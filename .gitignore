@@ -239,3 +239,5 @@ tevm-monorepo/
 
 # Reference code
 foundry/
+hardhat/
+edr/
