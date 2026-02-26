@@ -41,14 +41,6 @@ pub fn intrinsicGas(data: []const u8, is_create: bool) u64 {
     return gas;
 }
 
-fn deinitEventLogs(allocator: std.mem.Allocator, logs: []EventLog) void {
-    for (logs) |log| {
-        allocator.free(log.topics);
-        allocator.free(log.data);
-    }
-    allocator.free(logs);
-}
-
 fn allocateEventLogs(
     allocator: std.mem.Allocator,
     src_logs: []const guillotine_mini.Log,
@@ -129,8 +121,7 @@ pub fn processTransaction(
     if (current_nonce != tx.nonce) return TxError.NonceMismatch;
 
     // Calculate intrinsic gas
-    const is_create = tx.to == null;
-    const intrinsic = intrinsicGas(tx.data, is_create);
+    const intrinsic = intrinsicGas(tx.data, tx.to == null);
     if (intrinsic > tx.gas_limit) return TxError.IntrinsicGasExceedsLimit;
 
     // Validate balance covers value + gas cost
@@ -151,18 +142,10 @@ pub fn processTransaction(
 
     // Always route through EVM — it handles value transfers, EOA calls,
     // and precompile dispatch internally.
-    var evm_success: bool = true;
-    var evm_gas_left: u64 = execution_gas;
-    var owned_logs: []EventLog = allocator.alloc(EventLog, 0) catch return TxError.OutOfMemory;
-    errdefer deinitEventLogs(allocator, owned_logs);
-    var evm_refund: u64 = 0;
-    var evm_created_address: ?primitives.Address = null;
-
-    {
-        const target_code = if (tx.to) |target| (sm.getCode(target) catch return TxError.StateError) else &[_]u8{};
+    var result = blk: {
         const EvmType = guillotine_mini.Evm(.{});
         var evm: EvmType = undefined;
-        evm.init(allocator, host_iface, null, block_ctx, null) catch {
+        evm.init(allocator, host_iface, null, block_ctx, caller, tx.gas_price, null) catch {
             sm.revert();
             return TxError.EvmInitError;
         };
@@ -172,52 +155,38 @@ pub fn processTransaction(
             return TxError.EvmInitError;
         };
 
-        evm.pending_bytecode = target_code;
-        evm.origin = caller;
-        evm.gas_price = tx.gas_price;
-
-        const call_params = if (is_create)
-            EvmType.CallParams{ .create = .{
+        const call_params: EvmType.CallParams = if (tx.to) |to|
+            .{ .call = .{
+                .caller = caller,
+                .to = to,
+                .value = tx.value,
+                .input = tx.data,
+                .gas = execution_gas,
+            } }
+        else
+            .{ .create = .{
                 .caller = caller,
                 .value = tx.value,
                 .init_code = tx.data,
                 .gas = execution_gas,
-            } }
-        else
-            EvmType.CallParams{ .call = .{
-                .caller = caller,
-                .to = tx.to.?,
-                .value = tx.value,
-                .input = tx.data,
-                .gas = execution_gas,
             } };
 
-        const result = evm.call(call_params);
-
-        // Copy result data out of the EVM arena before evm.deinit() frees it
-        evm_success = result.success;
-        evm_gas_left = result.gas_left;
-        evm_refund = result.refund_counter;
-        evm_created_address = result.created_address;
-        if (result.logs.len > 0) {
-            const new_logs = try allocateEventLogs(allocator, result.logs);
-            deinitEventLogs(allocator, owned_logs);
-            owned_logs = new_logs;
-        }
-    }
+        break :blk evm.call(call_params).toOwnedResult(allocator) catch return TxError.OutOfMemory;
+    };
+    defer result.deinit(allocator);
 
     // Commit or revert EVM state changes (gas/nonce already applied above checkpoint)
-    if (evm_success) {
+    if (result.success) {
         sm.commit();
     } else {
         sm.revert();
     }
 
     // Gas accounting — applied on top of final state
-    const gas_consumed = execution_gas - evm_gas_left;
+    const gas_consumed = execution_gas - result.gas_left;
     const total_gas_used = intrinsic + gas_consumed;
     const max_refund = total_gas_used / 5;
-    const refund = @min(evm_refund, max_refund);
+    const refund = @min(result.refund_counter, max_refund);
     const effective_gas_used = total_gas_used - refund;
     const effective_gas_used_u256: u256 = @as(u256, effective_gas_used);
 
@@ -245,10 +214,10 @@ pub fn processTransaction(
         .to = tx.to,
         .cumulative_gas_used = effective_gas_used_u256,
         .gas_used = effective_gas_used_u256,
-        .contract_address = evm_created_address,
-        .logs = owned_logs,
+        .contract_address = result.created_address,
+        .logs = try allocateEventLogs(allocator, result.logs),
         .logs_bloom = logs_bloom,
-        .status = ReceiptStatus{ .success = evm_success, .gas_used = effective_gas_used_u256 },
+        .status = ReceiptStatus{ .success = result.success, .gas_used = effective_gas_used_u256 },
         .root = null,
         .effective_gas_price = tx.gas_price,
         .type = ReceiptType.legacy,
