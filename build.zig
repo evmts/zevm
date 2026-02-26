@@ -4,12 +4,41 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Import voltaire primitives
+    // Import voltaire modules
     const voltaire = b.dependency("voltaire", .{
         .target = target,
         .optimize = optimize,
     });
     const primitives_mod = voltaire.module("primitives");
+    const state_manager_mod = voltaire.module("state-manager");
+    const blockchain_mod = voltaire.module("blockchain");
+    const crypto_mod = voltaire.module("crypto");
+    const precompiles_mod = voltaire.module("precompiles");
+
+    // Get guillotine-mini dependency for source paths
+    const guillotine_mini_dep = b.dependency("guillotine-mini", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Create build_options module needed by guillotine-mini's evm_config.zig
+    const gm_build_options = b.addOptions();
+    gm_build_options.addOption(usize, "vector_length", 16);
+    const gm_build_options_mod = gm_build_options.createModule();
+
+    // Create guillotine-mini module using voltaire's primitives for type compatibility
+    const guillotine_mini_mod = b.addModule("guillotine_mini", .{
+        .root_source_file = guillotine_mini_dep.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
+            .{ .name = "precompiles", .module = precompiles_mod },
+            .{ .name = "crypto", .module = crypto_mod },
+            .{ .name = "build_options", .module = gm_build_options_mod },
+        },
+    });
 
     // zevm library module
     const mod = b.addModule("zevm", .{
@@ -17,6 +46,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .imports = &.{
             .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "state-manager", .module = state_manager_mod },
+            .{ .name = "blockchain", .module = blockchain_mod },
+            .{ .name = "crypto", .module = crypto_mod },
+            .{ .name = "precompiles", .module = precompiles_mod },
+            .{ .name = "guillotine_mini", .module = guillotine_mini_mod },
         },
     });
 

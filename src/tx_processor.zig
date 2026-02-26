@@ -161,11 +161,16 @@ pub fn processTransaction(
     {
         const target_code = if (tx.to) |target| (sm.getCode(target) catch return TxError.StateError) else &[_]u8{};
         const EvmType = guillotine_mini.Evm(.{});
-        var evm: EvmType = EvmType.init(allocator, host_iface, null, block_ctx, null) catch {
+        var evm: EvmType = undefined;
+        evm.init(allocator, host_iface, null, block_ctx, null) catch {
             sm.revert();
             return TxError.EvmInitError;
         };
         defer evm.deinit();
+        evm.initTransactionState(null) catch {
+            sm.revert();
+            return TxError.EvmInitError;
+        };
 
         evm.pending_bytecode = target_code;
         evm.origin = caller;
