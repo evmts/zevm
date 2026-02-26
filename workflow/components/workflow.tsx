@@ -1,7 +1,7 @@
 import { Workflow, smithers, outputs } from "../smithers";
 import { getTarget } from "../targets";
 import { focuses } from "./focuses";
-import { SuperRalph } from "@smithers-orchestrator/super-ralph";
+import { SuperRalph } from "super-ralph";
 import { WORKFLOW_MAX_CONCURRENCY, WORKFLOW_TASK_RETRIES } from "../config";
 import {
   GeminiAgent,
@@ -103,7 +103,7 @@ export default smithers((ctx) => {
               model: "claude-opus-4-6",
               systemPrompt: SYSTEM_PROMPT,
               cwd: REPO_ROOT,
-              dangerouslySkipPermissions: true,
+              permissionMode: "bypassPermissions",
               timeoutMs: 30 * 60 * 1000,
             }),
             description:
@@ -111,10 +111,11 @@ export default smithers((ctx) => {
           },
           codex: {
             agent: new CodexAgent({
-              model: "o3",
+              model: "gpt-5.3-codex",
               systemPrompt: SYSTEM_PROMPT,
               cwd: REPO_ROOT,
               yolo: true,
+              config: { model_reasoning_effort: "xhigh" },
               timeoutMs: 60 * 60 * 1000,
             }),
             description:
@@ -125,7 +126,7 @@ export default smithers((ctx) => {
               model: "claude-sonnet-4-6",
               systemPrompt: SYSTEM_PROMPT,
               cwd: REPO_ROOT,
-              dangerouslySkipPermissions: true,
+              permissionMode: "bypassPermissions",
               timeoutMs: 60 * 60 * 1000,
             }),
             description:
@@ -149,6 +150,7 @@ export default smithers((ctx) => {
               systemPrompt: SYSTEM_PROMPT,
               cwd: REPO_ROOT,
               timeoutMs: 60 * 60 * 1000,
+              finalMessageOnly: true,
             }),
             description:
               "Cheapest agent. Use as much as possible for simple work: straightforward RPC handler wiring, boilerplate, and low-complexity tickets.",

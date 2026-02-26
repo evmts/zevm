@@ -137,7 +137,7 @@ pub fn processTransaction(
     var result = blk: {
         const EvmType = guillotine_mini.Evm(.{});
         var evm: EvmType = undefined;
-        evm.init(allocator, host_iface, null, block_ctx, caller, tx.gas_price, null) catch {
+        evm.init(allocator, host_iface, null, block_ctx, null) catch {
             sm.revert();
             return TxError.EvmInitError;
         };

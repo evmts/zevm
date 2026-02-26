@@ -2,6 +2,33 @@ const std = @import("std");
 const primitives = @import("primitives");
 const consensus_verifier = @import("consensus_verifier.zig");
 
+fn expectLightClientHeaderEqual(expected: primitives.LightClientHeader.LightClientHeader, actual: primitives.LightClientHeader.LightClientHeader) !void {
+    try std.testing.expectEqual(expected.beacon.slot, actual.beacon.slot);
+    try std.testing.expectEqual(expected.beacon.proposer_index, actual.beacon.proposer_index);
+    try std.testing.expectEqualSlices(u8, &expected.beacon.parent_root, &actual.beacon.parent_root);
+    try std.testing.expectEqualSlices(u8, &expected.beacon.state_root, &actual.beacon.state_root);
+    try std.testing.expectEqualSlices(u8, &expected.beacon.body_root, &actual.beacon.body_root);
+    try std.testing.expectEqualSlices(u8, &expected.execution.parent_hash, &actual.execution.parent_hash);
+    try std.testing.expectEqualSlices(u8, &expected.execution.fee_recipient, &actual.execution.fee_recipient);
+    try std.testing.expectEqualSlices(u8, &expected.execution.state_root, &actual.execution.state_root);
+    try std.testing.expectEqualSlices(u8, &expected.execution.receipts_root, &actual.execution.receipts_root);
+    try std.testing.expectEqualSlices(u8, &expected.execution.logs_bloom, &actual.execution.logs_bloom);
+    try std.testing.expectEqualSlices(u8, &expected.execution.prev_randao, &actual.execution.prev_randao);
+    try std.testing.expectEqual(expected.execution.block_number, actual.execution.block_number);
+    try std.testing.expectEqual(expected.execution.gas_limit, actual.execution.gas_limit);
+    try std.testing.expectEqual(expected.execution.gas_used, actual.execution.gas_used);
+    try std.testing.expectEqual(expected.execution.timestamp, actual.execution.timestamp);
+    try std.testing.expectEqual(expected.execution.base_fee_per_gas, actual.execution.base_fee_per_gas);
+    try std.testing.expectEqualSlices(u8, &expected.execution.block_hash, &actual.execution.block_hash);
+    try std.testing.expectEqualSlices(u8, &expected.execution.transactions_root, &actual.execution.transactions_root);
+    try std.testing.expectEqualSlices(u8, &expected.execution.withdrawals_root, &actual.execution.withdrawals_root);
+    try std.testing.expectEqual(expected.execution.blob_gas_used, actual.execution.blob_gas_used);
+    try std.testing.expectEqual(expected.execution.excess_blob_gas, actual.execution.excess_blob_gas);
+    for (0..4) |i| {
+        try std.testing.expectEqualSlices(u8, &expected.execution_branch[i], &actual.execution_branch[i]);
+    }
+}
+
 fn fixtureHeader(slot: u64, marker: u8) primitives.LightClientHeader.LightClientHeader {
     return primitives.LightClientHeader.LightClientHeader.from(
         primitives.LightClientHeader.LightClientHeader.BeaconBlockHeader.from(
@@ -58,8 +85,8 @@ fn setFirstParticipants(bits: *[64]u8, count: usize) void {
 
 fn canonicalBeacon(
     beacon: primitives.LightClientHeader.LightClientHeader.BeaconBlockHeader,
-) primitives.BeaconBlockHeader.BeaconBlockHeader {
-    return primitives.BeaconBlockHeader.BeaconBlockHeader.from(
+) primitives.LightClientHeader.LightClientHeader.BeaconBlockHeader {
+    return primitives.LightClientHeader.LightClientHeader.BeaconBlockHeader.from(
         beacon.slot,
         beacon.proposer_index,
         beacon.parent_root,
@@ -185,8 +212,8 @@ test "applyBootstrap initializes store correctly" {
 
     consensus_verifier.applyBootstrap(&store, bootstrap);
 
-    try std.testing.expect(store.finalized_header.equals(bootstrap.header));
-    try std.testing.expect(store.optimistic_header.equals(bootstrap.header));
+    try expectLightClientHeaderEqual(store.finalized_header, bootstrap.header);
+    try expectLightClientHeaderEqual(store.optimistic_header, bootstrap.header);
     try std.testing.expectEqualSlices(
         u8,
         std.mem.asBytes(&bootstrap.current_sync_committee_pubkeys),
@@ -253,7 +280,7 @@ test "applyUpdate handles majority and non-majority correctly" {
     try std.testing.expectEqual(@as(u64, 96), store.finalized_header.beacon.slot);
     try std.testing.expectEqual(@as(u64, 100), store.optimistic_header.beacon.slot);
 
-    const expected_checkpoint = try canonicalBeacon(store.finalized_header.beacon).hashTreeRoot(std.testing.allocator);
+    const expected_checkpoint = consensus_verifier.beaconHeaderRoot(store.finalized_header.beacon);
     try std.testing.expectEqualSlices(u8, expected_checkpoint[0..], maybe_checkpoint.?[0..]);
 }
 

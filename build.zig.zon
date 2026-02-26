@@ -36,7 +36,7 @@
             .path = "../voltaire",
         },
         .@"guillotine-mini" = .{
-            .path = "../bench/guillotine-mini",
+            .path = "../guillotine-mini",
         },
     },
     // Specifies the set of files and directories that are included in this package.

@@ -39,7 +39,7 @@ process.on("SIGTERM", () => {
   process.exit(143);
 });
 
-const maxConcurrency = parseInt(process.env.WORKFLOW_MAX_CONCURRENCY || "4", 10);
+const maxConcurrency = parseInt(process.env.WORKFLOW_MAX_CONCURRENCY || "16", 10);
 
 // Refresh Kimi OAuth token before starting (and every 10min in background)
 const kimiRefresh = Bun.spawn(["bun", join(__dirname, "kimi-refresh.ts"), "--daemon"], {

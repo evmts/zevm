@@ -438,7 +438,7 @@ fn fixedBytesRoot(bytes: []const u8) [32]u8 {
     return root;
 }
 
-fn beaconHeaderRoot(beacon_header: primitives.LightClientHeader.LightClientHeader.BeaconBlockHeader) [32]u8 {
+pub fn beaconHeaderRoot(beacon_header: primitives.LightClientHeader.LightClientHeader.BeaconBlockHeader) [32]u8 {
     const slot_root = primitives.Ssz.merkle.hashTreeRootBasic(u64, beacon_header.slot);
     const proposer_index_root = primitives.Ssz.merkle.hashTreeRootBasic(u64, beacon_header.proposer_index);
 
