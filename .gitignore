@@ -237,7 +237,4 @@ tevm-monorepo/
 # Playwright MCP (testing artifacts)
 .playwright-mcp/
 
-# Reference code
-foundry/
-hardhat/
-edr/
+# Reference code (now tracked as submodules)
