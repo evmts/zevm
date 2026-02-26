@@ -115,8 +115,8 @@ export default smithers((ctx) => {
               systemPrompt: SYSTEM_PROMPT,
               cwd: REPO_ROOT,
               yolo: true,
-              config: { model_reasoning_effort: "xhigh" },
-              timeoutMs: 60 * 60 * 1000,
+              config: { model_reasoning_effort: "high" },
+              timeoutMs: 30 * 60 * 1000,
             }),
             description:
               "Main workhorse for bulk implementation. Good at following instructions and writing Zig code. Use for most implementation tickets.",
@@ -127,7 +127,7 @@ export default smithers((ctx) => {
               systemPrompt: SYSTEM_PROMPT,
               cwd: REPO_ROOT,
               permissionMode: "bypassPermissions",
-              timeoutMs: 60 * 60 * 1000,
+              timeoutMs: 30 * 60 * 1000,
             }),
             description:
               "Fast Claude model for testing, review-fix cycles, and lighter research. Good balance of speed and quality.",
@@ -143,13 +143,13 @@ export default smithers((ctx) => {
               timeoutMs: 30 * 60 * 1000,
             }),
             description:
-              "Very smart with large context window. Best for planning, reading reference implementations (edr, tevm-monorepo), and architecture analysis. Unreliable at tool calls.",
+              "Very smart with large context window. Best for planning, reading reference implementations (edr, tevm-monorepo), and architecture analysis. Unreliable at tool calls. CAUTION: Has strict rate limits — avoid scheduling multiple gemini tasks in parallel or back-to-back.",
           },
           kimi: {
             agent: new KimiAgent({
               systemPrompt: SYSTEM_PROMPT,
               cwd: REPO_ROOT,
-              timeoutMs: 60 * 60 * 1000,
+              timeoutMs: 30 * 60 * 1000,
               finalMessageOnly: true,
             }),
             description:
