@@ -238,3 +238,6 @@ tevm-monorepo/
 .playwright-mcp/
 
 # Reference code (now tracked as submodules)
+workflow/.db-backups/
+workflow/*.db-wal
+workflow/*.db
