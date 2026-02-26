@@ -5,7 +5,7 @@ const guillotine_mini = @import("guillotine_mini");
 const tx_processor = @import("tx_processor.zig");
 
 pub const BlockResult = struct {
-    receipts: []tx_processor.TxReceipt,
+    receipts: []primitives.Receipt.Receipt,
     total_gas_used: u64,
     block_number: u64,
 
@@ -32,7 +32,7 @@ pub fn buildBlock(
     transactions: []const tx_processor.ExecutionTx,
     block_ctx: guillotine_mini.BlockContext,
 ) !BlockResult {
-    var receipts = std.array_list.Managed(tx_processor.TxReceipt).init(allocator);
+    var receipts = std.array_list.Managed(primitives.Receipt.Receipt).init(allocator);
     errdefer {
         for (receipts.items) |r| r.deinit(allocator);
         receipts.deinit();

@@ -7,17 +7,9 @@ const CALLDATA_ZERO_BYTE_GAS: u64 = 4;
 const CALLDATA_NONZERO_BYTE_GAS: u64 = 16;
 const CREATE_GAS: u64 = 32_000;
 
-const EventLog = primitives.EventLog.EventLog;
-const Hash = primitives.Hash;
-const Receipt = primitives.Receipt.Receipt;
-const ReceiptStatus = primitives.Receipt.TransactionStatus;
-const ReceiptType = primitives.Receipt.TransactionType;
-
-pub const Transaction = primitives.Transaction.LegacyTransaction;
-pub const TxReceipt = Receipt;
 pub const ExecutionTx = struct {
     caller: primitives.Address,
-    tx: Transaction,
+    tx: primitives.Transaction.LegacyTransaction,
 };
 
 pub const TxError = error{
@@ -44,8 +36,8 @@ pub fn intrinsicGas(data: []const u8, is_create: bool) u64 {
 fn allocateEventLogs(
     allocator: std.mem.Allocator,
     src_logs: []const guillotine_mini.Log,
-) TxError![]EventLog {
-    const logs = allocator.alloc(EventLog, src_logs.len) catch return TxError.OutOfMemory;
+) TxError![]primitives.EventLog.EventLog {
+    const logs = allocator.alloc(primitives.EventLog.EventLog, src_logs.len) catch return TxError.OutOfMemory;
     var initialized: usize = 0;
     errdefer {
         var i: usize = 0;
@@ -57,9 +49,9 @@ fn allocateEventLogs(
     }
 
     for (src_logs, 0..) |log, i| {
-        const topics = allocator.alloc(Hash.Hash, log.topics.len) catch return TxError.OutOfMemory;
+        const topics = allocator.alloc(primitives.Hash.Hash, log.topics.len) catch return TxError.OutOfMemory;
         for (log.topics, 0..) |topic, j| {
-            var topic_hash: Hash.Hash = undefined;
+            var topic_hash: primitives.Hash.Hash = undefined;
             std.mem.writeInt(u256, &topic_hash, topic, .big);
             topics[j] = topic_hash;
         }
@@ -93,12 +85,12 @@ fn allocateEventLogs(
 
 fn computeLegacyTxHash(
     allocator: std.mem.Allocator,
-    tx: Transaction,
+    tx: primitives.Transaction.LegacyTransaction,
     chain_id: u64,
-) TxError!Hash.Hash {
+) TxError!primitives.Hash.Hash {
     const encoded = primitives.Transaction.encodeLegacyForSigning(allocator, tx, chain_id) catch return TxError.OutOfMemory;
     defer allocator.free(encoded);
-    var out: Hash.Hash = undefined;
+    var out: primitives.Hash.Hash = undefined;
     std.crypto.hash.sha3.Keccak256.hash(encoded, &out, .{});
     return out;
 }
@@ -113,9 +105,9 @@ pub fn processTransaction(
     sm: *state_manager.StateManager,
     host_iface: guillotine_mini.HostInterface,
     caller: primitives.Address,
-    tx: Transaction,
+    tx: primitives.Transaction.LegacyTransaction,
     block_ctx: guillotine_mini.BlockContext,
-) TxError!TxReceipt {
+) TxError!primitives.Receipt.Receipt {
     // Validate nonce
     const current_nonce = sm.getNonce(caller) catch return TxError.StateError;
     if (current_nonce != tx.nonce) return TxError.NonceMismatch;
@@ -205,10 +197,10 @@ pub fn processTransaction(
 
     const tx_hash = try computeLegacyTxHash(allocator, tx, @as(u64, @intCast(block_ctx.chain_id)));
 
-    return TxReceipt{
+    return primitives.Receipt.Receipt{
         .transaction_hash = tx_hash,
         .transaction_index = 0,
-        .block_hash = Hash.ZERO,
+        .block_hash = primitives.Hash.ZERO,
         .block_number = block_ctx.block_number,
         .sender = caller,
         .to = tx.to,
@@ -217,10 +209,10 @@ pub fn processTransaction(
         .contract_address = result.created_address,
         .logs = try allocateEventLogs(allocator, result.logs),
         .logs_bloom = logs_bloom,
-        .status = ReceiptStatus{ .success = result.success, .gas_used = effective_gas_used_u256 },
+        .status = primitives.Receipt.TransactionStatus{ .success = result.success, .gas_used = effective_gas_used_u256 },
         .root = null,
         .effective_gas_price = tx.gas_price,
-        .type = ReceiptType.legacy,
+        .type = primitives.Receipt.TransactionType.legacy,
         .blob_gas_used = null,
         .blob_gas_price = null,
     };

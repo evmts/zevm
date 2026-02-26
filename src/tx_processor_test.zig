@@ -12,7 +12,7 @@ fn makeLegacyTx(params: struct {
     gas_limit: u64,
     gas_price: u256,
     nonce: u64,
-}) tx_processor.Transaction {
+}) primitives.Transaction.LegacyTransaction {
     return .{
         .nonce = params.nonce,
         .gas_price = params.gas_price,
