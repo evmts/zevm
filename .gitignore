@@ -241,3 +241,4 @@ tevm-monorepo/
 workflow/.db-backups/
 workflow/*.db-wal
 workflow/*.db
+workflow/*.bak
