@@ -5,7 +5,7 @@
 Implement the missing HTTP JSON-RPC 2.0 server in ZEVM by composing existing upstream building blocks instead of introducing parallel infrastructure:
 
 1. Add JSON-RPC envelope primitives in `voltaire` (`jsonrpc/envelope.zig`).
-2. Import voltaire's `jsonrpc` module into ZEVM build wiring.
+2. Import voltaire's already-exported `jsonrpc` module into ZEVM `build.zig` wiring.
 3. Implement ZEVM's integration layer in `src/rpc_server.zig`:
    - JSON-RPC envelope parsing/serialization usage
    - method dispatch via `jsonrpc.eth.EthMethod.fromMethodName`, `jsonrpc.debug.DebugMethod.fromMethodName`, `jsonrpc.engine.EngineMethod.fromMethodName`
@@ -66,39 +66,42 @@ Scope for this ticket is foundational wiring only: all recognized methods still 
 29. Test: `test "handleJsonRpc preserves integer/string/null id in error responses"`.
 30. Implement: propagate `id` into response constructors for all non-parse errors.
 
-31. Test: `test "handleJsonRpc batch request returns array of responses"` and `test "handleJsonRpc empty batch returns -32600"`.
-32. Implement: batch branch in `handleJsonRpc` (single array payload, per-element processing, invalid empty batch handling).
+31. Test: `test "handleJsonRpc batch request returns array of responses"`.
+32. Implement: batch-response aggregation branch in `handleJsonRpc` for non-empty arrays.
+
+33. Test: `test "handleJsonRpc empty batch returns -32600"`.
+34. Implement: explicit empty-array guard in `handleJsonRpc`.
 
 ### Phase 4: HTTP server route in `src/rpc_server.zig`
 
-33. Test: integration test `test "HTTP POST / returns JSON-RPC response"` using random port and `std.http.Client`.
-34. Implement: `pub const ServerConfig` and `pub fn run(allocator: std.mem.Allocator, config: ServerConfig) !void` with accept loop and POST body handling.
+35. Test: integration test `test "HTTP POST / returns JSON-RPC response"` using random port and `std.http.Client`.
+36. Implement: `pub const ServerConfig` and `pub fn run(allocator: std.mem.Allocator, config: ServerConfig) !void` with accept loop and POST route handling.
 
-35. Test: integration test `test "HTTP non-POST returns 405"`.
-36. Implement: method gate in request handler path (`.method_not_allowed` status).
+37. Test: integration test `test "HTTP non-POST returns 405"`.
+38. Implement: method gate in request handler path (`.method_not_allowed` status).
 
-37. Test: integration test `test "HTTP malformed JSON returns parse error envelope"` (via POST raw body).
-38. Implement: connect HTTP body to `handleJsonRpc` and set `content-type: application/json`.
+39. Test: integration test `test "HTTP malformed JSON returns parse error envelope"` (via POST raw body).
+40. Implement: connect HTTP body to `handleJsonRpc` and set `content-type: application/json`.
 
 ### Phase 5: CLI arg wiring in `src/main.zig`
 
-39. Test: `test "parseServerConfig defaults host=127.0.0.1 port=8545 chain_id=31337"` in `src/rpc_server_test.zig`.
-40. Implement: `pub fn parseServerConfig(allocator: std.mem.Allocator, args: []const []const u8) !ServerConfig` in `src/rpc_server.zig`.
+41. Test: `test "parseServerConfig defaults host=127.0.0.1 port=8545 chain_id=31337"` in `src/rpc_server_test.zig`.
+42. Implement: `pub fn parseServerConfig(allocator: std.mem.Allocator, args: []const []const u8) !ServerConfig` in `src/rpc_server.zig`.
 
-41. Test: `test "parseServerConfig parses --host --port --chain-id"` in `src/rpc_server_test.zig`.
-42. Implement: flag parsing branches and integer parsing/validation.
+43. Test: `test "parseServerConfig parses --host --port --chain-id"` in `src/rpc_server_test.zig`.
+44. Implement: flag parsing branches and integer parsing/validation.
 
-43. Test: integration-level smoke test wrapper `test "main wiring uses parsed config and starts rpc server"` (no infinite loop; use extracted launcher function).
-44. Implement: `fn runWithArgs(allocator: std.mem.Allocator, args: []const []const u8) !void` in `src/main.zig`; `main()` delegates to it.
+45. Test: integration-level smoke test wrapper `test "main wiring uses parsed config and starts rpc server"` (no infinite loop; use extracted launcher function).
+46. Implement: `fn runWithArgs(allocator: std.mem.Allocator, args: []const []const u8) !void` in `src/main.zig`; `main()` delegates to it.
 
 ### Phase 6: Final verification
 
-45. Run ZEVM tests: `zig build test`.
-46. Manual smoke checks:
+47. Run ZEVM tests: `zig build test`.
+48. Manual smoke checks:
    - `curl` POST valid JSON-RPC method -> `-32601`
    - malformed JSON -> `-32700`
    - batch payload -> JSON array response
-47. If new upstream tests were added in `voltaire`, run `zig build test` in `../voltaire` before finalizing.
+49. If new upstream tests were added in `voltaire`, run `zig build test` in `../voltaire` before finalizing.
 
 ## Files to create/modify (with specific function signatures)
 
