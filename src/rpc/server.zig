@@ -1,21 +1,16 @@
 const std = @import("std");
-const envelope = @import("envelope.zig");
-const router = @import("router.zig");
-const handlers = @import("handlers.zig");
+const jsonrpc = @import("jsonrpc");
+const dispatcher = @import("dispatcher.zig");
 
 pub const ServerConfig = struct {
-    host: []const u8,
-    port: u16,
-    cors_enabled: bool,
+    host: []const u8 = "127.0.0.1",
+    port: u16 = 8545,
 };
 
 pub const TestHttpResponse = struct {
     status: std.http.Status,
     body: ?[]u8,
     content_type: ?[]const u8 = null,
-    access_control_allow_origin: ?[]const u8 = null,
-    access_control_allow_methods: ?[]const u8 = null,
-    access_control_allow_headers: ?[]const u8 = null,
 
     pub fn deinit(self: *TestHttpResponse, allocator: std.mem.Allocator) void {
         if (self.body) |body| {
@@ -29,77 +24,75 @@ const json_content_type_header = std.http.Header{
     .value = "application/json",
 };
 
-const cors_allow_origin_header = std.http.Header{
-    .name = "access-control-allow-origin",
-    .value = "*",
-};
+pub fn parseConfig(allocator: std.mem.Allocator, args: []const []const u8) !ServerConfig {
+    _ = allocator;
 
-const cors_allow_methods_header = std.http.Header{
-    .name = "access-control-allow-methods",
-    .value = "POST, OPTIONS",
-};
+    var config = ServerConfig{};
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        if (std.mem.eql(u8, args[index], "--host")) {
+            index += 1;
+            if (index >= args.len) {
+                return error.MissingHostValue;
+            }
+            config.host = args[index];
+            continue;
+        }
 
-const cors_allow_headers_header = std.http.Header{
-    .name = "access-control-allow-headers",
-    .value = "content-type",
-};
+        if (std.mem.eql(u8, args[index], "--port")) {
+            index += 1;
+            if (index >= args.len) {
+                return error.MissingPortValue;
+            }
+            config.port = std.fmt.parseInt(u16, args[index], 10) catch {
+                return error.InvalidPort;
+            };
+            continue;
+        }
 
-pub fn serve(
-    allocator: std.mem.Allocator,
-    config: ServerConfig,
-    context: *const handlers.HandlerContext,
-) !void {
+        return error.UnknownArgument;
+    }
+
+    return config;
+}
+
+pub fn run(allocator: std.mem.Allocator, config: ServerConfig, handlers: *const dispatcher.HandlerRegistry) !void {
     const address = try std.net.Address.parseIp(config.host, config.port);
     var tcp_server = try address.listen(.{ .reuse_address = true });
     defer tcp_server.deinit();
 
     while (true) {
         const connection = try tcp_server.accept();
-        handleConnection(allocator, config, context, connection) catch {
+        handleConnection(allocator, handlers, connection) catch {
             continue;
         };
     }
 }
 
-pub fn handleHttpRequestForTests(
+pub fn handleHttpRequestForTest(
     allocator: std.mem.Allocator,
-    config: ServerConfig,
-    context: *const handlers.HandlerContext,
     method: std.http.Method,
     body: []const u8,
+    handlers: *const dispatcher.HandlerRegistry,
 ) !TestHttpResponse {
-    if (method == .POST) {
-        const response_body = try handlePost(allocator, context, body);
-
+    if (method != .POST) {
         return .{
-            .status = .ok,
-            .body = response_body,
-            .content_type = "application/json",
-            .access_control_allow_origin = if (config.cors_enabled) "*" else null,
-        };
-    }
-
-    if (method == .OPTIONS and config.cors_enabled) {
-        return .{
-            .status = .no_content,
+            .status = .method_not_allowed,
             .body = null,
-            .access_control_allow_origin = "*",
-            .access_control_allow_methods = "POST, OPTIONS",
-            .access_control_allow_headers = "content-type",
         };
     }
 
+    const response_body = try handlePost(allocator, body, handlers);
     return .{
-        .status = .method_not_allowed,
-        .body = null,
-        .access_control_allow_origin = if (config.cors_enabled) "*" else null,
+        .status = .ok,
+        .body = response_body,
+        .content_type = "application/json",
     };
 }
 
 fn handleConnection(
     allocator: std.mem.Allocator,
-    config: ServerConfig,
-    context: *const handlers.HandlerContext,
+    handlers: *const dispatcher.HandlerRegistry,
     connection: std.net.Server.Connection,
 ) !void {
     defer connection.stream.close();
@@ -116,55 +109,31 @@ fn handleConnection(
             else => return err,
         };
 
-        try handleRequest(allocator, config, context, &request);
+        try handleRequest(allocator, handlers, &request);
     }
 }
 
 fn handleRequest(
     allocator: std.mem.Allocator,
-    config: ServerConfig,
-    context: *const handlers.HandlerContext,
+    handlers: *const dispatcher.HandlerRegistry,
     request: *std.http.Server.Request,
 ) !void {
-    if (request.head.method == .POST) {
-        const request_body = try readRequestBody(allocator, request);
-        defer allocator.free(request_body);
-
-        const response_body = try handlePost(allocator, context, request_body);
-        defer allocator.free(response_body);
-
-        const headers = if (config.cors_enabled)
-            &[_]std.http.Header{ json_content_type_header, cors_allow_origin_header }
-        else
-            &[_]std.http.Header{json_content_type_header};
-
-        try request.respond(response_body, .{
-            .status = .ok,
-            .extra_headers = headers,
+    if (request.head.method != .POST) {
+        try request.respond("Method not allowed", .{
+            .status = .method_not_allowed,
         });
         return;
     }
 
-    if (request.head.method == .OPTIONS and config.cors_enabled) {
-        try request.respond("", .{
-            .status = .no_content,
-            .extra_headers = &[_]std.http.Header{
-                cors_allow_origin_header,
-                cors_allow_methods_header,
-                cors_allow_headers_header,
-            },
-        });
-        return;
-    }
+    const request_body = try readRequestBody(allocator, request);
+    defer allocator.free(request_body);
 
-    const headers = if (config.cors_enabled)
-        &[_]std.http.Header{cors_allow_origin_header}
-    else
-        &[_]std.http.Header{};
+    const response_body = try handlePost(allocator, request_body, handlers);
+    defer allocator.free(response_body);
 
-    try request.respond("Method not allowed", .{
-        .status = .method_not_allowed,
-        .extra_headers = headers,
+    try request.respond(response_body, .{
+        .status = .ok,
+        .extra_headers = &[_]std.http.Header{json_content_type_header},
     });
 }
 
@@ -182,18 +151,80 @@ fn readRequestBody(allocator: std.mem.Allocator, request: *std.http.Server.Reque
 
 fn handlePost(
     allocator: std.mem.Allocator,
-    context: *const handlers.HandlerContext,
     body: []const u8,
+    handlers: *const dispatcher.HandlerRegistry,
 ) ![]u8 {
-    var parsed_body = envelope.parseBody(allocator, body) catch |err| switch (err) {
-        error.ParseError => return envelope.writeError(allocator, null, -32700, "Parse error"),
-        error.InvalidRequest => return envelope.writeError(allocator, null, -32600, "Invalid request"),
-        else => return err,
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+        return writeErrorResponse(allocator, null, jsonrpc.envelope.ErrorCode.PARSE_ERROR, "Parse error");
     };
-    defer parsed_body.deinit(allocator);
+    defer parsed.deinit();
 
-    return switch (parsed_body) {
-        .single => |request| router.route(allocator, context, request),
-        .batch => |requests| router.routeBatch(allocator, context, requests),
+    var request_batch = jsonrpc.envelope.parseSingleOrBatch(allocator, body) catch {
+        return writeErrorResponse(allocator, null, jsonrpc.envelope.ErrorCode.INVALID_REQUEST, "Invalid request");
     };
+    defer request_batch.deinit(allocator);
+
+    return switch (request_batch) {
+        .single => |request| handleSingleRequest(allocator, request, handlers),
+        .batch => |batch| handleBatch(allocator, batch, handlers),
+    };
+}
+
+fn handleSingleRequest(
+    allocator: std.mem.Allocator,
+    request: jsonrpc.envelope.RequestEnvelope,
+    handlers: *const dispatcher.HandlerRegistry,
+) ![]u8 {
+    var response = try dispatcher.dispatch(allocator, request, handlers);
+    defer response.deinit(allocator);
+
+    return stringifyResponse(allocator, response);
+}
+
+fn handleBatch(
+    allocator: std.mem.Allocator,
+    batch: []jsonrpc.envelope.RequestEnvelope,
+    handlers: *const dispatcher.HandlerRegistry,
+) ![]u8 {
+    var response_bytes = std.ArrayList(u8).empty;
+    errdefer response_bytes.deinit(allocator);
+
+    try response_bytes.append(allocator, '[');
+    for (batch, 0..) |request, index| {
+        if (index > 0) {
+            try response_bytes.append(allocator, ',');
+        }
+
+        var response = try dispatcher.dispatch(allocator, request, handlers);
+        defer response.deinit(allocator);
+
+        const item_bytes = try stringifyResponse(allocator, response);
+        defer allocator.free(item_bytes);
+
+        try response_bytes.appendSlice(allocator, item_bytes);
+    }
+    try response_bytes.append(allocator, ']');
+
+    return response_bytes.toOwnedSlice(allocator);
+}
+
+fn writeErrorResponse(
+    allocator: std.mem.Allocator,
+    id: ?jsonrpc.envelope.Id,
+    code: i32,
+    message: []const u8,
+) ![]u8 {
+    var response = jsonrpc.envelope.ResponseEnvelope.makeError(id, code, message);
+    defer response.deinit(allocator);
+
+    return stringifyResponse(allocator, response);
+}
+
+fn stringifyResponse(allocator: std.mem.Allocator, response: jsonrpc.envelope.ResponseEnvelope) ![]u8 {
+    var writer = std.Io.Writer.Allocating.init(allocator);
+    defer writer.deinit();
+
+    try std.json.Stringify.value(response, .{}, &writer.writer);
+
+    return writer.toOwnedSlice();
 }

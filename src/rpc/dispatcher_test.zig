@@ -18,6 +18,7 @@ test "zevm imports voltaire jsonrpc module" {
 
 test "dispatch unknown method returns -32601" {
     var request = jsonrpc.envelope.RequestEnvelope{
+        .jsonrpc = try std.testing.allocator.dupe(u8, "2.0"),
         .id = .{ .integer = 1 },
         .method = try std.testing.allocator.dupe(u8, "no_such_method"),
         .params = null,
@@ -36,6 +37,7 @@ test "dispatch recognized eth/debug/engine method with no handler returns -32601
 
     {
         var request = jsonrpc.envelope.RequestEnvelope{
+            .jsonrpc = try std.testing.allocator.dupe(u8, "2.0"),
             .id = .{ .integer = 11 },
             .method = try std.testing.allocator.dupe(u8, "eth_blockNumber"),
             .params = null,
@@ -49,6 +51,7 @@ test "dispatch recognized eth/debug/engine method with no handler returns -32601
 
     {
         var request = jsonrpc.envelope.RequestEnvelope{
+            .jsonrpc = try std.testing.allocator.dupe(u8, "2.0"),
             .id = .{ .integer = 12 },
             .method = try std.testing.allocator.dupe(u8, "debug_getBadBlocks"),
             .params = null,
@@ -65,6 +68,7 @@ test "dispatch recognized eth/debug/engine method with no handler returns -32601
         try params_array.append(.null);
 
         var request = jsonrpc.envelope.RequestEnvelope{
+            .jsonrpc = try std.testing.allocator.dupe(u8, "2.0"),
             .id = .{ .integer = 13 },
             .method = try std.testing.allocator.dupe(u8, "engine_exchangeCapabilities"),
             .params = .{ .array = params_array },
@@ -81,6 +85,7 @@ test "dispatch invalid params shape returns -32602" {
     const params_array = std.json.Array.init(std.testing.allocator);
 
     var request = jsonrpc.envelope.RequestEnvelope{
+        .jsonrpc = try std.testing.allocator.dupe(u8, "2.0"),
         .id = .{ .integer = 21 },
         .method = try std.testing.allocator.dupe(u8, "eth_getBalance"),
         .params = .{ .array = params_array },
@@ -96,6 +101,7 @@ test "dispatch invalid params shape returns -32602" {
 
 test "dispatch handler failure maps to -32603" {
     var request = jsonrpc.envelope.RequestEnvelope{
+        .jsonrpc = try std.testing.allocator.dupe(u8, "2.0"),
         .id = .{ .integer = 31 },
         .method = try std.testing.allocator.dupe(u8, "eth_blockNumber"),
         .params = null,
@@ -117,6 +123,7 @@ test "dispatch preserves integer|string|null id in error responses" {
 
     {
         var request = jsonrpc.envelope.RequestEnvelope{
+            .jsonrpc = try std.testing.allocator.dupe(u8, "2.0"),
             .id = .{ .integer = 100 },
             .method = try std.testing.allocator.dupe(u8, "unknown"),
             .params = null,
@@ -131,6 +138,7 @@ test "dispatch preserves integer|string|null id in error responses" {
 
     {
         var request = jsonrpc.envelope.RequestEnvelope{
+            .jsonrpc = try std.testing.allocator.dupe(u8, "2.0"),
             .id = .{ .string = try std.testing.allocator.dupe(u8, "req-abc") },
             .method = try std.testing.allocator.dupe(u8, "unknown"),
             .params = null,
@@ -145,6 +153,7 @@ test "dispatch preserves integer|string|null id in error responses" {
 
     {
         var request = jsonrpc.envelope.RequestEnvelope{
+            .jsonrpc = try std.testing.allocator.dupe(u8, "2.0"),
             .id = .{ .null_value = {} },
             .method = try std.testing.allocator.dupe(u8, "unknown"),
             .params = null,

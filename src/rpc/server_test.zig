@@ -1,7 +1,6 @@
 const std = @import("std");
-const state_manager = @import("state-manager");
-const blockchain = @import("blockchain");
-const handlers = @import("handlers.zig");
+const jsonrpc = @import("jsonrpc");
+const dispatcher = @import("dispatcher.zig");
 const server = @import("server.zig");
 
 fn getObjectField(value: std.json.Value, key: []const u8) !std.json.Value {
@@ -11,157 +10,189 @@ fn getObjectField(value: std.json.Value, key: []const u8) !std.json.Value {
     };
 }
 
-test "POST valid JSON-RPC returns HTTP 200 with JSON body" {
-    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
-    defer sm.deinit();
+fn parseJson(body: []const u8) !std.json.Parsed(std.json.Value) {
+    return std.json.parseFromSlice(std.json.Value, std.testing.allocator, body, .{
+        .allocate = .alloc_always,
+    });
+}
 
-    var chain = try blockchain.Blockchain.init(std.testing.allocator, null);
-    defer chain.deinit();
+fn successHandler(allocator: std.mem.Allocator, method_name: []const u8, params: ?std.json.Value) anyerror!std.json.Value {
+    _ = allocator;
+    _ = params;
 
-    const context = handlers.HandlerContext{
-        .state_manager = &sm,
-        .blockchain = &chain,
-        .chain_id = 1,
+    if (std.mem.eql(u8, method_name, "eth_blockNumber")) {
+        return .{ .integer = 7 };
+    }
+
+    return error.UnexpectedMethod;
+}
+
+test "POST single request returns HTTP 200 + JSON-RPC envelope" {
+    const handlers = dispatcher.HandlerRegistry{
+        .on_method = &successHandler,
     };
 
-    var response = try server.handleHttpRequestForTests(
+    var response = try server.handleHttpRequestForTest(
         std.testing.allocator,
-        .{ .host = "127.0.0.1", .port = 8545, .cors_enabled = false },
-        &context,
         .POST,
-        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_chainId\"}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_blockNumber\"}",
+        &handlers,
     );
     defer response.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(std.http.Status.ok, response.status);
     try std.testing.expectEqualStrings("application/json", response.content_type.?);
 
-    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, response.body.?, .{
-        .allocate = .alloc_always,
-    });
+    const parsed = try parseJson(response.body.?);
     defer parsed.deinit();
 
-    const error_object = try getObjectField(parsed.value, "error");
-    try std.testing.expectEqual(@as(i64, -32601), (try getObjectField(error_object, "code")).integer);
+    try std.testing.expectEqual(@as(i64, 7), (try getObjectField(parsed.value, "result")).integer);
 }
 
-test "non-POST returns 405" {
-    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
-    defer sm.deinit();
-
-    var chain = try blockchain.Blockchain.init(std.testing.allocator, null);
-    defer chain.deinit();
-
-    const context = handlers.HandlerContext{
-        .state_manager = &sm,
-        .blockchain = &chain,
-        .chain_id = 1,
+test "batch request returns per-item result/error array" {
+    const handlers = dispatcher.HandlerRegistry{
+        .on_method = &successHandler,
     };
 
-    var response = try server.handleHttpRequestForTests(
+    var response = try server.handleHttpRequestForTest(
         std.testing.allocator,
-        .{ .host = "127.0.0.1", .port = 8545, .cors_enabled = false },
-        &context,
-        .GET,
-        "",
-    );
-    defer response.deinit(std.testing.allocator);
-
-    try std.testing.expectEqual(std.http.Status.method_not_allowed, response.status);
-}
-
-test "malformed POST body returns JSON-RPC parse error" {
-    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
-    defer sm.deinit();
-
-    var chain = try blockchain.Blockchain.init(std.testing.allocator, null);
-    defer chain.deinit();
-
-    const context = handlers.HandlerContext{
-        .state_manager = &sm,
-        .blockchain = &chain,
-        .chain_id = 1,
-    };
-
-    var response = try server.handleHttpRequestForTests(
-        std.testing.allocator,
-        .{ .host = "127.0.0.1", .port = 8545, .cors_enabled = false },
-        &context,
         .POST,
-        "{\"jsonrpc\":\"2.0",
+        "[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_blockNumber\"},{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"unknown_method\"}]",
+        &handlers,
     );
     defer response.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(std.http.Status.ok, response.status);
 
-    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, response.body.?, .{
-        .allocate = .alloc_always,
-    });
-    defer parsed.deinit();
-
-    const error_object = try getObjectField(parsed.value, "error");
-    try std.testing.expectEqual(@as(i64, -32700), (try getObjectField(error_object, "code")).integer);
-}
-
-test "batch POST returns JSON array" {
-    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
-    defer sm.deinit();
-
-    var chain = try blockchain.Blockchain.init(std.testing.allocator, null);
-    defer chain.deinit();
-
-    const context = handlers.HandlerContext{
-        .state_manager = &sm,
-        .blockchain = &chain,
-        .chain_id = 1,
-    };
-
-    var response = try server.handleHttpRequestForTests(
-        std.testing.allocator,
-        .{ .host = "127.0.0.1", .port = 8545, .cors_enabled = false },
-        &context,
-        .POST,
-        "[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_chainId\"},{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_unknown\"}]",
-    );
-    defer response.deinit(std.testing.allocator);
-
-    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, response.body.?, .{
-        .allocate = .alloc_always,
-    });
+    const parsed = try parseJson(response.body.?);
     defer parsed.deinit();
 
     const items = switch (parsed.value) {
         .array => |array| array.items,
         else => return error.ExpectedArray,
     };
-
     try std.testing.expectEqual(@as(usize, 2), items.len);
+    try std.testing.expectEqual(@as(i64, 7), (try getObjectField(items[0], "result")).integer);
+
+    const error_object = try getObjectField(items[1], "error");
+    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND), (try getObjectField(error_object, "code")).integer);
 }
 
-test "OPTIONS with CORS enabled returns CORS headers" {
-    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
-    defer sm.deinit();
+test "malformed JSON returns -32700" {
+    const handlers = dispatcher.HandlerRegistry{};
 
-    var chain = try blockchain.Blockchain.init(std.testing.allocator, null);
-    defer chain.deinit();
-
-    const context = handlers.HandlerContext{
-        .state_manager = &sm,
-        .blockchain = &chain,
-        .chain_id = 1,
-    };
-
-    var response = try server.handleHttpRequestForTests(
+    var response = try server.handleHttpRequestForTest(
         std.testing.allocator,
-        .{ .host = "127.0.0.1", .port = 8545, .cors_enabled = true },
-        &context,
-        .OPTIONS,
-        "",
+        .POST,
+        "{\"jsonrpc\":\"2.0",
+        &handlers,
     );
     defer response.deinit(std.testing.allocator);
 
-    try std.testing.expectEqual(std.http.Status.no_content, response.status);
-    try std.testing.expectEqualStrings("*", response.access_control_allow_origin.?);
-    try std.testing.expectEqualStrings("POST, OPTIONS", response.access_control_allow_methods.?);
-    try std.testing.expectEqualStrings("content-type", response.access_control_allow_headers.?);
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+
+    const error_object = try getObjectField(parsed.value, "error");
+    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.PARSE_ERROR), (try getObjectField(error_object, "code")).integer);
+}
+
+test "invalid request object returns -32600" {
+    const handlers = dispatcher.HandlerRegistry{};
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":1}",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+
+    const error_object = try getObjectField(parsed.value, "error");
+    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.INVALID_REQUEST), (try getObjectField(error_object, "code")).integer);
+}
+
+test "unknown method returns -32601" {
+    const handlers = dispatcher.HandlerRegistry{};
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"unknown_method\"}",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+
+    const error_object = try getObjectField(parsed.value, "error");
+    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND), (try getObjectField(error_object, "code")).integer);
+}
+
+test "invalid params returns -32602" {
+    const handlers = dispatcher.HandlerRegistry{};
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getBalance\",\"params\":[]}",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+
+    const error_object = try getObjectField(parsed.value, "error");
+    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.INVALID_PARAMS), (try getObjectField(error_object, "code")).integer);
+}
+
+test "content-type is application/json for JSON-RPC responses" {
+    const handlers = dispatcher.HandlerRegistry{};
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"unknown_method\"}",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(std.http.Status.ok, response.status);
+    try std.testing.expectEqualStrings("application/json", response.content_type.?);
+}
+
+test "non-POST request returns 405" {
+    const handlers = dispatcher.HandlerRegistry{};
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .GET,
+        "",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(std.http.Status.method_not_allowed, response.status);
+    try std.testing.expect(response.body == null);
+}
+
+test "parseConfig defaults to 127.0.0.1:8545" {
+    const config = try server.parseConfig(std.testing.allocator, &[_][]const u8{});
+
+    try std.testing.expectEqualStrings("127.0.0.1", config.host);
+    try std.testing.expectEqual(@as(u16, 8545), config.port);
+}
+
+test "parseConfig parses --host and --port" {
+    const config = try server.parseConfig(
+        std.testing.allocator,
+        &[_][]const u8{ "--host", "0.0.0.0", "--port", "9555" },
+    );
+
+    try std.testing.expectEqualStrings("0.0.0.0", config.host);
+    try std.testing.expectEqual(@as(u16, 9555), config.port);
 }

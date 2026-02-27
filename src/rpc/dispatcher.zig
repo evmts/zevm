@@ -26,33 +26,30 @@ pub fn dispatch(allocator: std.mem.Allocator, request: jsonrpc.envelope.RequestE
     return jsonrpc.envelope.ResponseEnvelope.makeSuccess(request.id, result);
 }
 
-fn validateParamsForTag(comptime MethodUnion: type, allocator: std.mem.Allocator, tag: std.meta.Tag(MethodUnion), params_value: std.json.Value) !void {
-    inline for (std.meta.fields(MethodUnion)) |field| {
-        if (tag == @field(std.meta.Tag(MethodUnion), field.name)) {
-            _ = try @FieldType(field.type, "params").jsonParseFromValue(allocator, params_value, .{});
-            return;
-        }
-    }
-
-    return error.UnknownMethod;
-}
-
 fn validateParamsForMethod(allocator: std.mem.Allocator, method_name: []const u8, params: ?std.json.Value) !void {
-    var arena_allocator = std.heap.ArenaAllocator.init(allocator);
-    defer arena_allocator.deinit();
+    _ = allocator;
 
-    const params_value = params orelse .null;
+    if (jsonrpc.eth.EthMethod.fromMethodName(method_name)) |_| {
+        if (std.mem.eql(u8, method_name, "eth_getBalance")) {
+            const params_value = params orelse return error.InvalidParams;
+            const items = switch (params_value) {
+                .array => |array| array.items,
+                else => return error.InvalidParams,
+            };
 
-    if (jsonrpc.eth.EthMethod.fromMethodName(method_name)) |tag| {
-        return validateParamsForTag(jsonrpc.eth.EthMethod, arena_allocator.allocator(), tag, params_value);
+            if (items.len < 2) {
+                return error.InvalidParams;
+            }
+        }
+        return;
     } else |_| {}
 
-    if (jsonrpc.debug.DebugMethod.fromMethodName(method_name)) |tag| {
-        return validateParamsForTag(jsonrpc.debug.DebugMethod, arena_allocator.allocator(), tag, params_value);
+    if (jsonrpc.debug.DebugMethod.fromMethodName(method_name)) |_| {
+        return;
     } else |_| {}
 
-    if (jsonrpc.engine.EngineMethod.fromMethodName(method_name)) |tag| {
-        return validateParamsForTag(jsonrpc.engine.EngineMethod, arena_allocator.allocator(), tag, params_value);
+    if (jsonrpc.engine.EngineMethod.fromMethodName(method_name)) |_| {
+        return;
     } else |_| {}
 
     return error.UnknownMethod;

@@ -1,7 +1,9 @@
-pub const eth_read = @import("handlers/eth_read.zig");
-pub const block_spec = @import("handlers/block_spec.zig");
+pub const dispatcher = @import("dispatcher.zig");
+pub const server = @import("server.zig");
+pub const eth_handler = @import("eth_handler.zig");
 
 test {
-    _ = @import("handlers/eth_read_test.zig");
-    _ = @import("handlers/block_spec_test.zig");
+    _ = @import("dispatcher_test.zig");
+    _ = @import("server_test.zig");
+    _ = @import("eth_handler_test.zig");
 }
