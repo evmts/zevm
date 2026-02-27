@@ -14,6 +14,7 @@ pub fn build(b: *std.Build) void {
     const blockchain_mod = voltaire.module("blockchain");
     const crypto_mod = voltaire.module("crypto");
     const precompiles_mod = voltaire.module("precompiles");
+    const jsonrpc_mod = voltaire.module("jsonrpc");
 
     // Get guillotine-mini dependency for source paths
     const guillotine_mini_dep = b.dependency("guillotine-mini", .{
