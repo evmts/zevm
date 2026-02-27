@@ -104,8 +104,8 @@ pub fn createGenesisBlock(allocator: std.mem.Allocator) !primitives.Block.Block 
         // mix_hash defaults to Hash.ZERO — correct for post-merge
         // nonce defaults to zeros — correct for post-merge
     };
-    const body = primitives.BlockBody.BlockBody.init();
-    return primitives.Block.Block.from(&header, &body, allocator);
+    const body = primitives.BlockBody.init();
+    return primitives.Block.from(&header, &body, allocator);
 }
 
 // ── Genesis State Initialization ──────────────────────────────────────
