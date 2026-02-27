@@ -7,6 +7,7 @@ pub const consensus_verifier = @import("consensus_verifier.zig");
 pub const beacon_api = @import("beacon_api.zig");
 pub const consensus_sync = @import("consensus_sync.zig");
 pub const checkpoint = @import("checkpoint.zig");
+pub const mining = @import("mining.zig");
 pub const node_runtime = @import("node/runtime.zig");
 pub const rpc = @import("rpc/root.zig");
 
@@ -19,6 +20,7 @@ test {
     _ = @import("beacon_api_test.zig");
     _ = @import("consensus_sync_test.zig");
     _ = @import("checkpoint_test.zig");
+    _ = @import("mining_test.zig");
     _ = @import("node/runtime_test.zig");
     _ = @import("rpc/root.zig");
 }

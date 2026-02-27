@@ -1,6 +1,7 @@
 const std = @import("std");
 const state_manager = @import("state-manager");
 const primitives = @import("primitives");
+const mining = @import("../mining.zig");
 
 /// Hardhat/Anvil-style deterministic dev accounts.
 /// These are the same 10 accounts used by Hardhat/Anvil (derived from mnemonic
@@ -44,6 +45,7 @@ pub const NodeConfig = struct {
     base_fee: u256 = DEFAULT_BASE_FEE,
     blob_base_fee: u256 = DEFAULT_BLOB_BASE_FEE,
     max_priority_fee: u256 = DEFAULT_MAX_PRIORITY_FEE,
+    mining_config: mining.MiningConfig = mining.MiningConfig.default(),
 };
 
 pub const NodeRuntime = struct {
@@ -54,6 +56,7 @@ pub const NodeRuntime = struct {
     base_fee: u256,
     blob_base_fee: u256,
     max_priority_fee: u256,
+    mining_config: mining.MiningConfig,
     state: state_manager.StateManager,
 
     pub fn init(allocator: std.mem.Allocator, config_opt: ?NodeConfig) !NodeRuntime {
@@ -75,8 +78,13 @@ pub const NodeRuntime = struct {
             .base_fee = config.base_fee,
             .blob_base_fee = config.blob_base_fee,
             .max_priority_fee = config.max_priority_fee,
+            .mining_config = config.mining_config,
             .state = state,
         };
+    }
+
+    pub fn setMiningConfig(self: *NodeRuntime, config: mining.MiningConfig) void {
+        self.mining_config = config;
     }
 
     pub fn deinit(self: *NodeRuntime) void {
