@@ -1,5 +1,6 @@
 pub const database = @import("database/root.zig");
 pub const blockchain = @import("blockchain");
+pub const genesis = @import("genesis.zig");
 pub const host_adapter = @import("host_adapter.zig");
 pub const tx_processor = @import("tx_processor.zig");
 pub const block_builder = @import("block_builder.zig");
@@ -10,6 +11,7 @@ pub const checkpoint = @import("checkpoint.zig");
 
 test {
     _ = @import("database/root.zig");
+    _ = @import("genesis_test.zig");
     _ = @import("host_adapter_test.zig");
     _ = @import("tx_processor_test.zig");
     _ = @import("block_builder_test.zig");
