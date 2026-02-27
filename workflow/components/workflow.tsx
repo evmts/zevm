@@ -5,7 +5,7 @@ import { SuperRalph } from "super-ralph";
 import { WORKFLOW_MAX_CONCURRENCY, WORKFLOW_TASK_RETRIES } from "../config";
 import {
   GeminiAgent,
-  ClaudeCodeAgent,
+  AmpAgent,
   CodexAgent,
   KimiAgent,
 } from "smithers-orchestrator";
@@ -98,13 +98,13 @@ export default smithers((ctx) => {
         maxConcurrency={WORKFLOW_MAX_CONCURRENCY}
         taskRetries={WORKFLOW_TASK_RETRIES}
         agents={{
-          opus: {
-            agent: new ClaudeCodeAgent({
-              model: "claude-opus-4-6",
+          "amp-deep": {
+            agent: new AmpAgent({
+              mode: "deep",
               systemPrompt: SYSTEM_PROMPT,
               cwd: REPO_ROOT,
-              permissionMode: "bypassPermissions",
-              timeoutMs: 30 * 60 * 1000,
+              label: "zevm-workflow",
+              timeoutMs: 60 * 60 * 1000,
             }),
             description:
               "Best orchestrator and deepest thinker. Use for the most important research tasks that require careful reasoning about how to integrate voltaire/guillotine-mini. Expensive — reserve for high-stakes work.",
@@ -121,16 +121,15 @@ export default smithers((ctx) => {
             description:
               "Main workhorse for bulk implementation. Good at following instructions and writing Zig code. Use for most implementation tickets.",
           },
-          sonnet: {
-            agent: new ClaudeCodeAgent({
-              model: "claude-sonnet-4-6",
+          amp: {
+            agent: new AmpAgent({
               systemPrompt: SYSTEM_PROMPT,
               cwd: REPO_ROOT,
-              permissionMode: "bypassPermissions",
+              label: "zevm-workflow",
               timeoutMs: 60 * 60 * 1000,
             }),
             description:
-              "Fast Claude model for testing, review-fix cycles, and lighter research. Good balance of speed and quality.",
+              "Fast Amp agent for testing, review-fix cycles, and lighter research. Good balance of speed and quality.",
             isScheduler: true,
             isMergeQueue: true,
           },
