@@ -14,6 +14,8 @@ Implement the missing HTTP JSON-RPC 2.0 server in ZEVM by composing existing ups
 
 Scope for this ticket is foundational wiring only: all recognized methods still return JSON-RPC `-32601` until handler tickets land.
 
+Out of scope for this ticket: implementing concrete `eth_*`, `debug_*`, `engine_*`, `net_*`, or `web3_*` business logic.
+
 ## TDD step order (tests before implementation)
 
 ### Phase 1: Upstream envelope types in voltaire
