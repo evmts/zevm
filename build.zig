@@ -52,6 +52,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "crypto", .module = crypto_mod },
             .{ .name = "precompiles", .module = precompiles_mod },
             .{ .name = "guillotine_mini", .module = guillotine_mini_mod },
+            .{ .name = "jsonrpc", .module = jsonrpc_mod },
         },
     });
 
