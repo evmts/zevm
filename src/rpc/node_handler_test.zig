@@ -1714,6 +1714,7 @@ test "NodeHandler block filter returns mined block hashes via eth_getFilterChang
         .string => |value| try std.testing.expect(std.mem.startsWith(u8, value, "0x")),
         else => return error.ExpectedStringResult,
     }
+    try std.testing.expectEqual(@as(usize, 0), handler.node_runtime.mined_block_events.items.len);
 
     var second_params = std.json.Array.init(allocator);
     defer second_params.deinit();
@@ -1724,6 +1725,50 @@ test "NodeHandler block filter returns mined block hashes via eth_getFilterChang
         else => return error.ExpectedArrayResult,
     };
     try std.testing.expectEqual(@as(usize, 0), second_changes.len);
+}
+
+test "NodeHandler mined block event pruning waits for the slowest filter cursor" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    const filter_a_result = try callMethod(allocator, &handler, "eth_newBlockFilter", .{ .array = std.json.Array.init(allocator) });
+    const filter_a_id = switch (filter_a_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    const filter_b_result = try callMethod(allocator, &handler, "eth_newBlockFilter", .{ .array = std.json.Array.init(allocator) });
+    const filter_b_id = switch (filter_b_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    _ = try callMethod(allocator, &handler, "evm_mine", null);
+
+    var first_params = std.json.Array.init(allocator);
+    defer first_params.deinit();
+    try first_params.append(.{ .string = filter_a_id });
+    const first_result = try callMethod(allocator, &handler, "eth_getFilterChanges", .{ .array = first_params });
+    const first_changes = switch (first_result) {
+        .array => |array| array.items,
+        else => return error.ExpectedArrayResult,
+    };
+    try std.testing.expectEqual(@as(usize, 1), first_changes.len);
+    try std.testing.expectEqual(@as(usize, 1), handler.node_runtime.mined_block_events.items.len);
+
+    var second_params = std.json.Array.init(allocator);
+    defer second_params.deinit();
+    try second_params.append(.{ .string = filter_b_id });
+    const second_result = try callMethod(allocator, &handler, "eth_getFilterChanges", .{ .array = second_params });
+    const second_changes = switch (second_result) {
+        .array => |array| array.items,
+        else => return error.ExpectedArrayResult,
+    };
+    try std.testing.expectEqual(@as(usize, 1), second_changes.len);
+    try std.testing.expectEqual(@as(usize, 0), handler.node_runtime.mined_block_events.items.len);
 }
 
 test "NodeHandler pending filter returns pending tx hashes via eth_getFilterChanges" {
@@ -1773,6 +1818,7 @@ test "NodeHandler pending filter returns pending tx hashes via eth_getFilterChan
         .string => |value| try std.testing.expectEqualStrings(tx_hash, value),
         else => return error.ExpectedStringResult,
     }
+    try std.testing.expectEqual(@as(usize, 0), handler.node_runtime.pending_tx_events.items.len);
 
     var second_params = std.json.Array.init(allocator);
     defer second_params.deinit();
@@ -1783,6 +1829,65 @@ test "NodeHandler pending filter returns pending tx hashes via eth_getFilterChan
         else => return error.ExpectedArrayResult,
     };
     try std.testing.expectEqual(@as(usize, 0), second_changes.len);
+}
+
+test "NodeHandler pending event pruning waits for the slowest filter cursor" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var disable_automine_params = std.json.Array.init(allocator);
+    defer disable_automine_params.deinit();
+    try disable_automine_params.append(.{ .bool = false });
+    _ = try callMethod(allocator, &handler, "hardhat_setAutomine", .{ .array = disable_automine_params });
+
+    const filter_a_result = try callMethod(allocator, &handler, "eth_newPendingTransactionFilter", .{ .array = std.json.Array.init(allocator) });
+    const filter_a_id = switch (filter_a_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    const filter_b_result = try callMethod(allocator, &handler, "eth_newPendingTransactionFilter", .{ .array = std.json.Array.init(allocator) });
+    const filter_b_id = switch (filter_b_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    var tx_object = std.json.ObjectMap.init(allocator);
+    defer tx_object.deinit();
+    try tx_object.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try tx_object.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try tx_object.put("value", .{ .string = "0x1" });
+    try tx_object.put("gas", .{ .string = "0x5208" });
+
+    var send_params = std.json.Array.init(allocator);
+    defer send_params.deinit();
+    try send_params.append(.{ .object = tx_object });
+    _ = try callMethod(allocator, &handler, "eth_sendTransaction", .{ .array = send_params });
+
+    var first_params = std.json.Array.init(allocator);
+    defer first_params.deinit();
+    try first_params.append(.{ .string = filter_a_id });
+    const first_result = try callMethod(allocator, &handler, "eth_getFilterChanges", .{ .array = first_params });
+    const first_changes = switch (first_result) {
+        .array => |array| array.items,
+        else => return error.ExpectedArrayResult,
+    };
+    try std.testing.expectEqual(@as(usize, 1), first_changes.len);
+    try std.testing.expectEqual(@as(usize, 1), handler.node_runtime.pending_tx_events.items.len);
+
+    var second_params = std.json.Array.init(allocator);
+    defer second_params.deinit();
+    try second_params.append(.{ .string = filter_b_id });
+    const second_result = try callMethod(allocator, &handler, "eth_getFilterChanges", .{ .array = second_params });
+    const second_changes = switch (second_result) {
+        .array => |array| array.items,
+        else => return error.ExpectedArrayResult,
+    };
+    try std.testing.expectEqual(@as(usize, 1), second_changes.len);
+    try std.testing.expectEqual(@as(usize, 0), handler.node_runtime.pending_tx_events.items.len);
 }
 
 test "NodeHandler eth_uninstallFilter returns true then false" {

@@ -513,6 +513,8 @@ pub const NodeHandler = struct {
                 if (entry.value.filter_json) |json| {
                     allocator.free(json);
                 }
+                self.pruneMinedBlockEvents();
+                self.prunePendingTransactionEvents();
                 return .{ .bool = true };
             }
             return .{ .bool = false };
@@ -550,6 +552,8 @@ pub const NodeHandler = struct {
                 if (entry.value.filter_json) |json| {
                     allocator.free(json);
                 }
+                self.pruneMinedBlockEvents();
+                self.prunePendingTransactionEvents();
                 return .{ .bool = true };
             }
             return .{ .bool = false };
@@ -922,6 +926,7 @@ pub const NodeHandler = struct {
                 }
                 state.event_cursor = self.node_runtime.mined_block_events.items.len;
                 state.last_block = self.node_runtime.head_block_number;
+                self.pruneMinedBlockEvents();
                 return .{ .array = result_array };
             },
             .log => {
@@ -956,6 +961,7 @@ pub const NodeHandler = struct {
                     try result_array.append(.{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{hash}) });
                 }
                 state.event_cursor = self.node_runtime.pending_tx_events.items.len;
+                self.prunePendingTransactionEvents();
                 return .{ .array = result_array };
             },
             .subscription => {
@@ -1058,6 +1064,7 @@ pub const NodeHandler = struct {
                     }
                     state.event_cursor = self.node_runtime.mined_block_events.items.len;
                     state.last_block = self.node_runtime.head_block_number;
+                    self.pruneMinedBlockEvents();
                 },
                 .logs => {
                     var arena_state = std.heap.ArenaAllocator.init(allocator);
@@ -1118,6 +1125,7 @@ pub const NodeHandler = struct {
                         try messages.append(allocator, message);
                     }
                     state.event_cursor = self.node_runtime.pending_tx_events.items.len;
+                    self.prunePendingTransactionEvents();
                 },
                 .syncing => {
                     if (state.event_cursor == 0) {
@@ -1298,6 +1306,106 @@ pub const NodeHandler = struct {
             if (self.runtime_snapshots.fetchRemove(id)) |entry| {
                 var removed_snapshot = entry.value;
                 removed_snapshot.deinit(allocator);
+            }
+        }
+    }
+
+    fn pruneMinedBlockEvents(self: *NodeHandler) void {
+        const events = &self.node_runtime.mined_block_events;
+        if (events.items.len == 0) return;
+
+        var min_cursor: ?usize = null;
+        var filter_it = self.filters.valueIterator();
+        while (filter_it.next()) |state| {
+            var relevant = false;
+            switch (state.kind) {
+                .block => relevant = true,
+                .subscription => {
+                    const kind = state.subscription_kind orelse continue;
+                    relevant = kind == .new_heads;
+                },
+                .log, .pending_transaction => {},
+            }
+            if (!relevant) continue;
+
+            min_cursor = if (min_cursor) |current|
+                @min(current, state.event_cursor)
+            else
+                state.event_cursor;
+        }
+
+        const prune_count = @min(min_cursor orelse events.items.len, events.items.len);
+        if (prune_count == 0) return;
+
+        if (prune_count >= events.items.len) {
+            events.clearRetainingCapacity();
+        } else {
+            const remaining = events.items.len - prune_count;
+            std.mem.copyForwards(runtime.BlockEvent, events.items[0..remaining], events.items[prune_count..]);
+            events.items.len = remaining;
+        }
+
+        var update_it = self.filters.valueIterator();
+        while (update_it.next()) |state| {
+            switch (state.kind) {
+                .block => state.event_cursor -= prune_count,
+                .subscription => {
+                    const kind = state.subscription_kind orelse continue;
+                    if (kind == .new_heads) {
+                        state.event_cursor -= prune_count;
+                    }
+                },
+                .log, .pending_transaction => {},
+            }
+        }
+    }
+
+    fn prunePendingTransactionEvents(self: *NodeHandler) void {
+        const events = &self.node_runtime.pending_tx_events;
+        if (events.items.len == 0) return;
+
+        var min_cursor: ?usize = null;
+        var filter_it = self.filters.valueIterator();
+        while (filter_it.next()) |state| {
+            var relevant = false;
+            switch (state.kind) {
+                .pending_transaction => relevant = true,
+                .subscription => {
+                    const kind = state.subscription_kind orelse continue;
+                    relevant = kind == .new_pending_transactions;
+                },
+                .log, .block => {},
+            }
+            if (!relevant) continue;
+
+            min_cursor = if (min_cursor) |current|
+                @min(current, state.event_cursor)
+            else
+                state.event_cursor;
+        }
+
+        const prune_count = @min(min_cursor orelse events.items.len, events.items.len);
+        if (prune_count == 0) return;
+
+        if (prune_count >= events.items.len) {
+            events.clearRetainingCapacity();
+        } else {
+            const remaining = events.items.len - prune_count;
+            std.mem.copyForwards([32]u8, events.items[0..remaining], events.items[prune_count..]);
+            events.items.len = remaining;
+        }
+
+        var update_it = self.filters.valueIterator();
+        while (update_it.next()) |state| {
+            switch (state.kind) {
+                .pending_transaction => state.event_cursor -= prune_count,
+                .subscription => {
+                    const kind = state.subscription_kind orelse continue;
+                    if (kind == .new_pending_transactions) {
+                        state.event_cursor -= prune_count;
+                    }
+                },
+                .log, .block => {},
             }
         }
     }
