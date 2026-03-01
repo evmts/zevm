@@ -1250,7 +1250,7 @@ fn parseCallRequest(
         if (object.get("from")) |from_value| {
             const from_string = switch (from_value) {
                 .string => |string| string,
-                else => break :blk default_from,
+                else => return error.InvalidParams,
             };
             break :blk parseAddressFromHex(from_string) orelse return error.InvalidParams;
         }
