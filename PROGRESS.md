@@ -31,7 +31,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 
 ## Validation
 
-- Full test suite: **282/282 passing** (`zig build test --summary all`)
+- Full test suite: **284/284 passing** (`zig build test --summary all`)
 - Full build: **passing** (`zig build`)
 
 ## Recent Completion Highlights
@@ -110,6 +110,9 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
   - canonical empty-block persistence via `evm_mine`,
   - canonical mined block body persistence in automine,
   - receipt/log index rollback correctness after `evm_revert`.
+- Added server-level end-to-end regressions for:
+  - automined receipt visibility through `eth_getTransactionReceipt`,
+  - `eth_getBlockReceipts` returning `[]` for manually mined empty blocks.
 
 ## Notes
 
