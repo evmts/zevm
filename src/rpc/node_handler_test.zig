@@ -1042,6 +1042,8 @@ test "NodeHandler evm_revert restores receipt and log indexes" {
     var handler = try node_handler.NodeHandler.init(allocator, null);
     defer handler.deinit(allocator);
 
+    const initial_sealed_bytes = handler.node_runtime.sealed_block_transaction_bytes.items.len;
+
     const snapshot_result = try callMethod(allocator, &handler, "evm_snapshot", .{ .array = std.json.Array.init(allocator) });
     const snapshot_id = switch (snapshot_result) {
         .string => |value| value,
@@ -1072,6 +1074,7 @@ test "NodeHandler evm_revert restores receipt and log indexes" {
         .object => {},
         else => return error.ExpectedObjectResult,
     }
+    try std.testing.expect(handler.node_runtime.sealed_block_transaction_bytes.items.len > initial_sealed_bytes);
 
     var revert_params = std.json.Array.init(allocator);
     defer revert_params.deinit();
@@ -1089,6 +1092,7 @@ test "NodeHandler evm_revert restores receipt and log indexes" {
     }
 
     try std.testing.expectEqual(@as(usize, 0), handler.log_index.logs.items.len);
+    try std.testing.expectEqual(initial_sealed_bytes, handler.node_runtime.sealed_block_transaction_bytes.items.len);
 }
 
 test "NodeHandler evm_setNextBlockTimestamp applies on next mined block" {

@@ -118,6 +118,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
   - `receipts_root` now computed from canonical receipt trie entries (typed/legacy),
   - local-mode `state_root` now recomputed from runtime state caches during block sealing.
 - Added handler-level regression assertions that non-empty mined blocks no longer emit empty tx/receipt/state roots.
+- Fixed runtime snapshot fidelity for `evm_snapshot`/`evm_revert` to include sealed block-transaction byte storage, preventing unbounded retained memory across mine/revert loops.
 
 ## Notes
 

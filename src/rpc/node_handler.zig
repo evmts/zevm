@@ -77,6 +77,7 @@ const RuntimeSnapshot = struct {
     mining_mode: runtime.MiningMode,
     interval_seconds: u64,
     tx_index: std.AutoHashMap([32]u8, runtime.TransactionRecord),
+    sealed_block_transaction_bytes: std.ArrayList([]u8),
     pool: txpool.TxPool,
     receipt_index: receipt_index.ReceiptIndex,
     log_index: log_index.LogIndex,
@@ -90,6 +91,10 @@ const RuntimeSnapshot = struct {
             allocator.free(record.raw);
         }
         self.tx_index.deinit();
+        for (self.sealed_block_transaction_bytes.items) |raw| {
+            allocator.free(raw);
+        }
+        self.sealed_block_transaction_bytes.deinit(allocator);
         self.pool.deinit(allocator);
         self.log_index.deinit(allocator);
         self.receipt_index.deinit(allocator);
@@ -1088,6 +1093,19 @@ pub const NodeHandler = struct {
         var pool_copy = try copyTxPool(allocator, &self.node_runtime.pool);
         errdefer pool_copy.deinit(allocator);
 
+        var sealed_block_transaction_bytes_copy = std.ArrayList([]u8).empty;
+        errdefer {
+            for (sealed_block_transaction_bytes_copy.items) |raw| {
+                allocator.free(raw);
+            }
+            sealed_block_transaction_bytes_copy.deinit(allocator);
+        }
+        for (self.node_runtime.sealed_block_transaction_bytes.items) |raw| {
+            const raw_copy = try allocator.dupe(u8, raw);
+            errdefer allocator.free(raw_copy);
+            try sealed_block_transaction_bytes_copy.append(allocator, raw_copy);
+        }
+
         var receipt_index_copy = try copyReceiptIndex(allocator, &self.receipt_index);
         errdefer receipt_index_copy.deinit(allocator);
 
@@ -1118,6 +1136,7 @@ pub const NodeHandler = struct {
             .mining_mode = self.node_runtime.mining_mode,
             .interval_seconds = self.node_runtime.interval_seconds,
             .tx_index = tx_index_copy,
+            .sealed_block_transaction_bytes = sealed_block_transaction_bytes_copy,
             .pool = pool_copy,
             .receipt_index = receipt_index_copy,
             .log_index = log_index_copy,
@@ -1137,6 +1156,10 @@ pub const NodeHandler = struct {
             allocator.free(record.raw);
         }
         self.node_runtime.tx_index.deinit();
+        for (self.node_runtime.sealed_block_transaction_bytes.items) |raw| {
+            allocator.free(raw);
+        }
+        self.node_runtime.sealed_block_transaction_bytes.deinit(allocator);
         self.node_runtime.pool.deinit(allocator);
         self.log_index.deinit(allocator);
         self.receipt_index.deinit(allocator);
@@ -1156,6 +1179,7 @@ pub const NodeHandler = struct {
         self.node_runtime.mining_mode = snapshot.mining_mode;
         self.node_runtime.interval_seconds = snapshot.interval_seconds;
         self.node_runtime.tx_index = snapshot.tx_index;
+        self.node_runtime.sealed_block_transaction_bytes = snapshot.sealed_block_transaction_bytes;
         self.node_runtime.pool = snapshot.pool;
         self.receipt_index = snapshot.receipt_index;
         self.log_index = snapshot.log_index;
@@ -1164,6 +1188,7 @@ pub const NodeHandler = struct {
         self.node_runtime.impersonated_accounts = snapshot.impersonated_accounts;
 
         snapshot.tx_index = std.AutoHashMap([32]u8, runtime.TransactionRecord).init(allocator);
+        snapshot.sealed_block_transaction_bytes = std.ArrayList([]u8).empty;
         snapshot.pool = txpool.TxPool.init(allocator);
         snapshot.receipt_index = receipt_index.ReceiptIndex.init(allocator);
         snapshot.log_index = log_index.LogIndex.init();
