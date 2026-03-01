@@ -396,7 +396,7 @@ pub const NodeHandler = struct {
                     );
                 }
             }
-            return .{ .string = "0x0" };
+            return .{ .string = try allocator.dupe(u8, "0x0") };
         }
         if (std.mem.eql(u8, method_name, "eth_newFilter")) {
             const id = self.next_filter_id;
@@ -1107,7 +1107,40 @@ fn toJsonValue(allocator: std.mem.Allocator, value: anytype) !std.json.Value {
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{
         .allocate = .alloc_always,
     });
-    return parsed.value;
+    defer parsed.deinit();
+
+    return try cloneJsonValue(allocator, parsed.value);
+}
+
+fn cloneJsonValue(allocator: std.mem.Allocator, value: std.json.Value) !std.json.Value {
+    return switch (value) {
+        .null => .null,
+        .bool => |b| .{ .bool = b },
+        .integer => |i| .{ .integer = i },
+        .float => |f| .{ .float = f },
+        .number_string => |s| .{ .number_string = try allocator.dupe(u8, s) },
+        .string => |s| .{ .string = try allocator.dupe(u8, s) },
+        .array => |array| blk: {
+            var copied = std.json.Array.init(allocator);
+            errdefer copied.deinit();
+            for (array.items) |item| {
+                try copied.append(try cloneJsonValue(allocator, item));
+            }
+            break :blk .{ .array = copied };
+        },
+        .object => |object| blk: {
+            var copied = std.json.ObjectMap.init(allocator);
+            errdefer copied.deinit();
+            var object_it = object.iterator();
+            while (object_it.next()) |entry| {
+                const owned_key = try allocator.dupe(u8, entry.key_ptr.*);
+                errdefer allocator.free(owned_key);
+                const copied_value = try cloneJsonValue(allocator, entry.value_ptr.*);
+                try copied.put(owned_key, copied_value);
+            }
+            break :blk .{ .object = copied };
+        },
+    };
 }
 
 fn makeBlockQueryContext(self: *NodeHandler) block_query_handlers.BlockQueryContext {
