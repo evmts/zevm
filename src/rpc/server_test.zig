@@ -778,6 +778,42 @@ test "server with NodeHandler context handles eth_feeHistory ownership safely" {
     try std.testing.expect(result_object.get("oldestBlock") != null);
     try std.testing.expect(result_object.get("baseFeePerGas") != null);
     try std.testing.expect(result_object.get("gasUsedRatio") != null);
+    try std.testing.expect(result_object.get("baseFeePerBlobGas") != null);
+    try std.testing.expect(result_object.get("blobGasUsedRatio") != null);
+}
+
+test "server with NodeHandler context includes eth_feeHistory reward matrix" {
+    var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
+    defer handler.deinit(std.testing.allocator);
+
+    const handlers = dispatcher.HandlerRegistry{
+        .context = &handler,
+        .on_method_with_context = &node_handler.NodeHandler.onMethod,
+    };
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_feeHistory\",\"params\":[\"0x1\",\"latest\",[10,50]]}",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(std.http.Status.ok, response.status);
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+    const result = try getObjectField(parsed.value, "result");
+    const result_object = switch (result) {
+        .object => |obj| obj,
+        else => return error.ExpectedObject,
+    };
+
+    const reward_value = result_object.get("reward") orelse return error.ExpectedReward;
+    const reward_array = switch (reward_value) {
+        .array => |array| array.items,
+        else => return error.ExpectedArray,
+    };
+    try std.testing.expectEqual(@as(usize, 1), reward_array.len);
 }
 
 test "server with NodeHandler context maps eth_feeHistory descending reward percentiles to -32602" {

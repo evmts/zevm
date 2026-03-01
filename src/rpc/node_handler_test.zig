@@ -153,6 +153,32 @@ test "NodeHandler eth_feeHistory descending reward percentiles return InvalidPar
     );
 }
 
+test "NodeHandler eth_feeHistory includes reward matrix when percentiles provided" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    const params = try parseParams(
+        allocator,
+        \\["0x1","latest",[10,50]]
+    );
+    const result = try callMethod(allocator, &handler, "eth_feeHistory", params);
+    const result_object = switch (result) {
+        .object => |obj| obj,
+        else => return error.ExpectedObject,
+    };
+
+    const reward_value = result_object.get("reward") orelse return error.ExpectedReward;
+    const reward_array = switch (reward_value) {
+        .array => |array| array.items,
+        else => return error.ExpectedArray,
+    };
+    try std.testing.expectEqual(@as(usize, 1), reward_array.len);
+}
+
 test "NodeHandler sendRawTransaction then getTransactionByHash returns transaction object" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
