@@ -1307,6 +1307,7 @@ fn parseCallRequest(
         else => return error.InvalidParams,
     };
     if (array.len == 0) return error.InvalidParams;
+    if (array.len >= 2 and !isValidCallBlockParameter(array[1])) return error.InvalidParams;
 
     const object = switch (array[0]) {
         .object => |obj| obj,
@@ -1387,6 +1388,16 @@ fn parseCallRequest(
         .value = value,
         .nonce = nonce,
         .data = data,
+    };
+}
+
+fn isValidCallBlockParameter(value: std.json.Value) bool {
+    return switch (value) {
+        .string => true,
+        .integer => |integer| integer >= 0,
+        .object => true,
+        .null => true,
+        else => false,
     };
 }
 

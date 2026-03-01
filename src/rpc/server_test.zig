@@ -1120,6 +1120,30 @@ test "server with NodeHandler context maps eth_call non-string from to -32602" {
     try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.INVALID_PARAMS), (try getObjectField(error_object, "code")).integer);
 }
 
+test "server with NodeHandler context maps eth_call invalid block param type to -32602" {
+    var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
+    defer handler.deinit(std.testing.allocator);
+
+    const handlers = dispatcher.HandlerRegistry{
+        .context = &handler,
+        .on_method_with_context = &node_handler.NodeHandler.onMethod,
+    };
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x70997970C51812dc3A010C7d01b50e0d17dc79C8\",\"data\":\"0x\"},true]}",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(std.http.Status.ok, response.status);
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+    const error_object = try getObjectField(parsed.value, "error");
+    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.INVALID_PARAMS), (try getObjectField(error_object, "code")).integer);
+}
+
 test "server with NodeHandler context maps eth_estimateGas non-string from to -32602" {
     var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
     defer handler.deinit(std.testing.allocator);
@@ -1133,6 +1157,54 @@ test "server with NodeHandler context maps eth_estimateGas non-string from to -3
         std.testing.allocator,
         .POST,
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_estimateGas\",\"params\":[{\"from\":1,\"to\":\"0x70997970C51812dc3A010C7d01b50e0d17dc79C8\",\"value\":\"0x1\"}]}",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(std.http.Status.ok, response.status);
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+    const error_object = try getObjectField(parsed.value, "error");
+    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.INVALID_PARAMS), (try getObjectField(error_object, "code")).integer);
+}
+
+test "server with NodeHandler context maps eth_estimateGas invalid block param type to -32602" {
+    var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
+    defer handler.deinit(std.testing.allocator);
+
+    const handlers = dispatcher.HandlerRegistry{
+        .context = &handler,
+        .on_method_with_context = &node_handler.NodeHandler.onMethod,
+    };
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_estimateGas\",\"params\":[{\"to\":\"0x70997970C51812dc3A010C7d01b50e0d17dc79C8\",\"value\":\"0x1\"},true]}",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(std.http.Status.ok, response.status);
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+    const error_object = try getObjectField(parsed.value, "error");
+    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.INVALID_PARAMS), (try getObjectField(error_object, "code")).integer);
+}
+
+test "server with NodeHandler context maps debug_traceCall invalid block param type to -32602" {
+    var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
+    defer handler.deinit(std.testing.allocator);
+
+    const handlers = dispatcher.HandlerRegistry{
+        .context = &handler,
+        .on_method_with_context = &node_handler.NodeHandler.onMethod,
+    };
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"debug_traceCall\",\"params\":[{\"to\":\"0x70997970C51812dc3A010C7d01b50e0d17dc79C8\",\"data\":\"0x\"},true]}",
         &handlers,
     );
     defer response.deinit(std.testing.allocator);
