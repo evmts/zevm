@@ -113,6 +113,11 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 - Added server-level end-to-end regressions for:
   - automined receipt visibility through `eth_getTransactionReceipt`,
   - `eth_getBlockReceipts` returning `[]` for manually mined empty blocks.
+- Hardened canonical block-header correctness for mined blocks:
+  - `transactions_root` now computed from canonical tx trie entries,
+  - `receipts_root` now computed from canonical receipt trie entries (typed/legacy),
+  - local-mode `state_root` now recomputed from runtime state caches during block sealing.
+- Added handler-level regression assertions that non-empty mined blocks no longer emit empty tx/receipt/state roots.
 
 ## Notes
 

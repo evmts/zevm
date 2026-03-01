@@ -575,6 +575,7 @@ fn automine(
         next_timestamp,
         next_base_fee,
         block_transactions.items,
+        mined_receipts.items,
         cumulative_gas_used,
     );
 
@@ -642,6 +643,7 @@ pub fn mineEmptyBlockWithIndexes(
         next_timestamp,
         next_base_fee,
         &[_]primitives.BlockBody.TransactionData{},
+        &[_]primitives.Receipt.Receipt{},
         0,
     );
 
@@ -681,14 +683,15 @@ fn sealCanonicalBlock(
     block_timestamp: u64,
     base_fee: u256,
     transactions: []const primitives.BlockBody.TransactionData,
+    receipts: []const primitives.Receipt.Receipt,
     gas_used: u64,
 ) !primitives.Block.Block {
     var header = primitives.BlockHeader.init();
     header.parent_hash = parent_hash;
     header.ommers_hash = primitives.BlockHeader.EMPTY_OMMERS_HASH;
     header.beneficiary = rt.coinbase;
-    header.transactions_root = primitives.BlockHeader.EMPTY_TRANSACTIONS_ROOT;
-    header.receipts_root = primitives.BlockHeader.EMPTY_RECEIPTS_ROOT;
+    header.transactions_root = try computeTransactionsTrieRoot(allocator, transactions);
+    header.receipts_root = try computeReceiptsTrieRoot(allocator, receipts);
     header.difficulty = 0;
     header.number = block_number;
     header.gas_limit = rt.block_gas_limit;
@@ -696,7 +699,11 @@ fn sealCanonicalBlock(
     header.timestamp = block_timestamp;
     header.base_fee_per_gas = base_fee;
     header.mix_hash = u256ToHash(rt.prev_randao);
-    if (try rt.getBlockByHashWithFork(allocator, parent_hash)) |parent_block| {
+    header.state_root = primitives.AccountState.EMPTY_TRIE_ROOT;
+    if (rt.fork_url == null) {
+        header.state_root = try computeRuntimeStateRoot(allocator, rt);
+    } else if (try rt.getBlockByHashWithFork(allocator, parent_hash)) |parent_block| {
+        // Fork mode has incomplete remote state visibility; preserve parent root.
         header.state_root = parent_block.header.state_root;
     }
 
@@ -816,6 +823,339 @@ fn u256ToHash(value: u256) [32]u8 {
     var out: [32]u8 = undefined;
     std.mem.writeInt(u256, &out, value, .big);
     return out;
+}
+
+fn computeTransactionsTrieRoot(
+    allocator: std.mem.Allocator,
+    transactions: []const primitives.BlockBody.TransactionData,
+) ![32]u8 {
+    if (transactions.len == 0) return primitives.BlockHeader.EMPTY_TRANSACTIONS_ROOT;
+
+    var encoded_keys = std.ArrayList([]u8).empty;
+    defer {
+        for (encoded_keys.items) |key| {
+            allocator.free(key);
+        }
+        encoded_keys.deinit(allocator);
+    }
+
+    const trie_keys = try allocator.alloc([]const u8, transactions.len);
+    defer allocator.free(trie_keys);
+    const trie_values = try allocator.alloc([]const u8, transactions.len);
+    defer allocator.free(trie_values);
+
+    for (transactions, 0..) |tx, tx_index| {
+        const encoded_index = try primitives.Rlp.encode(allocator, @as(u64, @intCast(tx_index)));
+        try encoded_keys.append(allocator, encoded_index);
+        trie_keys[tx_index] = encoded_index;
+        trie_values[tx_index] = tx.raw;
+    }
+
+    return try primitives.TrieHash.trie_root(allocator, trie_keys, trie_values);
+}
+
+fn computeReceiptsTrieRoot(
+    allocator: std.mem.Allocator,
+    receipts: []const primitives.Receipt.Receipt,
+) ![32]u8 {
+    if (receipts.len == 0) return primitives.BlockHeader.EMPTY_RECEIPTS_ROOT;
+
+    var encoded_keys = std.ArrayList([]u8).empty;
+    defer {
+        for (encoded_keys.items) |key| {
+            allocator.free(key);
+        }
+        encoded_keys.deinit(allocator);
+    }
+
+    var encoded_values = std.ArrayList([]u8).empty;
+    defer {
+        for (encoded_values.items) |value| {
+            allocator.free(value);
+        }
+        encoded_values.deinit(allocator);
+    }
+
+    const trie_keys = try allocator.alloc([]const u8, receipts.len);
+    defer allocator.free(trie_keys);
+    const trie_values = try allocator.alloc([]const u8, receipts.len);
+    defer allocator.free(trie_values);
+
+    for (receipts, 0..) |receipt, tx_index| {
+        const encoded_index = try primitives.Rlp.encode(allocator, @as(u64, @intCast(tx_index)));
+        errdefer allocator.free(encoded_index);
+        try encoded_keys.append(allocator, encoded_index);
+        trie_keys[tx_index] = encoded_index;
+
+        const encoded_receipt = try encodeReceiptForTrie(allocator, receipt);
+        errdefer allocator.free(encoded_receipt);
+        try encoded_values.append(allocator, encoded_receipt);
+        trie_values[tx_index] = encoded_receipt;
+    }
+
+    return try primitives.TrieHash.trie_root(allocator, trie_keys, trie_values);
+}
+
+fn computeRuntimeStateRoot(
+    allocator: std.mem.Allocator,
+    rt: *runtime.NodeRuntime,
+) ![32]u8 {
+    var addresses = std.AutoHashMap(primitives.Address, void).init(allocator);
+    defer addresses.deinit();
+
+    var account_it = rt.state.journaled_state.account_cache.cache.iterator();
+    while (account_it.next()) |entry| {
+        try addresses.put(entry.key_ptr.*, {});
+    }
+
+    var contract_it = rt.state.journaled_state.contract_cache.cache.iterator();
+    while (contract_it.next()) |entry| {
+        try addresses.put(entry.key_ptr.*, {});
+    }
+
+    var storage_it = rt.state.journaled_state.storage_cache.cache.iterator();
+    while (storage_it.next()) |entry| {
+        try addresses.put(entry.key_ptr.*, {});
+    }
+
+    var account_keys = std.ArrayList([20]u8).empty;
+    defer account_keys.deinit(allocator);
+
+    var account_values = std.ArrayList([]u8).empty;
+    defer {
+        for (account_values.items) |value| {
+            allocator.free(value);
+        }
+        account_values.deinit(allocator);
+    }
+
+    var address_it = addresses.iterator();
+    while (address_it.next()) |entry| {
+        const address = entry.key_ptr.*;
+        const account_opt = rt.state.journaled_state.account_cache.get(address);
+
+        const nonce: u64 = if (account_opt) |account| account.nonce else 0;
+        const balance: u256 = if (account_opt) |account| account.balance else 0;
+
+        var code_hash = primitives.AccountState.EMPTY_CODE_HASH;
+        if (rt.state.journaled_state.contract_cache.cache.get(address)) |code| {
+            if (code.len > 0) {
+                std.crypto.hash.sha3.Keccak256.hash(code, &code_hash, .{});
+            }
+        } else if (account_opt) |account| {
+            code_hash = account.code_hash;
+        }
+
+        var storage_root = primitives.AccountState.EMPTY_TRIE_ROOT;
+        if (rt.state.journaled_state.storage_cache.cache.getPtr(address)) |slots| {
+            storage_root = try computeStorageTrieRoot(allocator, slots);
+        } else if (account_opt) |account| {
+            storage_root = account.storage_root;
+        }
+
+        const is_empty_account = nonce == 0 and
+            balance == 0 and
+            std.mem.eql(u8, &code_hash, &primitives.AccountState.EMPTY_CODE_HASH) and
+            std.mem.eql(u8, &storage_root, &primitives.AccountState.EMPTY_TRIE_ROOT);
+        if (is_empty_account) continue;
+
+        const account_state = primitives.AccountState.AccountState.from(.{
+            .nonce = nonce,
+            .balance = balance,
+            .storage_root = storage_root,
+            .code_hash = code_hash,
+        });
+
+        const encoded_account = try account_state.rlpEncode(allocator);
+        errdefer allocator.free(encoded_account);
+
+        try account_keys.append(allocator, address.bytes);
+        try account_values.append(allocator, encoded_account);
+    }
+
+    if (account_keys.items.len == 0) return primitives.AccountState.EMPTY_TRIE_ROOT;
+
+    const trie_keys = try allocator.alloc([]const u8, account_keys.items.len);
+    defer allocator.free(trie_keys);
+    for (account_keys.items, 0..) |key, index| {
+        trie_keys[index] = key[0..];
+    }
+
+    return try primitives.TrieHash.secure_trie_root(allocator, trie_keys, account_values.items);
+}
+
+fn computeStorageTrieRoot(
+    allocator: std.mem.Allocator,
+    slots: *const std.AutoHashMap(u256, u256),
+) ![32]u8 {
+    var slot_keys = std.ArrayList([32]u8).empty;
+    defer slot_keys.deinit(allocator);
+
+    var slot_values = std.ArrayList([]u8).empty;
+    defer {
+        for (slot_values.items) |value| {
+            allocator.free(value);
+        }
+        slot_values.deinit(allocator);
+    }
+
+    var slot_it = slots.iterator();
+    while (slot_it.next()) |entry| {
+        const slot_value = entry.value_ptr.*;
+        if (slot_value == 0) continue;
+
+        var slot_key: [32]u8 = undefined;
+        std.mem.writeInt(u256, &slot_key, entry.key_ptr.*, .big);
+        try slot_keys.append(allocator, slot_key);
+
+        const encoded_value = try primitives.Rlp.encode(allocator, slot_value);
+        errdefer allocator.free(encoded_value);
+        try slot_values.append(allocator, encoded_value);
+    }
+
+    if (slot_keys.items.len == 0) return primitives.AccountState.EMPTY_TRIE_ROOT;
+
+    const trie_keys = try allocator.alloc([]const u8, slot_keys.items.len);
+    defer allocator.free(trie_keys);
+    for (slot_keys.items, 0..) |key, index| {
+        trie_keys[index] = key[0..];
+    }
+
+    return try primitives.TrieHash.secure_trie_root(allocator, trie_keys, slot_values.items);
+}
+
+fn encodeReceiptForTrie(
+    allocator: std.mem.Allocator,
+    receipt: primitives.Receipt.Receipt,
+) ![]u8 {
+    var encoded_logs = std.ArrayList([]u8).empty;
+    defer {
+        for (encoded_logs.items) |encoded_log| {
+            allocator.free(encoded_log);
+        }
+        encoded_logs.deinit(allocator);
+    }
+
+    for (receipt.logs) |log| {
+        const encoded_log = try encodeLogForReceiptTrie(allocator, log);
+        errdefer allocator.free(encoded_log);
+        try encoded_logs.append(allocator, encoded_log);
+    }
+
+    const logs_payload = try encodeRlpListFromEncodedItems(allocator, encoded_logs.items);
+    errdefer allocator.free(logs_payload);
+
+    var encoded_fields = std.ArrayList([]u8).empty;
+    defer {
+        for (encoded_fields.items) |field| {
+            allocator.free(field);
+        }
+        encoded_fields.deinit(allocator);
+    }
+
+    const status_or_root = blk: {
+        if (receipt.root) |root| break :blk try primitives.Rlp.encodeBytes(allocator, &root);
+        const status = receipt.status orelse return error.InvalidReceiptEncoding;
+        break :blk try primitives.Rlp.encode(allocator, @as(u8, if (status.success) 1 else 0));
+    };
+    errdefer allocator.free(status_or_root);
+    try encoded_fields.append(allocator, status_or_root);
+
+    const cumulative_gas_used = try primitives.Rlp.encode(allocator, receipt.cumulative_gas_used);
+    errdefer allocator.free(cumulative_gas_used);
+    try encoded_fields.append(allocator, cumulative_gas_used);
+
+    const logs_bloom = try primitives.Rlp.encodeBytes(allocator, &receipt.logs_bloom);
+    errdefer allocator.free(logs_bloom);
+    try encoded_fields.append(allocator, logs_bloom);
+
+    try encoded_fields.append(allocator, logs_payload);
+
+    const receipt_payload = try encodeRlpListFromEncodedItems(allocator, encoded_fields.items);
+
+    const type_byte = switch (receipt.type) {
+        .legacy => return receipt_payload,
+        .eip2930 => @as(u8, 0x01),
+        .eip1559 => @as(u8, 0x02),
+        .eip4844 => @as(u8, 0x03),
+        .eip7702 => @as(u8, 0x04),
+    };
+
+    const typed = try allocator.alloc(u8, receipt_payload.len + 1);
+    typed[0] = type_byte;
+    @memcpy(typed[1..], receipt_payload);
+    allocator.free(receipt_payload);
+    return typed;
+}
+
+fn encodeLogForReceiptTrie(
+    allocator: std.mem.Allocator,
+    log: primitives.EventLog.EventLog,
+) ![]u8 {
+    var encoded_topics = std.ArrayList([]u8).empty;
+    defer {
+        for (encoded_topics.items) |topic| {
+            allocator.free(topic);
+        }
+        encoded_topics.deinit(allocator);
+    }
+
+    for (log.topics) |topic| {
+        const encoded_topic = try primitives.Rlp.encodeBytes(allocator, &topic);
+        errdefer allocator.free(encoded_topic);
+        try encoded_topics.append(allocator, encoded_topic);
+    }
+
+    const topics_payload = try encodeRlpListFromEncodedItems(allocator, encoded_topics.items);
+    errdefer allocator.free(topics_payload);
+
+    var encoded_fields = std.ArrayList([]u8).empty;
+    defer {
+        for (encoded_fields.items) |field| {
+            allocator.free(field);
+        }
+        encoded_fields.deinit(allocator);
+    }
+
+    const address = try primitives.Rlp.encodeBytes(allocator, &log.address.bytes);
+    errdefer allocator.free(address);
+    try encoded_fields.append(allocator, address);
+
+    try encoded_fields.append(allocator, topics_payload);
+
+    const data = try primitives.Rlp.encodeBytes(allocator, log.data);
+    errdefer allocator.free(data);
+    try encoded_fields.append(allocator, data);
+
+    return try encodeRlpListFromEncodedItems(allocator, encoded_fields.items);
+}
+
+fn encodeRlpListFromEncodedItems(
+    allocator: std.mem.Allocator,
+    encoded_items: []const []const u8,
+) ![]u8 {
+    var payload_len: usize = 0;
+    for (encoded_items) |item| {
+        payload_len += item.len;
+    }
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+
+    if (payload_len < 56) {
+        try out.append(allocator, 0xc0 + @as(u8, @intCast(payload_len)));
+    } else {
+        const len_bytes = try primitives.Rlp.encodeLength(allocator, payload_len);
+        defer allocator.free(len_bytes);
+        try out.append(allocator, 0xf7 + @as(u8, @intCast(len_bytes.len)));
+        try out.appendSlice(allocator, len_bytes);
+    }
+
+    for (encoded_items) |item| {
+        try out.appendSlice(allocator, item);
+    }
+
+    return try out.toOwnedSlice(allocator);
 }
 
 fn extractNonce(decoded: primitives.Transaction.DecodedTransaction) u64 {

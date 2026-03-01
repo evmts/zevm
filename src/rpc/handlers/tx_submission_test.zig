@@ -212,6 +212,9 @@ test "automine persists canonical block body with mined transaction" {
     const mined_block = try rt.blockchain.getBlockByNumber(1);
     try std.testing.expect(mined_block != null);
     try std.testing.expectEqual(@as(usize, 1), mined_block.?.body.transactions.len);
+    try std.testing.expect(!std.mem.eql(u8, &mined_block.?.header.transactions_root, &primitives.BlockHeader.EMPTY_TRANSACTIONS_ROOT));
+    try std.testing.expect(!std.mem.eql(u8, &mined_block.?.header.receipts_root, &primitives.BlockHeader.EMPTY_RECEIPTS_ROOT));
+    try std.testing.expect(!std.mem.eql(u8, &mined_block.?.header.state_root, &primitives.AccountState.EMPTY_TRIE_ROOT));
 }
 
 test "automine: manual mode does not mine" {
