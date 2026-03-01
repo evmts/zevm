@@ -41,7 +41,7 @@ pub fn handleEthGetBalance(
     rt: *runtime.NodeRuntime,
     params: jsonrpc.eth.GetBalance.Params,
 ) !jsonrpc.eth.GetBalance.Result {
-    _ = try block_spec.resolveBlockNumber(rt, params.block);
+    _ = try requireResolvedBlockNumber(rt, params.block);
     const balance = try rt.getBalanceWithFork(allocator, .{ .bytes = params.address.bytes });
     return .{ .value = .{ .value = .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{balance}) } } };
 }
@@ -51,7 +51,7 @@ pub fn handleEthGetCode(
     rt: *runtime.NodeRuntime,
     params: jsonrpc.eth.GetCode.Params,
 ) !jsonrpc.eth.GetCode.Result {
-    _ = try block_spec.resolveBlockNumber(rt, params.block);
+    _ = try requireResolvedBlockNumber(rt, params.block);
     const code = try rt.getCodeWithFork(allocator, .{ .bytes = params.address.bytes });
     return .{ .value = .{ .value = .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{code}) } } };
 }
@@ -61,8 +61,8 @@ pub fn handleEthGetStorageAt(
     rt: *runtime.NodeRuntime,
     params: jsonrpc.eth.GetStorageAt.Params,
 ) !jsonrpc.eth.GetStorageAt.Result {
-    _ = try block_spec.resolveBlockNumber(rt, params.block);
-    const slot = parseQuantityToU256(params.storage_slot) catch return .{ .value = .{ .value = .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{@as(u256, 0)}) } } };
+    _ = try requireResolvedBlockNumber(rt, params.block);
+    const slot = parseQuantityToU256(params.storage_slot) catch return error.InvalidParams;
     const value = try rt.getStorageWithFork(allocator, .{ .bytes = params.address.bytes }, slot);
     return .{ .value = .{ .value = .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{value}) } } };
 }
@@ -72,7 +72,7 @@ pub fn handleEthGetTransactionCount(
     rt: *runtime.NodeRuntime,
     params: jsonrpc.eth.GetTransactionCount.Params,
 ) !jsonrpc.eth.GetTransactionCount.Result {
-    _ = try block_spec.resolveBlockNumber(rt, params.block);
+    _ = try requireResolvedBlockNumber(rt, params.block);
     const nonce = try rt.getNonceWithFork(allocator, .{ .bytes = params.address.bytes });
     return .{ .value = .{ .value = .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{nonce}) } } };
 }
@@ -126,7 +126,9 @@ pub fn handleEthFeeHistory(
     rt: *const runtime.NodeRuntime,
     params: jsonrpc.eth.FeeHistory.Params,
 ) !jsonrpc.eth.FeeHistory.Result {
-    const block_count = parseQuantityToU64(params.block_count) catch 1;
+    const block_count = parseQuantityToU64(params.block_count) catch return error.InvalidParams;
+    if (block_count == 0) return error.InvalidParams;
+    _ = try requireResolvedBlockNumber(rt, params.newest_block);
     const count: usize = @min(block_count, 1024);
 
     const base_fees = try allocator.alloc(jsonrpc.types.Quantity, count + 1);
@@ -148,6 +150,10 @@ pub fn handleEthFeeHistory(
         .base_fee_per_gas = base_fees,
         .gas_used_ratio = gas_ratios,
     };
+}
+
+fn requireResolvedBlockNumber(rt: *const runtime.NodeRuntime, spec: jsonrpc.types.BlockSpec) !u64 {
+    return block_spec.resolveBlockNumber(rt, spec) catch return error.InvalidParams;
 }
 
 fn parseQuantityToU64(q: jsonrpc.types.Quantity) !u64 {

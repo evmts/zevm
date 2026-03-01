@@ -90,6 +90,25 @@ test "eth_getBalance returns 0 for unknown address" {
     try expectQuantityStr(result.value, "0x0");
 }
 
+test "eth_getBalance invalid block spec returns InvalidParams" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit(std.testing.allocator);
+
+    try std.testing.expectError(
+        error.InvalidParams,
+        eth_read.handleEthGetBalance(
+            arena.allocator(),
+            &rt,
+            .{
+                .address = .{ .bytes = runtime.DEFAULT_DEV_ACCOUNTS[0].bytes },
+                .block = makeBlockSpec("garbage"),
+            },
+        ),
+    );
+}
+
 // --- AC: eth_getTransactionCount reads nonce ---
 
 test "eth_getTransactionCount returns 0 for fresh account" {
@@ -107,6 +126,26 @@ test "eth_getTransactionCount returns 0 for fresh account" {
         },
     );
     try expectQuantityStr(result.value, "0x0");
+}
+
+test "eth_getStorageAt invalid storage slot returns InvalidParams" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit(std.testing.allocator);
+
+    try std.testing.expectError(
+        error.InvalidParams,
+        eth_read.handleEthGetStorageAt(
+            arena.allocator(),
+            &rt,
+            .{
+                .address = .{ .bytes = runtime.DEFAULT_DEV_ACCOUNTS[0].bytes },
+                .storage_slot = .{ .value = .{ .string = "0xZZ" } },
+                .block = makeBlockSpec("latest"),
+            },
+        ),
+    );
 }
 
 // --- AC: eth_coinbase returns coinbase address ---
@@ -192,6 +231,44 @@ test "eth_feeHistory returns correct shape" {
     try std.testing.expectEqual(@as(usize, 2), result.base_fee_per_gas.len);
     try std.testing.expectEqual(@as(usize, 1), result.gas_used_ratio.len);
     try std.testing.expectEqual(@as(f64, 0.0), result.gas_used_ratio[0]);
+}
+
+test "eth_feeHistory invalid block_count returns InvalidParams" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit(std.testing.allocator);
+
+    try std.testing.expectError(
+        error.InvalidParams,
+        eth_read.handleEthFeeHistory(
+            arena.allocator(),
+            &rt,
+            .{
+                .block_count = .{ .value = .{ .string = "0xZZ" } },
+                .newest_block = makeBlockSpec("latest"),
+            },
+        ),
+    );
+}
+
+test "eth_feeHistory zero block_count returns InvalidParams" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit(std.testing.allocator);
+
+    try std.testing.expectError(
+        error.InvalidParams,
+        eth_read.handleEthFeeHistory(
+            arena.allocator(),
+            &rt,
+            .{
+                .block_count = .{ .value = .{ .string = "0x0" } },
+                .newest_block = makeBlockSpec("latest"),
+            },
+        ),
+    );
 }
 
 // --- Helper ---
