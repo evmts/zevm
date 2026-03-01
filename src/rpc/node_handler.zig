@@ -366,10 +366,10 @@ pub const NodeHandler = struct {
             return .{ .bool = self.filters.remove(id) };
         }
         if (std.mem.eql(u8, method_name, "debug_traceCall")) {
-            return try simpleTraceResult(allocator);
+            return try self.traceCall(allocator, params);
         }
         if (std.mem.eql(u8, method_name, "debug_traceTransaction")) {
-            return try simpleTraceResult(allocator);
+            return try self.traceTransaction(allocator, params);
         }
         return error.MethodNotFound;
     }
@@ -534,6 +534,144 @@ pub const NodeHandler = struct {
             return status.success;
         }
         return true;
+    }
+
+    fn traceCall(
+        self: *NodeHandler,
+        allocator: std.mem.Allocator,
+        params: ?std.json.Value,
+    ) !std.json.Value {
+        const call = parseCallRequest(
+            allocator,
+            params,
+            self.node_runtime.coinbase,
+            self.node_runtime.block_gas_limit,
+            self.node_runtime.gas_price,
+        ) catch return error.InvalidParams;
+        defer allocator.free(call.data);
+
+        const trace = try self.runTraceExecution(allocator, call);
+        defer allocator.free(trace.output);
+        return try buildTraceResult(allocator, trace.gas_used, trace.failed, trace.output);
+    }
+
+    fn traceTransaction(
+        self: *NodeHandler,
+        allocator: std.mem.Allocator,
+        params: ?std.json.Value,
+    ) !std.json.Value {
+        const tx_hash = parseFirstHash(params) orelse return error.InvalidParams;
+        const record = self.node_runtime.getTransactionRecord(tx_hash) orelse return error.InvalidParams;
+        const decoded = primitives.Transaction.decodeRawTransaction(allocator, record.raw) catch return error.InvalidParams;
+        defer primitives.Transaction.deinitDecodedTransaction(allocator, decoded);
+
+        const call: CallRequest = switch (decoded) {
+            .legacy => |tx| .{
+                .from = record.sender,
+                .to = tx.to,
+                .gas = tx.gas_limit,
+                .gas_price = tx.gas_price,
+                .value = tx.value,
+                .nonce = tx.nonce,
+                .data = try allocator.dupe(u8, tx.data),
+            },
+            .eip2930 => |tx| .{
+                .from = record.sender,
+                .to = tx.to,
+                .gas = tx.gas_limit,
+                .gas_price = tx.gas_price,
+                .value = tx.value,
+                .nonce = tx.nonce,
+                .data = try allocator.dupe(u8, tx.data),
+            },
+            .eip1559 => |tx| .{
+                .from = record.sender,
+                .to = tx.to,
+                .gas = tx.gas_limit,
+                .gas_price = tx.max_fee_per_gas,
+                .value = tx.value,
+                .nonce = tx.nonce,
+                .data = try allocator.dupe(u8, tx.data),
+            },
+            .eip4844 => |tx| .{
+                .from = record.sender,
+                .to = tx.to,
+                .gas = tx.gas_limit,
+                .gas_price = tx.max_fee_per_gas,
+                .value = tx.value,
+                .nonce = tx.nonce,
+                .data = try allocator.dupe(u8, tx.data),
+            },
+            .eip7702 => |tx| .{
+                .from = record.sender,
+                .to = tx.to,
+                .gas = tx.gas_limit,
+                .gas_price = tx.max_fee_per_gas,
+                .value = tx.value,
+                .nonce = tx.nonce,
+                .data = try allocator.dupe(u8, tx.data),
+            },
+        };
+        defer allocator.free(call.data);
+
+        const trace = try self.runTraceExecution(allocator, call);
+        defer allocator.free(trace.output);
+        return try buildTraceResult(allocator, trace.gas_used, trace.failed, trace.output);
+    }
+
+    fn runTraceExecution(
+        self: *NodeHandler,
+        allocator: std.mem.Allocator,
+        call: CallRequest,
+    ) !struct { gas_used: u64, failed: bool, output: []u8 } {
+        try self.node_runtime.state.checkpoint();
+        defer self.node_runtime.state.revert();
+
+        const block_ctx = guillotine_mini.BlockContext{
+            .chain_id = self.node_runtime.chain_id,
+            .block_number = self.node_runtime.head_block_number,
+            .block_timestamp = self.node_runtime.current_timestamp,
+            .block_difficulty = 0,
+            .block_prevrandao = self.node_runtime.prev_randao,
+            .block_coinbase = self.node_runtime.coinbase,
+            .block_gas_limit = self.node_runtime.block_gas_limit,
+            .block_base_fee = self.node_runtime.base_fee,
+            .blob_base_fee = self.node_runtime.blob_base_fee,
+        };
+
+        var adapter = host_adapter.HostAdapter{ .state = &self.node_runtime.state };
+        const host_iface = adapter.hostInterface();
+        const EvmType = guillotine_mini.Evm(.{});
+        var evm: EvmType = undefined;
+        evm.init(allocator, host_iface, null, block_ctx, null) catch return error.InvalidParams;
+        defer evm.deinit();
+        evm.initTransactionState(null) catch return error.InvalidParams;
+
+        const gas_limit = @min(call.gas, self.node_runtime.block_gas_limit);
+        const call_params: EvmType.CallParams = if (call.to) |to|
+            .{ .call = .{
+                .caller = call.from,
+                .to = to,
+                .value = call.value,
+                .input = call.data,
+                .gas = gas_limit,
+            } }
+        else
+            .{ .create = .{
+                .caller = call.from,
+                .value = call.value,
+                .init_code = call.data,
+                .gas = gas_limit,
+            } };
+
+        var result = evm.call(call_params).toOwnedResult(allocator) catch return error.InvalidParams;
+        defer result.deinit(allocator);
+
+        return .{
+            .gas_used = gas_limit - result.gas_left,
+            .failed = !result.success,
+            .output = try allocator.dupe(u8, result.output),
+        };
     }
 
     fn handleGetFilterChanges(
@@ -846,6 +984,19 @@ fn parseFirstAddress(params: ?std.json.Value) ?primitives.Address {
     return parseAddressFromHex(value);
 }
 
+fn parseFirstHash(params: ?std.json.Value) ?[32]u8 {
+    const array = switch (params orelse return null) {
+        .array => |arr| arr.items,
+        else => return null,
+    };
+    if (array.len == 0) return null;
+    const value = switch (array[0]) {
+        .string => |string| string,
+        else => return null,
+    };
+    return primitives.Hex.hexToBytesFixed(32, value) catch null;
+}
+
 fn parseAddressFromHex(hex: []const u8) ?primitives.Address {
     if (hex.len != 42) return null;
     if (hex[0] != '0' or (hex[1] != 'x' and hex[1] != 'X')) return null;
@@ -931,11 +1082,16 @@ fn parseJsonQuantityToU256(value: std.json.Value) ?u256 {
     };
 }
 
-fn simpleTraceResult(allocator: std.mem.Allocator) !std.json.Value {
+fn buildTraceResult(
+    allocator: std.mem.Allocator,
+    gas_used: u64,
+    failed: bool,
+    output: []const u8,
+) !std.json.Value {
     var object = std.json.ObjectMap.init(allocator);
-    try object.put("gas", .{ .string = "0x0" });
-    try object.put("failed", .{ .bool = false });
-    try object.put("returnValue", .{ .string = "0x" });
+    try object.put("gas", .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{gas_used}) });
+    try object.put("failed", .{ .bool = failed });
+    try object.put("returnValue", .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{output}) });
     try object.put("structLogs", .{ .array = std.json.Array.init(allocator) });
     return .{ .object = object };
 }

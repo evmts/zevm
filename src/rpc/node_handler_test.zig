@@ -223,3 +223,75 @@ test "NodeHandler log filter lifecycle returns array results" {
         else => return error.ExpectedArrayResult,
     }
 }
+
+test "NodeHandler debug_traceCall returns structured trace result" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var tx_object = std.json.ObjectMap.init(allocator);
+    defer tx_object.deinit();
+    try tx_object.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try tx_object.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try tx_object.put("data", .{ .string = "0x" });
+
+    var params = std.json.Array.init(allocator);
+    defer params.deinit();
+    try params.append(.{ .object = tx_object });
+    try params.append(.{ .string = "latest" });
+
+    const result = try callMethod(allocator, &handler, "debug_traceCall", .{ .array = params });
+    const object = switch (result) {
+        .object => |obj| obj,
+        else => return error.ExpectedObject,
+    };
+    try std.testing.expect(object.get("gas") != null);
+    try std.testing.expect(object.get("failed") != null);
+    try std.testing.expect(object.get("returnValue") != null);
+    try std.testing.expect(object.get("structLogs") != null);
+}
+
+test "NodeHandler debug_traceTransaction returns structured trace result" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    const raw_tx = try signLegacyRawTx(
+        allocator,
+        0,
+        runtime.DEFAULT_GAS_PRICE,
+        21_000,
+        runtime.DEFAULT_DEV_ACCOUNTS[1],
+        1000,
+    );
+    defer allocator.free(raw_tx);
+    const raw_tx_hex = try primitives.Hex.bytesToHex(allocator, raw_tx);
+    defer allocator.free(raw_tx_hex);
+
+    var send_params = std.json.Array.init(allocator);
+    defer send_params.deinit();
+    try send_params.append(.{ .string = raw_tx_hex });
+    const send_result = try callMethod(allocator, &handler, "eth_sendRawTransaction", .{ .array = send_params });
+    const tx_hash = switch (send_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    var trace_params = std.json.Array.init(allocator);
+    defer trace_params.deinit();
+    try trace_params.append(.{ .string = tx_hash });
+
+    const trace_result = try callMethod(allocator, &handler, "debug_traceTransaction", .{ .array = trace_params });
+    const object = switch (trace_result) {
+        .object => |obj| obj,
+        else => return error.ExpectedObject,
+    };
+    try std.testing.expect(object.get("gas") != null);
+    try std.testing.expect(object.get("failed") != null);
+    try std.testing.expect(object.get("returnValue") != null);
+    try std.testing.expect(object.get("structLogs") != null);
+}
