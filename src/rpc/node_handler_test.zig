@@ -962,6 +962,16 @@ test "NodeHandler evm_mine persists empty canonical block" {
     const mined_block = try handler.node_runtime.blockchain.getBlockByNumber(1);
     try std.testing.expect(mined_block != null);
     try std.testing.expectEqual(@as(usize, 0), mined_block.?.body.transactions.len);
+
+    var receipts_params = std.json.Array.init(allocator);
+    defer receipts_params.deinit();
+    try receipts_params.append(.{ .string = "0x1" });
+    const receipts_result = try callMethod(allocator, &handler, "eth_getBlockReceipts", .{ .array = receipts_params });
+    const receipts = switch (receipts_result) {
+        .array => |array| array.items,
+        else => return error.ExpectedArrayResult,
+    };
+    try std.testing.expectEqual(@as(usize, 0), receipts.len);
 }
 
 test "NodeHandler evm_revert restores runtime snapshot metadata and mempool" {

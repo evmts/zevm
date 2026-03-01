@@ -618,6 +618,14 @@ fn automine(
 }
 
 pub fn mineEmptyBlock(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime) ![32]u8 {
+    return mineEmptyBlockWithIndexes(allocator, rt, null);
+}
+
+pub fn mineEmptyBlockWithIndexes(
+    allocator: std.mem.Allocator,
+    rt: *runtime.NodeRuntime,
+    indexes: ?MiningIndexes,
+) ![32]u8 {
     const parent_hash = rt.head_block_hash;
     const next_block_number = rt.head_block_number + 1;
     const next_timestamp: u64 = rt.next_block_timestamp_override orelse if (rt.mining_mode == .interval and rt.interval_seconds > 0)
@@ -650,6 +658,17 @@ pub fn mineEmptyBlock(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime) ![
         next_timestamp,
         next_base_fee,
     );
+
+    if (indexes) |resolved_indexes| {
+        const empty_receipts: []const primitives.Receipt.Receipt = &.{};
+        try resolved_indexes.receipt_index.putBlockReceipts(allocator, block.hash, empty_receipts);
+        try resolved_indexes.log_index.appendBlockLogs(
+            allocator,
+            next_block_number,
+            block.hash,
+            empty_receipts,
+        );
+    }
 
     return block.hash;
 }

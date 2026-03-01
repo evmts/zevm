@@ -443,7 +443,14 @@ pub const NodeHandler = struct {
                         },
                     );
                 } else {
-                    _ = try tx_submission.mineEmptyBlock(allocator, &self.node_runtime);
+                    _ = try tx_submission.mineEmptyBlockWithIndexes(
+                        allocator,
+                        &self.node_runtime,
+                        .{
+                            .receipt_index = &self.receipt_index,
+                            .log_index = &self.log_index,
+                        },
+                    );
                 }
             }
             return .{ .string = try allocator.dupe(u8, "0x0") };
