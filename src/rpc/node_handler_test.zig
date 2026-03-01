@@ -295,3 +295,103 @@ test "NodeHandler debug_traceTransaction returns structured trace result" {
     try std.testing.expect(object.get("returnValue") != null);
     try std.testing.expect(object.get("structLogs") != null);
 }
+
+test "NodeHandler debug_traceCall applies trace config flags to struct logs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var set_code_params = std.json.Array.init(allocator);
+    defer set_code_params.deinit();
+    try set_code_params.append(.{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try set_code_params.append(.{ .string = "0x00" });
+    _ = try callMethod(allocator, &handler, "hardhat_setCode", .{ .array = set_code_params });
+
+    var tx_object = std.json.ObjectMap.init(allocator);
+    defer tx_object.deinit();
+    try tx_object.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try tx_object.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try tx_object.put("data", .{ .string = "0x" });
+    try tx_object.put("gas", .{ .string = "0x100000" });
+
+    var config_object = std.json.ObjectMap.init(allocator);
+    defer config_object.deinit();
+    try config_object.put("disableStack", .{ .bool = true });
+    try config_object.put("disableMemory", .{ .bool = true });
+    try config_object.put("disableStorage", .{ .bool = true });
+
+    var params = std.json.Array.init(allocator);
+    defer params.deinit();
+    try params.append(.{ .object = tx_object });
+    try params.append(.{ .string = "latest" });
+    try params.append(.{ .object = config_object });
+
+    const result = try callMethod(allocator, &handler, "debug_traceCall", .{ .array = params });
+    const object = switch (result) {
+        .object => |obj| obj,
+        else => return error.ExpectedObject,
+    };
+
+    const struct_logs_value = object.get("structLogs") orelse return error.MissingField;
+    const struct_logs = switch (struct_logs_value) {
+        .array => |array| array.items,
+        else => return error.ExpectedArrayResult,
+    };
+    if (struct_logs.len > 0) {
+        const first_log_object = switch (struct_logs[0]) {
+            .object => |entry| entry,
+            else => return error.ExpectedObject,
+        };
+        try std.testing.expect(first_log_object.get("stack") == null);
+        try std.testing.expect(first_log_object.get("memory") == null);
+        try std.testing.expect(first_log_object.get("storage") == null);
+    }
+}
+
+test "NodeHandler eth_subscribe newPendingTransactions emits websocket messages" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var subscribe_params = std.json.Array.init(allocator);
+    defer subscribe_params.deinit();
+    try subscribe_params.append(.{ .string = "newPendingTransactions" });
+    const subscribe_result = try callMethod(allocator, &handler, "eth_subscribe", .{ .array = subscribe_params });
+    const subscription_id = switch (subscribe_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    var tx_object = std.json.ObjectMap.init(allocator);
+    defer tx_object.deinit();
+    try tx_object.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try tx_object.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try tx_object.put("value", .{ .string = "0x1" });
+    try tx_object.put("gas", .{ .string = "0x5208" });
+
+    var send_params = std.json.Array.init(allocator);
+    defer send_params.deinit();
+    try send_params.append(.{ .object = tx_object });
+    _ = try callMethod(allocator, &handler, "eth_sendTransaction", .{ .array = send_params });
+
+    const messages = try handler.collectSubscriptionMessages(allocator);
+    defer {
+        for (messages) |message| allocator.free(message);
+        allocator.free(messages);
+    }
+
+    var found = false;
+    for (messages) |message| {
+        if (std.mem.indexOf(u8, message, "\"method\":\"eth_subscription\"") != null and
+            std.mem.indexOf(u8, message, subscription_id) != null)
+        {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}

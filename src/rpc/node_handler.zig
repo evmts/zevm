@@ -21,10 +21,19 @@ const FilterKind = enum {
     subscription,
 };
 
+const SubscriptionKind = enum {
+    new_heads,
+    logs,
+    new_pending_transactions,
+    syncing,
+};
+
 const FilterState = struct {
     kind: FilterKind,
     last_block: u64,
     filter_json: ?[]u8 = null,
+    subscription_kind: ?SubscriptionKind = null,
+    event_cursor: usize = 0,
 };
 
 const CallRequest = struct {
@@ -35,6 +44,13 @@ const CallRequest = struct {
     value: u256,
     nonce: ?u64,
     data: []u8,
+};
+
+const TraceExecutionResult = struct {
+    gas_used: u64,
+    failed: bool,
+    output: []u8,
+    struct_logs: std.json.Array,
 };
 
 pub const NodeHandler = struct {
@@ -292,13 +308,24 @@ pub const NodeHandler = struct {
                 if (self.node_runtime.pool.pendingCount() > 0) {
                     try tx_submission.minePendingTransactions(allocator, &self.node_runtime);
                 } else {
+                    const parent_hash = self.node_runtime.head_block_hash;
                     const next_timestamp: u64 = self.node_runtime.next_block_timestamp_override orelse self.node_runtime.current_timestamp + 1;
                     const next_base_fee: u256 = self.node_runtime.next_block_base_fee_override orelse self.node_runtime.base_fee;
-                    self.node_runtime.head_block_number += 1;
+                    const next_block_number = self.node_runtime.head_block_number + 1;
+                    const block_hash = syntheticBlockHash(next_block_number, next_timestamp);
+                    self.node_runtime.head_block_number = next_block_number;
                     self.node_runtime.current_timestamp = next_timestamp;
                     self.node_runtime.base_fee = next_base_fee;
                     self.node_runtime.next_block_timestamp_override = null;
                     self.node_runtime.next_block_base_fee_override = null;
+                    try self.node_runtime.recordMinedBlock(
+                        allocator,
+                        next_block_number,
+                        block_hash,
+                        parent_hash,
+                        next_timestamp,
+                        next_base_fee,
+                    );
                 }
             }
             return .{ .string = "0x0" };
@@ -322,6 +349,7 @@ pub const NodeHandler = struct {
                 .kind = .block,
                 .last_block = self.node_runtime.head_block_number,
                 .filter_json = null,
+                .event_cursor = self.node_runtime.mined_block_events.items.len,
             });
             return .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{id}) };
         }
@@ -332,6 +360,7 @@ pub const NodeHandler = struct {
                 .kind = .pending_transaction,
                 .last_block = self.node_runtime.head_block_number,
                 .filter_json = null,
+                .event_cursor = self.node_runtime.pending_tx_events.items.len,
             });
             return .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{id}) };
         }
@@ -352,18 +381,37 @@ pub const NodeHandler = struct {
             return .{ .bool = false };
         }
         if (std.mem.eql(u8, method_name, "eth_subscribe")) {
+            const subscription_kind = parseSubscriptionKind(params) orelse return error.InvalidParams;
+            const filter_json = if (subscription_kind == .logs)
+                try extractSubscriptionFilterJson(allocator, params)
+            else
+                null;
+            errdefer if (filter_json) |json| allocator.free(json);
+
             const id = self.next_filter_id;
             self.next_filter_id += 1;
             try self.filters.put(id, .{
                 .kind = .subscription,
                 .last_block = self.node_runtime.head_block_number,
-                .filter_json = null,
+                .filter_json = filter_json,
+                .subscription_kind = subscription_kind,
+                .event_cursor = switch (subscription_kind) {
+                    .new_heads => self.node_runtime.mined_block_events.items.len,
+                    .new_pending_transactions => self.node_runtime.pending_tx_events.items.len,
+                    .logs, .syncing => 0,
+                },
             });
             return .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{id}) };
         }
         if (std.mem.eql(u8, method_name, "eth_unsubscribe")) {
             const id = parseFirstU64(params) orelse return error.InvalidParams;
-            return .{ .bool = self.filters.remove(id) };
+            if (self.filters.fetchRemove(id)) |entry| {
+                if (entry.value.filter_json) |json| {
+                    allocator.free(json);
+                }
+                return .{ .bool = true };
+            }
+            return .{ .bool = false };
         }
         if (std.mem.eql(u8, method_name, "debug_traceCall")) {
             return try self.traceCall(allocator, params);
@@ -550,9 +598,10 @@ pub const NodeHandler = struct {
         ) catch return error.InvalidParams;
         defer allocator.free(call.data);
 
-        const trace = try self.runTraceExecution(allocator, call);
+        const trace_config = parseTraceCallConfig(params);
+        const trace = try self.runTraceExecution(allocator, call, trace_config);
         defer allocator.free(trace.output);
-        return try buildTraceResult(allocator, trace.gas_used, trace.failed, trace.output);
+        return try buildTraceResult(allocator, trace.gas_used, trace.failed, trace.output, trace.struct_logs);
     }
 
     fn traceTransaction(
@@ -614,16 +663,18 @@ pub const NodeHandler = struct {
         };
         defer allocator.free(call.data);
 
-        const trace = try self.runTraceExecution(allocator, call);
+        const trace_config = parseTraceTransactionConfig(params);
+        const trace = try self.runTraceExecution(allocator, call, trace_config);
         defer allocator.free(trace.output);
-        return try buildTraceResult(allocator, trace.gas_used, trace.failed, trace.output);
+        return try buildTraceResult(allocator, trace.gas_used, trace.failed, trace.output, trace.struct_logs);
     }
 
     fn runTraceExecution(
         self: *NodeHandler,
         allocator: std.mem.Allocator,
         call: CallRequest,
-    ) !struct { gas_used: u64, failed: bool, output: []u8 } {
+        trace_config: primitives.TraceConfig,
+    ) !TraceExecutionResult {
         try self.node_runtime.state.checkpoint();
         defer self.node_runtime.state.revert();
 
@@ -647,6 +698,12 @@ pub const NodeHandler = struct {
         defer evm.deinit();
         evm.initTransactionState(null) catch return error.InvalidParams;
 
+        var tracer = guillotine_mini.Tracer.init(allocator);
+        defer tracer.deinit();
+        tracer.config = trace_config;
+        tracer.enable();
+        evm.setTracer(&tracer);
+
         const gas_limit = @min(call.gas, self.node_runtime.block_gas_limit);
         const call_params: EvmType.CallParams = if (call.to) |to|
             .{ .call = .{
@@ -667,10 +724,12 @@ pub const NodeHandler = struct {
         var result = evm.call(call_params).toOwnedResult(allocator) catch return error.InvalidParams;
         defer result.deinit(allocator);
 
+        const struct_logs = try traceEntriesToStructLogs(allocator, tracer.entries.items, trace_config);
         return .{
             .gas_used = gas_limit - result.gas_left,
             .failed = !result.success,
             .output = try allocator.dupe(u8, result.output),
+            .struct_logs = struct_logs,
         };
     }
 
@@ -685,14 +744,13 @@ pub const NodeHandler = struct {
         switch (state.kind) {
             .block => {
                 var result_array = std.json.Array.init(allocator);
-                if (self.node_runtime.head_block_number > state.last_block) {
-                    var block_number = state.last_block + 1;
-                    while (block_number <= self.node_runtime.head_block_number) : (block_number += 1) {
-                        const block_hash = syntheticBlockHash(block_number, self.node_runtime.current_timestamp);
-                        try result_array.append(.{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{block_hash}) });
-                    }
-                    state.last_block = self.node_runtime.head_block_number;
+                var index = state.event_cursor;
+                while (index < self.node_runtime.mined_block_events.items.len) : (index += 1) {
+                    const event = self.node_runtime.mined_block_events.items[index];
+                    try result_array.append(.{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{event.hash}) });
                 }
+                state.event_cursor = self.node_runtime.mined_block_events.items.len;
+                state.last_block = self.node_runtime.head_block_number;
                 return .{ .array = result_array };
             },
             .log => {
@@ -701,7 +759,17 @@ pub const NodeHandler = struct {
                 state.last_block = self.node_runtime.head_block_number;
                 return logs_value;
             },
-            .pending_transaction, .subscription => {
+            .pending_transaction => {
+                var result_array = std.json.Array.init(allocator);
+                var index = state.event_cursor;
+                while (index < self.node_runtime.pending_tx_events.items.len) : (index += 1) {
+                    const hash = self.node_runtime.pending_tx_events.items[index];
+                    try result_array.append(.{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{hash}) });
+                }
+                state.event_cursor = self.node_runtime.pending_tx_events.items.len;
+                return .{ .array = result_array };
+            },
+            .subscription => {
                 return .{ .array = std.json.Array.init(allocator) };
             },
         }
@@ -738,6 +806,80 @@ pub const NodeHandler = struct {
             .{ .filter = filter },
         );
         return try toJsonValue(allocator, logs_result.logs);
+    }
+
+    pub fn collectSubscriptionMessages(self: *NodeHandler, allocator: std.mem.Allocator) ![][]u8 {
+        var messages = std.ArrayList([]u8).empty;
+        errdefer {
+            for (messages.items) |message| {
+                allocator.free(message);
+            }
+            messages.deinit(allocator);
+        }
+
+        var filter_it = self.filters.iterator();
+        while (filter_it.next()) |entry| {
+            const id = entry.key_ptr.*;
+            const state = entry.value_ptr;
+            if (state.kind != .subscription) continue;
+            const subscription_kind = state.subscription_kind orelse continue;
+
+            switch (subscription_kind) {
+                .new_heads => {
+                    var arena_state = std.heap.ArenaAllocator.init(allocator);
+                    defer arena_state.deinit();
+                    const arena = arena_state.allocator();
+
+                    var index = state.event_cursor;
+                    while (index < self.node_runtime.mined_block_events.items.len) : (index += 1) {
+                        const event = self.node_runtime.mined_block_events.items[index];
+                        const header = try buildNewHeadResult(arena, &self.node_runtime, event);
+                        const message = try buildSubscriptionMessage(allocator, id, header);
+                        try messages.append(allocator, message);
+                    }
+                    state.event_cursor = self.node_runtime.mined_block_events.items.len;
+                    state.last_block = self.node_runtime.head_block_number;
+                },
+                .logs => {
+                    if (self.node_runtime.head_block_number > state.last_block) {
+                        var arena_state = std.heap.ArenaAllocator.init(allocator);
+                        defer arena_state.deinit();
+                        const arena = arena_state.allocator();
+
+                        const from_block = state.last_block + 1;
+                        const to_block = self.node_runtime.head_block_number;
+                        const logs_value = try self.queryFilterLogs(arena, state, from_block, to_block);
+                        const log_items = switch (logs_value) {
+                            .array => |array| array.items,
+                            else => &[_]std.json.Value{},
+                        };
+                        for (log_items) |log_item| {
+                            const message = try buildSubscriptionMessage(allocator, id, log_item);
+                            try messages.append(allocator, message);
+                        }
+                        state.last_block = self.node_runtime.head_block_number;
+                    }
+                },
+                .new_pending_transactions => {
+                    var index = state.event_cursor;
+                    while (index < self.node_runtime.pending_tx_events.items.len) : (index += 1) {
+                        const tx_hash = self.node_runtime.pending_tx_events.items[index];
+                        var arena_state = std.heap.ArenaAllocator.init(allocator);
+                        defer arena_state.deinit();
+                        const arena = arena_state.allocator();
+                        const result_value: std.json.Value = .{
+                            .string = try std.fmt.allocPrint(arena, "0x{x}", .{tx_hash}),
+                        };
+                        const message = try buildSubscriptionMessage(allocator, id, result_value);
+                        try messages.append(allocator, message);
+                    }
+                    state.event_cursor = self.node_runtime.pending_tx_events.items.len;
+                },
+                .syncing => {},
+            }
+        }
+
+        return messages.toOwnedSlice(allocator);
     }
 };
 
@@ -881,6 +1023,37 @@ fn extractStateOverrides(params: ?std.json.Value) ?std.json.Value {
     return array[2];
 }
 
+fn parseSubscriptionKind(params: ?std.json.Value) ?SubscriptionKind {
+    const array = switch (params orelse return null) {
+        .array => |arr| arr.items,
+        else => return null,
+    };
+    if (array.len == 0) return null;
+    const name = switch (array[0]) {
+        .string => |string| string,
+        else => return null,
+    };
+
+    if (std.mem.eql(u8, name, "newHeads")) return .new_heads;
+    if (std.mem.eql(u8, name, "logs")) return .logs;
+    if (std.mem.eql(u8, name, "newPendingTransactions")) return .new_pending_transactions;
+    if (std.mem.eql(u8, name, "syncing")) return .syncing;
+    return null;
+}
+
+fn extractSubscriptionFilterJson(allocator: std.mem.Allocator, params: ?std.json.Value) ![]u8 {
+    const array = switch (params orelse return allocator.dupe(u8, "{}")) {
+        .array => |arr| arr.items,
+        else => return allocator.dupe(u8, "{}"),
+    };
+    if (array.len < 2) return allocator.dupe(u8, "{}");
+
+    var writer = std.Io.Writer.Allocating.init(allocator);
+    defer writer.deinit();
+    try std.json.Stringify.value(array[1], .{}, &writer.writer);
+    return writer.toOwnedSlice();
+}
+
 fn extractFilterJson(allocator: std.mem.Allocator, params: ?std.json.Value) ![]u8 {
     const array = switch (params orelse return allocator.dupe(u8, "{}")) {
         .array => |arr| arr.items,
@@ -892,6 +1065,40 @@ fn extractFilterJson(allocator: std.mem.Allocator, params: ?std.json.Value) ![]u
     defer writer.deinit();
     try std.json.Stringify.value(array[0], .{}, &writer.writer);
     return writer.toOwnedSlice();
+}
+
+fn buildSubscriptionMessage(
+    allocator: std.mem.Allocator,
+    subscription_id: u64,
+    result: std.json.Value,
+) ![]u8 {
+    var writer = std.Io.Writer.Allocating.init(allocator);
+    defer writer.deinit();
+
+    try writer.writer.writeAll("{\"jsonrpc\":\"2.0\",\"method\":\"eth_subscription\",\"params\":{\"subscription\":\"");
+    try writer.writer.print("0x{x}", .{subscription_id});
+    try writer.writer.writeAll("\",\"result\":");
+    try std.json.Stringify.value(result, .{}, &writer.writer);
+    try writer.writer.writeAll("}}");
+
+    return writer.toOwnedSlice();
+}
+
+fn buildNewHeadResult(
+    allocator: std.mem.Allocator,
+    rt: *runtime.NodeRuntime,
+    event: runtime.BlockEvent,
+) !std.json.Value {
+    var object = std.json.ObjectMap.init(allocator);
+    try object.put("number", .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{event.number}) });
+    try object.put("hash", .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{event.hash}) });
+    try object.put("parentHash", .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{event.parent_hash}) });
+    try object.put("timestamp", .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{event.timestamp}) });
+    try object.put("miner", .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{rt.coinbase.bytes}) });
+    try object.put("gasLimit", .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{rt.block_gas_limit}) });
+    try object.put("gasUsed", .{ .string = "0x0" });
+    try object.put("baseFeePerGas", .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{event.base_fee}) });
+    return .{ .object = object };
 }
 
 fn parseStoredFilter(
@@ -1087,13 +1294,138 @@ fn buildTraceResult(
     gas_used: u64,
     failed: bool,
     output: []const u8,
+    struct_logs: std.json.Array,
 ) !std.json.Value {
     var object = std.json.ObjectMap.init(allocator);
-    try object.put("gas", .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{gas_used}) });
+    try object.put("gas", .{ .integer = @intCast(gas_used) });
     try object.put("failed", .{ .bool = failed });
     try object.put("returnValue", .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{output}) });
-    try object.put("structLogs", .{ .array = std.json.Array.init(allocator) });
+    try object.put("structLogs", .{ .array = struct_logs });
     return .{ .object = object };
+}
+
+fn parseTraceCallConfig(params: ?std.json.Value) primitives.TraceConfig {
+    const array = switch (params orelse return primitives.TraceConfig.from()) {
+        .array => |arr| arr.items,
+        else => return primitives.TraceConfig.from(),
+    };
+    if (array.len < 3) return primitives.TraceConfig.from();
+    return parseTraceConfigFromValue(array[2]);
+}
+
+fn parseTraceTransactionConfig(params: ?std.json.Value) primitives.TraceConfig {
+    const array = switch (params orelse return primitives.TraceConfig.from()) {
+        .array => |arr| arr.items,
+        else => return primitives.TraceConfig.from(),
+    };
+    if (array.len < 2) return primitives.TraceConfig.from();
+    return parseTraceConfigFromValue(array[1]);
+}
+
+fn parseTraceConfigFromValue(value: std.json.Value) primitives.TraceConfig {
+    const object = switch (value) {
+        .object => |obj| obj,
+        else => return primitives.TraceConfig.from(),
+    };
+
+    var config = primitives.TraceConfig.from();
+    if (object.get("disableStorage")) |disable_storage| {
+        if (disable_storage == .bool) {
+            config.disable_storage = disable_storage.bool;
+        }
+    }
+    if (object.get("disableStack")) |disable_stack| {
+        if (disable_stack == .bool) {
+            config.disable_stack = disable_stack.bool;
+        }
+    }
+    if (object.get("disableMemory")) |disable_memory| {
+        if (disable_memory == .bool) {
+            config.disable_memory = disable_memory.bool;
+        }
+    }
+    if (object.get("enableMemory")) |enable_memory| {
+        if (enable_memory == .bool) {
+            config.enable_memory = enable_memory.bool;
+        }
+    }
+    if (object.get("enableReturnData")) |enable_return_data| {
+        if (enable_return_data == .bool) {
+            config.enable_return_data = enable_return_data.bool;
+        }
+    }
+    if (object.get("tracer")) |tracer| {
+        if (tracer == .string) {
+            config.tracer = tracer.string;
+        }
+    }
+    if (object.get("timeout")) |timeout| {
+        if (timeout == .string) {
+            config.timeout = timeout.string;
+        }
+    }
+    return config;
+}
+
+fn traceEntriesToStructLogs(
+    allocator: std.mem.Allocator,
+    entries: []const guillotine_mini.TraceEntry,
+    trace_config: primitives.TraceConfig,
+) !std.json.Array {
+    var struct_logs = std.json.Array.init(allocator);
+    for (entries) |entry| {
+        var object = std.json.ObjectMap.init(allocator);
+        try object.put("pc", .{ .integer = @intCast(entry.pc) });
+        try object.put("op", .{ .string = try allocator.dupe(u8, entry.opName) });
+        try object.put("gas", .{ .integer = @intCast(entry.gas) });
+        try object.put("gasCost", .{ .integer = @intCast(entry.gasCost) });
+        try object.put("depth", .{ .integer = @intCast(entry.depth) });
+        try object.put("memSize", .{ .integer = @intCast(entry.memSize) });
+
+        if (trace_config.tracksStack()) {
+            var stack_array = std.json.Array.init(allocator);
+            for (entry.stack) |stack_item| {
+                try stack_array.append(.{
+                    .string = try std.fmt.allocPrint(allocator, "{x:0>64}", .{stack_item}),
+                });
+            }
+            try object.put("stack", .{ .array = stack_array });
+        }
+
+        if (trace_config.tracksMemory()) {
+            if (entry.memory) |memory| {
+                const memory_words = try memoryToWords(allocator, memory);
+                try object.put("memory", .{ .array = memory_words });
+            } else {
+                try object.put("memory", .{ .array = std.json.Array.init(allocator) });
+            }
+        }
+
+        if (trace_config.tracksStorage()) {
+            try object.put("storage", .{ .object = std.json.ObjectMap.init(allocator) });
+        }
+
+        if (entry.error_msg) |error_msg| {
+            try object.put("error", .{ .string = try allocator.dupe(u8, error_msg) });
+        }
+
+        try struct_logs.append(.{ .object = object });
+    }
+    return struct_logs;
+}
+
+fn memoryToWords(allocator: std.mem.Allocator, memory: []const u8) !std.json.Array {
+    var words = std.json.Array.init(allocator);
+    if (memory.len == 0) return words;
+
+    var index: usize = 0;
+    while (index < memory.len) : (index += 32) {
+        var word: [32]u8 = [_]u8{0} ** 32;
+        const copy_len = @min(@as(usize, 32), memory.len - index);
+        @memcpy(word[0..copy_len], memory[index .. index + copy_len]);
+        try words.append(.{ .string = try std.fmt.allocPrint(allocator, "{x}", .{word}) });
+    }
+    return words;
 }
 
 fn intrinsicGasFromHexData(data_hex: []const u8, is_create: bool) u64 {

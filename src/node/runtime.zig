@@ -69,6 +69,14 @@ pub const TransactionRecord = struct {
     transaction_index: ?u64 = null,
 };
 
+pub const BlockEvent = struct {
+    number: u64,
+    hash: [32]u8,
+    parent_hash: [32]u8,
+    timestamp: u64,
+    base_fee: u256,
+};
+
 pub const NodeConfig = struct {
     chain_id: u64 = DEFAULT_CHAIN_ID,
     coinbase_index: u8 = 0,
@@ -103,6 +111,8 @@ pub const NodeRuntime = struct {
     blockchain: blockchain.Blockchain,
     pool: txpool.TxPool,
     tx_index: std.AutoHashMap([32]u8, TransactionRecord),
+    pending_tx_events: std.ArrayList([32]u8),
+    mined_block_events: std.ArrayList(BlockEvent),
     impersonated_accounts: std.AutoHashMap(primitives.Address, void),
     prev_randao: u256,
     next_block_base_fee_override: ?u256,
@@ -175,6 +185,8 @@ pub const NodeRuntime = struct {
                 .blockchain = chain,
                 .pool = txpool.TxPool.init(allocator),
                 .tx_index = std.AutoHashMap([32]u8, TransactionRecord).init(allocator),
+                .pending_tx_events = std.ArrayList([32]u8).empty,
+                .mined_block_events = std.ArrayList(BlockEvent).empty,
                 .impersonated_accounts = std.AutoHashMap(primitives.Address, void).init(allocator),
                 .prev_randao = 0,
                 .next_block_base_fee_override = null,
@@ -218,6 +230,8 @@ pub const NodeRuntime = struct {
             .blockchain = chain,
             .pool = txpool.TxPool.init(allocator),
             .tx_index = std.AutoHashMap([32]u8, TransactionRecord).init(allocator),
+            .pending_tx_events = std.ArrayList([32]u8).empty,
+            .mined_block_events = std.ArrayList(BlockEvent).empty,
             .impersonated_accounts = std.AutoHashMap(primitives.Address, void).init(allocator),
             .prev_randao = 0,
             .next_block_base_fee_override = null,
@@ -249,6 +263,8 @@ pub const NodeRuntime = struct {
             allocator.free(record.raw);
         }
         self.tx_index.deinit();
+        self.pending_tx_events.deinit(allocator);
+        self.mined_block_events.deinit(allocator);
         self.pool.deinit(allocator);
         self.impersonated_accounts.deinit();
         self.blockchain.deinit();
@@ -319,6 +335,33 @@ pub const NodeRuntime = struct {
 
     pub fn getTransactionRecord(self: *const NodeRuntime, tx_hash: [32]u8) ?TransactionRecord {
         return self.tx_index.get(tx_hash);
+    }
+
+    pub fn recordPendingTransaction(
+        self: *NodeRuntime,
+        allocator: std.mem.Allocator,
+        tx_hash: [32]u8,
+    ) !void {
+        try self.pending_tx_events.append(allocator, tx_hash);
+    }
+
+    pub fn recordMinedBlock(
+        self: *NodeRuntime,
+        allocator: std.mem.Allocator,
+        block_number: u64,
+        block_hash: [32]u8,
+        parent_hash: [32]u8,
+        block_timestamp: u64,
+        block_base_fee: u256,
+    ) !void {
+        try self.mined_block_events.append(allocator, .{
+            .number = block_number,
+            .hash = block_hash,
+            .parent_hash = parent_hash,
+            .timestamp = block_timestamp,
+            .base_fee = block_base_fee,
+        });
+        self.head_block_hash = block_hash;
     }
 
     pub fn impersonateAccount(

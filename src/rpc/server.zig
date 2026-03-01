@@ -1,6 +1,7 @@
 const std = @import("std");
 const jsonrpc = @import("jsonrpc");
 const dispatcher = @import("dispatcher.zig");
+const node_handler = @import("node_handler.zig");
 
 pub const ServerConfig = struct {
     host: []const u8 = "127.0.0.1",
@@ -23,6 +24,24 @@ pub const TestHttpResponse = struct {
 const json_content_type_header = std.http.Header{
     .name = "content-type",
     .value = "application/json",
+};
+
+const subscription_poll_interval_ns: u64 = 200 * std.time.ns_per_ms;
+
+const ConnectionTask = struct {
+    allocator: std.mem.Allocator,
+    handlers: *const dispatcher.HandlerRegistry,
+    handler_mutex: *std.Thread.Mutex,
+    connection: std.net.Server.Connection,
+};
+
+const WebSocketNotificationTask = struct {
+    allocator: std.mem.Allocator,
+    handlers: *const dispatcher.HandlerRegistry,
+    handler_mutex: *std.Thread.Mutex,
+    write_mutex: *std.Thread.Mutex,
+    web_socket: *std.http.Server.WebSocket,
+    stop: *std.atomic.Value(bool),
 };
 
 pub fn parseConfig(allocator: std.mem.Allocator, args: []const []const u8) !ServerConfig {
@@ -70,12 +89,27 @@ pub fn run(allocator: std.mem.Allocator, config: ServerConfig, handlers: *const 
     const address = try std.net.Address.parseIp(config.host, config.port);
     var tcp_server = try address.listen(.{ .reuse_address = true });
     defer tcp_server.deinit();
+    var handler_mutex = std.Thread.Mutex{};
 
     while (true) {
         const connection = try tcp_server.accept();
-        handleConnection(allocator, handlers, connection) catch {
+        const task = allocator.create(ConnectionTask) catch {
+            connection.stream.close();
             continue;
         };
+        task.* = .{
+            .allocator = allocator,
+            .handlers = handlers,
+            .handler_mutex = &handler_mutex,
+            .connection = connection,
+        };
+
+        const thread = std.Thread.spawn(.{}, handleConnectionThread, .{task}) catch {
+            allocator.destroy(task);
+            connection.stream.close();
+            continue;
+        };
+        thread.detach();
     }
 }
 
@@ -103,6 +137,7 @@ pub fn handleHttpRequestForTest(
 fn handleConnection(
     allocator: std.mem.Allocator,
     handlers: *const dispatcher.HandlerRegistry,
+    handler_mutex: *std.Thread.Mutex,
     connection: std.net.Server.Connection,
 ) !void {
     defer connection.stream.close();
@@ -119,13 +154,30 @@ fn handleConnection(
             else => return err,
         };
 
-        try handleRequest(allocator, handlers, &request);
+        switch (request.upgradeRequested()) {
+            .websocket => |key_opt| {
+                const key = key_opt orelse return;
+                var web_socket = try request.respondWebSocket(.{ .key = key });
+                try serveWebSocket(allocator, handlers, handler_mutex, &web_socket);
+                return;
+            },
+            .other => {
+                try request.respond("Unsupported upgrade", .{
+                    .status = .bad_request,
+                });
+                return;
+            },
+            .none => {
+                try handleRequest(allocator, handlers, handler_mutex, &request);
+            },
+        }
     }
 }
 
 fn handleRequest(
     allocator: std.mem.Allocator,
     handlers: *const dispatcher.HandlerRegistry,
+    handler_mutex: *std.Thread.Mutex,
     request: *std.http.Server.Request,
 ) !void {
     if (request.head.method != .POST) {
@@ -138,6 +190,8 @@ fn handleRequest(
     const request_body = try readRequestBody(allocator, request);
     defer allocator.free(request_body);
 
+    handler_mutex.lock();
+    defer handler_mutex.unlock();
     const response_body = try handlePost(allocator, request_body, handlers);
     defer allocator.free(response_body);
 
@@ -145,6 +199,99 @@ fn handleRequest(
         .status = .ok,
         .extra_headers = &[_]std.http.Header{json_content_type_header},
     });
+}
+
+fn handleConnectionThread(task: *ConnectionTask) void {
+    defer task.allocator.destroy(task);
+    handleConnection(task.allocator, task.handlers, task.handler_mutex, task.connection) catch {};
+}
+
+fn serveWebSocket(
+    allocator: std.mem.Allocator,
+    handlers: *const dispatcher.HandlerRegistry,
+    handler_mutex: *std.Thread.Mutex,
+    web_socket: *std.http.Server.WebSocket,
+) !void {
+    var write_mutex = std.Thread.Mutex{};
+    var stop = std.atomic.Value(bool).init(false);
+    var notification_task = WebSocketNotificationTask{
+        .allocator = allocator,
+        .handlers = handlers,
+        .handler_mutex = handler_mutex,
+        .write_mutex = &write_mutex,
+        .web_socket = web_socket,
+        .stop = &stop,
+    };
+
+    const notification_thread = try std.Thread.spawn(.{}, serveWebSocketNotifications, .{&notification_task});
+    defer {
+        stop.store(true, .release);
+        notification_thread.join();
+    }
+
+    while (true) {
+        const message = web_socket.readSmallMessage() catch {
+            return;
+        };
+
+        if (message.opcode == .ping) {
+            write_mutex.lock();
+            const pong_result = web_socket.writeMessage(message.data, .pong);
+            write_mutex.unlock();
+            pong_result catch return;
+            continue;
+        }
+
+        if (message.opcode != .text and message.opcode != .binary) {
+            continue;
+        }
+
+        handler_mutex.lock();
+        const response_body = handlePost(allocator, message.data, handlers) catch {
+            handler_mutex.unlock();
+            continue;
+        };
+        handler_mutex.unlock();
+        defer allocator.free(response_body);
+
+        write_mutex.lock();
+        const write_result = web_socket.writeMessage(response_body, .text);
+        write_mutex.unlock();
+        write_result catch return;
+    }
+}
+
+fn serveWebSocketNotifications(task: *WebSocketNotificationTask) void {
+    const context = task.handlers.context orelse return;
+    const handler: *node_handler.NodeHandler = @ptrCast(@alignCast(context));
+
+    while (!task.stop.load(.acquire)) {
+        task.handler_mutex.lock();
+        const messages = handler.collectSubscriptionMessages(task.allocator) catch {
+            task.handler_mutex.unlock();
+            std.time.sleep(subscription_poll_interval_ns);
+            continue;
+        };
+        task.handler_mutex.unlock();
+        defer {
+            for (messages) |message| {
+                task.allocator.free(message);
+            }
+            task.allocator.free(messages);
+        }
+
+        for (messages) |message| {
+            task.write_mutex.lock();
+            const write_result = task.web_socket.writeMessage(message, .text);
+            task.write_mutex.unlock();
+            write_result catch {
+                task.stop.store(true, .release);
+                return;
+            };
+        }
+
+        std.time.sleep(subscription_poll_interval_ns);
+    }
 }
 
 fn readRequestBody(allocator: std.mem.Allocator, request: *std.http.Server.Request) ![]u8 {

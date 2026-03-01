@@ -86,6 +86,7 @@ pub fn handleSendRawTransaction(
         error.OutOfMemory => return TxSubmissionError.OutOfMemory,
     };
     rt.putTransactionRecord(allocator, tx_hash, sender, raw_bytes) catch return TxSubmissionError.OutOfMemory;
+    rt.recordPendingTransaction(allocator, tx_hash) catch return TxSubmissionError.OutOfMemory;
 
     // Automine if in auto mode
     if (rt.mining_mode == .auto) {
@@ -323,6 +324,7 @@ pub fn handleSendTransaction(
         error.OutOfMemory => return TxSubmissionError.OutOfMemory,
     };
     rt.putTransactionRecord(allocator, tx_hash, from_addr, encoded) catch return TxSubmissionError.OutOfMemory;
+    rt.recordPendingTransaction(allocator, tx_hash) catch return TxSubmissionError.OutOfMemory;
 
     // Automine if in auto mode
     if (rt.mining_mode == .auto) {
@@ -342,6 +344,7 @@ fn automine(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime) !void {
 
     if (ready.len == 0) return;
 
+    const parent_hash = rt.head_block_hash;
     const next_block_number = rt.head_block_number + 1;
     const next_timestamp: u64 = rt.next_block_timestamp_override orelse if (rt.mining_mode == .interval and rt.interval_seconds > 0)
         rt.current_timestamp + rt.interval_seconds
@@ -393,6 +396,14 @@ fn automine(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime) !void {
     rt.base_fee = next_base_fee;
     rt.next_block_timestamp_override = null;
     rt.next_block_base_fee_override = null;
+    try rt.recordMinedBlock(
+        allocator,
+        next_block_number,
+        block_hash,
+        parent_hash,
+        next_timestamp,
+        next_base_fee,
+    );
 
     // Remove mined txs from pool
     var mined_hashes = try allocator.alloc([32]u8, ready.len);
