@@ -131,6 +131,67 @@ test "request with id null still returns JSON-RPC response" {
     try std.testing.expectEqual(@as(i64, 7), (try getObjectField(parsed.value, "result")).integer);
 }
 
+test "notification executes side effects while suppressing response" {
+    var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
+    defer handler.deinit(std.testing.allocator);
+
+    const handlers = dispatcher.HandlerRegistry{
+        .context = &handler,
+        .on_method_with_context = &node_handler.NodeHandler.onMethod,
+    };
+
+    var notification_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"method\":\"hardhat_mine\",\"params\":[\"0x1\"]}",
+        &handlers,
+    );
+    defer notification_response.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.no_content, notification_response.status);
+
+    var read_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_blockNumber\",\"params\":[]}",
+        &handlers,
+    );
+    defer read_response.deinit(std.testing.allocator);
+
+    const parsed = try parseJson(read_response.body.?);
+    defer parsed.deinit();
+    const result = try getObjectField(parsed.value, "result");
+    try std.testing.expectEqualStrings("0x1", result.string);
+}
+
+test "mixed batch executes notification side effects and returns only request responses" {
+    var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
+    defer handler.deinit(std.testing.allocator);
+
+    const handlers = dispatcher.HandlerRegistry{
+        .context = &handler,
+        .on_method_with_context = &node_handler.NodeHandler.onMethod,
+    };
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "[{\"jsonrpc\":\"2.0\",\"method\":\"hardhat_mine\",\"params\":[\"0x1\"]},{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_blockNumber\",\"params\":[]}]",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(std.http.Status.ok, response.status);
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+    const items = switch (parsed.value) {
+        .array => |array| array.items,
+        else => return error.ExpectedArray,
+    };
+    try std.testing.expectEqual(@as(usize, 1), items.len);
+    try std.testing.expectEqual(@as(i64, 1), (try getObjectField(items[0], "id")).integer);
+    try std.testing.expectEqualStrings("0x1", (try getObjectField(items[0], "result")).string);
+}
+
 test "batch request returns per-item result/error array" {
     const handlers = dispatcher.HandlerRegistry{
         .on_method = &successHandler,
