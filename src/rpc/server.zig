@@ -44,6 +44,12 @@ const WebSocketNotificationTask = struct {
     stop: *std.atomic.Value(bool),
 };
 
+const IntervalMiningTask = struct {
+    allocator: std.mem.Allocator,
+    handlers: *const dispatcher.HandlerRegistry,
+    handler_mutex: *std.Thread.Mutex,
+};
+
 pub fn parseConfig(allocator: std.mem.Allocator, args: []const []const u8) !ServerConfig {
     _ = allocator;
 
@@ -90,6 +96,24 @@ pub fn run(allocator: std.mem.Allocator, config: ServerConfig, handlers: *const 
     var tcp_server = try address.listen(.{ .reuse_address = true });
     defer tcp_server.deinit();
     var handler_mutex = std.Thread.Mutex{};
+
+    if (handlers.on_method_with_context != null and handlers.context != null) {
+        const interval_task = allocator.create(IntervalMiningTask) catch null;
+        if (interval_task) |task| {
+            task.* = .{
+                .allocator = allocator,
+                .handlers = handlers,
+                .handler_mutex = &handler_mutex,
+            };
+            const interval_thread: ?std.Thread = std.Thread.spawn(.{}, serveIntervalMining, .{task}) catch blk: {
+                allocator.destroy(task);
+                break :blk null;
+            };
+            if (interval_thread) |thread| {
+                thread.detach();
+            }
+        }
+    }
 
     while (true) {
         const connection = try tcp_server.accept();
@@ -269,7 +293,7 @@ fn serveWebSocketNotifications(task: *WebSocketNotificationTask) void {
         task.handler_mutex.lock();
         const messages = handler.collectSubscriptionMessages(task.allocator) catch {
             task.handler_mutex.unlock();
-            std.time.sleep(subscription_poll_interval_ns);
+            std.Thread.sleep(subscription_poll_interval_ns);
             continue;
         };
         task.handler_mutex.unlock();
@@ -290,7 +314,23 @@ fn serveWebSocketNotifications(task: *WebSocketNotificationTask) void {
             };
         }
 
-        std.time.sleep(subscription_poll_interval_ns);
+        std.Thread.sleep(subscription_poll_interval_ns);
+    }
+}
+
+fn serveIntervalMining(task: *IntervalMiningTask) void {
+    defer task.allocator.destroy(task);
+
+    const context = task.handlers.context orelse return;
+    const handler: *node_handler.NodeHandler = @ptrCast(@alignCast(context));
+
+    while (true) {
+        std.Thread.sleep(subscription_poll_interval_ns);
+        task.handler_mutex.lock();
+        handler.maybeMineInterval(task.allocator) catch {
+            // Keep background mining loop alive.
+        };
+        task.handler_mutex.unlock();
     }
 }
 

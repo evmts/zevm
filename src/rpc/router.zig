@@ -67,6 +67,12 @@ fn isKnownMethod(method_name: []const u8) bool {
                                 std.mem.eql(u8, method_name, "hardhat_mine") or
                                 std.mem.eql(u8, method_name, "evm_increaseTime") or
                                 std.mem.eql(u8, method_name, "evm_setNextBlockTimestamp") or
+                                std.mem.eql(u8, method_name, "hardhat_setAutomine") or
+                                std.mem.eql(u8, method_name, "evm_setAutomine") or
+                                std.mem.eql(u8, method_name, "anvil_setAutomine") or
+                                std.mem.eql(u8, method_name, "hardhat_setIntervalMining") or
+                                std.mem.eql(u8, method_name, "evm_setIntervalMining") or
+                                std.mem.eql(u8, method_name, "anvil_setIntervalMining") or
                                 std.mem.eql(u8, method_name, "hardhat_setPrevRandao") or
                                 std.mem.eql(u8, method_name, "hardhat_impersonateAccount") or
                                 std.mem.eql(u8, method_name, "hardhat_stopImpersonatingAccount") or

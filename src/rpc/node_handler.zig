@@ -3,6 +3,7 @@ const jsonrpc = @import("jsonrpc");
 const primitives = @import("primitives");
 const guillotine_mini = @import("guillotine_mini");
 const state_manager = @import("state-manager");
+const txpool = @import("txpool");
 const runtime = @import("../node/runtime.zig");
 const tx_submission = @import("handlers/tx_submission.zig");
 const eth_read = @import("handlers/eth_read.zig");
@@ -53,6 +54,37 @@ const TraceExecutionResult = struct {
     struct_logs: std.json.Array,
 };
 
+const RuntimeSnapshot = struct {
+    coinbase: primitives.Address,
+    block_gas_limit: u64,
+    head_block_number: u64,
+    head_block_hash: [32]u8,
+    current_timestamp: u64,
+    base_fee: u256,
+    prev_randao: u256,
+    next_block_base_fee_override: ?u256,
+    next_block_timestamp_override: ?u64,
+    mining_mode: runtime.MiningMode,
+    interval_seconds: u64,
+    tx_index: std.AutoHashMap([32]u8, runtime.TransactionRecord),
+    pool: txpool.TxPool,
+    pending_tx_events: std.ArrayList([32]u8),
+    mined_block_events: std.ArrayList(runtime.BlockEvent),
+    impersonated_accounts: std.AutoHashMap(primitives.Address, void),
+
+    fn deinit(self: *RuntimeSnapshot, allocator: std.mem.Allocator) void {
+        var tx_it = self.tx_index.valueIterator();
+        while (tx_it.next()) |record| {
+            allocator.free(record.raw);
+        }
+        self.tx_index.deinit();
+        self.pool.deinit(allocator);
+        self.pending_tx_events.deinit(allocator);
+        self.mined_block_events.deinit(allocator);
+        self.impersonated_accounts.deinit();
+    }
+};
+
 pub const NodeHandler = struct {
     node_runtime: runtime.NodeRuntime,
     dev_runtime: dev_runtime.DevRuntime,
@@ -60,6 +92,8 @@ pub const NodeHandler = struct {
     log_index: log_index.LogIndex,
     next_filter_id: u64,
     filters: std.AutoHashMap(u64, FilterState),
+    runtime_snapshots: std.AutoHashMap(u64, RuntimeSnapshot),
+    last_interval_mine_ns: ?i128,
 
     pub fn init(allocator: std.mem.Allocator, config: ?runtime.NodeConfig) !NodeHandler {
         var node_runtime = try runtime.NodeRuntime.init(allocator, config);
@@ -72,6 +106,8 @@ pub const NodeHandler = struct {
             .log_index = log_index.LogIndex.init(),
             .next_filter_id = 1,
             .filters = std.AutoHashMap(u64, FilterState).init(allocator),
+            .runtime_snapshots = std.AutoHashMap(u64, RuntimeSnapshot).init(allocator),
+            .last_interval_mine_ns = null,
         };
     }
 
@@ -83,6 +119,11 @@ pub const NodeHandler = struct {
             }
         }
         self.filters.deinit();
+        var snapshot_it = self.runtime_snapshots.valueIterator();
+        while (snapshot_it.next()) |snapshot| {
+            snapshot.deinit(allocator);
+        }
+        self.runtime_snapshots.deinit();
         self.log_index.deinit(allocator);
         self.receipt_index.deinit(allocator);
         self.dev_runtime.deinit(allocator);
@@ -229,11 +270,20 @@ pub const NodeHandler = struct {
                 &self.node_runtime.state,
                 self.node_runtime.head_block_number,
             );
+            const snapshot_id = parseHexU64String(switch (result) {
+                .string => |snapshot_id_string| snapshot_id_string,
+                else => return error.InvalidParams,
+            }) orelse return error.InvalidParams;
+            var runtime_snapshot = try self.captureRuntimeSnapshot(allocator);
+            errdefer runtime_snapshot.deinit(allocator);
+            try self.runtime_snapshots.put(snapshot_id, runtime_snapshot);
             return result;
         }
         if (std.mem.eql(u8, method_name, "evm_revert")) {
             const snapshot_id = parseFirstU64(params) orelse return error.InvalidParams;
-            const snapshot_entry = self.dev_runtime.snapshots.get(snapshot_id) orelse return .{ .bool = false };
+            if (!self.dev_runtime.snapshots.contains(snapshot_id)) {
+                return .{ .bool = false };
+            }
             const result = try dev_handlers.handleEvmRevert(
                 allocator,
                 &self.dev_runtime,
@@ -242,10 +292,9 @@ pub const NodeHandler = struct {
                 params,
             );
             if (result.bool) {
-                self.node_runtime.head_block_number = snapshot_entry.block_number;
-                self.node_runtime.coinbase = snapshot_entry.config.coinbase;
-                self.node_runtime.next_block_base_fee_override = snapshot_entry.config.next_block_base_fee_per_gas;
-                self.node_runtime.block_gas_limit = snapshot_entry.config.block_gas_limit;
+                const snapshot = self.runtime_snapshots.getPtr(snapshot_id) orelse return error.InvalidParams;
+                self.restoreRuntimeSnapshot(allocator, snapshot);
+                try self.discardRuntimeSnapshotsFrom(allocator, snapshot_id);
             }
             return result;
         }
@@ -275,6 +324,25 @@ pub const NodeHandler = struct {
             const result = try dev_handlers.handleHardhatSetNextBlockBaseFeePerGas(&self.dev_runtime, params);
             self.node_runtime.next_block_base_fee_override = self.dev_runtime.config.next_block_base_fee_per_gas;
             return result;
+        }
+        if (std.mem.eql(u8, method_name, "hardhat_setAutomine") or std.mem.eql(u8, method_name, "evm_setAutomine") or std.mem.eql(u8, method_name, "anvil_setAutomine")) {
+            const enabled = parseFirstBool(params) orelse return error.InvalidParams;
+            self.node_runtime.setMiningConfig(if (enabled) .auto else .manual);
+            self.last_interval_mine_ns = null;
+            return .{ .bool = true };
+        }
+        if (std.mem.eql(u8, method_name, "hardhat_setIntervalMining") or std.mem.eql(u8, method_name, "evm_setIntervalMining") or std.mem.eql(u8, method_name, "anvil_setIntervalMining")) {
+            const interval_millis = parseFirstU64(params) orelse 0;
+            if (interval_millis == 0) {
+                self.node_runtime.setMiningConfig(.manual);
+                self.last_interval_mine_ns = null;
+                return .{ .bool = true };
+            }
+
+            const interval_seconds = @max(@as(u64, 1), (interval_millis + 999) / 1000);
+            self.node_runtime.setMiningConfig(.{ .interval = .{ .block_time = interval_seconds } });
+            self.last_interval_mine_ns = std.time.nanoTimestamp();
+            return .{ .bool = true };
         }
         if (std.mem.eql(u8, method_name, "hardhat_impersonateAccount")) {
             const address = parseFirstAddress(params) orelse return error.InvalidParams;
@@ -884,6 +952,135 @@ pub const NodeHandler = struct {
 
         return messages.toOwnedSlice(allocator);
     }
+
+    pub fn maybeMineInterval(self: *NodeHandler, allocator: std.mem.Allocator) !void {
+        if (self.node_runtime.mining_mode != .interval or self.node_runtime.interval_seconds == 0) {
+            self.last_interval_mine_ns = null;
+            return;
+        }
+        if (self.node_runtime.pool.pendingCount() == 0) {
+            return;
+        }
+
+        const now = std.time.nanoTimestamp();
+        if (self.last_interval_mine_ns == null) {
+            self.last_interval_mine_ns = now;
+            return;
+        }
+
+        const interval_ns: i128 = @as(i128, @intCast(self.node_runtime.interval_seconds)) * std.time.ns_per_s;
+        if (now - self.last_interval_mine_ns.? >= interval_ns) {
+            try tx_submission.minePendingTransactions(allocator, &self.node_runtime);
+            self.last_interval_mine_ns = now;
+        }
+    }
+
+    fn captureRuntimeSnapshot(self: *NodeHandler, allocator: std.mem.Allocator) !RuntimeSnapshot {
+        var tx_index_copy = try copyTxIndex(allocator, &self.node_runtime.tx_index);
+        errdefer {
+            var tx_it = tx_index_copy.valueIterator();
+            while (tx_it.next()) |record| {
+                allocator.free(record.raw);
+            }
+            tx_index_copy.deinit();
+        }
+
+        var pool_copy = try copyTxPool(allocator, &self.node_runtime.pool);
+        errdefer pool_copy.deinit(allocator);
+
+        var pending_tx_events_copy = std.ArrayList([32]u8).empty;
+        errdefer pending_tx_events_copy.deinit(allocator);
+        try pending_tx_events_copy.appendSlice(allocator, self.node_runtime.pending_tx_events.items);
+
+        var mined_block_events_copy = std.ArrayList(runtime.BlockEvent).empty;
+        errdefer mined_block_events_copy.deinit(allocator);
+        try mined_block_events_copy.appendSlice(allocator, self.node_runtime.mined_block_events.items);
+
+        var impersonated_accounts_copy = try copyAddressSet(allocator, &self.node_runtime.impersonated_accounts);
+        errdefer impersonated_accounts_copy.deinit();
+
+        return .{
+            .coinbase = self.node_runtime.coinbase,
+            .block_gas_limit = self.node_runtime.block_gas_limit,
+            .head_block_number = self.node_runtime.head_block_number,
+            .head_block_hash = self.node_runtime.head_block_hash,
+            .current_timestamp = self.node_runtime.current_timestamp,
+            .base_fee = self.node_runtime.base_fee,
+            .prev_randao = self.node_runtime.prev_randao,
+            .next_block_base_fee_override = self.node_runtime.next_block_base_fee_override,
+            .next_block_timestamp_override = self.node_runtime.next_block_timestamp_override,
+            .mining_mode = self.node_runtime.mining_mode,
+            .interval_seconds = self.node_runtime.interval_seconds,
+            .tx_index = tx_index_copy,
+            .pool = pool_copy,
+            .pending_tx_events = pending_tx_events_copy,
+            .mined_block_events = mined_block_events_copy,
+            .impersonated_accounts = impersonated_accounts_copy,
+        };
+    }
+
+    fn restoreRuntimeSnapshot(
+        self: *NodeHandler,
+        allocator: std.mem.Allocator,
+        snapshot: *RuntimeSnapshot,
+    ) void {
+        var tx_it = self.node_runtime.tx_index.valueIterator();
+        while (tx_it.next()) |record| {
+            allocator.free(record.raw);
+        }
+        self.node_runtime.tx_index.deinit();
+        self.node_runtime.pool.deinit(allocator);
+        self.node_runtime.pending_tx_events.deinit(allocator);
+        self.node_runtime.mined_block_events.deinit(allocator);
+        self.node_runtime.impersonated_accounts.deinit();
+
+        self.node_runtime.coinbase = snapshot.coinbase;
+        self.node_runtime.block_gas_limit = snapshot.block_gas_limit;
+        self.node_runtime.head_block_number = snapshot.head_block_number;
+        self.node_runtime.head_block_hash = snapshot.head_block_hash;
+        self.node_runtime.current_timestamp = snapshot.current_timestamp;
+        self.node_runtime.base_fee = snapshot.base_fee;
+        self.node_runtime.prev_randao = snapshot.prev_randao;
+        self.node_runtime.next_block_base_fee_override = snapshot.next_block_base_fee_override;
+        self.node_runtime.next_block_timestamp_override = snapshot.next_block_timestamp_override;
+        self.node_runtime.mining_mode = snapshot.mining_mode;
+        self.node_runtime.interval_seconds = snapshot.interval_seconds;
+        self.node_runtime.tx_index = snapshot.tx_index;
+        self.node_runtime.pool = snapshot.pool;
+        self.node_runtime.pending_tx_events = snapshot.pending_tx_events;
+        self.node_runtime.mined_block_events = snapshot.mined_block_events;
+        self.node_runtime.impersonated_accounts = snapshot.impersonated_accounts;
+
+        snapshot.tx_index = std.AutoHashMap([32]u8, runtime.TransactionRecord).init(allocator);
+        snapshot.pool = txpool.TxPool.init(allocator);
+        snapshot.pending_tx_events = std.ArrayList([32]u8).empty;
+        snapshot.mined_block_events = std.ArrayList(runtime.BlockEvent).empty;
+        snapshot.impersonated_accounts = std.AutoHashMap(primitives.Address, void).init(allocator);
+        self.last_interval_mine_ns = null;
+    }
+
+    fn discardRuntimeSnapshotsFrom(
+        self: *NodeHandler,
+        allocator: std.mem.Allocator,
+        snapshot_id: u64,
+    ) !void {
+        var snapshot_ids = std.ArrayList(u64).empty;
+        defer snapshot_ids.deinit(allocator);
+
+        var snapshot_it = self.runtime_snapshots.iterator();
+        while (snapshot_it.next()) |entry| {
+            if (entry.key_ptr.* >= snapshot_id) {
+                try snapshot_ids.append(allocator, entry.key_ptr.*);
+            }
+        }
+
+        for (snapshot_ids.items) |id| {
+            if (self.runtime_snapshots.fetchRemove(id)) |entry| {
+                var removed_snapshot = entry.value;
+                removed_snapshot.deinit(allocator);
+            }
+        }
+    }
 };
 
 fn parseParams(comptime T: type, allocator: std.mem.Allocator, params: ?std.json.Value) !T {
@@ -1248,6 +1445,18 @@ fn parseFirstU64(params: ?std.json.Value) ?u64 {
     return parseJsonQuantityToU64(array[0]);
 }
 
+fn parseFirstBool(params: ?std.json.Value) ?bool {
+    const array = switch (params orelse return null) {
+        .array => |arr| arr.items,
+        else => return null,
+    };
+    if (array.len == 0) return null;
+    return switch (array[0]) {
+        .bool => |value| value,
+        else => null,
+    };
+}
+
 fn parseFirstU256(params: ?std.json.Value) ?u256 {
     const array = switch (params orelse return null) {
         .array => |arr| arr.items,
@@ -1290,6 +1499,85 @@ fn parseJsonQuantityToU256(value: std.json.Value) ?u256 {
         .integer => |integer| if (integer >= 0) @intCast(integer) else null,
         else => null,
     };
+}
+
+fn parseHexU64String(value: []const u8) ?u64 {
+    var hex = value;
+    if (hex.len >= 2 and hex[0] == '0' and (hex[1] == 'x' or hex[1] == 'X')) {
+        hex = hex[2..];
+    }
+    if (hex.len == 0) return 0;
+    return std.fmt.parseInt(u64, hex, 16) catch null;
+}
+
+fn copyTxIndex(
+    allocator: std.mem.Allocator,
+    source: *const std.AutoHashMap([32]u8, runtime.TransactionRecord),
+) !std.AutoHashMap([32]u8, runtime.TransactionRecord) {
+    var copy = std.AutoHashMap([32]u8, runtime.TransactionRecord).init(allocator);
+    errdefer {
+        var copy_it = copy.valueIterator();
+        while (copy_it.next()) |record| {
+            allocator.free(record.raw);
+        }
+        copy.deinit();
+    }
+
+    var source_it = source.iterator();
+    while (source_it.next()) |entry| {
+        const copied_raw = try allocator.dupe(u8, entry.value_ptr.raw);
+        try copy.put(entry.key_ptr.*, .{
+            .sender = entry.value_ptr.sender,
+            .raw = copied_raw,
+            .block_hash = entry.value_ptr.block_hash,
+            .block_number = entry.value_ptr.block_number,
+            .block_timestamp = entry.value_ptr.block_timestamp,
+            .transaction_index = entry.value_ptr.transaction_index,
+        });
+    }
+    return copy;
+}
+
+fn copyTxPool(
+    allocator: std.mem.Allocator,
+    source: *const txpool.TxPool,
+) !txpool.TxPool {
+    var copy = txpool.TxPool.init(allocator);
+    errdefer copy.deinit(allocator);
+
+    var nonce_it = source.nonce_state.iterator();
+    while (nonce_it.next()) |entry| {
+        try copy.nonce_state.put(entry.key_ptr.*, entry.value_ptr.*);
+    }
+
+    var hash_it = source.hash_index.iterator();
+    while (hash_it.next()) |entry| {
+        try copy.hash_index.put(entry.key_ptr.*, entry.value_ptr.*);
+    }
+
+    var sender_it = source.sender_queues.iterator();
+    while (sender_it.next()) |entry| {
+        var queue_copy = std.ArrayListUnmanaged(txpool.TxPool.PooledTransaction){};
+        errdefer queue_copy.deinit(allocator);
+        try queue_copy.appendSlice(allocator, entry.value_ptr.items);
+        try copy.sender_queues.put(entry.key_ptr.*, queue_copy);
+    }
+
+    return copy;
+}
+
+fn copyAddressSet(
+    allocator: std.mem.Allocator,
+    source: *const std.AutoHashMap(primitives.Address, void),
+) !std.AutoHashMap(primitives.Address, void) {
+    var copy = std.AutoHashMap(primitives.Address, void).init(allocator);
+    errdefer copy.deinit();
+
+    var source_it = source.iterator();
+    while (source_it.next()) |entry| {
+        try copy.put(entry.key_ptr.*, {});
+    }
+    return copy;
 }
 
 fn buildTraceResult(

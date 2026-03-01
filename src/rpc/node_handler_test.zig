@@ -395,3 +395,386 @@ test "NodeHandler eth_subscribe newPendingTransactions emits websocket messages"
     }
     try std.testing.expect(found);
 }
+
+test "NodeHandler setAutomine toggles mining mode" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var disable_params = std.json.Array.init(allocator);
+    defer disable_params.deinit();
+    try disable_params.append(.{ .bool = false });
+    _ = try callMethod(allocator, &handler, "hardhat_setAutomine", .{ .array = disable_params });
+    try std.testing.expectEqual(runtime.MiningMode.manual, handler.node_runtime.mining_mode);
+
+    var enable_params = std.json.Array.init(allocator);
+    defer enable_params.deinit();
+    try enable_params.append(.{ .bool = true });
+    _ = try callMethod(allocator, &handler, "hardhat_setAutomine", .{ .array = enable_params });
+    try std.testing.expectEqual(runtime.MiningMode.auto, handler.node_runtime.mining_mode);
+}
+
+test "NodeHandler interval mining tick mines pending transactions" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var interval_params = std.json.Array.init(allocator);
+    defer interval_params.deinit();
+    try interval_params.append(.{ .string = "0x3e8" }); // 1000 ms
+    _ = try callMethod(allocator, &handler, "hardhat_setIntervalMining", .{ .array = interval_params });
+    try std.testing.expectEqual(runtime.MiningMode.interval, handler.node_runtime.mining_mode);
+
+    const initial_block_number = handler.node_runtime.head_block_number;
+
+    var tx_object = std.json.ObjectMap.init(allocator);
+    defer tx_object.deinit();
+    try tx_object.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try tx_object.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try tx_object.put("value", .{ .string = "0x1" });
+    try tx_object.put("gas", .{ .string = "0x5208" });
+
+    var send_params = std.json.Array.init(allocator);
+    defer send_params.deinit();
+    try send_params.append(.{ .object = tx_object });
+    _ = try callMethod(allocator, &handler, "eth_sendTransaction", .{ .array = send_params });
+    try std.testing.expectEqual(@as(usize, 1), handler.node_runtime.pool.pendingCount());
+
+    handler.last_interval_mine_ns = std.time.nanoTimestamp() - std.time.ns_per_s;
+    try handler.maybeMineInterval(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), handler.node_runtime.pool.pendingCount());
+    try std.testing.expectEqual(initial_block_number + 1, handler.node_runtime.head_block_number);
+}
+
+test "NodeHandler evm_revert restores runtime snapshot metadata and mempool" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var disable_automine_params = std.json.Array.init(allocator);
+    defer disable_automine_params.deinit();
+    try disable_automine_params.append(.{ .bool = false });
+    _ = try callMethod(allocator, &handler, "hardhat_setAutomine", .{ .array = disable_automine_params });
+
+    const initial_timestamp = handler.node_runtime.current_timestamp;
+    const initial_pending_events = handler.node_runtime.pending_tx_events.items.len;
+    const initial_block_events = handler.node_runtime.mined_block_events.items.len;
+
+    const snapshot_result = try callMethod(allocator, &handler, "evm_snapshot", .{ .array = std.json.Array.init(allocator) });
+    const snapshot_id = switch (snapshot_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    var tx_object = std.json.ObjectMap.init(allocator);
+    defer tx_object.deinit();
+    try tx_object.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try tx_object.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try tx_object.put("value", .{ .string = "0x1" });
+    try tx_object.put("gas", .{ .string = "0x5208" });
+
+    var send_params = std.json.Array.init(allocator);
+    defer send_params.deinit();
+    try send_params.append(.{ .object = tx_object });
+    const send_result = try callMethod(allocator, &handler, "eth_sendTransaction", .{ .array = send_params });
+    const tx_hash = switch (send_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    var increase_time_params = std.json.Array.init(allocator);
+    defer increase_time_params.deinit();
+    try increase_time_params.append(.{ .integer = 60 });
+    _ = try callMethod(allocator, &handler, "evm_increaseTime", .{ .array = increase_time_params });
+    try std.testing.expect(handler.node_runtime.current_timestamp > initial_timestamp);
+
+    try std.testing.expectEqual(@as(usize, 1), handler.node_runtime.pool.pendingCount());
+
+    var revert_params = std.json.Array.init(allocator);
+    defer revert_params.deinit();
+    try revert_params.append(.{ .string = snapshot_id });
+    const revert_result = try callMethod(allocator, &handler, "evm_revert", .{ .array = revert_params });
+    try std.testing.expect(revert_result.bool);
+
+    try std.testing.expectEqual(@as(usize, 0), handler.node_runtime.pool.pendingCount());
+    try std.testing.expectEqual(initial_timestamp, handler.node_runtime.current_timestamp);
+    try std.testing.expectEqual(initial_pending_events, handler.node_runtime.pending_tx_events.items.len);
+    try std.testing.expectEqual(initial_block_events, handler.node_runtime.mined_block_events.items.len);
+
+    const tx_hash_bytes = primitives.Hex.hexToBytesFixed(32, tx_hash) catch return error.InvalidHexData;
+    try std.testing.expect(handler.node_runtime.getTransactionRecord(tx_hash_bytes) == null);
+}
+
+test "NodeHandler evm_setNextBlockTimestamp applies on next mined block" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    const target_timestamp = handler.node_runtime.current_timestamp + 1234;
+
+    var set_params = std.json.Array.init(allocator);
+    defer set_params.deinit();
+    try set_params.append(.{ .integer = @intCast(target_timestamp) });
+    const set_result = try callMethod(allocator, &handler, "evm_setNextBlockTimestamp", .{ .array = set_params });
+    try std.testing.expect(set_result.bool);
+
+    _ = try callMethod(allocator, &handler, "evm_mine", null);
+    try std.testing.expectEqual(target_timestamp, handler.node_runtime.current_timestamp);
+}
+
+test "NodeHandler hardhat_setPrevRandao updates runtime value" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var params = std.json.Array.init(allocator);
+    defer params.deinit();
+    try params.append(.{ .string = "0x42" });
+
+    const result = try callMethod(allocator, &handler, "hardhat_setPrevRandao", .{ .array = params });
+    try std.testing.expect(result.bool);
+    try std.testing.expectEqual(@as(u256, 0x42), handler.node_runtime.prev_randao);
+}
+
+test "NodeHandler hardhat_mine mines requested number of blocks" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    const initial = handler.node_runtime.head_block_number;
+    var mine_params = std.json.Array.init(allocator);
+    defer mine_params.deinit();
+    try mine_params.append(.{ .string = "0x3" });
+
+    _ = try callMethod(allocator, &handler, "hardhat_mine", .{ .array = mine_params });
+    try std.testing.expectEqual(initial + 3, handler.node_runtime.head_block_number);
+}
+
+test "NodeHandler block filter returns mined block hashes via eth_getFilterChanges" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    const create_result = try callMethod(allocator, &handler, "eth_newBlockFilter", .{ .array = std.json.Array.init(allocator) });
+    const filter_id = switch (create_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    _ = try callMethod(allocator, &handler, "evm_mine", null);
+
+    var changes_params = std.json.Array.init(allocator);
+    defer changes_params.deinit();
+    try changes_params.append(.{ .string = filter_id });
+    const changes_result = try callMethod(allocator, &handler, "eth_getFilterChanges", .{ .array = changes_params });
+    const changes = switch (changes_result) {
+        .array => |array| array.items,
+        else => return error.ExpectedArrayResult,
+    };
+
+    try std.testing.expectEqual(@as(usize, 1), changes.len);
+    switch (changes[0]) {
+        .string => |value| try std.testing.expect(std.mem.startsWith(u8, value, "0x")),
+        else => return error.ExpectedStringResult,
+    }
+
+    var second_params = std.json.Array.init(allocator);
+    defer second_params.deinit();
+    try second_params.append(.{ .string = filter_id });
+    const second_result = try callMethod(allocator, &handler, "eth_getFilterChanges", .{ .array = second_params });
+    const second_changes = switch (second_result) {
+        .array => |array| array.items,
+        else => return error.ExpectedArrayResult,
+    };
+    try std.testing.expectEqual(@as(usize, 0), second_changes.len);
+}
+
+test "NodeHandler pending filter returns pending tx hashes via eth_getFilterChanges" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var disable_automine_params = std.json.Array.init(allocator);
+    defer disable_automine_params.deinit();
+    try disable_automine_params.append(.{ .bool = false });
+    _ = try callMethod(allocator, &handler, "hardhat_setAutomine", .{ .array = disable_automine_params });
+
+    const create_result = try callMethod(allocator, &handler, "eth_newPendingTransactionFilter", .{ .array = std.json.Array.init(allocator) });
+    const filter_id = switch (create_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    var tx_object = std.json.ObjectMap.init(allocator);
+    defer tx_object.deinit();
+    try tx_object.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try tx_object.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try tx_object.put("value", .{ .string = "0x1" });
+    try tx_object.put("gas", .{ .string = "0x5208" });
+
+    var send_params = std.json.Array.init(allocator);
+    defer send_params.deinit();
+    try send_params.append(.{ .object = tx_object });
+    const tx_result = try callMethod(allocator, &handler, "eth_sendTransaction", .{ .array = send_params });
+    const tx_hash = switch (tx_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    var changes_params = std.json.Array.init(allocator);
+    defer changes_params.deinit();
+    try changes_params.append(.{ .string = filter_id });
+    const changes_result = try callMethod(allocator, &handler, "eth_getFilterChanges", .{ .array = changes_params });
+    const changes = switch (changes_result) {
+        .array => |array| array.items,
+        else => return error.ExpectedArrayResult,
+    };
+    try std.testing.expectEqual(@as(usize, 1), changes.len);
+    switch (changes[0]) {
+        .string => |value| try std.testing.expectEqualStrings(tx_hash, value),
+        else => return error.ExpectedStringResult,
+    }
+
+    var second_params = std.json.Array.init(allocator);
+    defer second_params.deinit();
+    try second_params.append(.{ .string = filter_id });
+    const second_result = try callMethod(allocator, &handler, "eth_getFilterChanges", .{ .array = second_params });
+    const second_changes = switch (second_result) {
+        .array => |array| array.items,
+        else => return error.ExpectedArrayResult,
+    };
+    try std.testing.expectEqual(@as(usize, 0), second_changes.len);
+}
+
+test "NodeHandler eth_uninstallFilter returns true then false" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var filter_object = std.json.ObjectMap.init(allocator);
+    defer filter_object.deinit();
+    var create_params = std.json.Array.init(allocator);
+    defer create_params.deinit();
+    try create_params.append(.{ .object = filter_object });
+    const create_result = try callMethod(allocator, &handler, "eth_newFilter", .{ .array = create_params });
+    const filter_id = switch (create_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    var remove_params = std.json.Array.init(allocator);
+    defer remove_params.deinit();
+    try remove_params.append(.{ .string = filter_id });
+    const first_remove = try callMethod(allocator, &handler, "eth_uninstallFilter", .{ .array = remove_params });
+    try std.testing.expect(first_remove.bool);
+
+    var second_remove_params = std.json.Array.init(allocator);
+    defer second_remove_params.deinit();
+    try second_remove_params.append(.{ .string = filter_id });
+    const second_remove = try callMethod(allocator, &handler, "eth_uninstallFilter", .{ .array = second_remove_params });
+    try std.testing.expect(!second_remove.bool);
+}
+
+test "NodeHandler automine aliases toggle mining mode" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var disable_params = std.json.Array.init(allocator);
+    defer disable_params.deinit();
+    try disable_params.append(.{ .bool = false });
+    _ = try callMethod(allocator, &handler, "evm_setAutomine", .{ .array = disable_params });
+    try std.testing.expectEqual(runtime.MiningMode.manual, handler.node_runtime.mining_mode);
+
+    var enable_params = std.json.Array.init(allocator);
+    defer enable_params.deinit();
+    try enable_params.append(.{ .bool = true });
+    _ = try callMethod(allocator, &handler, "anvil_setAutomine", .{ .array = enable_params });
+    try std.testing.expectEqual(runtime.MiningMode.auto, handler.node_runtime.mining_mode);
+}
+
+test "NodeHandler interval mining aliases set and clear interval mode" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var set_params = std.json.Array.init(allocator);
+    defer set_params.deinit();
+    try set_params.append(.{ .string = "0x3e8" });
+    _ = try callMethod(allocator, &handler, "anvil_setIntervalMining", .{ .array = set_params });
+    try std.testing.expectEqual(runtime.MiningMode.interval, handler.node_runtime.mining_mode);
+    try std.testing.expectEqual(@as(u64, 1), handler.node_runtime.interval_seconds);
+
+    var clear_params = std.json.Array.init(allocator);
+    defer clear_params.deinit();
+    try clear_params.append(.{ .string = "0x0" });
+    _ = try callMethod(allocator, &handler, "evm_setIntervalMining", .{ .array = clear_params });
+    try std.testing.expectEqual(runtime.MiningMode.manual, handler.node_runtime.mining_mode);
+}
+
+test "NodeHandler reverting old snapshot invalidates newer snapshots" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    const initial_timestamp = handler.node_runtime.current_timestamp;
+    const snapshot_1 = try callMethod(allocator, &handler, "evm_snapshot", .{ .array = std.json.Array.init(allocator) });
+    const snapshot_1_id = switch (snapshot_1) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    var increase_1_params = std.json.Array.init(allocator);
+    defer increase_1_params.deinit();
+    try increase_1_params.append(.{ .integer = 10 });
+    _ = try callMethod(allocator, &handler, "evm_increaseTime", .{ .array = increase_1_params });
+
+    const snapshot_2 = try callMethod(allocator, &handler, "evm_snapshot", .{ .array = std.json.Array.init(allocator) });
+    const snapshot_2_id = switch (snapshot_2) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    var increase_2_params = std.json.Array.init(allocator);
+    defer increase_2_params.deinit();
+    try increase_2_params.append(.{ .integer = 20 });
+    _ = try callMethod(allocator, &handler, "evm_increaseTime", .{ .array = increase_2_params });
+
+    var revert_1_params = std.json.Array.init(allocator);
+    defer revert_1_params.deinit();
+    try revert_1_params.append(.{ .string = snapshot_1_id });
+    const revert_1 = try callMethod(allocator, &handler, "evm_revert", .{ .array = revert_1_params });
+    try std.testing.expect(revert_1.bool);
+    try std.testing.expectEqual(initial_timestamp, handler.node_runtime.current_timestamp);
+
+    var revert_2_params = std.json.Array.init(allocator);
+    defer revert_2_params.deinit();
+    try revert_2_params.append(.{ .string = snapshot_2_id });
+    const revert_2 = try callMethod(allocator, &handler, "evm_revert", .{ .array = revert_2_params });
+    try std.testing.expect(!revert_2.bool);
+}
