@@ -391,6 +391,10 @@ fn handlePost(
 
     return switch (parsed.value) {
         .object => blk: {
+            if (hasUnsafeFloatRequestId(parsed.value)) {
+                const id_for_error = extractErrorId(parsed.value);
+                break :blk try writeErrorResponse(allocator, id_for_error, jsonrpc.envelope.ErrorCode.INVALID_REQUEST, "Invalid request");
+            }
             var request = jsonrpc.envelope.RequestEnvelope.jsonParseFromValue(allocator, parsed.value, .{}) catch {
                 const id_for_error = extractErrorId(parsed.value);
                 break :blk try writeErrorResponse(allocator, id_for_error, jsonrpc.envelope.ErrorCode.INVALID_REQUEST, "Invalid request");
@@ -446,6 +450,18 @@ fn handleBatch(
             continue;
         }
 
+        if (hasUnsafeFloatRequestId(item)) {
+            const id_for_error = extractErrorId(item);
+            const invalid_bytes = try writeErrorResponse(allocator, id_for_error, jsonrpc.envelope.ErrorCode.INVALID_REQUEST, "Invalid request");
+            defer allocator.free(invalid_bytes);
+            if (emitted_count > 0) {
+                try response_bytes.append(allocator, ',');
+            }
+            try response_bytes.appendSlice(allocator, invalid_bytes);
+            emitted_count += 1;
+            continue;
+        }
+
         var request = jsonrpc.envelope.RequestEnvelope.jsonParseFromValue(allocator, item, .{}) catch {
             const id_for_error = extractErrorId(item);
             const invalid_bytes = try writeErrorResponse(allocator, id_for_error, jsonrpc.envelope.ErrorCode.INVALID_REQUEST, "Invalid request");
@@ -479,6 +495,18 @@ fn handleBatch(
 
     const owned = try response_bytes.toOwnedSlice(allocator);
     return owned;
+}
+
+fn hasUnsafeFloatRequestId(value: std.json.Value) bool {
+    const object = switch (value) {
+        .object => |obj| obj,
+        else => return false,
+    };
+    const id_value = object.get("id") orelse return false;
+    return switch (id_value) {
+        .float => |f| !isSafeIntegralI64Float(f),
+        else => false,
+    };
 }
 
 fn writeErrorResponse(
@@ -518,14 +546,19 @@ fn extractErrorId(value: std.json.Value) ?jsonrpc.envelope.Id {
 }
 
 fn extractFloatErrorId(value: f64) ?jsonrpc.envelope.Id {
-    if (!std.math.isFinite(value)) return null;
+    if (!isSafeIntegralI64Float(value)) return null;
+    return .{ .integer = @as(i64, @intFromFloat(value)) };
+}
+
+fn isSafeIntegralI64Float(value: f64) bool {
+    if (!std.math.isFinite(value)) return false;
 
     const floor_value = std.math.floor(value);
-    if (floor_value != value) return null;
+    if (floor_value != value) return false;
 
     const min_i64_f64 = @as(f64, @floatFromInt(std.math.minInt(i64)));
     const max_i64_f64 = @as(f64, @floatFromInt(std.math.maxInt(i64)));
-    if (value < min_i64_f64 or value > max_i64_f64) return null;
+    if (value < min_i64_f64 or value > max_i64_f64) return false;
 
-    return .{ .integer = @as(i64, @intFromFloat(value)) };
+    return true;
 }

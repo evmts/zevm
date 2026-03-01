@@ -172,6 +172,68 @@ test "request with id null still returns JSON-RPC response" {
     try std.testing.expectEqual(@as(i64, 7), (try getObjectField(parsed.value, "result")).integer);
 }
 
+test "request with integral float id succeeds and echoes integer id" {
+    const handlers = dispatcher.HandlerRegistry{
+        .on_method = &successHandler,
+    };
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":7.0,\"method\":\"eth_blockNumber\"}",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(std.http.Status.ok, response.status);
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(i64, 7), (try getObjectField(parsed.value, "id")).integer);
+    try std.testing.expectEqual(@as(i64, 7), (try getObjectField(parsed.value, "result")).integer);
+}
+
+test "request with fractional float id returns invalid request" {
+    const handlers = dispatcher.HandlerRegistry{
+        .on_method = &successHandler,
+    };
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":7.5,\"method\":\"eth_blockNumber\"}",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(std.http.Status.ok, response.status);
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+    try std.testing.expect((try getObjectField(parsed.value, "id")) == .null);
+    const error_object = try getObjectField(parsed.value, "error");
+    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.INVALID_REQUEST), (try getObjectField(error_object, "code")).integer);
+}
+
+test "request with out-of-range float id returns invalid request" {
+    const handlers = dispatcher.HandlerRegistry{
+        .on_method = &successHandler,
+    };
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":1e30,\"method\":\"eth_blockNumber\"}",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(std.http.Status.ok, response.status);
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+    try std.testing.expect((try getObjectField(parsed.value, "id")) == .null);
+    const error_object = try getObjectField(parsed.value, "error");
+    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.INVALID_REQUEST), (try getObjectField(error_object, "code")).integer);
+}
+
 test "notification executes side effects while suppressing response" {
     var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
     defer handler.deinit(std.testing.allocator);
@@ -340,6 +402,34 @@ test "batch invalid object with string id echoes string id in error item" {
     try std.testing.expectEqual(@as(usize, 2), items.len);
 
     try std.testing.expectEqualStrings("bad-req", (try getObjectField(items[0], "id")).string);
+    const first_error = try getObjectField(items[0], "error");
+    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.INVALID_REQUEST), (try getObjectField(first_error, "code")).integer);
+    try std.testing.expectEqual(@as(i64, 7), (try getObjectField(items[1], "result")).integer);
+}
+
+test "batch with out-of-range float id item returns invalid request item and keeps valid item" {
+    const handlers = dispatcher.HandlerRegistry{
+        .on_method = &successHandler,
+    };
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "[{\"jsonrpc\":\"2.0\",\"id\":1e30,\"method\":\"eth_blockNumber\"},{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_blockNumber\"}]",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(std.http.Status.ok, response.status);
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+    const items = switch (parsed.value) {
+        .array => |array| array.items,
+        else => return error.ExpectedArray,
+    };
+    try std.testing.expectEqual(@as(usize, 2), items.len);
+
+    try std.testing.expect((try getObjectField(items[0], "id")) == .null);
     const first_error = try getObjectField(items[0], "error");
     try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.INVALID_REQUEST), (try getObjectField(first_error, "code")).integer);
     try std.testing.expectEqual(@as(i64, 7), (try getObjectField(items[1], "result")).integer);
