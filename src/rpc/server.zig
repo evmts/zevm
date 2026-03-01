@@ -151,10 +151,16 @@ pub fn handleHttpRequestForTest(
     }
 
     const response_body = try handlePost(allocator, body, handlers);
+    if (response_body) |body_bytes| {
+        return .{
+            .status = .ok,
+            .body = body_bytes,
+            .content_type = "application/json",
+        };
+    }
     return .{
-        .status = .ok,
-        .body = response_body,
-        .content_type = "application/json",
+        .status = .no_content,
+        .body = null,
     };
 }
 
@@ -217,11 +223,17 @@ fn handleRequest(
     handler_mutex.lock();
     defer handler_mutex.unlock();
     const response_body = try handlePost(allocator, request_body, handlers);
-    defer allocator.free(response_body);
+    if (response_body) |body_bytes| {
+        defer allocator.free(body_bytes);
+        try request.respond(body_bytes, .{
+            .status = .ok,
+            .extra_headers = &[_]std.http.Header{json_content_type_header},
+        });
+        return;
+    }
 
-    try request.respond(response_body, .{
-        .status = .ok,
-        .extra_headers = &[_]std.http.Header{json_content_type_header},
+    try request.respond("", .{
+        .status = .no_content,
     });
 }
 
@@ -276,12 +288,14 @@ fn serveWebSocket(
             continue;
         };
         handler_mutex.unlock();
-        defer allocator.free(response_body);
+        if (response_body) |body_bytes| {
+            defer allocator.free(body_bytes);
 
-        write_mutex.lock();
-        const write_result = web_socket.writeMessage(response_body, .text);
-        write_mutex.unlock();
-        write_result catch return;
+            write_mutex.lock();
+            const write_result = web_socket.writeMessage(body_bytes, .text);
+            write_mutex.unlock();
+            write_result catch return;
+        }
     }
 }
 
@@ -350,14 +364,14 @@ fn handlePost(
     allocator: std.mem.Allocator,
     body: []const u8,
     handlers: *const dispatcher.HandlerRegistry,
-) ![]u8 {
+) !?[]u8 {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
-        return writeErrorResponse(allocator, null, jsonrpc.envelope.ErrorCode.PARSE_ERROR, "Parse error");
+        return try writeErrorResponse(allocator, null, jsonrpc.envelope.ErrorCode.PARSE_ERROR, "Parse error");
     };
     defer parsed.deinit();
 
     var request_batch = jsonrpc.envelope.parseSingleOrBatch(allocator, body) catch {
-        return writeErrorResponse(allocator, null, jsonrpc.envelope.ErrorCode.INVALID_REQUEST, "Invalid request");
+        return try writeErrorResponse(allocator, null, jsonrpc.envelope.ErrorCode.INVALID_REQUEST, "Invalid request");
     };
     defer request_batch.deinit(allocator);
 
@@ -371,38 +385,55 @@ fn handleSingleRequest(
     allocator: std.mem.Allocator,
     request: jsonrpc.envelope.RequestEnvelope,
     handlers: *const dispatcher.HandlerRegistry,
-) ![]u8 {
+) !?[]u8 {
     var response = try dispatcher.dispatch(allocator, request, handlers);
     defer response.deinit(allocator);
 
-    return stringifyResponse(allocator, response);
+    if (request.id == null) {
+        return null;
+    }
+
+    const response_bytes = try stringifyResponse(allocator, response);
+    return response_bytes;
 }
 
 fn handleBatch(
     allocator: std.mem.Allocator,
     batch: []jsonrpc.envelope.RequestEnvelope,
     handlers: *const dispatcher.HandlerRegistry,
-) ![]u8 {
+) !?[]u8 {
     var response_bytes = std.ArrayList(u8).empty;
     errdefer response_bytes.deinit(allocator);
 
     try response_bytes.append(allocator, '[');
-    for (batch, 0..) |request, index| {
-        if (index > 0) {
-            try response_bytes.append(allocator, ',');
-        }
-
+    var emitted_count: usize = 0;
+    for (batch) |request| {
         var response = try dispatcher.dispatch(allocator, request, handlers);
         defer response.deinit(allocator);
 
+        if (request.id == null) {
+            continue;
+        }
+
+        if (emitted_count > 0) {
+            try response_bytes.append(allocator, ',');
+        }
         const item_bytes = try stringifyResponse(allocator, response);
         defer allocator.free(item_bytes);
 
         try response_bytes.appendSlice(allocator, item_bytes);
+        emitted_count += 1;
     }
+
+    if (emitted_count == 0) {
+        response_bytes.deinit(allocator);
+        return null;
+    }
+
     try response_bytes.append(allocator, ']');
 
-    return response_bytes.toOwnedSlice(allocator);
+    const owned = try response_bytes.toOwnedSlice(allocator);
+    return owned;
 }
 
 fn writeErrorResponse(
