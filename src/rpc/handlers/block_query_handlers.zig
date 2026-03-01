@@ -25,7 +25,10 @@ pub fn handleGetBlockByNumber(
     ctx: *const BlockQueryContext,
     params: jsonrpc.eth.GetBlockByNumber.Params,
 ) !jsonrpc.eth.GetBlockByNumber.Result {
-    const block_number = block_spec.resolveBlockNumber(ctx.rt, params.block) catch return .{ .block = null };
+    const block_number = block_spec.resolveBlockNumber(ctx.rt, params.block) catch |err| switch (err) {
+        error.InvalidBlockSpec => return error.InvalidParams,
+        error.BlockOutOfRange => return .{ .block = null },
+    };
     const block = ctx.rt.getBlockByNumberWithFork(allocator, block_number) catch return .{ .block = null };
     if (block) |resolved_block| {
         const internal = block_queries.blockToResponseFromBlock(
@@ -84,7 +87,10 @@ pub fn handleGetBlockReceipts(
     ctx: *const BlockQueryContext,
     params: jsonrpc.eth.GetBlockReceipts.Params,
 ) !jsonrpc.eth.GetBlockReceipts.Result {
-    const block_number = block_spec.resolveBlockNumber(ctx.rt, params.block) catch return .{ .value = null };
+    const block_number = block_spec.resolveBlockNumber(ctx.rt, params.block) catch |err| switch (err) {
+        error.InvalidBlockSpec => return error.InvalidParams,
+        error.BlockOutOfRange => return .{ .value = null },
+    };
     const block = ctx.rt.getBlockByNumberWithFork(allocator, block_number) catch return .{ .value = null };
     if (block == null) return .{ .value = null };
 
@@ -111,14 +117,17 @@ pub fn handleGetLogs(
     ctx: *const BlockQueryContext,
     params: jsonrpc.eth.GetLogs.Params,
 ) !jsonrpc.eth.GetLogs.Result {
-    const filter = rpcFilterToInternal(allocator, params.filter) catch return .{ .logs = &.{} };
+    const filter = rpcFilterToInternal(allocator, params.filter) catch return error.InvalidParams;
 
-    const internal = block_queries.getLogs(allocator, ctx.blockchain, ctx.log_index, filter) catch return .{ .logs = &.{} };
+    const internal = block_queries.getLogs(allocator, ctx.blockchain, ctx.log_index, filter) catch |err| switch (err) {
+        error.InvalidFilter => return error.InvalidParams,
+        else => return err,
+    };
     defer allocator.free(internal);
 
-    const rpc_logs = allocator.alloc(jsonrpc.types.LogEntry, internal.len) catch return .{ .logs = &.{} };
+    const rpc_logs = try allocator.alloc(jsonrpc.types.LogEntry, internal.len);
     for (internal, 0..) |resp, i| {
-        rpc_logs[i] = internalLogToRpc(allocator, resp) catch return .{ .logs = &.{} };
+        rpc_logs[i] = try internalLogToRpc(allocator, resp);
     }
     return .{ .logs = rpc_logs };
 }

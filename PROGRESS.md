@@ -31,7 +31,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 
 ## Validation
 
-- Full test suite: **242/242 passing** (`zig build test --summary all`)
+- Full test suite: **245/245 passing** (`zig build test --summary all`)
 - Full build: **passing** (`zig build`)
 
 ## Recent Completion Highlights
@@ -73,6 +73,8 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 - Added regression coverage for EIP-7702 typed send support in both handler-level and NodeHandler-level paths.
 - Fixed `eth_getLogs` and `eth_getTransactionReceipt` log conversion to preserve real `data` and `topics` instead of returning empty placeholders.
 - Added regression coverage ensuring RPC log payload fidelity for both log queries and receipt queries.
+- Changed invalid `eth_getLogs` filter handling to return JSON-RPC `Invalid params` semantics instead of silently returning empty arrays.
+- Changed malformed block-spec handling for `eth_getBlockByNumber` and `eth_getBlockReceipts` to return `Invalid params` while preserving null responses for out-of-range block lookups.
 
 ## Notes
 

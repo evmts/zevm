@@ -63,6 +63,24 @@ test "NodeHandler eth_chainId returns expected dev chain id" {
     }
 }
 
+test "NodeHandler eth_getLogs invalid filter returns InvalidParams" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    const params = try parseParams(
+        allocator,
+        \\[{"fromBlock":"0x2","toBlock":"0x1"}]
+    );
+    try std.testing.expectError(
+        error.InvalidParams,
+        callMethod(allocator, &handler, "eth_getLogs", params),
+    );
+}
+
 test "NodeHandler sendRawTransaction then getTransactionByHash returns transaction object" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
