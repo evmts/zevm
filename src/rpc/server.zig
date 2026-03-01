@@ -388,7 +388,8 @@ fn handlePost(
     return switch (parsed.value) {
         .object => blk: {
             var request = jsonrpc.envelope.RequestEnvelope.jsonParseFromValue(allocator, parsed.value, .{}) catch {
-                break :blk try writeErrorResponse(allocator, null, jsonrpc.envelope.ErrorCode.INVALID_REQUEST, "Invalid request");
+                const id_for_error = extractErrorId(parsed.value);
+                break :blk try writeErrorResponse(allocator, id_for_error, jsonrpc.envelope.ErrorCode.INVALID_REQUEST, "Invalid request");
             };
             defer request.deinit(allocator);
             break :blk try handleSingleRequest(allocator, request, handlers);
@@ -442,7 +443,8 @@ fn handleBatch(
         }
 
         var request = jsonrpc.envelope.RequestEnvelope.jsonParseFromValue(allocator, item, .{}) catch {
-            const invalid_bytes = try writeErrorResponse(allocator, null, jsonrpc.envelope.ErrorCode.INVALID_REQUEST, "Invalid request");
+            const id_for_error = extractErrorId(item);
+            const invalid_bytes = try writeErrorResponse(allocator, id_for_error, jsonrpc.envelope.ErrorCode.INVALID_REQUEST, "Invalid request");
             defer allocator.free(invalid_bytes);
             if (emitted_count > 0) {
                 try response_bytes.append(allocator, ',');
@@ -494,4 +496,18 @@ fn stringifyResponse(allocator: std.mem.Allocator, response: jsonrpc.envelope.Re
     try std.json.Stringify.value(response, .{}, &writer.writer);
 
     return writer.toOwnedSlice();
+}
+
+fn extractErrorId(value: std.json.Value) ?jsonrpc.envelope.Id {
+    const object = switch (value) {
+        .object => |obj| obj,
+        else => return null,
+    };
+    const id_value = object.get("id") orelse return null;
+    return switch (id_value) {
+        .null => .{ .null_value = {} },
+        .integer => |i| .{ .integer = i },
+        .string => |s| .{ .string = s },
+        else => null,
+    };
 }

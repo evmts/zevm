@@ -291,6 +291,33 @@ test "batch with invalid item returns per-item invalid request error" {
     try std.testing.expectEqual(@as(i64, 7), (try getObjectField(items[1], "result")).integer);
 }
 
+test "batch invalid object with id echoes id in error item" {
+    const handlers = dispatcher.HandlerRegistry{
+        .on_method = &successHandler,
+    };
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "[{\"jsonrpc\":\"1.0\",\"id\":42,\"method\":\"eth_blockNumber\"},{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_blockNumber\"}]",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+    const items = switch (parsed.value) {
+        .array => |array| array.items,
+        else => return error.ExpectedArray,
+    };
+    try std.testing.expectEqual(@as(usize, 2), items.len);
+
+    try std.testing.expectEqual(@as(i64, 42), (try getObjectField(items[0], "id")).integer);
+    const first_error = try getObjectField(items[0], "error");
+    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.INVALID_REQUEST), (try getObjectField(first_error, "code")).integer);
+    try std.testing.expectEqual(@as(i64, 7), (try getObjectField(items[1], "result")).integer);
+}
+
 test "malformed JSON returns -32700" {
     const handlers = dispatcher.HandlerRegistry{};
 
@@ -323,6 +350,25 @@ test "invalid request object returns -32600" {
     const parsed = try parseJson(response.body.?);
     defer parsed.deinit();
 
+    const error_object = try getObjectField(parsed.value, "error");
+    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.INVALID_REQUEST), (try getObjectField(error_object, "code")).integer);
+}
+
+test "invalid request object with id echoes id in error response" {
+    const handlers = dispatcher.HandlerRegistry{};
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"1.0\",\"id\":7,\"method\":\"eth_blockNumber\"}",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(i64, 7), (try getObjectField(parsed.value, "id")).integer);
     const error_object = try getObjectField(parsed.value, "error");
     try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.INVALID_REQUEST), (try getObjectField(error_object, "code")).integer);
 }
