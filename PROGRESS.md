@@ -31,7 +31,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 
 ## Validation
 
-- Full test suite: **207/207 passing** (`zig build test --summary all`)
+- Full test suite: **208/208 passing** (`zig build test --summary all`)
 - Full build: **passing** (`zig build`)
 
 ## Recent Completion Highlights
@@ -49,6 +49,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 - Expanded subscription coverage (`newHeads` notifications and `eth_unsubscribe` lifecycle semantics).
 - Implemented JSON-RPC notification suppression semantics (`204` for notifications without `id`; `id: null` still responds).
 - Added coverage that notifications still execute side effects while suppressing responses (single and mixed batch).
+- Improved batch compliance for mixed-validity payloads by returning per-item `-32600` errors for invalid batch entries.
 
 ## Notes
 

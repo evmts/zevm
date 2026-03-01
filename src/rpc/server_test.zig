@@ -221,6 +221,35 @@ test "batch request returns per-item result/error array" {
     try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND), (try getObjectField(error_object, "code")).integer);
 }
 
+test "batch with invalid item returns per-item invalid request error" {
+    const handlers = dispatcher.HandlerRegistry{
+        .on_method = &successHandler,
+    };
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "[123,{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_blockNumber\"}]",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(std.http.Status.ok, response.status);
+
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+    const items = switch (parsed.value) {
+        .array => |array| array.items,
+        else => return error.ExpectedArray,
+    };
+    try std.testing.expectEqual(@as(usize, 2), items.len);
+
+    const first_error = try getObjectField(items[0], "error");
+    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.INVALID_REQUEST), (try getObjectField(first_error, "code")).integer);
+    try std.testing.expect((try getObjectField(items[0], "id")) == .null);
+    try std.testing.expectEqual(@as(i64, 7), (try getObjectField(items[1], "result")).integer);
+}
+
 test "malformed JSON returns -32700" {
     const handlers = dispatcher.HandlerRegistry{};
 

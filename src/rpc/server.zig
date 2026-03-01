@@ -370,14 +370,21 @@ fn handlePost(
     };
     defer parsed.deinit();
 
-    var request_batch = jsonrpc.envelope.parseSingleOrBatch(allocator, body) catch {
-        return try writeErrorResponse(allocator, null, jsonrpc.envelope.ErrorCode.INVALID_REQUEST, "Invalid request");
-    };
-    defer request_batch.deinit(allocator);
-
-    return switch (request_batch) {
-        .single => |request| handleSingleRequest(allocator, request, handlers),
-        .batch => |batch| handleBatch(allocator, batch, handlers),
+    return switch (parsed.value) {
+        .object => blk: {
+            var request = jsonrpc.envelope.RequestEnvelope.jsonParseFromValue(allocator, parsed.value, .{}) catch {
+                break :blk try writeErrorResponse(allocator, null, jsonrpc.envelope.ErrorCode.INVALID_REQUEST, "Invalid request");
+            };
+            defer request.deinit(allocator);
+            break :blk try handleSingleRequest(allocator, request, handlers);
+        },
+        .array => |array| blk: {
+            if (array.items.len == 0) {
+                break :blk try writeErrorResponse(allocator, null, jsonrpc.envelope.ErrorCode.INVALID_REQUEST, "Invalid request");
+            }
+            break :blk try handleBatch(allocator, array.items, handlers);
+        },
+        else => try writeErrorResponse(allocator, null, jsonrpc.envelope.ErrorCode.INVALID_REQUEST, "Invalid request"),
     };
 }
 
@@ -399,7 +406,7 @@ fn handleSingleRequest(
 
 fn handleBatch(
     allocator: std.mem.Allocator,
-    batch: []jsonrpc.envelope.RequestEnvelope,
+    batch: []const std.json.Value,
     handlers: *const dispatcher.HandlerRegistry,
 ) !?[]u8 {
     var response_bytes = std.ArrayList(u8).empty;
@@ -407,22 +414,39 @@ fn handleBatch(
 
     try response_bytes.append(allocator, '[');
     var emitted_count: usize = 0;
-    for (batch) |request| {
-        var response = try dispatcher.dispatch(allocator, request, handlers);
-        defer response.deinit(allocator);
-
-        if (request.id == null) {
+    for (batch) |item| {
+        if (item != .object) {
+            const invalid_bytes = try writeErrorResponse(allocator, null, jsonrpc.envelope.ErrorCode.INVALID_REQUEST, "Invalid request");
+            defer allocator.free(invalid_bytes);
+            if (emitted_count > 0) {
+                try response_bytes.append(allocator, ',');
+            }
+            try response_bytes.appendSlice(allocator, invalid_bytes);
+            emitted_count += 1;
             continue;
         }
 
-        if (emitted_count > 0) {
-            try response_bytes.append(allocator, ',');
-        }
-        const item_bytes = try stringifyResponse(allocator, response);
-        defer allocator.free(item_bytes);
+        var request = jsonrpc.envelope.RequestEnvelope.jsonParseFromValue(allocator, item, .{}) catch {
+            const invalid_bytes = try writeErrorResponse(allocator, null, jsonrpc.envelope.ErrorCode.INVALID_REQUEST, "Invalid request");
+            defer allocator.free(invalid_bytes);
+            if (emitted_count > 0) {
+                try response_bytes.append(allocator, ',');
+            }
+            try response_bytes.appendSlice(allocator, invalid_bytes);
+            emitted_count += 1;
+            continue;
+        };
+        defer request.deinit(allocator);
 
-        try response_bytes.appendSlice(allocator, item_bytes);
-        emitted_count += 1;
+        const item_response = try handleSingleRequest(allocator, request, handlers);
+        if (item_response) |item_bytes| {
+            defer allocator.free(item_bytes);
+            if (emitted_count > 0) {
+                try response_bytes.append(allocator, ',');
+            }
+            try response_bytes.appendSlice(allocator, item_bytes);
+            emitted_count += 1;
+        }
     }
 
     if (emitted_count == 0) {
