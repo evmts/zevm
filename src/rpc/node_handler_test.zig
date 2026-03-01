@@ -396,6 +396,72 @@ test "NodeHandler eth_subscribe newPendingTransactions emits websocket messages"
     try std.testing.expect(found);
 }
 
+test "NodeHandler eth_subscribe newHeads emits websocket messages after mining" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var subscribe_params = std.json.Array.init(allocator);
+    defer subscribe_params.deinit();
+    try subscribe_params.append(.{ .string = "newHeads" });
+    const subscribe_result = try callMethod(allocator, &handler, "eth_subscribe", .{ .array = subscribe_params });
+    const subscription_id = switch (subscribe_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    _ = try callMethod(allocator, &handler, "evm_mine", null);
+
+    const messages = try handler.collectSubscriptionMessages(allocator);
+    defer {
+        for (messages) |message| allocator.free(message);
+        allocator.free(messages);
+    }
+
+    var found = false;
+    for (messages) |message| {
+        if (std.mem.indexOf(u8, message, "\"method\":\"eth_subscription\"") != null and
+            std.mem.indexOf(u8, message, subscription_id) != null and
+            std.mem.indexOf(u8, message, "\"number\"") != null)
+        {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "NodeHandler eth_unsubscribe returns true then false for subscription id" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var subscribe_params = std.json.Array.init(allocator);
+    defer subscribe_params.deinit();
+    try subscribe_params.append(.{ .string = "newPendingTransactions" });
+    const subscribe_result = try callMethod(allocator, &handler, "eth_subscribe", .{ .array = subscribe_params });
+    const subscription_id = switch (subscribe_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    var unsubscribe_params = std.json.Array.init(allocator);
+    defer unsubscribe_params.deinit();
+    try unsubscribe_params.append(.{ .string = subscription_id });
+    const first_result = try callMethod(allocator, &handler, "eth_unsubscribe", .{ .array = unsubscribe_params });
+    try std.testing.expect(first_result.bool);
+
+    var unsubscribe_again_params = std.json.Array.init(allocator);
+    defer unsubscribe_again_params.deinit();
+    try unsubscribe_again_params.append(.{ .string = subscription_id });
+    const second_result = try callMethod(allocator, &handler, "eth_unsubscribe", .{ .array = unsubscribe_again_params });
+    try std.testing.expect(!second_result.bool);
+}
+
 test "NodeHandler setAutomine toggles mining mode" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
