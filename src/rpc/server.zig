@@ -511,6 +511,7 @@ fn extractErrorId(value: std.json.Value) ?jsonrpc.envelope.Id {
     return switch (id_value) {
         .null => .{ .null_value = {} },
         .integer => |i| .{ .integer = i },
+        .float => |f| .{ .integer = @intFromFloat(f) },
         .string => |s| .{ .string = s },
         else => null,
     };

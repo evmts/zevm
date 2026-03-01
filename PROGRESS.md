@@ -31,7 +31,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 
 ## Validation
 
-- Full test suite: **217/217 passing** (`zig build test --summary all`)
+- Full test suite: **219/219 passing** (`zig build test --summary all`)
 - Full build: **passing** (`zig build`)
 
 ## Recent Completion Highlights
@@ -54,6 +54,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 - Added CLI support for deterministic fork pinning via `--fork-block-number` (decimal or hex).
 - Improved invalid-request compatibility by echoing request `id` when present and parseable.
 - Added config validation that `--fork-block-number` requires `--fork-url`.
+- Expanded invalid-request ID compatibility coverage (integer/string/float input handling for error `id` echo).
 
 ## Notes
 
