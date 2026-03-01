@@ -2,6 +2,7 @@ const std = @import("std");
 const jsonrpc = @import("jsonrpc");
 const dispatcher = @import("dispatcher.zig");
 const server = @import("server.zig");
+const node_handler = @import("node_handler.zig");
 
 fn getObjectField(value: std.json.Value, key: []const u8) !std.json.Value {
     return switch (value) {
@@ -206,4 +207,52 @@ test "parseConfig parses --fork-url" {
 
     try std.testing.expect(config.fork_url != null);
     try std.testing.expectEqualStrings("https://example.rpc", config.fork_url.?);
+}
+
+test "server with NodeHandler context handles eth_chainId response ownership safely" {
+    var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
+    defer handler.deinit(std.testing.allocator);
+
+    const handlers = dispatcher.HandlerRegistry{
+        .context = &handler,
+        .on_method_with_context = &node_handler.NodeHandler.onMethod,
+    };
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_chainId\",\"params\":[]}",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(std.http.Status.ok, response.status);
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+    const result = try getObjectField(parsed.value, "result");
+    try std.testing.expectEqualStrings("0x7a69", result.string);
+}
+
+test "server with NodeHandler context handles hardhat_mine response ownership safely" {
+    var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
+    defer handler.deinit(std.testing.allocator);
+
+    const handlers = dispatcher.HandlerRegistry{
+        .context = &handler,
+        .on_method_with_context = &node_handler.NodeHandler.onMethod,
+    };
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"hardhat_mine\",\"params\":[\"0x1\"]}",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(std.http.Status.ok, response.status);
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+    const result = try getObjectField(parsed.value, "result");
+    try std.testing.expectEqualStrings("0x0", result.string);
 }

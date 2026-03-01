@@ -146,110 +146,114 @@ pub const NodeHandler = struct {
         method_name: []const u8,
         params: ?std.json.Value,
     ) !std.json.Value {
+        var temp_arena = std.heap.ArenaAllocator.init(allocator);
+        defer temp_arena.deinit();
+        const temp_allocator = temp_arena.allocator();
+
         if (std.mem.eql(u8, method_name, "eth_chainId")) {
-            const parsed = try parseParams(jsonrpc.eth.ChainId.Params, allocator, params);
-            const result = try eth_read.handleEthChainId(allocator, &self.node_runtime, parsed);
+            const parsed = try parseParams(jsonrpc.eth.ChainId.Params, temp_allocator, params);
+            const result = try eth_read.handleEthChainId(temp_allocator, &self.node_runtime, parsed);
             return try toJsonValue(allocator, result);
         }
         if (std.mem.eql(u8, method_name, "eth_blockNumber")) {
-            const parsed = try parseParams(jsonrpc.eth.BlockNumber.Params, allocator, params);
-            const result = try eth_read.handleEthBlockNumber(allocator, &self.node_runtime, parsed);
+            const parsed = try parseParams(jsonrpc.eth.BlockNumber.Params, temp_allocator, params);
+            const result = try eth_read.handleEthBlockNumber(temp_allocator, &self.node_runtime, parsed);
             return try toJsonValue(allocator, result);
         }
         if (std.mem.eql(u8, method_name, "eth_getBalance")) {
-            const parsed = try parseParams(jsonrpc.eth.GetBalance.Params, allocator, params);
-            const result = try eth_read.handleEthGetBalance(allocator, &self.node_runtime, parsed);
+            const parsed = try parseParams(jsonrpc.eth.GetBalance.Params, temp_allocator, params);
+            const result = try eth_read.handleEthGetBalance(temp_allocator, &self.node_runtime, parsed);
             return try toJsonValue(allocator, result);
         }
         if (std.mem.eql(u8, method_name, "eth_getCode")) {
-            const parsed = try parseParams(jsonrpc.eth.GetCode.Params, allocator, params);
-            const result = try eth_read.handleEthGetCode(allocator, &self.node_runtime, parsed);
+            const parsed = try parseParams(jsonrpc.eth.GetCode.Params, temp_allocator, params);
+            const result = try eth_read.handleEthGetCode(temp_allocator, &self.node_runtime, parsed);
             return try toJsonValue(allocator, result);
         }
         if (std.mem.eql(u8, method_name, "eth_getStorageAt")) {
-            const parsed = try parseParams(jsonrpc.eth.GetStorageAt.Params, allocator, params);
-            const result = try eth_read.handleEthGetStorageAt(allocator, &self.node_runtime, parsed);
+            const parsed = try parseParams(jsonrpc.eth.GetStorageAt.Params, temp_allocator, params);
+            const result = try eth_read.handleEthGetStorageAt(temp_allocator, &self.node_runtime, parsed);
             return try toJsonValue(allocator, result);
         }
         if (std.mem.eql(u8, method_name, "eth_getTransactionCount")) {
-            const parsed = try parseParams(jsonrpc.eth.GetTransactionCount.Params, allocator, params);
-            const result = try eth_read.handleEthGetTransactionCount(allocator, &self.node_runtime, parsed);
+            const parsed = try parseParams(jsonrpc.eth.GetTransactionCount.Params, temp_allocator, params);
+            const result = try eth_read.handleEthGetTransactionCount(temp_allocator, &self.node_runtime, parsed);
             return try toJsonValue(allocator, result);
         }
         if (std.mem.eql(u8, method_name, "eth_gasPrice")) {
-            const parsed = try parseParams(jsonrpc.eth.GasPrice.Params, allocator, params);
-            const result = try eth_read.handleEthGasPrice(allocator, &self.node_runtime, parsed);
+            const parsed = try parseParams(jsonrpc.eth.GasPrice.Params, temp_allocator, params);
+            const result = try eth_read.handleEthGasPrice(temp_allocator, &self.node_runtime, parsed);
             return try toJsonValue(allocator, result);
         }
         if (std.mem.eql(u8, method_name, "eth_coinbase")) {
-            const parsed = try parseParams(jsonrpc.eth.Coinbase.Params, allocator, params);
-            const result = try eth_read.handleEthCoinbase(allocator, &self.node_runtime, parsed);
+            const parsed = try parseParams(jsonrpc.eth.Coinbase.Params, temp_allocator, params);
+            const result = try eth_read.handleEthCoinbase(temp_allocator, &self.node_runtime, parsed);
             return try toJsonValue(allocator, result);
         }
         if (std.mem.eql(u8, method_name, "eth_accounts")) {
-            const parsed = try parseParams(jsonrpc.eth.Accounts.Params, allocator, params);
-            const result = try eth_read.handleEthAccounts(allocator, &self.node_runtime, parsed);
+            const parsed = try parseParams(jsonrpc.eth.Accounts.Params, temp_allocator, params);
+            const result = try eth_read.handleEthAccounts(temp_allocator, &self.node_runtime, parsed);
             return try toJsonValue(allocator, result);
         }
         if (std.mem.eql(u8, method_name, "eth_maxPriorityFeePerGas")) {
-            const parsed = try parseParams(jsonrpc.eth.MaxPriorityFeePerGas.Params, allocator, params);
-            const result = try eth_read.handleEthMaxPriorityFeePerGas(allocator, &self.node_runtime, parsed);
+            const parsed = try parseParams(jsonrpc.eth.MaxPriorityFeePerGas.Params, temp_allocator, params);
+            const result = try eth_read.handleEthMaxPriorityFeePerGas(temp_allocator, &self.node_runtime, parsed);
             return try toJsonValue(allocator, result);
         }
         if (std.mem.eql(u8, method_name, "eth_blobBaseFee")) {
-            const parsed = try parseParams(jsonrpc.eth.BlobBaseFee.Params, allocator, params);
-            const result = try eth_read.handleEthBlobBaseFee(allocator, &self.node_runtime, parsed);
+            const parsed = try parseParams(jsonrpc.eth.BlobBaseFee.Params, temp_allocator, params);
+            const result = try eth_read.handleEthBlobBaseFee(temp_allocator, &self.node_runtime, parsed);
             return try toJsonValue(allocator, result);
         }
         if (std.mem.eql(u8, method_name, "eth_feeHistory")) {
-            const parsed = try parseParams(jsonrpc.eth.FeeHistory.Params, allocator, params);
-            const result = try eth_read.handleEthFeeHistory(allocator, &self.node_runtime, parsed);
+            const parsed = try parseParams(jsonrpc.eth.FeeHistory.Params, temp_allocator, params);
+            const result = try eth_read.handleEthFeeHistory(temp_allocator, &self.node_runtime, parsed);
             return try toJsonValue(allocator, result);
         }
         if (std.mem.eql(u8, method_name, "eth_sendRawTransaction")) {
-            const parsed = try parseParams(jsonrpc.eth.SendRawTransaction.Params, allocator, params);
+            const parsed = try parseParams(jsonrpc.eth.SendRawTransaction.Params, temp_allocator, params);
             const result = try tx_submission.handleSendRawTransaction(allocator, &self.node_runtime, parsed);
             return try toJsonValue(allocator, result);
         }
         if (std.mem.eql(u8, method_name, "eth_sendTransaction")) {
-            const parsed = try parseParams(jsonrpc.eth.SendTransaction.Params, allocator, params);
+            const parsed = try parseParams(jsonrpc.eth.SendTransaction.Params, temp_allocator, params);
             const result = try tx_submission.handleSendTransaction(allocator, &self.node_runtime, parsed);
             return try toJsonValue(allocator, result);
         }
         if (std.mem.eql(u8, method_name, "eth_getBlockByNumber")) {
-            const parsed = try parseParams(jsonrpc.eth.GetBlockByNumber.Params, allocator, params);
+            const parsed = try parseParams(jsonrpc.eth.GetBlockByNumber.Params, temp_allocator, params);
             var block_query_context = makeBlockQueryContext(self);
-            const result = try block_query_handlers.handleGetBlockByNumber(allocator, &block_query_context, parsed);
+            const result = try block_query_handlers.handleGetBlockByNumber(temp_allocator, &block_query_context, parsed);
             return try toJsonValue(allocator, result);
         }
         if (std.mem.eql(u8, method_name, "eth_getBlockByHash")) {
-            const parsed = try parseParams(jsonrpc.eth.GetBlockByHash.Params, allocator, params);
+            const parsed = try parseParams(jsonrpc.eth.GetBlockByHash.Params, temp_allocator, params);
             var block_query_context = makeBlockQueryContext(self);
-            const result = try block_query_handlers.handleGetBlockByHash(allocator, &block_query_context, parsed);
+            const result = try block_query_handlers.handleGetBlockByHash(temp_allocator, &block_query_context, parsed);
             return try toJsonValue(allocator, result);
         }
         if (std.mem.eql(u8, method_name, "eth_getTransactionReceipt")) {
-            const parsed = try parseParams(jsonrpc.eth.GetTransactionReceipt.Params, allocator, params);
+            const parsed = try parseParams(jsonrpc.eth.GetTransactionReceipt.Params, temp_allocator, params);
             var block_query_context = makeBlockQueryContext(self);
-            const result = try block_query_handlers.handleGetTransactionReceipt(allocator, &block_query_context, parsed);
+            const result = try block_query_handlers.handleGetTransactionReceipt(temp_allocator, &block_query_context, parsed);
             return try toJsonValue(allocator, result);
         }
         if (std.mem.eql(u8, method_name, "eth_getBlockReceipts")) {
-            const parsed = try parseParams(jsonrpc.eth.GetBlockReceipts.Params, allocator, params);
+            const parsed = try parseParams(jsonrpc.eth.GetBlockReceipts.Params, temp_allocator, params);
             var block_query_context = makeBlockQueryContext(self);
-            const result = try block_query_handlers.handleGetBlockReceipts(allocator, &block_query_context, parsed);
+            const result = try block_query_handlers.handleGetBlockReceipts(temp_allocator, &block_query_context, parsed);
             return try toJsonValue(allocator, result);
         }
         if (std.mem.eql(u8, method_name, "eth_getLogs")) {
-            const parsed = try parseParams(jsonrpc.eth.GetLogs.Params, allocator, params);
+            const parsed = try parseParams(jsonrpc.eth.GetLogs.Params, temp_allocator, params);
             var block_query_context = makeBlockQueryContext(self);
-            const result = try block_query_handlers.handleGetLogs(allocator, &block_query_context, parsed);
+            const result = try block_query_handlers.handleGetLogs(temp_allocator, &block_query_context, parsed);
             return try toJsonValue(allocator, result);
         }
         if (std.mem.eql(u8, method_name, "eth_getTransactionByHash")) {
-            const parsed = try parseParams(jsonrpc.eth.GetTransactionByHash.Params, allocator, params);
+            const parsed = try parseParams(jsonrpc.eth.GetTransactionByHash.Params, temp_allocator, params);
             var block_query_context = makeBlockQueryContext(self);
-            const result = try block_query_handlers.handleGetTransactionByHash(allocator, &block_query_context, parsed);
+            const result = try block_query_handlers.handleGetTransactionByHash(temp_allocator, &block_query_context, parsed);
             return try toJsonValue(allocator, result);
         }
         if (std.mem.eql(u8, method_name, "eth_call")) {
