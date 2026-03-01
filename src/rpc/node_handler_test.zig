@@ -405,6 +405,36 @@ test "NodeHandler log filter lifecycle returns array results" {
     }
 }
 
+test "NodeHandler eth_newFilter rejects non-object filter param" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var params = std.json.Array.init(allocator);
+    defer params.deinit();
+    try params.append(.{ .integer = 1 });
+
+    try std.testing.expectError(
+        error.InvalidParams,
+        callMethod(allocator, &handler, "eth_newFilter", .{ .array = params }),
+    );
+}
+
+test "NodeHandler eth_newFilter rejects missing filter param" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    try std.testing.expectError(
+        error.InvalidParams,
+        callMethod(allocator, &handler, "eth_newFilter", .{ .array = std.json.Array.init(allocator) }),
+    );
+}
+
 test "NodeHandler debug_traceCall returns structured trace result" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -575,6 +605,24 @@ test "NodeHandler eth_subscribe newPendingTransactions emits websocket messages"
         }
     }
     try std.testing.expect(found);
+}
+
+test "NodeHandler eth_subscribe logs rejects non-object filter" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var subscribe_params = std.json.Array.init(allocator);
+    defer subscribe_params.deinit();
+    try subscribe_params.append(.{ .string = "logs" });
+    try subscribe_params.append(.{ .string = "0x1" });
+
+    try std.testing.expectError(
+        error.InvalidParams,
+        callMethod(allocator, &handler, "eth_subscribe", .{ .array = subscribe_params }),
+    );
 }
 
 test "NodeHandler eth_subscribe newHeads emits websocket messages after mining" {

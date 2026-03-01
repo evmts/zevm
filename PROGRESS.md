@@ -31,7 +31,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 
 ## Validation
 
-- Full test suite: **255/255 passing** (`zig build test --summary all`)
+- Full test suite: **260/260 passing** (`zig build test --summary all`)
 - Full build: **passing** (`zig build`)
 
 ## Recent Completion Highlights
@@ -81,6 +81,10 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
   - malformed `eth_getStorageAt` slot values no longer coerce to zero,
   - malformed/zero `eth_feeHistory` block counts now return `Invalid params`.
 - Added server-level regression coverage for malformed `eth_getStorageAt` and `eth_getLogs` parameters to verify end-to-end `-32602` JSON-RPC mapping.
+- Hardened filter/subscription input validation:
+  - `eth_newFilter` now requires exactly one object filter argument,
+  - `eth_subscribe` with `logs` now rejects non-object filter payloads,
+  - malformed stored filter JSON now propagates `Invalid params` instead of silently becoming `{}`.
 
 ## Notes
 

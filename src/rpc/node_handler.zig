@@ -1347,9 +1347,10 @@ fn parseSubscriptionKind(params: ?std.json.Value) ?SubscriptionKind {
 fn extractSubscriptionFilterJson(allocator: std.mem.Allocator, params: ?std.json.Value) ![]u8 {
     const array = switch (params orelse return allocator.dupe(u8, "{}")) {
         .array => |arr| arr.items,
-        else => return allocator.dupe(u8, "{}"),
+        else => return error.InvalidParams,
     };
     if (array.len < 2) return allocator.dupe(u8, "{}");
+    if (array[1] != .object) return error.InvalidParams;
 
     var writer = std.Io.Writer.Allocating.init(allocator);
     defer writer.deinit();
@@ -1358,11 +1359,12 @@ fn extractSubscriptionFilterJson(allocator: std.mem.Allocator, params: ?std.json
 }
 
 fn extractFilterJson(allocator: std.mem.Allocator, params: ?std.json.Value) ![]u8 {
-    const array = switch (params orelse return allocator.dupe(u8, "{}")) {
+    const array = switch (params orelse return error.InvalidParams) {
         .array => |arr| arr.items,
-        else => return allocator.dupe(u8, "{}"),
+        else => return error.InvalidParams,
     };
-    if (array.len == 0) return allocator.dupe(u8, "{}");
+    if (array.len != 1) return error.InvalidParams;
+    if (array[0] != .object) return error.InvalidParams;
 
     var writer = std.Io.Writer.Allocating.init(allocator);
     defer writer.deinit();
@@ -1415,7 +1417,7 @@ fn parseStoredFilter(
     });
     defer parsed.deinit();
 
-    return std.json.innerParseFromValue(jsonrpc.types.Filter, allocator, parsed.value, .{}) catch jsonrpc.types.Filter{};
+    return std.json.innerParseFromValue(jsonrpc.types.Filter, allocator, parsed.value, .{}) catch return error.InvalidParams;
 }
 
 fn applyStateOverrides(
