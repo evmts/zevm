@@ -835,6 +835,54 @@ test "server with NodeHandler context maps invalid sendRawTransaction to -32602"
     try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.INVALID_PARAMS), (try getObjectField(error_object, "code")).integer);
 }
 
+test "server with NodeHandler context maps malformed eth_getStorageAt slot to -32602" {
+    var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
+    defer handler.deinit(std.testing.allocator);
+
+    const handlers = dispatcher.HandlerRegistry{
+        .context = &handler,
+        .on_method_with_context = &node_handler.NodeHandler.onMethod,
+    };
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getStorageAt\",\"params\":[\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"0xZZ\",\"latest\"]}",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(std.http.Status.ok, response.status);
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+    const error_object = try getObjectField(parsed.value, "error");
+    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.INVALID_PARAMS), (try getObjectField(error_object, "code")).integer);
+}
+
+test "server with NodeHandler context maps malformed eth_getLogs quantity to -32602" {
+    var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
+    defer handler.deinit(std.testing.allocator);
+
+    const handlers = dispatcher.HandlerRegistry{
+        .context = &handler,
+        .on_method_with_context = &node_handler.NodeHandler.onMethod,
+    };
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getLogs\",\"params\":[{\"fromBlock\":\"0xZZ\",\"toBlock\":\"0x1\"}]}",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(std.http.Status.ok, response.status);
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+    const error_object = try getObjectField(parsed.value, "error");
+    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.INVALID_PARAMS), (try getObjectField(error_object, "code")).integer);
+}
+
 test "server with NodeHandler context maps unmanaged sendTransaction to -32602" {
     var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
     defer handler.deinit(std.testing.allocator);
