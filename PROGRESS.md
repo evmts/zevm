@@ -31,7 +31,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 
 ## Validation
 
-- Full test suite: **276/276 passing** (`zig build test --summary all`)
+- Full test suite: **279/279 passing** (`zig build test --summary all`)
 - Full build: **passing** (`zig build`)
 
 ## Recent Completion Highlights
@@ -98,6 +98,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
   - malformed `evm_mine` / `hardhat_mine` count arguments now return `Invalid params`,
   - added NodeHandler and server-level `-32602` regressions.
 - Added server-level regression coverage that `eth_newFilter` with missing params maps to `-32602`.
+- Added shared call-request parser regressions so non-string `from` is rejected consistently across `eth_call`, `eth_estimateGas`, and `debug_traceCall` (including server-level `-32602` coverage).
 
 ## Notes
 

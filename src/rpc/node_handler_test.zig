@@ -442,6 +442,29 @@ test "NodeHandler eth_estimateGas uses execution search" {
     }
 }
 
+test "NodeHandler eth_estimateGas rejects non-string from field" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var tx_object = std.json.ObjectMap.init(allocator);
+    defer tx_object.deinit();
+    try tx_object.put("from", .{ .integer = 1 });
+    try tx_object.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try tx_object.put("value", .{ .string = "0x1" });
+
+    var params = std.json.Array.init(allocator);
+    defer params.deinit();
+    try params.append(.{ .object = tx_object });
+
+    try std.testing.expectError(
+        error.InvalidParams,
+        callMethod(allocator, &handler, "eth_estimateGas", .{ .array = params }),
+    );
+}
+
 test "NodeHandler log filter lifecycle returns array results" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -530,6 +553,30 @@ test "NodeHandler debug_traceCall returns structured trace result" {
     try std.testing.expect(object.get("failed") != null);
     try std.testing.expect(object.get("returnValue") != null);
     try std.testing.expect(object.get("structLogs") != null);
+}
+
+test "NodeHandler debug_traceCall rejects non-string from field" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var tx_object = std.json.ObjectMap.init(allocator);
+    defer tx_object.deinit();
+    try tx_object.put("from", .{ .integer = 1 });
+    try tx_object.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try tx_object.put("data", .{ .string = "0x" });
+
+    var params = std.json.Array.init(allocator);
+    defer params.deinit();
+    try params.append(.{ .object = tx_object });
+    try params.append(.{ .string = "latest" });
+
+    try std.testing.expectError(
+        error.InvalidParams,
+        callMethod(allocator, &handler, "debug_traceCall", .{ .array = params }),
+    );
 }
 
 test "NodeHandler debug_traceTransaction returns structured trace result" {
