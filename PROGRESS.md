@@ -31,7 +31,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 
 ## Validation
 
-- Full test suite: **224/224 passing** (`zig build test --summary all`)
+- Full test suite: **229/229 passing** (`zig build test --summary all`)
 - Full build: **passing** (`zig build`)
 
 ## Recent Completion Highlights
@@ -60,6 +60,9 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 - Fixed automine to only evict transactions that were actually mined in the block.
 - Added host adapter fork regression tests for unresolved-default fallback and resolver-backed request completion.
 - Hardened invalid-request `id` echo for float values (integral in-range only; fractional/out-of-range safely return `null` id).
+- Fixed automine to enforce runtime block gas limit for transaction inclusion (no hardcoded gas limit in mined tx execution path).
+- Hardened `eth_sendTransaction` input parsing to reject malformed `to` and `data` fields instead of coercing to contract-create/empty input defaults.
+- Tightened access-list parsing cleanup to avoid partial-allocation leaks on malformed input error paths.
 
 ## Notes
 

@@ -176,11 +176,11 @@ pub fn handleSendTransaction(
 
     const to: ?primitives.Address = blk: {
         if (tx_obj.get("to")) |to_val| {
-            const to_str = switch (to_val) {
-                .string => |s| s,
-                else => break :blk null,
+            break :blk switch (to_val) {
+                .null => null,
+                .string => |to_str| primitives.Address.fromHex(to_str) catch return TxSubmissionError.InvalidHexData,
+                else => return TxSubmissionError.InvalidHexData,
             };
-            break :blk primitives.Address.fromHex(to_str) catch break :blk null;
         }
         break :blk null;
     };
@@ -189,9 +189,9 @@ pub fn handleSendTransaction(
         if (tx_obj.get("data") orelse tx_obj.get("input")) |data_val| {
             const data_str = switch (data_val) {
                 .string => |s| s,
-                else => break :blk &[_]u8{},
+                else => return TxSubmissionError.InvalidHexData,
             };
-            break :blk primitives.Hex.hexToBytes(allocator, data_str) catch break :blk &[_]u8{};
+            break :blk primitives.Hex.hexToBytes(allocator, data_str) catch return TxSubmissionError.InvalidHexData;
         }
         break :blk &[_]u8{};
     };
@@ -367,9 +367,9 @@ fn automine(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime) !void {
         .block_number = next_block_number,
         .block_timestamp = next_timestamp,
         .block_difficulty = 0,
-        .block_prevrandao = 0,
+        .block_prevrandao = rt.prev_randao,
         .block_coinbase = rt.coinbase,
-        .block_gas_limit = 30_000_000,
+        .block_gas_limit = rt.block_gas_limit,
         .block_base_fee = next_base_fee,
         .blob_base_fee = rt.blob_base_fee,
     };
@@ -388,11 +388,17 @@ fn automine(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime) !void {
 
     var mined_hashes = std.ArrayList([32]u8).empty;
     defer mined_hashes.deinit(allocator);
+    var remaining_block_gas = rt.block_gas_limit;
     var tx_index: u64 = 0;
     for (ready) |pooled_tx| {
         const record = rt.getTransactionRecord(pooled_tx.hash) orelse continue;
         const decoded = primitives.Transaction.decodeRawTransaction(allocator, record.raw) catch continue;
         defer primitives.Transaction.deinitDecodedTransaction(allocator, decoded);
+
+        const tx_gas_limit = extractGasLimit(decoded);
+        if (tx_gas_limit > remaining_block_gas) {
+            continue;
+        }
 
         const exec_tx = executionTxFromDecoded(record.sender, decoded);
         _ = tx_processor.processTransaction(
@@ -404,6 +410,7 @@ fn automine(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime) !void {
             block_ctx,
         ) catch continue;
 
+        remaining_block_gas -= tx_gas_limit;
         rt.markTransactionMined(
             pooled_tx.hash,
             block_hash,
@@ -657,7 +664,14 @@ fn parseAccessList(
     };
 
     const access_list = try allocator.alloc(primitives.Transaction.AccessListItem, access_items.len);
-    errdefer allocator.free(access_list);
+    var initialized: usize = 0;
+    errdefer {
+        var i: usize = 0;
+        while (i < initialized) : (i += 1) {
+            allocator.free(access_list[i].storage_keys);
+        }
+        allocator.free(access_list);
+    }
 
     for (access_items, 0..) |entry, i| {
         const entry_obj = switch (entry) {
@@ -692,6 +706,7 @@ fn parseAccessList(
             .address = address,
             .storage_keys = storage_keys,
         };
+        initialized += 1;
     }
 
     return access_list;

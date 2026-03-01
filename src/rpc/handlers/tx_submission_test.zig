@@ -218,6 +218,62 @@ test "automine: manual mode does not mine" {
     try std.testing.expectEqual(@as(usize, 1), rt.pool.pendingCount());
 }
 
+test "automine honors runtime block gas limit and leaves oversized tx pending" {
+    var rt = try makeRuntime();
+    defer rt.deinit(std.testing.allocator);
+
+    // Keep automine enabled but set a low block gas limit.
+    rt.block_gas_limit = 20_000;
+
+    const encoded = try signTestLegacyTx(
+        std.testing.allocator,
+        0,
+        runtime.DEFAULT_GAS_PRICE,
+        21_000,
+        runtime.DEFAULT_DEV_ACCOUNTS[1],
+        1000,
+        runtime.DEFAULT_CHAIN_ID,
+        runtime.DEFAULT_DEV_PRIVATE_KEYS[0],
+    );
+    defer std.testing.allocator.free(encoded);
+
+    const hex = try bytesToHexAlloc(std.testing.allocator, encoded);
+    defer std.testing.allocator.free(hex);
+
+    _ = try tx_submission.handleSendRawTransaction(std.testing.allocator, &rt, makeRawTxParams(hex));
+
+    // Tx remains pending because it cannot fit in current block gas limit.
+    try std.testing.expectEqual(@as(u64, 0), rt.head_block_number);
+    try std.testing.expectEqual(@as(usize, 1), rt.pool.pendingCount());
+}
+
+test "automine mines transaction when runtime block gas limit can fit" {
+    var rt = try makeRuntime();
+    defer rt.deinit(std.testing.allocator);
+
+    rt.block_gas_limit = 21_000;
+
+    const encoded = try signTestLegacyTx(
+        std.testing.allocator,
+        0,
+        runtime.DEFAULT_GAS_PRICE,
+        21_000,
+        runtime.DEFAULT_DEV_ACCOUNTS[1],
+        1000,
+        runtime.DEFAULT_CHAIN_ID,
+        runtime.DEFAULT_DEV_PRIVATE_KEYS[0],
+    );
+    defer std.testing.allocator.free(encoded);
+
+    const hex = try bytesToHexAlloc(std.testing.allocator, encoded);
+    defer std.testing.allocator.free(hex);
+
+    _ = try tx_submission.handleSendRawTransaction(std.testing.allocator, &rt, makeRawTxParams(hex));
+
+    try std.testing.expectEqual(@as(u64, 1), rt.head_block_number);
+    try std.testing.expectEqual(@as(usize, 0), rt.pool.pendingCount());
+}
+
 // --- Phase 5 Tests ---
 
 test "eth_sendTransaction managed account signs and returns hash" {
@@ -258,6 +314,60 @@ test "eth_sendTransaction unmanaged account returns error" {
 
     const result = tx_submission.handleSendTransaction(std.testing.allocator, &rt, params);
     try std.testing.expectError(tx_submission.TxSubmissionError.UnmanagedAccount, result);
+}
+
+test "eth_sendTransaction rejects malformed to address" {
+    var rt = try makeRuntime();
+    defer rt.deinit(std.testing.allocator);
+
+    var obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try obj.put("to", .{ .string = "0x1234" });
+    try obj.put("value", .{ .string = "0x1" });
+
+    const params = jsonrpc.eth.SendTransaction.Params{
+        .transaction = .{ .value = .{ .object = obj } },
+    };
+
+    const result = tx_submission.handleSendTransaction(std.testing.allocator, &rt, params);
+    try std.testing.expectError(tx_submission.TxSubmissionError.InvalidHexData, result);
+}
+
+test "eth_sendTransaction rejects malformed data field" {
+    var rt = try makeRuntime();
+    defer rt.deinit(std.testing.allocator);
+
+    var obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try obj.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try obj.put("data", .{ .string = "0x123" });
+
+    const params = jsonrpc.eth.SendTransaction.Params{
+        .transaction = .{ .value = .{ .object = obj } },
+    };
+
+    const result = tx_submission.handleSendTransaction(std.testing.allocator, &rt, params);
+    try std.testing.expectError(tx_submission.TxSubmissionError.InvalidHexData, result);
+}
+
+test "eth_sendTransaction rejects non-string data field" {
+    var rt = try makeRuntime();
+    defer rt.deinit(std.testing.allocator);
+
+    var obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try obj.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try obj.put("data", .{ .integer = 1 });
+
+    const params = jsonrpc.eth.SendTransaction.Params{
+        .transaction = .{ .value = .{ .object = obj } },
+    };
+
+    const result = tx_submission.handleSendTransaction(std.testing.allocator, &rt, params);
+    try std.testing.expectError(tx_submission.TxSubmissionError.InvalidHexData, result);
 }
 
 test "eth_sendTransaction supports EIP-1559 typed transactions" {
