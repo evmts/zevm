@@ -192,3 +192,34 @@ test "NodeHandler eth_estimateGas uses execution search" {
         else => return error.ExpectedStringResult,
     }
 }
+
+test "NodeHandler log filter lifecycle returns array results" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var filter_object = std.json.ObjectMap.init(allocator);
+    defer filter_object.deinit();
+
+    var new_filter_params = std.json.Array.init(allocator);
+    defer new_filter_params.deinit();
+    try new_filter_params.append(.{ .object = filter_object });
+
+    const new_filter_result = try callMethod(allocator, &handler, "eth_newFilter", .{ .array = new_filter_params });
+    const filter_id = switch (new_filter_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    var get_logs_params = std.json.Array.init(allocator);
+    defer get_logs_params.deinit();
+    try get_logs_params.append(.{ .string = filter_id });
+
+    const logs_result = try callMethod(allocator, &handler, "eth_getFilterLogs", .{ .array = get_logs_params });
+    switch (logs_result) {
+        .array => |_| {},
+        else => return error.ExpectedArrayResult,
+    }
+}

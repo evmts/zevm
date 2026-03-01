@@ -24,6 +24,7 @@ const FilterKind = enum {
 const FilterState = struct {
     kind: FilterKind,
     last_block: u64,
+    filter_json: ?[]u8 = null,
 };
 
 const CallRequest = struct {
@@ -59,6 +60,12 @@ pub const NodeHandler = struct {
     }
 
     pub fn deinit(self: *NodeHandler, allocator: std.mem.Allocator) void {
+        var filter_it = self.filters.valueIterator();
+        while (filter_it.next()) |filter_state| {
+            if (filter_state.filter_json) |json| {
+                allocator.free(json);
+            }
+        }
         self.filters.deinit();
         self.log_index.deinit(allocator);
         self.receipt_index.deinit(allocator);
@@ -299,35 +306,59 @@ pub const NodeHandler = struct {
         if (std.mem.eql(u8, method_name, "eth_newFilter")) {
             const id = self.next_filter_id;
             self.next_filter_id += 1;
-            try self.filters.put(id, .{ .kind = .log, .last_block = self.node_runtime.head_block_number });
+            const filter_json = try extractFilterJson(allocator, params);
+            errdefer allocator.free(filter_json);
+            try self.filters.put(id, .{
+                .kind = .log,
+                .last_block = self.node_runtime.head_block_number,
+                .filter_json = filter_json,
+            });
             return .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{id}) };
         }
         if (std.mem.eql(u8, method_name, "eth_newBlockFilter")) {
             const id = self.next_filter_id;
             self.next_filter_id += 1;
-            try self.filters.put(id, .{ .kind = .block, .last_block = self.node_runtime.head_block_number });
+            try self.filters.put(id, .{
+                .kind = .block,
+                .last_block = self.node_runtime.head_block_number,
+                .filter_json = null,
+            });
             return .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{id}) };
         }
         if (std.mem.eql(u8, method_name, "eth_newPendingTransactionFilter")) {
             const id = self.next_filter_id;
             self.next_filter_id += 1;
-            try self.filters.put(id, .{ .kind = .pending_transaction, .last_block = self.node_runtime.head_block_number });
+            try self.filters.put(id, .{
+                .kind = .pending_transaction,
+                .last_block = self.node_runtime.head_block_number,
+                .filter_json = null,
+            });
             return .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{id}) };
         }
         if (std.mem.eql(u8, method_name, "eth_getFilterChanges")) {
             return try self.handleGetFilterChanges(allocator, params);
         }
         if (std.mem.eql(u8, method_name, "eth_getFilterLogs")) {
-            return .{ .array = std.json.Array.init(allocator) };
+            return try self.handleGetFilterLogs(allocator, params);
         }
         if (std.mem.eql(u8, method_name, "eth_uninstallFilter")) {
             const id = parseFirstU64(params) orelse return error.InvalidParams;
-            return .{ .bool = self.filters.remove(id) };
+            if (self.filters.fetchRemove(id)) |entry| {
+                if (entry.value.filter_json) |json| {
+                    allocator.free(json);
+                }
+                return .{ .bool = true };
+            }
+            return .{ .bool = false };
         }
         if (std.mem.eql(u8, method_name, "eth_subscribe")) {
             const id = self.next_filter_id;
             self.next_filter_id += 1;
-            try self.filters.put(id, .{ .kind = .subscription, .last_block = self.node_runtime.head_block_number });
+            try self.filters.put(id, .{
+                .kind = .subscription,
+                .last_block = self.node_runtime.head_block_number,
+                .filter_json = null,
+            });
             return .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{id}) };
         }
         if (std.mem.eql(u8, method_name, "eth_unsubscribe")) {
@@ -517,16 +548,58 @@ pub const NodeHandler = struct {
             .block => {
                 var result_array = std.json.Array.init(allocator);
                 if (self.node_runtime.head_block_number > state.last_block) {
-                    const block_hash = syntheticBlockHash(self.node_runtime.head_block_number, self.node_runtime.current_timestamp);
-                    try result_array.append(.{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{block_hash}) });
+                    var block_number = state.last_block + 1;
+                    while (block_number <= self.node_runtime.head_block_number) : (block_number += 1) {
+                        const block_hash = syntheticBlockHash(block_number, self.node_runtime.current_timestamp);
+                        try result_array.append(.{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{block_hash}) });
+                    }
                     state.last_block = self.node_runtime.head_block_number;
                 }
                 return .{ .array = result_array };
             },
-            .pending_transaction, .log, .subscription => {
+            .log => {
+                const from_block = if (state.last_block < self.node_runtime.head_block_number) state.last_block + 1 else state.last_block;
+                const logs_value = try self.queryFilterLogs(allocator, state, from_block, self.node_runtime.head_block_number);
+                state.last_block = self.node_runtime.head_block_number;
+                return logs_value;
+            },
+            .pending_transaction, .subscription => {
                 return .{ .array = std.json.Array.init(allocator) };
             },
         }
+    }
+
+    fn handleGetFilterLogs(
+        self: *NodeHandler,
+        allocator: std.mem.Allocator,
+        params: ?std.json.Value,
+    ) !std.json.Value {
+        const id = parseFirstU64(params) orelse return error.InvalidParams;
+        const state = self.filters.getPtr(id) orelse return .{ .array = std.json.Array.init(allocator) };
+        if (state.kind != .log) {
+            return .{ .array = std.json.Array.init(allocator) };
+        }
+        return try self.queryFilterLogs(allocator, state, 0, self.node_runtime.head_block_number);
+    }
+
+    fn queryFilterLogs(
+        self: *NodeHandler,
+        allocator: std.mem.Allocator,
+        state: *const FilterState,
+        from_block: u64,
+        to_block: u64,
+    ) !std.json.Value {
+        var filter = try parseStoredFilter(allocator, state.filter_json);
+        filter.fromBlock = .{ .value = .{ .integer = @intCast(from_block) } };
+        filter.toBlock = .{ .value = .{ .integer = @intCast(to_block) } };
+
+        var block_query_context = makeBlockQueryContext(self);
+        const logs_result = try block_query_handlers.handleGetLogs(
+            allocator,
+            &block_query_context,
+            .{ .filter = filter },
+        );
+        return try toJsonValue(allocator, logs_result.logs);
     }
 };
 
@@ -668,6 +741,33 @@ fn extractStateOverrides(params: ?std.json.Value) ?std.json.Value {
     };
     if (array.len < 3) return null;
     return array[2];
+}
+
+fn extractFilterJson(allocator: std.mem.Allocator, params: ?std.json.Value) ![]u8 {
+    const array = switch (params orelse return allocator.dupe(u8, "{}")) {
+        .array => |arr| arr.items,
+        else => return allocator.dupe(u8, "{}"),
+    };
+    if (array.len == 0) return allocator.dupe(u8, "{}");
+
+    var writer = std.Io.Writer.Allocating.init(allocator);
+    defer writer.deinit();
+    try std.json.Stringify.value(array[0], .{}, &writer.writer);
+    return writer.toOwnedSlice();
+}
+
+fn parseStoredFilter(
+    allocator: std.mem.Allocator,
+    filter_json: ?[]u8,
+) !jsonrpc.types.Filter {
+    if (filter_json == null) return jsonrpc.types.Filter{};
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, filter_json.?, .{
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+
+    return std.json.innerParseFromValue(jsonrpc.types.Filter, allocator, parsed.value, .{}) catch jsonrpc.types.Filter{};
 }
 
 fn applyStateOverrides(
