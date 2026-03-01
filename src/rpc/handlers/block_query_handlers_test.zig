@@ -153,6 +153,43 @@ test "handleGetBlockByNumber: returns block at latest" {
     try std.testing.expect(result.block != null);
 }
 
+test "handleGetBlockByNumber: preserves block extraData" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var state = try setupCtx(allocator);
+    defer state.deinit(allocator);
+
+    const genesis = (try state.rt.blockchain.getBlockByNumber(0)).?;
+    var header = primitives.BlockHeader.BlockHeader{
+        .parent_hash = genesis.hash,
+        .number = 1,
+        .timestamp = 12,
+        .gas_limit = 30_000_000,
+        .base_fee_per_gas = runtime.DEFAULT_BASE_FEE,
+        .extra_data = &[_]u8{ 0xde, 0xad },
+    };
+    const body = primitives.BlockBody.init();
+    const block = try primitives.Block.from(&header, &body, allocator);
+    try state.rt.blockchain.putBlock(block);
+    try state.rt.blockchain.setCanonicalHead(block.hash);
+
+    state.rt.head_block_number = 1;
+
+    var ctx = state.getCtx();
+    const result = try block_query_handlers.handleGetBlockByNumber(
+        arena.allocator(),
+        &ctx,
+        .{ .block = makeBlockSpec("0x1"), .hydrated_transactions = false },
+    );
+    const rpc_block = result.block orelse return error.ExpectedBlock;
+    switch (rpc_block.extraData.value) {
+        .string => |value| try std.testing.expectEqualStrings("0xdead", value),
+        else => return error.ExpectedExtraDataString,
+    }
+}
+
 // ============================================================================
 // eth_getBlockByHash tests
 // ============================================================================

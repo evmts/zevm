@@ -344,7 +344,7 @@ fn internalBlockToRpc(
         .gasLimit = try quantityFromU64(allocator, resp.gasLimit),
         .gasUsed = try quantityFromU64(allocator, resp.gasUsed),
         .timestamp = try quantityFromU64(allocator, resp.timestamp),
-        .extraData = .{ .value = .{ .string = "0x" } },
+        .extraData = try dataFromBytes(allocator, resp.extraData),
         .mixHash = hashToRpc(resp.mixHash),
         .nonce = .{ .bytes = resp.nonce },
         .size = try quantityFromU64(allocator, resp.size),

@@ -31,7 +31,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 
 ## Validation
 
-- Full test suite: **268/268 passing** (`zig build test --summary all`)
+- Full test suite: **269/269 passing** (`zig build test --summary all`)
 - Full build: **passing** (`zig build`)
 
 ## Recent Completion Highlights
@@ -91,6 +91,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
   - now includes `baseFeePerBlobGas` and `blobGasUsedRatio` fields,
   - supports `reward` matrix output when reward percentiles are requested,
   - validates reward percentiles (finite, 0..100, nondecreasing) and maps invalid input to `Invalid params`.
+- Fixed block response conversion to preserve real `extraData` bytes instead of always returning `"0x"`, with regression coverage.
 
 ## Notes
 
