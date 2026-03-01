@@ -67,6 +67,21 @@ test "single notification returns HTTP 204 with no response body" {
     try std.testing.expect(response.body == null);
 }
 
+test "unknown method notification is suppressed (no response body)" {
+    const handlers = dispatcher.HandlerRegistry{};
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"method\":\"unknown_method\"}",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(std.http.Status.no_content, response.status);
+    try std.testing.expect(response.body == null);
+}
+
 test "batch notifications only returns HTTP 204 with no response body" {
     const handlers = dispatcher.HandlerRegistry{
         .on_method = &successHandler,
@@ -107,6 +122,32 @@ test "batch mixed notification and request omits notification response" {
     };
     try std.testing.expectEqual(@as(usize, 1), items.len);
     try std.testing.expectEqual(@as(i64, 1), (try getObjectField(items[0], "id")).integer);
+}
+
+test "mixed batch suppresses unknown notification error and keeps normal response" {
+    const handlers = dispatcher.HandlerRegistry{
+        .on_method = &successHandler,
+    };
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "[{\"jsonrpc\":\"2.0\",\"method\":\"unknown_method\"},{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_blockNumber\"}]",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(std.http.Status.ok, response.status);
+
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+    const items = switch (parsed.value) {
+        .array => |array| array.items,
+        else => return error.ExpectedArray,
+    };
+    try std.testing.expectEqual(@as(usize, 1), items.len);
+    try std.testing.expectEqual(@as(i64, 1), (try getObjectField(items[0], "id")).integer);
+    try std.testing.expectEqual(@as(i64, 7), (try getObjectField(items[0], "result")).integer);
 }
 
 test "request with id null still returns JSON-RPC response" {
