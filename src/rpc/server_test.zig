@@ -419,6 +419,63 @@ test "invalid request object with string id echoes string id in error response" 
     try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.INVALID_REQUEST), (try getObjectField(error_object, "code")).integer);
 }
 
+test "invalid request object with integral float id echoes integer id in error response" {
+    const handlers = dispatcher.HandlerRegistry{};
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"1.0\",\"id\":7.0,\"method\":\"eth_blockNumber\"}",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(i64, 7), (try getObjectField(parsed.value, "id")).integer);
+    const error_object = try getObjectField(parsed.value, "error");
+    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.INVALID_REQUEST), (try getObjectField(error_object, "code")).integer);
+}
+
+test "invalid request object with fractional float id returns null id" {
+    const handlers = dispatcher.HandlerRegistry{};
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"1.0\",\"id\":7.5,\"method\":\"eth_blockNumber\"}",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+
+    try std.testing.expect((try getObjectField(parsed.value, "id")) == .null);
+    const error_object = try getObjectField(parsed.value, "error");
+    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.INVALID_REQUEST), (try getObjectField(error_object, "code")).integer);
+}
+
+test "invalid request object with out-of-range float id returns null id" {
+    const handlers = dispatcher.HandlerRegistry{};
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"1.0\",\"id\":1e30,\"method\":\"eth_blockNumber\"}",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+
+    try std.testing.expect((try getObjectField(parsed.value, "id")) == .null);
+    const error_object = try getObjectField(parsed.value, "error");
+    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.INVALID_REQUEST), (try getObjectField(error_object, "code")).integer);
+}
+
 test "unknown method returns -32601" {
     const handlers = dispatcher.HandlerRegistry{};
 

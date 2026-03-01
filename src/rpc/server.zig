@@ -511,8 +511,21 @@ fn extractErrorId(value: std.json.Value) ?jsonrpc.envelope.Id {
     return switch (id_value) {
         .null => .{ .null_value = {} },
         .integer => |i| .{ .integer = i },
-        .float => |f| .{ .integer = @intFromFloat(f) },
+        .float => |f| extractFloatErrorId(f),
         .string => |s| .{ .string = s },
         else => null,
     };
+}
+
+fn extractFloatErrorId(value: f64) ?jsonrpc.envelope.Id {
+    if (!std.math.isFinite(value)) return null;
+
+    const floor_value = std.math.floor(value);
+    if (floor_value != value) return null;
+
+    const min_i64_f64 = @as(f64, @floatFromInt(std.math.minInt(i64)));
+    const max_i64_f64 = @as(f64, @floatFromInt(std.math.maxInt(i64)));
+    if (value < min_i64_f64 or value > max_i64_f64) return null;
+
+    return .{ .integer = @as(i64, @intFromFloat(value)) };
 }

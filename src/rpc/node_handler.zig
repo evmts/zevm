@@ -54,6 +54,16 @@ const TraceExecutionResult = struct {
     struct_logs: std.json.Array,
 };
 
+const HostForkResolverContext = struct {
+    allocator: std.mem.Allocator,
+    node_runtime: *runtime.NodeRuntime,
+};
+
+fn resolveHostForkPending(context: *anyopaque) bool {
+    const typed_context: *HostForkResolverContext = @ptrCast(@alignCast(context));
+    return typed_context.node_runtime.processForkRequests(typed_context.allocator) catch false;
+}
+
 const RuntimeSnapshot = struct {
     coinbase: primitives.Address,
     block_gas_limit: u64,
@@ -555,7 +565,17 @@ pub const NodeHandler = struct {
             .blob_base_fee = self.node_runtime.blob_base_fee,
         };
 
-        var adapter = host_adapter.HostAdapter{ .state = &self.node_runtime.state };
+        var host_fork_resolver_context = HostForkResolverContext{
+            .allocator = allocator,
+            .node_runtime = &self.node_runtime,
+        };
+        var adapter = host_adapter.HostAdapter{
+            .state = &self.node_runtime.state,
+            .fork_resolver = .{
+                .context = @ptrCast(&host_fork_resolver_context),
+                .resolve = resolveHostForkPending,
+            },
+        };
         const host_iface = adapter.hostInterface();
 
         const EvmType = guillotine_mini.Evm(.{});
@@ -664,7 +684,17 @@ pub const NodeHandler = struct {
             .blob_base_fee = self.node_runtime.blob_base_fee,
         };
 
-        var adapter = host_adapter.HostAdapter{ .state = &self.node_runtime.state };
+        var host_fork_resolver_context = HostForkResolverContext{
+            .allocator = allocator,
+            .node_runtime = &self.node_runtime,
+        };
+        var adapter = host_adapter.HostAdapter{
+            .state = &self.node_runtime.state,
+            .fork_resolver = .{
+                .context = @ptrCast(&host_fork_resolver_context),
+                .resolve = resolveHostForkPending,
+            },
+        };
         const host_iface = adapter.hostInterface();
         var receipt = tx_processor.processTransaction(
             allocator,
@@ -788,7 +818,17 @@ pub const NodeHandler = struct {
             .blob_base_fee = self.node_runtime.blob_base_fee,
         };
 
-        var adapter = host_adapter.HostAdapter{ .state = &self.node_runtime.state };
+        var host_fork_resolver_context = HostForkResolverContext{
+            .allocator = allocator,
+            .node_runtime = &self.node_runtime,
+        };
+        var adapter = host_adapter.HostAdapter{
+            .state = &self.node_runtime.state,
+            .fork_resolver = .{
+                .context = @ptrCast(&host_fork_resolver_context),
+                .resolve = resolveHostForkPending,
+            },
+        };
         const host_iface = adapter.hostInterface();
         const EvmType = guillotine_mini.Evm(.{});
         var evm: EvmType = undefined;

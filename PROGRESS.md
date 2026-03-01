@@ -31,7 +31,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 
 ## Validation
 
-- Full test suite: **219/219 passing** (`zig build test --summary all`)
+- Full test suite: **224/224 passing** (`zig build test --summary all`)
 - Full build: **passing** (`zig build`)
 
 ## Recent Completion Highlights
@@ -55,6 +55,11 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 - Improved invalid-request compatibility by echoing request `id` when present and parseable.
 - Added config validation that `--fork-block-number` requires `--fork-url`.
 - Expanded invalid-request ID compatibility coverage (integer/string/float input handling for error `id` echo).
+- Hardened host adapter fork behavior to resolve async `RpcPending` requests safely instead of panicking.
+- Wired fork request resolution into `eth_call`, gas estimation, tracing, and mined transaction execution paths.
+- Fixed automine to only evict transactions that were actually mined in the block.
+- Added host adapter fork regression tests for unresolved-default fallback and resolver-backed request completion.
+- Hardened invalid-request `id` echo for float values (integral in-range only; fractional/out-of-range safely return `null` id).
 
 ## Notes
 

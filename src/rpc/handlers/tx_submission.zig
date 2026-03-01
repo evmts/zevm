@@ -22,6 +22,16 @@ pub const TxSubmissionError = error{
     StateError,
 };
 
+const HostForkResolverContext = struct {
+    allocator: std.mem.Allocator,
+    node_runtime: *runtime.NodeRuntime,
+};
+
+fn resolveHostForkPending(context: *anyopaque) bool {
+    const typed_context: *HostForkResolverContext = @ptrCast(@alignCast(context));
+    return typed_context.node_runtime.processForkRequests(typed_context.allocator) catch false;
+}
+
 pub fn handleSendRawTransaction(
     allocator: std.mem.Allocator,
     rt: *runtime.NodeRuntime,
@@ -363,8 +373,21 @@ fn automine(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime) !void {
         .block_base_fee = next_base_fee,
         .blob_base_fee = rt.blob_base_fee,
     };
-    var adapter = host_adapter.HostAdapter{ .state = &rt.state };
+    var host_fork_resolver_context = HostForkResolverContext{
+        .allocator = allocator,
+        .node_runtime = rt,
+    };
+    var adapter = host_adapter.HostAdapter{
+        .state = &rt.state,
+        .fork_resolver = .{
+            .context = @ptrCast(&host_fork_resolver_context),
+            .resolve = resolveHostForkPending,
+        },
+    };
     const host_iface = adapter.hostInterface();
+
+    var mined_hashes = std.ArrayList([32]u8).empty;
+    defer mined_hashes.deinit(allocator);
     var tx_index: u64 = 0;
     for (ready) |pooled_tx| {
         const record = rt.getTransactionRecord(pooled_tx.hash) orelse continue;
@@ -388,8 +411,11 @@ fn automine(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime) !void {
             next_timestamp,
             tx_index,
         );
+        try mined_hashes.append(allocator, pooled_tx.hash);
         tx_index += 1;
     }
+
+    if (mined_hashes.items.len == 0) return;
 
     rt.head_block_number = next_block_number;
     rt.current_timestamp = next_timestamp;
@@ -406,12 +432,7 @@ fn automine(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime) !void {
     );
 
     // Remove mined txs from pool
-    var mined_hashes = try allocator.alloc([32]u8, ready.len);
-    defer allocator.free(mined_hashes);
-    for (ready, 0..) |pooled_tx, i| {
-        mined_hashes[i] = pooled_tx.hash;
-    }
-    rt.pool.removeMined(mined_hashes);
+    rt.pool.removeMined(mined_hashes.items);
 }
 
 fn computeTxHash(raw_bytes: []const u8) [32]u8 {
