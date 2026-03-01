@@ -188,6 +188,32 @@ test "automine: auto mode mines block on valid tx" {
     try std.testing.expectEqual(@as(usize, 0), rt.pool.pendingCount());
 }
 
+test "automine persists canonical block body with mined transaction" {
+    var rt = try makeRuntime();
+    defer rt.deinit(std.testing.allocator);
+
+    const encoded = try signTestLegacyTx(
+        std.testing.allocator,
+        0,
+        runtime.DEFAULT_GAS_PRICE,
+        21_000,
+        runtime.DEFAULT_DEV_ACCOUNTS[1],
+        1000,
+        runtime.DEFAULT_CHAIN_ID,
+        runtime.DEFAULT_DEV_PRIVATE_KEYS[0],
+    );
+    defer std.testing.allocator.free(encoded);
+
+    const hex = try bytesToHexAlloc(std.testing.allocator, encoded);
+    defer std.testing.allocator.free(hex);
+
+    _ = try tx_submission.handleSendRawTransaction(std.testing.allocator, &rt, makeRawTxParams(hex));
+
+    const mined_block = try rt.blockchain.getBlockByNumber(1);
+    try std.testing.expect(mined_block != null);
+    try std.testing.expectEqual(@as(usize, 1), mined_block.?.body.transactions.len);
+}
+
 test "automine: manual mode does not mine" {
     var rt = try makeRuntime();
     defer rt.deinit(std.testing.allocator);

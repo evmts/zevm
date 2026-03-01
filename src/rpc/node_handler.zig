@@ -78,6 +78,8 @@ const RuntimeSnapshot = struct {
     interval_seconds: u64,
     tx_index: std.AutoHashMap([32]u8, runtime.TransactionRecord),
     pool: txpool.TxPool,
+    receipt_index: receipt_index.ReceiptIndex,
+    log_index: log_index.LogIndex,
     pending_tx_events: std.ArrayList([32]u8),
     mined_block_events: std.ArrayList(runtime.BlockEvent),
     impersonated_accounts: std.AutoHashMap(primitives.Address, void),
@@ -89,6 +91,8 @@ const RuntimeSnapshot = struct {
         }
         self.tx_index.deinit();
         self.pool.deinit(allocator);
+        self.log_index.deinit(allocator);
+        self.receipt_index.deinit(allocator);
         self.pending_tx_events.deinit(allocator);
         self.mined_block_events.deinit(allocator);
         self.impersonated_accounts.deinit();
@@ -222,7 +226,15 @@ pub const NodeHandler = struct {
         }
         if (std.mem.eql(u8, method_name, "eth_sendRawTransaction")) {
             const parsed = try parseParams(jsonrpc.eth.SendRawTransaction.Params, temp_allocator, params);
-            const result = tx_submission.handleSendRawTransaction(allocator, &self.node_runtime, parsed) catch |err| switch (err) {
+            const result = tx_submission.handleSendRawTransactionWithIndexes(
+                allocator,
+                &self.node_runtime,
+                parsed,
+                .{
+                    .receipt_index = &self.receipt_index,
+                    .log_index = &self.log_index,
+                },
+            ) catch |err| switch (err) {
                 tx_submission.TxSubmissionError.InvalidHexData,
                 tx_submission.TxSubmissionError.DecodeFailed,
                 tx_submission.TxSubmissionError.SenderRecoveryFailed,
@@ -240,7 +252,15 @@ pub const NodeHandler = struct {
         }
         if (std.mem.eql(u8, method_name, "eth_sendTransaction")) {
             const parsed = try parseParams(jsonrpc.eth.SendTransaction.Params, temp_allocator, params);
-            const result = tx_submission.handleSendTransaction(allocator, &self.node_runtime, parsed) catch |err| switch (err) {
+            const result = tx_submission.handleSendTransactionWithIndexes(
+                allocator,
+                &self.node_runtime,
+                parsed,
+                .{
+                    .receipt_index = &self.receipt_index,
+                    .log_index = &self.log_index,
+                },
+            ) catch |err| switch (err) {
                 tx_submission.TxSubmissionError.InvalidHexData,
                 tx_submission.TxSubmissionError.DecodeFailed,
                 tx_submission.TxSubmissionError.SenderRecoveryFailed,
@@ -414,26 +434,16 @@ pub const NodeHandler = struct {
             var i: u64 = 0;
             while (i < count) : (i += 1) {
                 if (self.node_runtime.pool.pendingCount() > 0) {
-                    try tx_submission.minePendingTransactions(allocator, &self.node_runtime);
-                } else {
-                    const parent_hash = self.node_runtime.head_block_hash;
-                    const next_timestamp: u64 = self.node_runtime.next_block_timestamp_override orelse self.node_runtime.current_timestamp + 1;
-                    const next_base_fee: u256 = self.node_runtime.next_block_base_fee_override orelse self.node_runtime.base_fee;
-                    const next_block_number = self.node_runtime.head_block_number + 1;
-                    const block_hash = syntheticBlockHash(next_block_number, next_timestamp);
-                    self.node_runtime.head_block_number = next_block_number;
-                    self.node_runtime.current_timestamp = next_timestamp;
-                    self.node_runtime.base_fee = next_base_fee;
-                    self.node_runtime.next_block_timestamp_override = null;
-                    self.node_runtime.next_block_base_fee_override = null;
-                    try self.node_runtime.recordMinedBlock(
+                    try tx_submission.minePendingTransactionsWithIndexes(
                         allocator,
-                        next_block_number,
-                        block_hash,
-                        parent_hash,
-                        next_timestamp,
-                        next_base_fee,
+                        &self.node_runtime,
+                        .{
+                            .receipt_index = &self.receipt_index,
+                            .log_index = &self.log_index,
+                        },
                     );
+                } else {
+                    _ = try tx_submission.mineEmptyBlock(allocator, &self.node_runtime);
                 }
             }
             return .{ .string = try allocator.dupe(u8, "0x0") };
@@ -1046,7 +1056,14 @@ pub const NodeHandler = struct {
 
         const interval_ns: i128 = @as(i128, @intCast(self.node_runtime.interval_seconds)) * std.time.ns_per_s;
         if (now - self.last_interval_mine_ns.? >= interval_ns) {
-            try tx_submission.minePendingTransactions(allocator, &self.node_runtime);
+            try tx_submission.minePendingTransactionsWithIndexes(
+                allocator,
+                &self.node_runtime,
+                .{
+                    .receipt_index = &self.receipt_index,
+                    .log_index = &self.log_index,
+                },
+            );
             self.last_interval_mine_ns = now;
         }
     }
@@ -1063,6 +1080,12 @@ pub const NodeHandler = struct {
 
         var pool_copy = try copyTxPool(allocator, &self.node_runtime.pool);
         errdefer pool_copy.deinit(allocator);
+
+        var receipt_index_copy = try copyReceiptIndex(allocator, &self.receipt_index);
+        errdefer receipt_index_copy.deinit(allocator);
+
+        var log_index_copy = try copyLogIndex(allocator, &self.log_index);
+        errdefer log_index_copy.deinit(allocator);
 
         var pending_tx_events_copy = std.ArrayList([32]u8).empty;
         errdefer pending_tx_events_copy.deinit(allocator);
@@ -1089,6 +1112,8 @@ pub const NodeHandler = struct {
             .interval_seconds = self.node_runtime.interval_seconds,
             .tx_index = tx_index_copy,
             .pool = pool_copy,
+            .receipt_index = receipt_index_copy,
+            .log_index = log_index_copy,
             .pending_tx_events = pending_tx_events_copy,
             .mined_block_events = mined_block_events_copy,
             .impersonated_accounts = impersonated_accounts_copy,
@@ -1106,6 +1131,8 @@ pub const NodeHandler = struct {
         }
         self.node_runtime.tx_index.deinit();
         self.node_runtime.pool.deinit(allocator);
+        self.log_index.deinit(allocator);
+        self.receipt_index.deinit(allocator);
         self.node_runtime.pending_tx_events.deinit(allocator);
         self.node_runtime.mined_block_events.deinit(allocator);
         self.node_runtime.impersonated_accounts.deinit();
@@ -1123,12 +1150,16 @@ pub const NodeHandler = struct {
         self.node_runtime.interval_seconds = snapshot.interval_seconds;
         self.node_runtime.tx_index = snapshot.tx_index;
         self.node_runtime.pool = snapshot.pool;
+        self.receipt_index = snapshot.receipt_index;
+        self.log_index = snapshot.log_index;
         self.node_runtime.pending_tx_events = snapshot.pending_tx_events;
         self.node_runtime.mined_block_events = snapshot.mined_block_events;
         self.node_runtime.impersonated_accounts = snapshot.impersonated_accounts;
 
         snapshot.tx_index = std.AutoHashMap([32]u8, runtime.TransactionRecord).init(allocator);
         snapshot.pool = txpool.TxPool.init(allocator);
+        snapshot.receipt_index = receipt_index.ReceiptIndex.init(allocator);
+        snapshot.log_index = log_index.LogIndex.init();
         snapshot.pending_tx_events = std.ArrayList([32]u8).empty;
         snapshot.mined_block_events = std.ArrayList(runtime.BlockEvent).empty;
         snapshot.impersonated_accounts = std.AutoHashMap(primitives.Address, void).init(allocator);
@@ -1677,6 +1708,44 @@ fn copyTxPool(
     return copy;
 }
 
+fn copyReceiptIndex(
+    allocator: std.mem.Allocator,
+    source: *const receipt_index.ReceiptIndex,
+) !receipt_index.ReceiptIndex {
+    var copy = receipt_index.ReceiptIndex.init(allocator);
+    errdefer copy.deinit(allocator);
+
+    var source_it = source.by_block.iterator();
+    while (source_it.next()) |entry| {
+        try copy.putBlockReceipts(allocator, entry.key_ptr.*, entry.value_ptr.*);
+    }
+    return copy;
+}
+
+fn copyLogIndex(
+    allocator: std.mem.Allocator,
+    source: *const log_index.LogIndex,
+) !log_index.LogIndex {
+    var copy = log_index.LogIndex.init();
+    errdefer copy.deinit(allocator);
+
+    try copy.logs.ensureTotalCapacity(allocator, source.logs.items.len);
+    for (source.logs.items) |entry| {
+        const cloned_log = try primitives.EventLog.clone(allocator, entry.log);
+        try copy.logs.append(allocator, .{
+            .log = cloned_log,
+            .block_hash = entry.block_hash,
+        });
+    }
+
+    var range_it = source.block_range.iterator();
+    while (range_it.next()) |entry| {
+        try copy.block_range.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
+    }
+
+    return copy;
+}
+
 fn copyAddressSet(
     allocator: std.mem.Allocator,
     source: *const std.AutoHashMap(primitives.Address, void),
@@ -1858,13 +1927,4 @@ fn hexDigitToNibble(digit: u8) u8 {
         'A'...'F' => digit - 'A' + 10,
         else => 0xff,
     };
-}
-
-fn syntheticBlockHash(block_number: u64, timestamp: u64) [32]u8 {
-    var bytes: [16]u8 = undefined;
-    std.mem.writeInt(u64, bytes[0..8], block_number, .big);
-    std.mem.writeInt(u64, bytes[8..16], timestamp, .big);
-    var out: [32]u8 = undefined;
-    std.crypto.hash.sha3.Keccak256.hash(&bytes, &out, .{});
-    return out;
 }

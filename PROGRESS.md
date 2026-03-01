@@ -31,7 +31,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 
 ## Validation
 
-- Full test suite: **279/279 passing** (`zig build test --summary all`)
+- Full test suite: **282/282 passing** (`zig build test --summary all`)
 - Full build: **passing** (`zig build`)
 
 ## Recent Completion Highlights
@@ -99,6 +99,17 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
   - added NodeHandler and server-level `-32602` regressions.
 - Added server-level regression coverage that `eth_newFilter` with missing params maps to `-32602`.
 - Added shared call-request parser regressions so non-string `from` is rejected consistently across `eth_call`, `eth_estimateGas`, and `debug_traceCall` (including server-level `-32602` coverage).
+- Implemented canonical block sealing for mined transactions and empty `evm_mine`/`hardhat_mine` blocks:
+  - mined blocks are now persisted in blockchain storage,
+  - block bodies include mined transactions,
+  - transaction metadata (`blockHash`, `blockNumber`, index) now reflects canonical sealed blocks.
+- Wired production mining flow to index receipts/logs at seal time, fixing end-to-end `eth_getTransactionReceipt` / `eth_getBlockReceipts` / `eth_getLogs` visibility for real mined transactions.
+- Added stable ownership for block-body transaction bytes to prevent dangling references across runtime snapshot/revert.
+- Extended `evm_snapshot`/`evm_revert` runtime snapshots to include receipt/log indexes, restoring index state correctly on revert.
+- Added regression coverage for:
+  - canonical empty-block persistence via `evm_mine`,
+  - canonical mined block body persistence in automine,
+  - receipt/log index rollback correctness after `evm_revert`.
 
 ## Notes
 

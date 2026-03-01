@@ -71,8 +71,7 @@ test "NodeHandler eth_getLogs invalid filter returns InvalidParams" {
     var handler = try node_handler.NodeHandler.init(allocator, null);
     defer handler.deinit(allocator);
 
-    const params = try parseParams(
-        allocator,
+    const params = try parseParams(allocator,
         \\[{"fromBlock":"0x2","toBlock":"0x1"}]
     );
     try std.testing.expectError(
@@ -89,8 +88,7 @@ test "NodeHandler eth_getLogs malformed block quantity returns InvalidParams" {
     var handler = try node_handler.NodeHandler.init(allocator, null);
     defer handler.deinit(allocator);
 
-    const params = try parseParams(
-        allocator,
+    const params = try parseParams(allocator,
         \\[{"fromBlock":"0xZZ","toBlock":"0x1"}]
     );
     try std.testing.expectError(
@@ -107,8 +105,7 @@ test "NodeHandler eth_getStorageAt malformed slot returns InvalidParams" {
     var handler = try node_handler.NodeHandler.init(allocator, null);
     defer handler.deinit(allocator);
 
-    const params = try parseParams(
-        allocator,
+    const params = try parseParams(allocator,
         \\["0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266","0xZZ","latest"]
     );
     try std.testing.expectError(
@@ -125,8 +122,7 @@ test "NodeHandler eth_feeHistory invalid block_count returns InvalidParams" {
     var handler = try node_handler.NodeHandler.init(allocator, null);
     defer handler.deinit(allocator);
 
-    const params = try parseParams(
-        allocator,
+    const params = try parseParams(allocator,
         \\["0xZZ","latest",[]]
     );
     try std.testing.expectError(
@@ -143,8 +139,7 @@ test "NodeHandler eth_feeHistory descending reward percentiles return InvalidPar
     var handler = try node_handler.NodeHandler.init(allocator, null);
     defer handler.deinit(allocator);
 
-    const params = try parseParams(
-        allocator,
+    const params = try parseParams(allocator,
         \\["0x1","latest",[90,10]]
     );
     try std.testing.expectError(
@@ -161,8 +156,7 @@ test "NodeHandler eth_feeHistory includes reward matrix when percentiles provide
     var handler = try node_handler.NodeHandler.init(allocator, null);
     defer handler.deinit(allocator);
 
-    const params = try parseParams(
-        allocator,
+    const params = try parseParams(allocator,
         \\["0x1","latest",[10,50]]
     );
     const result = try callMethod(allocator, &handler, "eth_feeHistory", params);
@@ -956,6 +950,20 @@ test "NodeHandler evm_setBlockGasLimit constrains automine inclusion" {
     try std.testing.expectEqual(@as(usize, 1), handler.node_runtime.pool.pendingCount());
 }
 
+test "NodeHandler evm_mine persists empty canonical block" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    _ = try callMethod(allocator, &handler, "evm_mine", null);
+
+    const mined_block = try handler.node_runtime.blockchain.getBlockByNumber(1);
+    try std.testing.expect(mined_block != null);
+    try std.testing.expectEqual(@as(usize, 0), mined_block.?.body.transactions.len);
+}
+
 test "NodeHandler evm_revert restores runtime snapshot metadata and mempool" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1015,6 +1023,62 @@ test "NodeHandler evm_revert restores runtime snapshot metadata and mempool" {
 
     const tx_hash_bytes = primitives.Hex.hexToBytesFixed(32, tx_hash) catch return error.InvalidHexData;
     try std.testing.expect(handler.node_runtime.getTransactionRecord(tx_hash_bytes) == null);
+}
+
+test "NodeHandler evm_revert restores receipt and log indexes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    const snapshot_result = try callMethod(allocator, &handler, "evm_snapshot", .{ .array = std.json.Array.init(allocator) });
+    const snapshot_id = switch (snapshot_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    var tx_object = std.json.ObjectMap.init(allocator);
+    defer tx_object.deinit();
+    try tx_object.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try tx_object.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try tx_object.put("value", .{ .string = "0x1" });
+    try tx_object.put("gas", .{ .string = "0x5208" });
+
+    var send_params = std.json.Array.init(allocator);
+    defer send_params.deinit();
+    try send_params.append(.{ .object = tx_object });
+    const send_result = try callMethod(allocator, &handler, "eth_sendTransaction", .{ .array = send_params });
+    const tx_hash = switch (send_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    var receipt_params = std.json.Array.init(allocator);
+    defer receipt_params.deinit();
+    try receipt_params.append(.{ .string = tx_hash });
+    const mined_receipt = try callMethod(allocator, &handler, "eth_getTransactionReceipt", .{ .array = receipt_params });
+    switch (mined_receipt) {
+        .object => {},
+        else => return error.ExpectedObjectResult,
+    }
+
+    var revert_params = std.json.Array.init(allocator);
+    defer revert_params.deinit();
+    try revert_params.append(.{ .string = snapshot_id });
+    const revert_result = try callMethod(allocator, &handler, "evm_revert", .{ .array = revert_params });
+    try std.testing.expect(revert_result.bool);
+
+    var reverted_receipt_params = std.json.Array.init(allocator);
+    defer reverted_receipt_params.deinit();
+    try reverted_receipt_params.append(.{ .string = tx_hash });
+    const reverted_receipt = try callMethod(allocator, &handler, "eth_getTransactionReceipt", .{ .array = reverted_receipt_params });
+    switch (reverted_receipt) {
+        .null => {},
+        else => return error.ExpectedNullResult,
+    }
+
+    try std.testing.expectEqual(@as(usize, 0), handler.log_index.logs.items.len);
 }
 
 test "NodeHandler evm_setNextBlockTimestamp applies on next mined block" {

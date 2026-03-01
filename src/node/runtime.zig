@@ -111,6 +111,7 @@ pub const NodeRuntime = struct {
     blockchain: blockchain.Blockchain,
     pool: txpool.TxPool,
     tx_index: std.AutoHashMap([32]u8, TransactionRecord),
+    sealed_block_transaction_bytes: std.ArrayList([]u8),
     pending_tx_events: std.ArrayList([32]u8),
     mined_block_events: std.ArrayList(BlockEvent),
     impersonated_accounts: std.AutoHashMap(primitives.Address, void),
@@ -185,6 +186,7 @@ pub const NodeRuntime = struct {
                 .blockchain = chain,
                 .pool = txpool.TxPool.init(allocator),
                 .tx_index = std.AutoHashMap([32]u8, TransactionRecord).init(allocator),
+                .sealed_block_transaction_bytes = std.ArrayList([]u8).empty,
                 .pending_tx_events = std.ArrayList([32]u8).empty,
                 .mined_block_events = std.ArrayList(BlockEvent).empty,
                 .impersonated_accounts = std.AutoHashMap(primitives.Address, void).init(allocator),
@@ -230,6 +232,7 @@ pub const NodeRuntime = struct {
             .blockchain = chain,
             .pool = txpool.TxPool.init(allocator),
             .tx_index = std.AutoHashMap([32]u8, TransactionRecord).init(allocator),
+            .sealed_block_transaction_bytes = std.ArrayList([]u8).empty,
             .pending_tx_events = std.ArrayList([32]u8).empty,
             .mined_block_events = std.ArrayList(BlockEvent).empty,
             .impersonated_accounts = std.AutoHashMap(primitives.Address, void).init(allocator),
@@ -268,6 +271,10 @@ pub const NodeRuntime = struct {
         self.pool.deinit(allocator);
         self.impersonated_accounts.deinit();
         self.blockchain.deinit();
+        for (self.sealed_block_transaction_bytes.items) |raw| {
+            allocator.free(raw);
+        }
+        self.sealed_block_transaction_bytes.deinit(allocator);
         self.state.deinit();
         if (self.fork_block_cache) |fork_cache| {
             fork_cache.deinit();
@@ -362,6 +369,17 @@ pub const NodeRuntime = struct {
             .base_fee = block_base_fee,
         });
         self.head_block_hash = block_hash;
+    }
+
+    pub fn retainBlockTransactionRaw(
+        self: *NodeRuntime,
+        allocator: std.mem.Allocator,
+        raw_tx: []const u8,
+    ) ![]const u8 {
+        const owned = try allocator.dupe(u8, raw_tx);
+        errdefer allocator.free(owned);
+        try self.sealed_block_transaction_bytes.append(allocator, owned);
+        return owned;
     }
 
     pub fn impersonateAccount(

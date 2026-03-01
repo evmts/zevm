@@ -6,6 +6,8 @@ const guillotine_mini = @import("guillotine_mini");
 const runtime = @import("../../node/runtime.zig");
 const host_adapter = @import("../../host_adapter.zig");
 const tx_processor = @import("../../tx_processor.zig");
+const receipt_index = @import("../../receipt_index.zig");
+const log_index = @import("../../log_index.zig");
 
 pub const TxSubmissionError = error{
     InvalidHexData,
@@ -32,10 +34,24 @@ fn resolveHostForkPending(context: *anyopaque) bool {
     return typed_context.node_runtime.processForkRequests(typed_context.allocator) catch false;
 }
 
+pub const MiningIndexes = struct {
+    receipt_index: *receipt_index.ReceiptIndex,
+    log_index: *log_index.LogIndex,
+};
+
 pub fn handleSendRawTransaction(
     allocator: std.mem.Allocator,
     rt: *runtime.NodeRuntime,
     params: jsonrpc.eth.SendRawTransaction.Params,
+) TxSubmissionError!jsonrpc.eth.SendRawTransaction.Result {
+    return handleSendRawTransactionWithIndexes(allocator, rt, params, null);
+}
+
+pub fn handleSendRawTransactionWithIndexes(
+    allocator: std.mem.Allocator,
+    rt: *runtime.NodeRuntime,
+    params: jsonrpc.eth.SendRawTransaction.Params,
+    indexes: ?MiningIndexes,
 ) TxSubmissionError!jsonrpc.eth.SendRawTransaction.Result {
     // Extract hex string from the Quantity param
     const hex_str = switch (params.transaction.value) {
@@ -100,7 +116,7 @@ pub fn handleSendRawTransaction(
 
     // Automine if in auto mode
     if (rt.mining_mode == .auto) {
-        automine(allocator, rt) catch {};
+        automine(allocator, rt, indexes) catch {};
     }
 
     return .{ .value = .{ .bytes = tx_hash } };
@@ -110,6 +126,15 @@ pub fn handleSendTransaction(
     allocator: std.mem.Allocator,
     rt: *runtime.NodeRuntime,
     params: jsonrpc.eth.SendTransaction.Params,
+) TxSubmissionError!jsonrpc.eth.SendTransaction.Result {
+    return handleSendTransactionWithIndexes(allocator, rt, params, null);
+}
+
+pub fn handleSendTransactionWithIndexes(
+    allocator: std.mem.Allocator,
+    rt: *runtime.NodeRuntime,
+    params: jsonrpc.eth.SendTransaction.Params,
+    indexes: ?MiningIndexes,
 ) TxSubmissionError!jsonrpc.eth.SendTransaction.Result {
     // Parse the transaction object from the JSON value
     const tx_obj = switch (params.transaction.value) {
@@ -420,17 +445,29 @@ pub fn handleSendTransaction(
 
     // Automine if in auto mode
     if (rt.mining_mode == .auto) {
-        automine(allocator, rt) catch {};
+        automine(allocator, rt, indexes) catch {};
     }
 
     return .{ .value = .{ .bytes = tx_hash } };
 }
 
 pub fn minePendingTransactions(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime) !void {
-    try automine(allocator, rt);
+    try automine(allocator, rt, null);
 }
 
-fn automine(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime) !void {
+pub fn minePendingTransactionsWithIndexes(
+    allocator: std.mem.Allocator,
+    rt: *runtime.NodeRuntime,
+    indexes: ?MiningIndexes,
+) !void {
+    try automine(allocator, rt, indexes);
+}
+
+fn automine(
+    allocator: std.mem.Allocator,
+    rt: *runtime.NodeRuntime,
+    indexes: ?MiningIndexes,
+) !void {
     const ready = try rt.pool.getReady(allocator);
     defer allocator.free(ready);
 
@@ -443,7 +480,6 @@ fn automine(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime) !void {
     else
         rt.current_timestamp + 1;
     const next_base_fee = rt.next_block_base_fee_override orelse rt.base_fee;
-    const block_hash = syntheticBlockHash(next_block_number, next_timestamp);
     const block_ctx = guillotine_mini.BlockContext{
         .chain_id = rt.chain_id,
         .block_number = next_block_number,
@@ -470,8 +506,19 @@ fn automine(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime) !void {
 
     var mined_hashes = std.ArrayList([32]u8).empty;
     defer mined_hashes.deinit(allocator);
+    var mined_receipts = std.ArrayList(primitives.Receipt.Receipt).empty;
+    defer {
+        for (mined_receipts.items) |receipt| {
+            receipt.deinit(allocator);
+        }
+        mined_receipts.deinit(allocator);
+    }
+    var block_transactions = std.ArrayList(primitives.BlockBody.TransactionData).empty;
+    defer block_transactions.deinit(allocator);
+
     var remaining_block_gas = rt.block_gas_limit;
-    var tx_index: u64 = 0;
+    var cumulative_gas_used: u64 = 0;
+    var global_log_index: u32 = 0;
     for (ready) |pooled_tx| {
         const record = rt.getTransactionRecord(pooled_tx.hash) orelse continue;
         const decoded = primitives.Transaction.decodeRawTransaction(allocator, record.raw) catch continue;
@@ -482,8 +529,8 @@ fn automine(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime) !void {
             continue;
         }
 
-        const exec_tx = executionTxFromDecoded(record.sender, decoded);
-        _ = tx_processor.processTransaction(
+        const exec_tx = executionTxFromDecoded(record.sender, decoded, next_base_fee);
+        var receipt = tx_processor.processTransaction(
             allocator,
             &rt.state,
             host_iface,
@@ -491,20 +538,66 @@ fn automine(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime) !void {
             exec_tx.tx,
             block_ctx,
         ) catch continue;
+        errdefer receipt.deinit(allocator);
 
         remaining_block_gas -= tx_gas_limit;
-        rt.markTransactionMined(
-            pooled_tx.hash,
-            block_hash,
-            next_block_number,
-            next_timestamp,
-            tx_index,
-        );
+        const gas_used_u64 = std.math.cast(u64, receipt.gas_used) orelse return error.GasOverflow;
+        cumulative_gas_used +%= gas_used_u64;
+        receipt.cumulative_gas_used = @as(u256, cumulative_gas_used);
+        receipt.transaction_hash = pooled_tx.hash;
+        receipt.transaction_index = @intCast(mined_hashes.items.len);
+        receipt.block_number = next_block_number;
+        receipt.type = transactionTypeFromDecoded(decoded);
+        receipt.effective_gas_price = effectiveGasPriceFromDecoded(decoded, next_base_fee);
+
+        const receipt_logs = @constCast(receipt.logs);
+        for (receipt_logs) |*log| {
+            log.block_number = next_block_number;
+            log.transaction_hash = pooled_tx.hash;
+            log.transaction_index = receipt.transaction_index;
+            log.log_index = global_log_index;
+            global_log_index += 1;
+        }
+
+        const raw_for_block = try rt.retainBlockTransactionRaw(allocator, record.raw);
+        try block_transactions.append(allocator, .{ .raw = raw_for_block });
         try mined_hashes.append(allocator, pooled_tx.hash);
-        tx_index += 1;
+        try mined_receipts.append(allocator, receipt);
     }
 
     if (mined_hashes.items.len == 0) return;
+
+    const block = try sealCanonicalBlock(
+        allocator,
+        rt,
+        parent_hash,
+        next_block_number,
+        next_timestamp,
+        next_base_fee,
+        block_transactions.items,
+        cumulative_gas_used,
+    );
+
+    for (mined_receipts.items, 0..) |*receipt, tx_index| {
+        receipt.block_hash = block.hash;
+        rt.markTransactionMined(
+            mined_hashes.items[tx_index],
+            block.hash,
+            next_block_number,
+            next_timestamp,
+            @intCast(tx_index),
+        );
+    }
+
+    if (indexes) |resolved_indexes| {
+        try resolved_indexes.receipt_index.putBlockReceipts(allocator, block.hash, mined_receipts.items);
+        try resolved_indexes.log_index.appendBlockLogs(
+            allocator,
+            next_block_number,
+            block.hash,
+            mined_receipts.items,
+        );
+    }
 
     rt.head_block_number = next_block_number;
     rt.current_timestamp = next_timestamp;
@@ -514,7 +607,7 @@ fn automine(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime) !void {
     try rt.recordMinedBlock(
         allocator,
         next_block_number,
-        block_hash,
+        block.hash,
         parent_hash,
         next_timestamp,
         next_base_fee,
@@ -524,24 +617,91 @@ fn automine(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime) !void {
     rt.pool.removeMined(mined_hashes.items);
 }
 
+pub fn mineEmptyBlock(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime) ![32]u8 {
+    const parent_hash = rt.head_block_hash;
+    const next_block_number = rt.head_block_number + 1;
+    const next_timestamp: u64 = rt.next_block_timestamp_override orelse if (rt.mining_mode == .interval and rt.interval_seconds > 0)
+        rt.current_timestamp + rt.interval_seconds
+    else
+        rt.current_timestamp + 1;
+    const next_base_fee = rt.next_block_base_fee_override orelse rt.base_fee;
+
+    const block = try sealCanonicalBlock(
+        allocator,
+        rt,
+        parent_hash,
+        next_block_number,
+        next_timestamp,
+        next_base_fee,
+        &[_]primitives.BlockBody.TransactionData{},
+        0,
+    );
+
+    rt.head_block_number = next_block_number;
+    rt.current_timestamp = next_timestamp;
+    rt.base_fee = next_base_fee;
+    rt.next_block_timestamp_override = null;
+    rt.next_block_base_fee_override = null;
+    try rt.recordMinedBlock(
+        allocator,
+        next_block_number,
+        block.hash,
+        parent_hash,
+        next_timestamp,
+        next_base_fee,
+    );
+
+    return block.hash;
+}
+
+fn sealCanonicalBlock(
+    allocator: std.mem.Allocator,
+    rt: *runtime.NodeRuntime,
+    parent_hash: [32]u8,
+    block_number: u64,
+    block_timestamp: u64,
+    base_fee: u256,
+    transactions: []const primitives.BlockBody.TransactionData,
+    gas_used: u64,
+) !primitives.Block.Block {
+    var header = primitives.BlockHeader.init();
+    header.parent_hash = parent_hash;
+    header.ommers_hash = primitives.BlockHeader.EMPTY_OMMERS_HASH;
+    header.beneficiary = rt.coinbase;
+    header.transactions_root = primitives.BlockHeader.EMPTY_TRANSACTIONS_ROOT;
+    header.receipts_root = primitives.BlockHeader.EMPTY_RECEIPTS_ROOT;
+    header.difficulty = 0;
+    header.number = block_number;
+    header.gas_limit = rt.block_gas_limit;
+    header.gas_used = gas_used;
+    header.timestamp = block_timestamp;
+    header.base_fee_per_gas = base_fee;
+    header.mix_hash = u256ToHash(rt.prev_randao);
+    if (try rt.getBlockByHashWithFork(allocator, parent_hash)) |parent_block| {
+        header.state_root = parent_block.header.state_root;
+    }
+
+    const body = primitives.BlockBody.BlockBody{
+        .transactions = transactions,
+        .ommers = &[_]primitives.BlockBody.UncleHeader{},
+        .withdrawals = null,
+    };
+    const block = try primitives.Block.from(&header, &body, allocator);
+    try rt.blockchain.putBlock(block);
+    try rt.blockchain.setCanonicalHead(block.hash);
+    return block;
+}
+
 fn computeTxHash(raw_bytes: []const u8) [32]u8 {
     var out: [32]u8 = undefined;
     std.crypto.hash.sha3.Keccak256.hash(raw_bytes, &out, .{});
     return out;
 }
 
-fn syntheticBlockHash(block_number: u64, timestamp: u64) [32]u8 {
-    var bytes: [16]u8 = undefined;
-    std.mem.writeInt(u64, bytes[0..8], block_number, .big);
-    std.mem.writeInt(u64, bytes[8..16], timestamp, .big);
-    var out: [32]u8 = undefined;
-    std.crypto.hash.sha3.Keccak256.hash(&bytes, &out, .{});
-    return out;
-}
-
 fn executionTxFromDecoded(
     sender: primitives.Address,
     decoded: primitives.Transaction.DecodedTransaction,
+    base_fee: u256,
 ) tx_processor.ExecutionTx {
     return switch (decoded) {
         .legacy => |tx| .{
@@ -566,7 +726,7 @@ fn executionTxFromDecoded(
             .caller = sender,
             .tx = .{
                 .nonce = tx.nonce,
-                .gas_price = tx.max_fee_per_gas,
+                .gas_price = eip1559EffectiveGasPrice(tx.max_fee_per_gas, tx.max_priority_fee_per_gas, base_fee),
                 .gas_limit = tx.gas_limit,
                 .to = tx.to,
                 .value = tx.value,
@@ -580,7 +740,7 @@ fn executionTxFromDecoded(
             .caller = sender,
             .tx = .{
                 .nonce = tx.nonce,
-                .gas_price = tx.max_fee_per_gas,
+                .gas_price = eip1559EffectiveGasPrice(tx.max_fee_per_gas, tx.max_priority_fee_per_gas, base_fee),
                 .gas_limit = tx.gas_limit,
                 .to = tx.to,
                 .value = tx.value,
@@ -594,7 +754,7 @@ fn executionTxFromDecoded(
             .caller = sender,
             .tx = .{
                 .nonce = tx.nonce,
-                .gas_price = tx.max_fee_per_gas,
+                .gas_price = eip1559EffectiveGasPrice(tx.max_fee_per_gas, tx.max_priority_fee_per_gas, base_fee),
                 .gas_limit = tx.gas_limit,
                 .to = tx.to,
                 .value = tx.value,
@@ -605,6 +765,38 @@ fn executionTxFromDecoded(
             },
         },
     };
+}
+
+fn transactionTypeFromDecoded(decoded: primitives.Transaction.DecodedTransaction) primitives.Receipt.TransactionType {
+    return switch (decoded) {
+        .legacy => .legacy,
+        .eip2930 => .eip2930,
+        .eip1559 => .eip1559,
+        .eip4844 => .eip4844,
+        .eip7702 => .eip7702,
+    };
+}
+
+fn effectiveGasPriceFromDecoded(decoded: primitives.Transaction.DecodedTransaction, base_fee: u256) u256 {
+    return switch (decoded) {
+        .legacy => |tx| tx.gas_price,
+        .eip2930 => |tx| tx.gas_price,
+        .eip1559 => |tx| eip1559EffectiveGasPrice(tx.max_fee_per_gas, tx.max_priority_fee_per_gas, base_fee),
+        .eip4844 => |tx| eip1559EffectiveGasPrice(tx.max_fee_per_gas, tx.max_priority_fee_per_gas, base_fee),
+        .eip7702 => |tx| eip1559EffectiveGasPrice(tx.max_fee_per_gas, tx.max_priority_fee_per_gas, base_fee),
+    };
+}
+
+fn eip1559EffectiveGasPrice(max_fee_per_gas: u256, max_priority_fee_per_gas: u256, base_fee: u256) u256 {
+    const priority_sum, const overflow = @addWithOverflow(base_fee, max_priority_fee_per_gas);
+    if (overflow != 0) return max_fee_per_gas;
+    return @min(max_fee_per_gas, priority_sum);
+}
+
+fn u256ToHash(value: u256) [32]u8 {
+    var out: [32]u8 = undefined;
+    std.mem.writeInt(u256, &out, value, .big);
+    return out;
 }
 
 fn extractNonce(decoded: primitives.Transaction.DecodedTransaction) u64 {
