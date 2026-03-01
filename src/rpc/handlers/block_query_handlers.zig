@@ -357,6 +357,11 @@ fn internalReceiptToRpc(
 ) !jsonrpc.types.ReceiptResponse {
     const rpc_logs = try allocator.alloc(jsonrpc.types.LogEntry, resp.logs.len);
     for (resp.logs, 0..) |log, i| {
+        const rpc_topics = try allocator.alloc(jsonrpc.types.Hash, log.topics.len);
+        for (log.topics, 0..) |topic, topic_index| {
+            rpc_topics[topic_index] = hashToRpc(topic);
+        }
+
         rpc_logs[i] = .{
             .removed = log.removed,
             .logIndex = if (log.logIndex) |li| try quantityFromU64(allocator, li) else null,
@@ -365,8 +370,8 @@ fn internalReceiptToRpc(
             .blockHash = hashToRpc(log.blockHash),
             .blockNumber = if (log.blockNumber) |bn| try quantityFromU64(allocator, bn) else null,
             .address = addrToRpc(log.address),
-            .data = .{ .value = .{ .string = "0x" } },
-            .topics = &.{},
+            .data = try dataFromBytes(allocator, log.data),
+            .topics = rpc_topics,
         };
     }
 
@@ -408,7 +413,7 @@ fn internalLogToRpc(
         .blockHash = hashToRpc(resp.blockHash),
         .blockNumber = if (resp.blockNumber) |bn| try quantityFromU64(allocator, bn) else null,
         .address = addrToRpc(resp.address),
-        .data = .{ .value = .{ .string = "0x" } },
+        .data = try dataFromBytes(allocator, resp.data),
         .topics = rpc_topics,
     };
 }

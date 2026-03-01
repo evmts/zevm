@@ -51,6 +51,53 @@ fn setupCtx(allocator: std.mem.Allocator) !struct {
     };
 }
 
+fn makeReceiptWithSingleLog(
+    allocator: std.mem.Allocator,
+    tx_hash: [32]u8,
+    block_hash: [32]u8,
+    block_number: u64,
+    topic: [32]u8,
+    data: []const u8,
+) !primitives.Receipt.Receipt {
+    const topics = try allocator.alloc([32]u8, 1);
+    topics[0] = topic;
+
+    const logs = try allocator.alloc(primitives.EventLog.EventLog, 1);
+    logs[0] = .{
+        .address = runtime.DEFAULT_DEV_ACCOUNTS[0],
+        .topics = topics,
+        .data = try allocator.dupe(u8, data),
+        .block_number = block_number,
+        .transaction_hash = tx_hash,
+        .transaction_index = 0,
+        .log_index = 0,
+        .removed = false,
+    };
+
+    var bloom: [256]u8 = undefined;
+    @memset(&bloom, 0);
+
+    return .{
+        .transaction_hash = tx_hash,
+        .transaction_index = 0,
+        .block_hash = block_hash,
+        .block_number = block_number,
+        .sender = runtime.DEFAULT_DEV_ACCOUNTS[0],
+        .to = runtime.DEFAULT_DEV_ACCOUNTS[1],
+        .cumulative_gas_used = 21_000,
+        .gas_used = 21_000,
+        .contract_address = null,
+        .logs = logs,
+        .logs_bloom = bloom,
+        .status = .{ .success = true, .gas_used = 21_000 },
+        .root = null,
+        .effective_gas_price = runtime.DEFAULT_GAS_PRICE,
+        .type = .legacy,
+        .blob_gas_used = null,
+        .blob_gas_price = null,
+    };
+}
+
 // ============================================================================
 // eth_getBlockByNumber tests
 // ============================================================================
@@ -170,6 +217,50 @@ test "handleGetTransactionReceipt: returns null for missing tx" {
         .{ .transaction_hash = .{ .bytes = [_]u8{0xff} ** 32 } },
     );
     try std.testing.expect(result.value == null);
+}
+
+test "handleGetTransactionReceipt: preserves log data and topics" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var state = try setupCtx(allocator);
+    defer state.deinit(allocator);
+
+    const genesis = (try state.bc.getBlockByNumber(0)).?;
+    var tx_hash: [32]u8 = undefined;
+    @memset(&tx_hash, 0x11);
+    var topic: [32]u8 = undefined;
+    @memset(&topic, 0xaa);
+
+    var receipt = try makeReceiptWithSingleLog(
+        allocator,
+        tx_hash,
+        genesis.hash,
+        0,
+        topic,
+        &[_]u8{ 0xde, 0xad, 0xbe, 0xef },
+    );
+    defer receipt.deinit(allocator);
+    try state.ri.putBlockReceipts(allocator, genesis.hash, &[_]primitives.Receipt.Receipt{receipt});
+
+    var ctx = state.getCtx();
+    const result = try block_query_handlers.handleGetTransactionReceipt(
+        arena.allocator(),
+        &ctx,
+        .{ .transaction_hash = .{ .bytes = tx_hash } },
+    );
+    const rpc_receipt = result.value orelse return error.ExpectedReceipt;
+    try std.testing.expectEqual(@as(usize, 1), rpc_receipt.logs.len);
+
+    const rpc_log = rpc_receipt.logs[0];
+    try std.testing.expectEqual(@as(usize, 1), rpc_log.topics.len);
+    try std.testing.expectEqual(topic, rpc_log.topics[0].bytes);
+
+    switch (rpc_log.data.value) {
+        .string => |data_hex| try std.testing.expectEqualStrings("0xdeadbeef", data_hex),
+        else => return error.ExpectedHexDataString,
+    }
 }
 
 // ============================================================================
@@ -297,4 +388,57 @@ test "handleGetLogs: returns empty for empty chain" {
         params,
     );
     try std.testing.expectEqual(@as(usize, 0), result.logs.len);
+}
+
+test "handleGetLogs: preserves log data and topics" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var state = try setupCtx(allocator);
+    defer state.deinit(allocator);
+
+    const genesis = (try state.bc.getBlockByNumber(0)).?;
+    var tx_hash: [32]u8 = undefined;
+    @memset(&tx_hash, 0x22);
+    var topic: [32]u8 = undefined;
+    @memset(&topic, 0xbb);
+
+    var receipt = try makeReceiptWithSingleLog(
+        allocator,
+        tx_hash,
+        genesis.hash,
+        0,
+        topic,
+        &[_]u8{ 0xca, 0xfe },
+    );
+    defer receipt.deinit(allocator);
+    try state.li.appendBlockLogs(allocator, 0, genesis.hash, &[_]primitives.Receipt.Receipt{receipt});
+
+    var ctx = state.getCtx();
+    const filter_json =
+        \\[{"fromBlock":"0x0","toBlock":"0x0"}]
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, arena.allocator(), filter_json, .{});
+    const params = try std.json.innerParseFromValue(
+        jsonrpc.eth.GetLogs.Params,
+        arena.allocator(),
+        parsed.value,
+        .{},
+    );
+    const result = try block_query_handlers.handleGetLogs(
+        arena.allocator(),
+        &ctx,
+        params,
+    );
+    try std.testing.expectEqual(@as(usize, 1), result.logs.len);
+
+    const rpc_log = result.logs[0];
+    try std.testing.expectEqual(@as(usize, 1), rpc_log.topics.len);
+    try std.testing.expectEqual(topic, rpc_log.topics[0].bytes);
+
+    switch (rpc_log.data.value) {
+        .string => |data_hex| try std.testing.expectEqualStrings("0xcafe", data_hex),
+        else => return error.ExpectedHexDataString,
+    }
 }
