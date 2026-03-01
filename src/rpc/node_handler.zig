@@ -948,19 +948,23 @@ pub const NodeHandler = struct {
         if (state.kind != .log) {
             return .{ .array = std.json.Array.init(allocator) };
         }
-        return try self.queryFilterLogs(allocator, state, 0, self.node_runtime.head_block_number);
+        return try self.queryFilterLogs(allocator, state, null, null);
     }
 
     fn queryFilterLogs(
         self: *NodeHandler,
         allocator: std.mem.Allocator,
         state: *const FilterState,
-        from_block: u64,
-        to_block: u64,
+        from_block: ?u64,
+        to_block: ?u64,
     ) !std.json.Value {
         var filter = try parseStoredFilter(allocator, state.filter_json);
-        filter.fromBlock = .{ .value = .{ .integer = @intCast(from_block) } };
-        filter.toBlock = .{ .value = .{ .integer = @intCast(to_block) } };
+        if (from_block) |value| {
+            filter.fromBlock = .{ .value = .{ .integer = @intCast(value) } };
+        }
+        if (to_block) |value| {
+            filter.toBlock = .{ .value = .{ .integer = @intCast(value) } };
+        }
 
         var block_query_context = makeBlockQueryContext(self);
         const logs_result = try block_query_handlers.handleGetLogs(

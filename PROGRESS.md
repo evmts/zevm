@@ -31,7 +31,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 
 ## Validation
 
-- Full test suite: **284/284 passing** (`zig build test --summary all`)
+- Full test suite: **285/285 passing** (`zig build test --summary all`)
 - Full build: **passing** (`zig build`)
 
 ## Recent Completion Highlights
@@ -119,6 +119,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
   - local-mode `state_root` now recomputed from runtime state caches during block sealing.
 - Added handler-level regression assertions that non-empty mined blocks no longer emit empty tx/receipt/state roots.
 - Fixed runtime snapshot fidelity for `evm_snapshot`/`evm_revert` to include sealed block-transaction byte storage, preventing unbounded retained memory across mine/revert loops.
+- Fixed `eth_getFilterLogs` to honor the originally installed filter block range instead of force-overriding to `0..head`; added regression coverage for range-preserving behavior.
 
 ## Notes
 

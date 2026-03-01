@@ -47,6 +47,50 @@ fn signLegacyRawTx(
     return primitives.Transaction.encodeLegacyForSigning(allocator, signed_tx, runtime.DEFAULT_CHAIN_ID);
 }
 
+fn makeReceiptWithSingleLog(
+    allocator: std.mem.Allocator,
+    block_hash: [32]u8,
+    block_number: u64,
+    marker: u8,
+) !primitives.Receipt.Receipt {
+    const logs = try allocator.alloc(primitives.EventLog.EventLog, 1);
+    logs[0] = .{
+        .address = primitives.Address.ZERO_ADDRESS,
+        .topics = try allocator.alloc([32]u8, 0),
+        .data = try allocator.dupe(u8, &[_]u8{marker}),
+        .block_number = block_number,
+        .transaction_hash = null,
+        .transaction_index = 0,
+        .log_index = 0,
+        .removed = false,
+    };
+
+    var tx_hash: [32]u8 = undefined;
+    @memset(&tx_hash, marker);
+    var bloom: [256]u8 = undefined;
+    @memset(&bloom, 0);
+
+    return .{
+        .transaction_hash = tx_hash,
+        .transaction_index = 0,
+        .block_hash = block_hash,
+        .block_number = block_number,
+        .sender = primitives.Address.ZERO_ADDRESS,
+        .to = null,
+        .cumulative_gas_used = 21_000,
+        .gas_used = 21_000,
+        .contract_address = null,
+        .logs = logs,
+        .logs_bloom = bloom,
+        .status = .{ .success = true, .gas_used = 21_000 },
+        .root = null,
+        .effective_gas_price = 1_000_000_000,
+        .type = .legacy,
+        .blob_gas_used = null,
+        .blob_gas_price = null,
+    };
+}
+
 test "NodeHandler eth_chainId returns expected dev chain id" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -487,6 +531,62 @@ test "NodeHandler log filter lifecycle returns array results" {
     switch (logs_result) {
         .array => |_| {},
         else => return error.ExpectedArrayResult,
+    }
+}
+
+test "NodeHandler eth_getFilterLogs honors stored block range" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    _ = try callMethod(allocator, &handler, "evm_mine", null);
+    _ = try callMethod(allocator, &handler, "evm_mine", null);
+
+    const block_1 = (try handler.node_runtime.blockchain.getBlockByNumber(1)) orelse return error.ExpectedBlock;
+    const block_2 = (try handler.node_runtime.blockchain.getBlockByNumber(2)) orelse return error.ExpectedBlock;
+
+    var receipt_1 = try makeReceiptWithSingleLog(allocator, block_1.hash, 1, 0x11);
+    defer receipt_1.deinit(allocator);
+    var receipt_2 = try makeReceiptWithSingleLog(allocator, block_2.hash, 2, 0x22);
+    defer receipt_2.deinit(allocator);
+
+    try handler.log_index.appendBlockLogs(allocator, 1, block_1.hash, &[_]primitives.Receipt.Receipt{receipt_1});
+    try handler.log_index.appendBlockLogs(allocator, 2, block_2.hash, &[_]primitives.Receipt.Receipt{receipt_2});
+
+    var filter_object = std.json.ObjectMap.init(allocator);
+    defer filter_object.deinit();
+    try filter_object.put("fromBlock", .{ .string = "0x2" });
+    try filter_object.put("toBlock", .{ .string = "0x2" });
+
+    var new_filter_params = std.json.Array.init(allocator);
+    defer new_filter_params.deinit();
+    try new_filter_params.append(.{ .object = filter_object });
+    const create_result = try callMethod(allocator, &handler, "eth_newFilter", .{ .array = new_filter_params });
+    const filter_id = switch (create_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    var get_logs_params = std.json.Array.init(allocator);
+    defer get_logs_params.deinit();
+    try get_logs_params.append(.{ .string = filter_id });
+    const logs_result = try callMethod(allocator, &handler, "eth_getFilterLogs", .{ .array = get_logs_params });
+    const logs = switch (logs_result) {
+        .array => |array| array.items,
+        else => return error.ExpectedArrayResult,
+    };
+    try std.testing.expectEqual(@as(usize, 1), logs.len);
+
+    const log_object = switch (logs[0]) {
+        .object => |obj| obj,
+        else => return error.ExpectedObjectResult,
+    };
+    const block_number = log_object.get("blockNumber") orelse return error.ExpectedBlockNumber;
+    switch (block_number) {
+        .string => |value| try std.testing.expectEqualStrings("0x2", value),
+        else => return error.ExpectedStringResult,
     }
 }
 
