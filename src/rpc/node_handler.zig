@@ -754,7 +754,10 @@ pub const NodeHandler = struct {
                 return .{ .array = result_array };
             },
             .log => {
-                const from_block = if (state.last_block < self.node_runtime.head_block_number) state.last_block + 1 else state.last_block;
+                if (self.node_runtime.head_block_number <= state.last_block) {
+                    return .{ .array = std.json.Array.init(allocator) };
+                }
+                const from_block = state.last_block + 1;
                 const logs_value = try self.queryFilterLogs(allocator, state, from_block, self.node_runtime.head_block_number);
                 state.last_block = self.node_runtime.head_block_number;
                 return logs_value;
