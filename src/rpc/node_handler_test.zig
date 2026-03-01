@@ -144,6 +144,26 @@ test "NodeHandler hardhat impersonation allows eth_sendTransaction" {
     }
 }
 
+test "NodeHandler eth_sendTransaction rejects malformed to address" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var tx_object = std.json.ObjectMap.init(allocator);
+    defer tx_object.deinit();
+    try tx_object.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try tx_object.put("to", .{ .string = "0x1234" });
+    try tx_object.put("value", .{ .string = "0x1" });
+
+    var send_params = std.json.Array.init(allocator);
+    defer send_params.deinit();
+    try send_params.append(.{ .object = tx_object });
+
+    try std.testing.expectError(error.InvalidParams, callMethod(allocator, &handler, "eth_sendTransaction", .{ .array = send_params }));
+}
+
 test "NodeHandler eth_call executes and returns hex data" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -515,6 +535,34 @@ test "NodeHandler interval mining tick mines pending transactions" {
 
     try std.testing.expectEqual(@as(usize, 0), handler.node_runtime.pool.pendingCount());
     try std.testing.expectEqual(initial_block_number + 1, handler.node_runtime.head_block_number);
+}
+
+test "NodeHandler evm_setBlockGasLimit constrains automine inclusion" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var set_limit_params = std.json.Array.init(allocator);
+    defer set_limit_params.deinit();
+    try set_limit_params.append(.{ .string = "0x4e20" }); // 20_000
+    _ = try callMethod(allocator, &handler, "evm_setBlockGasLimit", .{ .array = set_limit_params });
+
+    var tx_object = std.json.ObjectMap.init(allocator);
+    defer tx_object.deinit();
+    try tx_object.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try tx_object.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try tx_object.put("value", .{ .string = "0x1" });
+    try tx_object.put("gas", .{ .string = "0x5208" }); // 21_000
+
+    var send_params = std.json.Array.init(allocator);
+    defer send_params.deinit();
+    try send_params.append(.{ .object = tx_object });
+    _ = try callMethod(allocator, &handler, "eth_sendTransaction", .{ .array = send_params });
+
+    try std.testing.expectEqual(@as(u64, 0), handler.node_runtime.head_block_number);
+    try std.testing.expectEqual(@as(usize, 1), handler.node_runtime.pool.pendingCount());
 }
 
 test "NodeHandler evm_revert restores runtime snapshot metadata and mempool" {
