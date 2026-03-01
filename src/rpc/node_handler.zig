@@ -917,8 +917,22 @@ pub const NodeHandler = struct {
                 return .{ .array = result_array };
             },
             .log => {
+                var arena_state = std.heap.ArenaAllocator.init(allocator);
+                defer arena_state.deinit();
+                const arena = arena_state.allocator();
+                const stored_filter = try parseStoredFilter(arena, state.filter_json);
+                const has_block_hash = stored_filter.blockHash != null;
                 const has_initial_cursor = state.last_block == pre_genesis_log_cursor;
-                if (!has_initial_cursor and self.node_runtime.head_block_number <= state.last_block) {
+                if (has_block_hash and !has_initial_cursor) {
+                    return .{ .array = std.json.Array.init(allocator) };
+                }
+                if (!has_initial_cursor and self.node_runtime.head_block_number < state.last_block) {
+                    // A chain rewind (for example via evm_revert) can move the head below
+                    // the remembered cursor; reset so subsequent polls can progress.
+                    state.last_block = self.node_runtime.head_block_number;
+                    return .{ .array = std.json.Array.init(allocator) };
+                }
+                if (!has_initial_cursor and self.node_runtime.head_block_number == state.last_block) {
                     return .{ .array = std.json.Array.init(allocator) };
                 }
                 const from_block = if (has_initial_cursor) @as(u64, 0) else state.last_block + 1;
@@ -962,7 +976,11 @@ pub const NodeHandler = struct {
         from_block: ?u64,
         to_block: ?u64,
     ) !std.json.Value {
-        var filter = try parseStoredFilter(allocator, state.filter_json);
+        var arena_state = std.heap.ArenaAllocator.init(allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+
+        var filter = try parseStoredFilter(arena, state.filter_json);
         if (filter.blockHash == null) {
             if (from_block) |value| {
                 filter.fromBlock = .{ .value = .{ .integer = @intCast(value) } };
@@ -974,7 +992,7 @@ pub const NodeHandler = struct {
 
         var block_query_context = makeBlockQueryContext(self);
         const logs_result = try block_query_handlers.handleGetLogs(
-            allocator,
+            arena,
             &block_query_context,
             .{ .filter = filter },
         );

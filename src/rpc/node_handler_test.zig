@@ -771,6 +771,8 @@ test "NodeHandler eth_getFilterChanges supports blockHash filters on first poll"
     };
     try std.testing.expectEqual(@as(usize, 1), first_changes.len);
 
+    _ = try callMethod(allocator, &handler, "evm_mine", null);
+
     var second_changes_params = std.json.Array.init(allocator);
     defer second_changes_params.deinit();
     try second_changes_params.append(.{ .string = filter_id });
@@ -780,6 +782,83 @@ test "NodeHandler eth_getFilterChanges supports blockHash filters on first poll"
         else => return error.ExpectedArrayResult,
     };
     try std.testing.expectEqual(@as(usize, 0), second_changes.len);
+}
+
+test "NodeHandler eth_getFilterChanges log filter resumes after evm_revert head rewind" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    const snapshot_result = try callMethod(allocator, &handler, "evm_snapshot", .{ .array = std.json.Array.init(allocator) });
+    const snapshot_id = switch (snapshot_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    var filter_object = std.json.ObjectMap.init(allocator);
+    defer filter_object.deinit();
+
+    var create_params = std.json.Array.init(allocator);
+    defer create_params.deinit();
+    try create_params.append(.{ .object = filter_object });
+    const create_result = try callMethod(allocator, &handler, "eth_newFilter", .{ .array = create_params });
+    const filter_id = switch (create_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    _ = try callMethod(allocator, &handler, "evm_mine", null);
+
+    const first_block = (try handler.node_runtime.blockchain.getBlockByNumber(1)) orelse return error.ExpectedBlock;
+    var first_receipt = try makeReceiptWithSingleLog(allocator, first_block.hash, 1, 0x61);
+    defer first_receipt.deinit(allocator);
+    try handler.log_index.appendBlockLogs(allocator, 1, first_block.hash, &[_]primitives.Receipt.Receipt{first_receipt});
+
+    var changes_params = std.json.Array.init(allocator);
+    defer changes_params.deinit();
+    try changes_params.append(.{ .string = filter_id });
+    const first_changes_result = try callMethod(allocator, &handler, "eth_getFilterChanges", .{ .array = changes_params });
+    const first_changes = switch (first_changes_result) {
+        .array => |array| array.items,
+        else => return error.ExpectedArrayResult,
+    };
+    try std.testing.expectEqual(@as(usize, 1), first_changes.len);
+
+    var revert_params = std.json.Array.init(allocator);
+    defer revert_params.deinit();
+    try revert_params.append(.{ .string = snapshot_id });
+    const revert_result = try callMethod(allocator, &handler, "evm_revert", .{ .array = revert_params });
+    try std.testing.expect(revert_result.bool);
+    try std.testing.expectEqual(@as(u64, 0), handler.node_runtime.head_block_number);
+
+    var rewind_changes_params = std.json.Array.init(allocator);
+    defer rewind_changes_params.deinit();
+    try rewind_changes_params.append(.{ .string = filter_id });
+    const rewind_changes_result = try callMethod(allocator, &handler, "eth_getFilterChanges", .{ .array = rewind_changes_params });
+    const rewind_changes = switch (rewind_changes_result) {
+        .array => |array| array.items,
+        else => return error.ExpectedArrayResult,
+    };
+    try std.testing.expectEqual(@as(usize, 0), rewind_changes.len);
+
+    _ = try callMethod(allocator, &handler, "evm_mine", null);
+
+    const rebuilt_block = (try handler.node_runtime.blockchain.getBlockByNumber(1)) orelse return error.ExpectedBlock;
+    var rebuilt_receipt = try makeReceiptWithSingleLog(allocator, rebuilt_block.hash, 1, 0x62);
+    defer rebuilt_receipt.deinit(allocator);
+    try handler.log_index.appendBlockLogs(allocator, 1, rebuilt_block.hash, &[_]primitives.Receipt.Receipt{rebuilt_receipt});
+
+    var resumed_changes_params = std.json.Array.init(allocator);
+    defer resumed_changes_params.deinit();
+    try resumed_changes_params.append(.{ .string = filter_id });
+    const resumed_changes_result = try callMethod(allocator, &handler, "eth_getFilterChanges", .{ .array = resumed_changes_params });
+    const resumed_changes = switch (resumed_changes_result) {
+        .array => |array| array.items,
+        else => return error.ExpectedArrayResult,
+    };
+    try std.testing.expectEqual(@as(usize, 1), resumed_changes.len);
 }
 
 test "NodeHandler eth_newFilter rejects non-object filter param" {
