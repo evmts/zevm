@@ -121,8 +121,31 @@ pub fn handleEthFeeHistory(
         fee.* = .{ .value = .{ .string = base_fee_str } };
     }
 
+    const blob_base_fees = try allocator.alloc(jsonrpc.types.Quantity, count + 1);
+    const blob_base_fee_str = try std.fmt.allocPrint(allocator, "0x{x}", .{rt.blob_base_fee});
+    for (blob_base_fees) |*fee| {
+        fee.* = .{ .value = .{ .string = blob_base_fee_str } };
+    }
+
     const gas_ratios = try allocator.alloc(f64, count);
     @memset(gas_ratios, 0.0);
+
+    const blob_gas_ratios = try allocator.alloc(f64, count);
+    @memset(blob_gas_ratios, 0.0);
+
+    const reward_percentiles = try parseRewardPercentiles(allocator, params.reward_percentiles);
+    const reward = if (reward_percentiles.len > 0) blk: {
+        const reward_matrix = try allocator.alloc([]const jsonrpc.types.Quantity, count);
+        const priority_fee_str = try std.fmt.allocPrint(allocator, "0x{x}", .{rt.max_priority_fee});
+        for (reward_matrix) |*row| {
+            const row_values = try allocator.alloc(jsonrpc.types.Quantity, reward_percentiles.len);
+            for (row_values) |*entry| {
+                entry.* = .{ .value = .{ .string = priority_fee_str } };
+            }
+            row.* = row_values;
+        }
+        break :blk reward_matrix;
+    } else null;
 
     const oldest: u64 = if (rt.head_block_number >= count)
         rt.head_block_number - count + 1
@@ -133,11 +156,45 @@ pub fn handleEthFeeHistory(
         .oldest_block = .{ .value = .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{oldest}) } },
         .base_fee_per_gas = base_fees,
         .gas_used_ratio = gas_ratios,
+        .reward = reward,
+        .base_fee_per_blob_gas = blob_base_fees,
+        .blob_gas_used_ratio = blob_gas_ratios,
     };
 }
 
 fn requireResolvedBlockNumber(rt: *const runtime.NodeRuntime, spec: jsonrpc.types.BlockSpec) !u64 {
     return block_spec.resolveBlockNumber(rt, spec) catch return error.InvalidParams;
+}
+
+fn parseRewardPercentiles(
+    allocator: std.mem.Allocator,
+    reward_percentiles: ?std.json.Value,
+) ![]const f64 {
+    if (reward_percentiles == null) return &.{};
+
+    const value = reward_percentiles.?;
+    const items = switch (value) {
+        .array => |array| array.items,
+        else => return error.InvalidParams,
+    };
+
+    const parsed = try allocator.alloc(f64, items.len);
+    var previous: f64 = -1.0;
+    for (items, 0..) |item, i| {
+        const percentile: f64 = switch (item) {
+            .float => |v| v,
+            .integer => |v| @floatFromInt(v),
+            else => return error.InvalidParams,
+        };
+
+        if (!std.math.isFinite(percentile)) return error.InvalidParams;
+        if (percentile < 0.0 or percentile > 100.0) return error.InvalidParams;
+        if (percentile < previous) return error.InvalidParams;
+
+        parsed[i] = percentile;
+        previous = percentile;
+    }
+    return parsed;
 }
 
 fn parseQuantityToU64(q: jsonrpc.types.Quantity) !u64 {

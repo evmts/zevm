@@ -135,6 +135,24 @@ test "NodeHandler eth_feeHistory invalid block_count returns InvalidParams" {
     );
 }
 
+test "NodeHandler eth_feeHistory descending reward percentiles return InvalidParams" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    const params = try parseParams(
+        allocator,
+        \\["0x1","latest",[90,10]]
+    );
+    try std.testing.expectError(
+        error.InvalidParams,
+        callMethod(allocator, &handler, "eth_feeHistory", params),
+    );
+}
+
 test "NodeHandler sendRawTransaction then getTransactionByHash returns transaction object" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

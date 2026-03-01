@@ -231,6 +231,45 @@ test "eth_feeHistory returns correct shape" {
     try std.testing.expectEqual(@as(usize, 2), result.base_fee_per_gas.len);
     try std.testing.expectEqual(@as(usize, 1), result.gas_used_ratio.len);
     try std.testing.expectEqual(@as(f64, 0.0), result.gas_used_ratio[0]);
+    try std.testing.expect(result.base_fee_per_blob_gas != null);
+    try std.testing.expect(result.blob_gas_used_ratio != null);
+    try std.testing.expectEqual(@as(usize, 2), result.base_fee_per_blob_gas.?.len);
+    try std.testing.expectEqual(@as(usize, 1), result.blob_gas_used_ratio.?.len);
+    try std.testing.expect(result.reward == null);
+}
+
+test "eth_feeHistory includes reward matrix when percentiles are requested" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit(std.testing.allocator);
+
+    var reward_percentiles = std.json.Array.init(arena.allocator());
+    defer reward_percentiles.deinit();
+    try reward_percentiles.append(.{ .float = 10.0 });
+    try reward_percentiles.append(.{ .float = 50.0 });
+    try reward_percentiles.append(.{ .float = 90.0 });
+
+    const result = try eth_read.handleEthFeeHistory(
+        arena.allocator(),
+        &rt,
+        .{
+            .block_count = .{ .value = .{ .string = "0x2" } },
+            .newest_block = makeBlockSpec("latest"),
+            .reward_percentiles = .{ .array = reward_percentiles },
+        },
+    );
+
+    try std.testing.expect(result.reward != null);
+    try std.testing.expectEqual(@as(usize, 2), result.reward.?.len);
+    try std.testing.expectEqual(@as(usize, 3), result.reward.?[0].len);
+    try std.testing.expectEqual(@as(usize, 3), result.reward.?[1].len);
+
+    for (result.reward.?) |row| {
+        for (row) |entry| {
+            try expectQuantityStr(entry, "0x3b9aca00");
+        }
+    }
 }
 
 test "eth_feeHistory invalid block_count returns InvalidParams" {
@@ -266,6 +305,55 @@ test "eth_feeHistory zero block_count returns InvalidParams" {
             .{
                 .block_count = .{ .value = .{ .string = "0x0" } },
                 .newest_block = makeBlockSpec("latest"),
+            },
+        ),
+    );
+}
+
+test "eth_feeHistory rejects out-of-range reward percentile" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit(std.testing.allocator);
+
+    var reward_percentiles = std.json.Array.init(arena.allocator());
+    defer reward_percentiles.deinit();
+    try reward_percentiles.append(.{ .float = 110.0 });
+
+    try std.testing.expectError(
+        error.InvalidParams,
+        eth_read.handleEthFeeHistory(
+            arena.allocator(),
+            &rt,
+            .{
+                .block_count = .{ .value = .{ .string = "0x1" } },
+                .newest_block = makeBlockSpec("latest"),
+                .reward_percentiles = .{ .array = reward_percentiles },
+            },
+        ),
+    );
+}
+
+test "eth_feeHistory rejects descending reward percentiles" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit(std.testing.allocator);
+
+    var reward_percentiles = std.json.Array.init(arena.allocator());
+    defer reward_percentiles.deinit();
+    try reward_percentiles.append(.{ .float = 90.0 });
+    try reward_percentiles.append(.{ .float = 10.0 });
+
+    try std.testing.expectError(
+        error.InvalidParams,
+        eth_read.handleEthFeeHistory(
+            arena.allocator(),
+            &rt,
+            .{
+                .block_count = .{ .value = .{ .string = "0x1" } },
+                .newest_block = makeBlockSpec("latest"),
+                .reward_percentiles = .{ .array = reward_percentiles },
             },
         ),
     );

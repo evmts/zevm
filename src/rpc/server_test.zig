@@ -780,6 +780,30 @@ test "server with NodeHandler context handles eth_feeHistory ownership safely" {
     try std.testing.expect(result_object.get("gasUsedRatio") != null);
 }
 
+test "server with NodeHandler context maps eth_feeHistory descending reward percentiles to -32602" {
+    var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
+    defer handler.deinit(std.testing.allocator);
+
+    const handlers = dispatcher.HandlerRegistry{
+        .context = &handler,
+        .on_method_with_context = &node_handler.NodeHandler.onMethod,
+    };
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_feeHistory\",\"params\":[\"0x1\",\"latest\",[90,10]]}",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(std.http.Status.ok, response.status);
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+    const error_object = try getObjectField(parsed.value, "error");
+    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.INVALID_PARAMS), (try getObjectField(error_object, "code")).integer);
+}
+
 test "server with NodeHandler context handles eth_getBlockByNumber ownership safely" {
     var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
     defer handler.deinit(std.testing.allocator);

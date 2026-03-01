@@ -31,7 +31,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 
 ## Validation
 
-- Full test suite: **263/263 passing** (`zig build test --summary all`)
+- Full test suite: **268/268 passing** (`zig build test --summary all`)
 - Full build: **passing** (`zig build`)
 
 ## Recent Completion Highlights
@@ -87,6 +87,10 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
   - malformed stored filter JSON now propagates `Invalid params` instead of silently becoming `{}`.
 - Implemented `eth_subscribe` `"syncing"` notification behavior by emitting a `false` subscription result once (matching non-syncing dev-node status), with regression coverage.
 - Tightened `eth_call` parameter validation to reject non-string `from` values (no silent fallback to default sender), with NodeHandler and server-level `-32602` coverage.
+- Expanded `eth_feeHistory` response completeness:
+  - now includes `baseFeePerBlobGas` and `blobGasUsedRatio` fields,
+  - supports `reward` matrix output when reward percentiles are requested,
+  - validates reward percentiles (finite, 0..100, nondecreasing) and maps invalid input to `Invalid params`.
 
 ## Notes
 
