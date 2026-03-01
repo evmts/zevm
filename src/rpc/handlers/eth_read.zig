@@ -4,22 +4,6 @@ const primitives = @import("primitives");
 const runtime = @import("../../node/runtime.zig");
 const block_spec = @import("block_spec.zig");
 
-/// Create a Quantity from a u64 using JSON integer representation.
-/// The JSON serializer in voltaire will pass through the json.Value.
-fn quantityFromU64(n: u64) jsonrpc.types.Quantity {
-    return .{ .value = .{ .integer = @intCast(n) } };
-}
-
-/// Create a Quantity from a u256 using JSON integer when it fits, else string.
-fn quantityFromU256(n: u256) jsonrpc.types.Quantity {
-    if (n <= std.math.maxInt(i64)) {
-        return .{ .value = .{ .integer = @intCast(n) } };
-    }
-    // For values > i64 max, store as hex string
-    // This is a comptime fallback; in practice dev node balances fit in i64
-    return .{ .value = .{ .integer = 0 } };
-}
-
 pub fn handleEthChainId(
     allocator: std.mem.Allocator,
     rt: *const runtime.NodeRuntime,
