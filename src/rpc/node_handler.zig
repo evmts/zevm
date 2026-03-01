@@ -104,6 +104,8 @@ const RuntimeSnapshot = struct {
     }
 };
 
+const pre_genesis_log_cursor: u64 = std.math.maxInt(u64);
+
 pub const NodeHandler = struct {
     node_runtime: runtime.NodeRuntime,
     dev_runtime: dev_runtime.DevRuntime,
@@ -465,9 +467,10 @@ pub const NodeHandler = struct {
             self.next_filter_id += 1;
             const filter_json = try extractFilterJson(allocator, params);
             errdefer allocator.free(filter_json);
+            const initial_cursor = try self.resolveInitialLogFilterCursor(temp_allocator, filter_json);
             try self.filters.put(id, .{
                 .kind = .log,
-                .last_block = self.node_runtime.head_block_number,
+                .last_block = initial_cursor,
                 .filter_json = filter_json,
             });
             return .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{id}) };
@@ -914,10 +917,11 @@ pub const NodeHandler = struct {
                 return .{ .array = result_array };
             },
             .log => {
-                if (self.node_runtime.head_block_number <= state.last_block) {
+                const has_initial_cursor = state.last_block == pre_genesis_log_cursor;
+                if (!has_initial_cursor and self.node_runtime.head_block_number <= state.last_block) {
                     return .{ .array = std.json.Array.init(allocator) };
                 }
-                const from_block = state.last_block + 1;
+                const from_block = if (has_initial_cursor) @as(u64, 0) else state.last_block + 1;
                 const logs_value = try self.queryFilterLogs(allocator, state, from_block, self.node_runtime.head_block_number);
                 state.last_block = self.node_runtime.head_block_number;
                 return logs_value;
@@ -959,11 +963,13 @@ pub const NodeHandler = struct {
         to_block: ?u64,
     ) !std.json.Value {
         var filter = try parseStoredFilter(allocator, state.filter_json);
-        if (from_block) |value| {
-            filter.fromBlock = .{ .value = .{ .integer = @intCast(value) } };
-        }
-        if (to_block) |value| {
-            filter.toBlock = .{ .value = .{ .integer = @intCast(value) } };
+        if (filter.blockHash == null) {
+            if (from_block) |value| {
+                filter.fromBlock = .{ .value = .{ .integer = @intCast(value) } };
+            }
+            if (to_block) |value| {
+                filter.toBlock = .{ .value = .{ .integer = @intCast(value) } };
+            }
         }
 
         var block_query_context = makeBlockQueryContext(self);
@@ -973,6 +979,23 @@ pub const NodeHandler = struct {
             .{ .filter = filter },
         );
         return try toJsonValue(allocator, logs_result.logs);
+    }
+
+    fn resolveInitialLogFilterCursor(
+        self: *NodeHandler,
+        allocator: std.mem.Allocator,
+        filter_json: []const u8,
+    ) !u64 {
+        const filter = try parseStoredFilter(allocator, filter_json);
+        if (filter.blockHash != null) return pre_genesis_log_cursor;
+
+        if (filter.fromBlock) |from_block| {
+            const start_block = try resolveFilterQuantityToBlockNumber(&self.node_runtime, from_block);
+            if (start_block == 0) return pre_genesis_log_cursor;
+            return start_block - 1;
+        }
+
+        return self.node_runtime.head_block_number;
     }
 
     pub fn collectSubscriptionMessages(self: *NodeHandler, allocator: std.mem.Allocator) ![][]u8 {
@@ -1492,7 +1515,7 @@ fn buildNewHeadResult(
 
 fn parseStoredFilter(
     allocator: std.mem.Allocator,
-    filter_json: ?[]u8,
+    filter_json: ?[]const u8,
 ) !jsonrpc.types.Filter {
     if (filter_json == null) return jsonrpc.types.Filter{};
 
@@ -1502,6 +1525,32 @@ fn parseStoredFilter(
     defer parsed.deinit();
 
     return std.json.innerParseFromValue(jsonrpc.types.Filter, allocator, parsed.value, .{}) catch return error.InvalidParams;
+}
+
+fn resolveFilterQuantityToBlockNumber(
+    rt: *const runtime.NodeRuntime,
+    quantity: jsonrpc.types.Quantity,
+) !u64 {
+    return switch (quantity.value) {
+        .string => |string| blk: {
+            if (std.mem.eql(u8, string, "latest") or
+                std.mem.eql(u8, string, "pending") or
+                std.mem.eql(u8, string, "safe") or
+                std.mem.eql(u8, string, "finalized"))
+            {
+                break :blk rt.head_block_number;
+            }
+            if (std.mem.eql(u8, string, "earliest")) {
+                break :blk 0;
+            }
+            if (string.len >= 2 and string[0] == '0' and (string[1] == 'x' or string[1] == 'X')) {
+                break :blk std.fmt.parseInt(u64, string[2..], 16) catch return error.InvalidParams;
+            }
+            break :blk std.fmt.parseInt(u64, string, 10) catch return error.InvalidParams;
+        },
+        .integer => |integer| if (integer >= 0) @intCast(integer) else error.InvalidParams,
+        else => error.InvalidParams,
+    };
 }
 
 fn applyStateOverrides(

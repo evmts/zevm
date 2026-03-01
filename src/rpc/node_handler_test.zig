@@ -636,6 +636,113 @@ test "NodeHandler eth_getFilterLogs honors stored block range" {
     }
 }
 
+test "NodeHandler eth_getFilterChanges replays logs from configured fromBlock on first poll" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    _ = try callMethod(allocator, &handler, "evm_mine", null);
+    _ = try callMethod(allocator, &handler, "evm_mine", null);
+
+    const block_1 = (try handler.node_runtime.blockchain.getBlockByNumber(1)) orelse return error.ExpectedBlock;
+    const block_2 = (try handler.node_runtime.blockchain.getBlockByNumber(2)) orelse return error.ExpectedBlock;
+
+    var receipt_1 = try makeReceiptWithSingleLog(allocator, block_1.hash, 1, 0x31);
+    defer receipt_1.deinit(allocator);
+    var receipt_2 = try makeReceiptWithSingleLog(allocator, block_2.hash, 2, 0x32);
+    defer receipt_2.deinit(allocator);
+
+    try handler.log_index.appendBlockLogs(allocator, 1, block_1.hash, &[_]primitives.Receipt.Receipt{receipt_1});
+    try handler.log_index.appendBlockLogs(allocator, 2, block_2.hash, &[_]primitives.Receipt.Receipt{receipt_2});
+
+    var filter_object = std.json.ObjectMap.init(allocator);
+    defer filter_object.deinit();
+    try filter_object.put("fromBlock", .{ .string = "0x1" });
+    try filter_object.put("toBlock", .{ .string = "0x2" });
+
+    var create_params = std.json.Array.init(allocator);
+    defer create_params.deinit();
+    try create_params.append(.{ .object = filter_object });
+    const create_result = try callMethod(allocator, &handler, "eth_newFilter", .{ .array = create_params });
+    const filter_id = switch (create_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    var changes_params = std.json.Array.init(allocator);
+    defer changes_params.deinit();
+    try changes_params.append(.{ .string = filter_id });
+    const first_changes_result = try callMethod(allocator, &handler, "eth_getFilterChanges", .{ .array = changes_params });
+    const first_changes = switch (first_changes_result) {
+        .array => |array| array.items,
+        else => return error.ExpectedArrayResult,
+    };
+    try std.testing.expectEqual(@as(usize, 2), first_changes.len);
+
+    var second_changes_params = std.json.Array.init(allocator);
+    defer second_changes_params.deinit();
+    try second_changes_params.append(.{ .string = filter_id });
+    const second_changes_result = try callMethod(allocator, &handler, "eth_getFilterChanges", .{ .array = second_changes_params });
+    const second_changes = switch (second_changes_result) {
+        .array => |array| array.items,
+        else => return error.ExpectedArrayResult,
+    };
+    try std.testing.expectEqual(@as(usize, 0), second_changes.len);
+}
+
+test "NodeHandler eth_getFilterChanges supports blockHash filters on first poll" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    _ = try callMethod(allocator, &handler, "evm_mine", null);
+    _ = try callMethod(allocator, &handler, "evm_mine", null);
+
+    const block_2 = (try handler.node_runtime.blockchain.getBlockByNumber(2)) orelse return error.ExpectedBlock;
+    var receipt_2 = try makeReceiptWithSingleLog(allocator, block_2.hash, 2, 0x42);
+    defer receipt_2.deinit(allocator);
+    try handler.log_index.appendBlockLogs(allocator, 2, block_2.hash, &[_]primitives.Receipt.Receipt{receipt_2});
+
+    const block_2_hex = try std.fmt.allocPrint(allocator, "0x{x}", .{block_2.hash});
+
+    var filter_object = std.json.ObjectMap.init(allocator);
+    defer filter_object.deinit();
+    try filter_object.put("blockHash", .{ .string = block_2_hex });
+
+    var create_params = std.json.Array.init(allocator);
+    defer create_params.deinit();
+    try create_params.append(.{ .object = filter_object });
+    const create_result = try callMethod(allocator, &handler, "eth_newFilter", .{ .array = create_params });
+    const filter_id = switch (create_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    var changes_params = std.json.Array.init(allocator);
+    defer changes_params.deinit();
+    try changes_params.append(.{ .string = filter_id });
+    const first_changes_result = try callMethod(allocator, &handler, "eth_getFilterChanges", .{ .array = changes_params });
+    const first_changes = switch (first_changes_result) {
+        .array => |array| array.items,
+        else => return error.ExpectedArrayResult,
+    };
+    try std.testing.expectEqual(@as(usize, 1), first_changes.len);
+
+    var second_changes_params = std.json.Array.init(allocator);
+    defer second_changes_params.deinit();
+    try second_changes_params.append(.{ .string = filter_id });
+    const second_changes_result = try callMethod(allocator, &handler, "eth_getFilterChanges", .{ .array = second_changes_params });
+    const second_changes = switch (second_changes_result) {
+        .array => |array| array.items,
+        else => return error.ExpectedArrayResult,
+    };
+    try std.testing.expectEqual(@as(usize, 0), second_changes.len);
+}
+
 test "NodeHandler eth_newFilter rejects non-object filter param" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
