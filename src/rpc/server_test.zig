@@ -472,7 +472,7 @@ test "parseConfig parses --fork-url" {
 test "parseConfig parses --fork-block-number decimal" {
     const config = try server.parseConfig(
         std.testing.allocator,
-        &[_][]const u8{ "--fork-block-number", "12345678" },
+        &[_][]const u8{ "--fork-url", "https://example.rpc", "--fork-block-number", "12345678" },
     );
 
     try std.testing.expectEqual(@as(u64, 12_345_678), config.fork_block_number.?);
@@ -481,10 +481,17 @@ test "parseConfig parses --fork-block-number decimal" {
 test "parseConfig parses --fork-block-number hex" {
     const config = try server.parseConfig(
         std.testing.allocator,
-        &[_][]const u8{ "--fork-block-number", "0xbc614e" },
+        &[_][]const u8{ "--fork-url", "https://example.rpc", "--fork-block-number", "0xbc614e" },
     );
 
     try std.testing.expectEqual(@as(u64, 12_345_678), config.fork_block_number.?);
+}
+
+test "parseConfig rejects --fork-block-number without --fork-url" {
+    try std.testing.expectError(
+        error.ForkBlockNumberRequiresForkUrl,
+        server.parseConfig(std.testing.allocator, &[_][]const u8{ "--fork-block-number", "0x10" }),
+    );
 }
 
 test "parseConfig rejects missing --fork-block-number value" {

@@ -103,6 +103,10 @@ pub fn parseConfig(allocator: std.mem.Allocator, args: []const []const u8) !Serv
         return error.UnknownArgument;
     }
 
+    if (config.fork_block_number != null and config.fork_url == null) {
+        return error.ForkBlockNumberRequiresForkUrl;
+    }
+
     return config;
 }
 
