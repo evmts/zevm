@@ -31,7 +31,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 
 ## Validation
 
-- Full test suite: **293/293 passing** (`zig build test --summary all`)
+- Full test suite: **294/294 passing** (`zig build test --summary all`)
 - Full build: **passing** (`zig build`)
 
 ## Recent Completion Highlights
@@ -124,6 +124,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 - Fixed log-filter first-poll semantics for `eth_getFilterChanges`:
   - `fromBlock` filters now replay historical logs on first poll,
   - `blockHash` log filters now return matching logs once on first poll (instead of returning empty/invalid behavior).
+  - explicit `fromBlock: "latest"` now correctly tails future logs only (no historical head replay).
 
 ## Notes
 

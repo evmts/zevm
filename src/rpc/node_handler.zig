@@ -990,6 +990,9 @@ pub const NodeHandler = struct {
         if (filter.blockHash != null) return pre_genesis_log_cursor;
 
         if (filter.fromBlock) |from_block| {
+            if (isLatestStyleBlockTag(from_block.value)) {
+                return self.node_runtime.head_block_number;
+            }
             const start_block = try resolveFilterQuantityToBlockNumber(&self.node_runtime, from_block);
             if (start_block == 0) return pre_genesis_log_cursor;
             return start_block - 1;
@@ -1551,6 +1554,17 @@ fn resolveFilterQuantityToBlockNumber(
         .integer => |integer| if (integer >= 0) @intCast(integer) else error.InvalidParams,
         else => error.InvalidParams,
     };
+}
+
+fn isLatestStyleBlockTag(value: std.json.Value) bool {
+    const tag = switch (value) {
+        .string => |string| string,
+        else => return false,
+    };
+    return std.mem.eql(u8, tag, "latest") or
+        std.mem.eql(u8, tag, "pending") or
+        std.mem.eql(u8, tag, "safe") or
+        std.mem.eql(u8, tag, "finalized");
 }
 
 fn applyStateOverrides(

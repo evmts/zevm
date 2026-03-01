@@ -692,6 +692,45 @@ test "NodeHandler eth_getFilterChanges replays logs from configured fromBlock on
     try std.testing.expectEqual(@as(usize, 0), second_changes.len);
 }
 
+test "NodeHandler eth_getFilterChanges with fromBlock latest does not replay head logs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    _ = try callMethod(allocator, &handler, "evm_mine", null);
+    _ = try callMethod(allocator, &handler, "evm_mine", null);
+
+    const head_block = (try handler.node_runtime.blockchain.getBlockByNumber(2)) orelse return error.ExpectedBlock;
+    var receipt = try makeReceiptWithSingleLog(allocator, head_block.hash, 2, 0x52);
+    defer receipt.deinit(allocator);
+    try handler.log_index.appendBlockLogs(allocator, 2, head_block.hash, &[_]primitives.Receipt.Receipt{receipt});
+
+    var filter_object = std.json.ObjectMap.init(allocator);
+    defer filter_object.deinit();
+    try filter_object.put("fromBlock", .{ .string = "latest" });
+
+    var create_params = std.json.Array.init(allocator);
+    defer create_params.deinit();
+    try create_params.append(.{ .object = filter_object });
+    const create_result = try callMethod(allocator, &handler, "eth_newFilter", .{ .array = create_params });
+    const filter_id = switch (create_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    var changes_params = std.json.Array.init(allocator);
+    defer changes_params.deinit();
+    try changes_params.append(.{ .string = filter_id });
+    const first_changes_result = try callMethod(allocator, &handler, "eth_getFilterChanges", .{ .array = changes_params });
+    const first_changes = switch (first_changes_result) {
+        .array => |array| array.items,
+        else => return error.ExpectedArrayResult,
+    };
+    try std.testing.expectEqual(@as(usize, 0), first_changes.len);
+}
+
 test "NodeHandler eth_getFilterChanges supports blockHash filters on first poll" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
