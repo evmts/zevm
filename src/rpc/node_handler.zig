@@ -1016,7 +1016,13 @@ pub const NodeHandler = struct {
                     }
                     state.event_cursor = self.node_runtime.pending_tx_events.items.len;
                 },
-                .syncing => {},
+                .syncing => {
+                    if (state.event_cursor == 0) {
+                        const message = try buildSubscriptionMessage(allocator, id, .{ .bool = false });
+                        try messages.append(allocator, message);
+                        state.event_cursor = 1;
+                    }
+                },
             }
         }
 

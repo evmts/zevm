@@ -691,6 +691,39 @@ test "NodeHandler eth_unsubscribe returns true then false for subscription id" {
     try std.testing.expect(!second_result.bool);
 }
 
+test "NodeHandler eth_subscribe syncing emits false once" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var subscribe_params = std.json.Array.init(allocator);
+    defer subscribe_params.deinit();
+    try subscribe_params.append(.{ .string = "syncing" });
+    const subscribe_result = try callMethod(allocator, &handler, "eth_subscribe", .{ .array = subscribe_params });
+    const subscription_id = switch (subscribe_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    const first_messages = try handler.collectSubscriptionMessages(allocator);
+    defer {
+        for (first_messages) |message| allocator.free(message);
+        allocator.free(first_messages);
+    }
+    try std.testing.expectEqual(@as(usize, 1), first_messages.len);
+    try std.testing.expect(std.mem.indexOf(u8, first_messages[0], subscription_id) != null);
+    try std.testing.expect(std.mem.indexOf(u8, first_messages[0], "\"result\":false") != null);
+
+    const second_messages = try handler.collectSubscriptionMessages(allocator);
+    defer {
+        for (second_messages) |message| allocator.free(message);
+        allocator.free(second_messages);
+    }
+    try std.testing.expectEqual(@as(usize, 0), second_messages.len);
+}
+
 test "NodeHandler setAutomine toggles mining mode" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

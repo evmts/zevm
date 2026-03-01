@@ -31,7 +31,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 
 ## Validation
 
-- Full test suite: **260/260 passing** (`zig build test --summary all`)
+- Full test suite: **261/261 passing** (`zig build test --summary all`)
 - Full build: **passing** (`zig build`)
 
 ## Recent Completion Highlights
@@ -85,6 +85,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
   - `eth_newFilter` now requires exactly one object filter argument,
   - `eth_subscribe` with `logs` now rejects non-object filter payloads,
   - malformed stored filter JSON now propagates `Invalid params` instead of silently becoming `{}`.
+- Implemented `eth_subscribe` `"syncing"` notification behavior by emitting a `false` subscription result once (matching non-syncing dev-node status), with regression coverage.
 
 ## Notes
 
