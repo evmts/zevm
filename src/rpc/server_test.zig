@@ -256,3 +256,65 @@ test "server with NodeHandler context handles hardhat_mine response ownership sa
     const result = try getObjectField(parsed.value, "result");
     try std.testing.expectEqualStrings("0x0", result.string);
 }
+
+test "server with NodeHandler context handles eth_feeHistory ownership safely" {
+    var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
+    defer handler.deinit(std.testing.allocator);
+
+    const handlers = dispatcher.HandlerRegistry{
+        .context = &handler,
+        .on_method_with_context = &node_handler.NodeHandler.onMethod,
+    };
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_feeHistory\",\"params\":[\"0x2\",\"latest\",[]]}",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(std.http.Status.ok, response.status);
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+    const result = try getObjectField(parsed.value, "result");
+    const result_object = switch (result) {
+        .object => |obj| obj,
+        else => return error.ExpectedObject,
+    };
+
+    try std.testing.expect(result_object.get("oldestBlock") != null);
+    try std.testing.expect(result_object.get("baseFeePerGas") != null);
+    try std.testing.expect(result_object.get("gasUsedRatio") != null);
+}
+
+test "server with NodeHandler context handles eth_getBlockByNumber ownership safely" {
+    var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
+    defer handler.deinit(std.testing.allocator);
+
+    const handlers = dispatcher.HandlerRegistry{
+        .context = &handler,
+        .on_method_with_context = &node_handler.NodeHandler.onMethod,
+    };
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getBlockByNumber\",\"params\":[\"latest\",false]}",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(std.http.Status.ok, response.status);
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+    const result = try getObjectField(parsed.value, "result");
+    const block_object = switch (result) {
+        .object => |obj| obj,
+        else => return error.ExpectedObject,
+    };
+
+    try std.testing.expect(block_object.get("number") != null);
+    try std.testing.expect(block_object.get("hash") != null);
+    try std.testing.expect(block_object.get("transactions") != null);
+}
