@@ -229,26 +229,19 @@ fn blockToResponse(
     const txs: TransactionList = if (full_txs) blk: {
         const full = try allocator.alloc(TxResponse, block.body.transactions.len);
         for (block.body.transactions, 0..) |tx_data, i| {
-            _ = tx_data;
-            full[i] = .{
-                .blockHash = block.hash,
-                .blockNumber = block.header.number,
-                .from = primitives.Address.ZERO_ADDRESS,
-                .gas = 0,
-                .hash = [_]u8{0} ** 32,
-                .input = &.{},
-                .nonce = 0,
-                .to = null,
-                .transactionIndex = @intCast(i),
-                .value = 0,
-                .type_field = 0,
-            };
+            full[i] = try transactionToResponse(
+                allocator,
+                block.hash,
+                block.header.number,
+                tx_data.raw,
+                @intCast(i),
+            );
         }
         break :blk .{ .full = full };
     } else blk: {
         const hashes = try allocator.alloc([32]u8, block.body.transactions.len);
-        for (block.body.transactions, 0..) |_, i| {
-            hashes[i] = [_]u8{0} ** 32;
+        for (block.body.transactions, 0..) |tx_data, i| {
+            hashes[i] = txHash(tx_data.raw);
         }
         break :blk .{ .hashes = hashes };
     };
@@ -278,6 +271,81 @@ fn blockToResponse(
         .totalDifficulty = block.total_difficulty,
         .transactions = txs,
     };
+}
+
+fn transactionToResponse(
+    allocator: std.mem.Allocator,
+    block_hash: [32]u8,
+    block_number: u64,
+    raw_tx: []const u8,
+    transaction_index: u32,
+) !TxResponse {
+    const decoded = try primitives.Transaction.decodeRawTransaction(allocator, raw_tx);
+    defer primitives.Transaction.deinitDecodedTransaction(allocator, decoded);
+
+    const sender = primitives.Transaction.recoverSender(allocator, decoded) catch primitives.Address.ZERO_ADDRESS;
+    const hash = txHash(raw_tx);
+
+    return switch (decoded) {
+        .legacy => |tx| .{
+            .blockHash = block_hash,
+            .blockNumber = block_number,
+            .from = sender,
+            .gas = tx.gas_limit,
+            .hash = hash,
+            .input = try allocator.dupe(u8, tx.data),
+            .nonce = tx.nonce,
+            .to = tx.to,
+            .transactionIndex = transaction_index,
+            .value = tx.value,
+            .type_field = 0,
+        },
+        .eip1559 => |tx| .{
+            .blockHash = block_hash,
+            .blockNumber = block_number,
+            .from = sender,
+            .gas = tx.gas_limit,
+            .hash = hash,
+            .input = try allocator.dupe(u8, tx.data),
+            .nonce = tx.nonce,
+            .to = tx.to,
+            .transactionIndex = transaction_index,
+            .value = tx.value,
+            .type_field = 2,
+        },
+        .eip4844 => |tx| .{
+            .blockHash = block_hash,
+            .blockNumber = block_number,
+            .from = sender,
+            .gas = tx.gas_limit,
+            .hash = hash,
+            .input = try allocator.dupe(u8, tx.data),
+            .nonce = tx.nonce,
+            .to = tx.to,
+            .transactionIndex = transaction_index,
+            .value = tx.value,
+            .type_field = 3,
+        },
+        .eip7702 => |tx| .{
+            .blockHash = block_hash,
+            .blockNumber = block_number,
+            .from = sender,
+            .gas = tx.gas_limit,
+            .hash = hash,
+            .input = try allocator.dupe(u8, tx.data),
+            .nonce = tx.nonce,
+            .to = tx.to,
+            .transactionIndex = transaction_index,
+            .value = tx.value,
+            .type_field = 4,
+        },
+    };
+}
+
+fn txHash(raw_tx: []const u8) [32]u8 {
+    var hash: [32]u8 = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(raw_tx, &hash, .{});
+    return hash;
 }
 
 fn txTypeToU8(t: primitives.Receipt.TransactionType) u8 {

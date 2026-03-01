@@ -1,7 +1,9 @@
 const std = @import("std");
 const primitives = @import("primitives");
 const jsonrpc = @import("jsonrpc");
+const guillotine_mini = @import("guillotine_mini");
 const runtime = @import("../../node/runtime.zig");
+const host_adapter = @import("../../host_adapter.zig");
 const tx_processor = @import("../../tx_processor.zig");
 
 pub const TxSubmissionError = error{
@@ -82,6 +84,7 @@ pub fn handleSendRawTransaction(
         error.ReplacementUnderpriced => return TxSubmissionError.PoolInsertFailed,
         error.OutOfMemory => return TxSubmissionError.OutOfMemory,
     };
+    rt.putTransactionRecord(allocator, tx_hash, sender, raw_bytes) catch return TxSubmissionError.OutOfMemory;
 
     // Automine if in auto mode
     if (rt.mining_mode == .auto) {
@@ -110,9 +113,11 @@ pub fn handleSendTransaction(
     };
     const from_addr = primitives.Address.fromHex(from_str) catch return TxSubmissionError.InvalidHexData;
 
-    // Look up private key for the managed account
-    const private_key = runtime.NodeRuntime.lookupManagedAccount(from_addr) orelse
+    // Managed accounts are signed locally. Impersonated accounts bypass signature checks.
+    const private_key = runtime.NodeRuntime.lookupManagedAccount(from_addr);
+    if (private_key == null and !rt.isImpersonated(from_addr)) {
         return TxSubmissionError.UnmanagedAccount;
+    }
 
     // Extract fields
     const nonce = blk: {
@@ -179,13 +184,17 @@ pub fn handleSendTransaction(
         .s = [_]u8{0} ** 32,
     };
 
-    // Sign the transaction
-    const signed_tx = primitives.Transaction.signLegacyTransaction(allocator, unsigned_tx, private_key, rt.chain_id) catch
-        return TxSubmissionError.SigningFailed;
-
-    // Encode the signed transaction to RLP
-    const encoded = primitives.Transaction.encodeLegacyForSigning(allocator, signed_tx, rt.chain_id) catch
-        return TxSubmissionError.OutOfMemory;
+    // Encode the transaction to raw RLP bytes.
+    // Impersonated accounts use unsigned payload encoding.
+    const encoded = if (private_key) |pk| blk: {
+        const signed_tx = primitives.Transaction.signLegacyTransaction(allocator, unsigned_tx, pk, rt.chain_id) catch
+            return TxSubmissionError.SigningFailed;
+        break :blk primitives.Transaction.encodeLegacyForSigning(allocator, signed_tx, rt.chain_id) catch
+            return TxSubmissionError.OutOfMemory;
+    } else blk: {
+        break :blk primitives.Transaction.encodeLegacyForSigning(allocator, unsigned_tx, rt.chain_id) catch
+            return TxSubmissionError.OutOfMemory;
+    };
     defer allocator.free(encoded);
 
     // Compute tx hash
@@ -218,6 +227,7 @@ pub fn handleSendTransaction(
         error.ReplacementUnderpriced => return TxSubmissionError.PoolInsertFailed,
         error.OutOfMemory => return TxSubmissionError.OutOfMemory,
     };
+    rt.putTransactionRecord(allocator, tx_hash, from_addr, encoded) catch return TxSubmissionError.OutOfMemory;
 
     // Automine if in auto mode
     if (rt.mining_mode == .auto) {
@@ -227,36 +237,67 @@ pub fn handleSendTransaction(
     return .{ .value = .{ .bytes = tx_hash } };
 }
 
+pub fn minePendingTransactions(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime) !void {
+    try automine(allocator, rt);
+}
+
 fn automine(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime) !void {
     const ready = try rt.pool.getReady(allocator);
     defer allocator.free(ready);
 
     if (ready.len == 0) return;
 
-    // Convert ready pooled transactions to ExecutionTx for block building
-    // For now, we create simple legacy transactions from pool entries
-    var exec_txs = try allocator.alloc(tx_processor.ExecutionTx, ready.len);
-    defer allocator.free(exec_txs);
+    const next_block_number = rt.head_block_number + 1;
+    const next_timestamp: u64 = rt.next_block_timestamp_override orelse if (rt.mining_mode == .interval and rt.interval_seconds > 0)
+        rt.current_timestamp + rt.interval_seconds
+    else
+        rt.current_timestamp + 1;
+    const next_base_fee = rt.next_block_base_fee_override orelse rt.base_fee;
+    const block_hash = syntheticBlockHash(next_block_number, next_timestamp);
+    const block_ctx = guillotine_mini.BlockContext{
+        .chain_id = rt.chain_id,
+        .block_number = next_block_number,
+        .block_timestamp = next_timestamp,
+        .block_difficulty = 0,
+        .block_prevrandao = 0,
+        .block_coinbase = rt.coinbase,
+        .block_gas_limit = 30_000_000,
+        .block_base_fee = next_base_fee,
+        .blob_base_fee = rt.blob_base_fee,
+    };
+    var adapter = host_adapter.HostAdapter{ .state = &rt.state };
+    const host_iface = adapter.hostInterface();
+    var tx_index: u64 = 0;
+    for (ready) |pooled_tx| {
+        const record = rt.getTransactionRecord(pooled_tx.hash) orelse continue;
+        const decoded = primitives.Transaction.decodeRawTransaction(allocator, record.raw) catch continue;
+        defer primitives.Transaction.deinitDecodedTransaction(allocator, decoded);
 
-    for (ready, 0..) |pooled_tx, i| {
-        // Create a minimal legacy tx from pool data
-        exec_txs[i] = .{
-            .caller = pooled_tx.sender,
-            .tx = .{
-                .nonce = pooled_tx.nonce,
-                .gas_price = pooled_tx.max_fee_per_gas,
-                .gas_limit = pooled_tx.gas_limit,
-                .to = null,
-                .value = 0,
-                .data = &[_]u8{},
-                .v = 0,
-                .r = [_]u8{0} ** 32,
-                .s = [_]u8{0} ** 32,
-            },
-        };
+        const exec_tx = executionTxFromDecoded(record.sender, decoded);
+        _ = tx_processor.processTransaction(
+            allocator,
+            &rt.state,
+            host_iface,
+            exec_tx.caller,
+            exec_tx.tx,
+            block_ctx,
+        ) catch continue;
+
+        rt.markTransactionMined(
+            pooled_tx.hash,
+            block_hash,
+            next_block_number,
+            next_timestamp,
+            tx_index,
+        );
+        tx_index += 1;
     }
 
-    rt.head_block_number += 1;
+    rt.head_block_number = next_block_number;
+    rt.current_timestamp = next_timestamp;
+    rt.base_fee = next_base_fee;
+    rt.next_block_timestamp_override = null;
+    rt.next_block_base_fee_override = null;
 
     // Remove mined txs from pool
     var mined_hashes = try allocator.alloc([32]u8, ready.len);
@@ -271,6 +312,69 @@ fn computeTxHash(raw_bytes: []const u8) [32]u8 {
     var out: [32]u8 = undefined;
     std.crypto.hash.sha3.Keccak256.hash(raw_bytes, &out, .{});
     return out;
+}
+
+fn syntheticBlockHash(block_number: u64, timestamp: u64) [32]u8 {
+    var bytes: [16]u8 = undefined;
+    std.mem.writeInt(u64, bytes[0..8], block_number, .big);
+    std.mem.writeInt(u64, bytes[8..16], timestamp, .big);
+    var out: [32]u8 = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(&bytes, &out, .{});
+    return out;
+}
+
+fn executionTxFromDecoded(
+    sender: primitives.Address,
+    decoded: primitives.Transaction.DecodedTransaction,
+) tx_processor.ExecutionTx {
+    return switch (decoded) {
+        .legacy => |tx| .{
+            .caller = sender,
+            .tx = tx,
+        },
+        .eip1559 => |tx| .{
+            .caller = sender,
+            .tx = .{
+                .nonce = tx.nonce,
+                .gas_price = tx.max_fee_per_gas,
+                .gas_limit = tx.gas_limit,
+                .to = tx.to,
+                .value = tx.value,
+                .data = tx.data,
+                .v = tx.y_parity,
+                .r = tx.r,
+                .s = tx.s,
+            },
+        },
+        .eip4844 => |tx| .{
+            .caller = sender,
+            .tx = .{
+                .nonce = tx.nonce,
+                .gas_price = tx.max_fee_per_gas,
+                .gas_limit = tx.gas_limit,
+                .to = tx.to,
+                .value = tx.value,
+                .data = tx.data,
+                .v = tx.y_parity,
+                .r = tx.r,
+                .s = tx.s,
+            },
+        },
+        .eip7702 => |tx| .{
+            .caller = sender,
+            .tx = .{
+                .nonce = tx.nonce,
+                .gas_price = tx.max_fee_per_gas,
+                .gas_limit = tx.gas_limit,
+                .to = tx.to,
+                .value = tx.value,
+                .data = tx.data,
+                .v = tx.y_parity,
+                .r = tx.r,
+                .s = tx.s,
+            },
+        },
+    };
 }
 
 fn extractNonce(decoded: primitives.Transaction.DecodedTransaction) u64 {

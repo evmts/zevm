@@ -60,7 +60,30 @@ fn isKnownMethod(method_name: []const u8) bool {
     _ = jsonrpc.eth.EthMethod.fromMethodName(method_name) catch {
         _ = jsonrpc.debug.DebugMethod.fromMethodName(method_name) catch {
             _ = jsonrpc.engine.EngineMethod.fromMethodName(method_name) catch {
-                return false;
+                _ = jsonrpc.evm.EvmMethod.fromMethodName(method_name) catch {
+                    _ = jsonrpc.hardhat.HardhatMethod.fromMethodName(method_name) catch {
+                        _ = jsonrpc.anvil.AnvilMethod.fromMethodName(method_name) catch {
+                            if (std.mem.eql(u8, method_name, "evm_mine") or
+                                std.mem.eql(u8, method_name, "hardhat_mine") or
+                                std.mem.eql(u8, method_name, "evm_increaseTime") or
+                                std.mem.eql(u8, method_name, "evm_setNextBlockTimestamp") or
+                                std.mem.eql(u8, method_name, "hardhat_setPrevRandao") or
+                                std.mem.eql(u8, method_name, "hardhat_impersonateAccount") or
+                                std.mem.eql(u8, method_name, "hardhat_stopImpersonatingAccount") or
+                                std.mem.eql(u8, method_name, "debug_traceCall") or
+                                std.mem.eql(u8, method_name, "debug_traceTransaction") or
+                                std.mem.eql(u8, method_name, "eth_subscribe") or
+                                std.mem.eql(u8, method_name, "eth_unsubscribe"))
+                            {
+                                return true;
+                            }
+                            return false;
+                        };
+                        return true;
+                    };
+                    return true;
+                };
+                return true;
             };
             return true;
         };

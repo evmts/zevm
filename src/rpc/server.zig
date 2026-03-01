@@ -5,6 +5,7 @@ const dispatcher = @import("dispatcher.zig");
 pub const ServerConfig = struct {
     host: []const u8 = "127.0.0.1",
     port: u16 = 8545,
+    fork_url: ?[]const u8 = null,
 };
 
 pub const TestHttpResponse = struct {
@@ -47,6 +48,15 @@ pub fn parseConfig(allocator: std.mem.Allocator, args: []const []const u8) !Serv
             config.port = std.fmt.parseInt(u16, args[index], 10) catch {
                 return error.InvalidPort;
             };
+            continue;
+        }
+
+        if (std.mem.eql(u8, args[index], "--fork-url")) {
+            index += 1;
+            if (index >= args.len) {
+                return error.MissingForkUrlValue;
+            }
+            config.fork_url = args[index];
             continue;
         }
 

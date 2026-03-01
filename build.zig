@@ -12,6 +12,7 @@ pub fn build(b: *std.Build) void {
     const primitives_mod = voltaire.module("primitives");
     const state_manager_mod = voltaire.module("state-manager");
     const blockchain_mod = voltaire.module("blockchain");
+    const txpool_mod = voltaire.module("txpool");
     const crypto_mod = voltaire.module("crypto");
     const precompiles_mod = voltaire.module("precompiles");
     const jsonrpc_mod = voltaire.module("jsonrpc");
@@ -49,6 +50,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "primitives", .module = primitives_mod },
             .{ .name = "state-manager", .module = state_manager_mod },
             .{ .name = "blockchain", .module = blockchain_mod },
+            .{ .name = "txpool", .module = txpool_mod },
             .{ .name = "crypto", .module = crypto_mod },
             .{ .name = "precompiles", .module = precompiles_mod },
             .{ .name = "guillotine_mini", .module = guillotine_mini_mod },

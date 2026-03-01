@@ -117,11 +117,96 @@ pub fn handleGetLogs(
 // ============================================================================
 
 pub fn handleGetTransactionByHash(
-    _: std.mem.Allocator,
-    _: *const BlockQueryContext,
-    _: jsonrpc.eth.GetTransactionByHash.Params,
+    allocator: std.mem.Allocator,
+    ctx: *const BlockQueryContext,
+    params: jsonrpc.eth.GetTransactionByHash.Params,
 ) !jsonrpc.eth.GetTransactionByHash.Result {
-    return .{ .value = null };
+    const record = ctx.rt.getTransactionRecord(params.transaction_hash.bytes) orelse return .{ .value = null };
+    const decoded = primitives.Transaction.decodeRawTransaction(allocator, record.raw) catch return .{ .value = null };
+    defer primitives.Transaction.deinitDecodedTransaction(allocator, decoded);
+
+    const metadata = jsonrpc.types.TransactionResponse.Metadata{
+        .block_hash = if (record.block_hash) |h| .{ .bytes = h } else null,
+        .block_number = record.block_number,
+        .block_timestamp = record.block_timestamp,
+        .transaction_index = record.transaction_index,
+        .from = .{ .bytes = record.sender.bytes },
+        .hash = .{ .bytes = params.transaction_hash.bytes },
+    };
+
+    return .{
+        .value = switch (decoded) {
+            .legacy => |tx| .{
+                .legacy = .{
+                    .metadata = metadata,
+                    .nonce = tx.nonce,
+                    .gas_price = tx.gas_price,
+                    .gas = tx.gas_limit,
+                    .to = if (tx.to) |to| .{ .bytes = to.bytes } else null,
+                    .value = tx.value,
+                    .input = try allocator.dupe(u8, tx.data),
+                    .v = tx.v,
+                    .r = tx.r,
+                    .s = tx.s,
+                    .chain_id = ctx.rt.chain_id,
+                },
+            },
+            .eip1559 => |tx| .{
+                .eip1559 = .{
+                    .metadata = metadata,
+                    .chain_id = tx.chain_id,
+                    .nonce = tx.nonce,
+                    .max_priority_fee_per_gas = tx.max_priority_fee_per_gas,
+                    .max_fee_per_gas = tx.max_fee_per_gas,
+                    .gas = tx.gas_limit,
+                    .to = if (tx.to) |to| .{ .bytes = to.bytes } else null,
+                    .value = tx.value,
+                    .input = try allocator.dupe(u8, tx.data),
+                    .access_list = try toResponseAccessList(allocator, tx.access_list),
+                    .y_parity = tx.y_parity,
+                    .r = tx.r,
+                    .s = tx.s,
+                },
+            },
+            .eip4844 => |tx| .{
+                .eip4844 = .{
+                    .metadata = metadata,
+                    .chain_id = tx.chain_id,
+                    .nonce = tx.nonce,
+                    .max_priority_fee_per_gas = tx.max_priority_fee_per_gas,
+                    .max_fee_per_gas = tx.max_fee_per_gas,
+                    .gas = tx.gas_limit,
+                    .to = .{ .bytes = tx.to.bytes },
+                    .value = tx.value,
+                    .input = try allocator.dupe(u8, tx.data),
+                    .access_list = try toResponseAccessList(allocator, tx.access_list),
+                    .max_fee_per_blob_gas = tx.max_fee_per_blob_gas,
+                    .blob_versioned_hashes = try toBlobVersionedHashes(allocator, tx.blob_versioned_hashes),
+                    .y_parity = tx.y_parity,
+                    .r = tx.r,
+                    .s = tx.s,
+                },
+            },
+            .eip7702 => |tx| .{
+                .eip7702 = .{
+                    .metadata = metadata,
+                    .chain_id = tx.chain_id,
+                    .nonce = tx.nonce,
+                    .max_priority_fee_per_gas = tx.max_priority_fee_per_gas,
+                    .max_fee_per_gas = tx.max_fee_per_gas,
+                    .gas = tx.gas_limit,
+                    .to = if (tx.to) |to| .{ .bytes = to.bytes } else null,
+                    .value = tx.value,
+                    .input = try allocator.dupe(u8, tx.data),
+                    .access_list = try toResponseAccessList(allocator, tx.access_list),
+                    .authorization_list = try toResponseAuthorizationList(allocator, tx.authorization_list),
+                    .y_parity = tx.y_parity,
+                    .r = tx.r,
+                    .s = tx.s,
+                },
+            },
+        },
+    };
 }
 
 // ============================================================================
@@ -145,6 +230,20 @@ fn quantityFromU64(allocator: std.mem.Allocator, n: u64) !jsonrpc.types.Quantity
 
 fn quantityFromU256(allocator: std.mem.Allocator, n: u256) !jsonrpc.types.Quantity {
     return .{ .value = .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{n}) } };
+}
+
+fn dataFromBytes(allocator: std.mem.Allocator, data: []const u8) !jsonrpc.types.Quantity {
+    return .{ .value = .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{data}) } };
+}
+
+fn txTypeFromU8(type_field: u8) jsonrpc.types.TransactionInfo.TransactionType {
+    return switch (type_field) {
+        1 => .eip2930,
+        2 => .eip1559,
+        3 => .eip4844,
+        4 => .eip7702,
+        else => .legacy,
+    };
 }
 
 fn hashToRpc(h: [32]u8) jsonrpc.types.Hash {
@@ -179,7 +278,7 @@ fn internalBlockToRpc(
             for (full, 0..) |tx, i| {
                 txs[i] = .{
                     .full = .{
-                        .type = .legacy,
+                        .type = txTypeFromU8(tx.type_field),
                         .hash = hashToRpc(tx.hash),
                         .nonce = try quantityFromU64(allocator, tx.nonce),
                         .blockHash = hashToRpc(tx.blockHash orelse [_]u8{0} ** 32),
@@ -189,7 +288,7 @@ fn internalBlockToRpc(
                         .to = optAddrToRpc(tx.to),
                         .value = try quantityFromU256(allocator, tx.value),
                         .gas = try quantityFromU64(allocator, tx.gas),
-                        .input = .{ .value = .{ .string = "0x" } },
+                        .input = try dataFromBytes(allocator, tx.input),
                     },
                 };
             }
@@ -367,6 +466,49 @@ fn parseQuantityToU64(q: jsonrpc.types.Quantity) !u64 {
         },
         else => return error.InvalidQuantity,
     }
+}
+
+fn toResponseAccessList(
+    allocator: std.mem.Allocator,
+    access_list: []const primitives.Transaction.AccessListItem,
+) ![]const jsonrpc.types.TransactionResponse.AccessListEntry {
+    const response = try allocator.alloc(jsonrpc.types.TransactionResponse.AccessListEntry, access_list.len);
+    for (access_list, 0..) |entry, i| {
+        response[i] = .{
+            .address = .{ .bytes = entry.address.bytes },
+            .storage_keys = try allocator.dupe([32]u8, entry.storage_keys),
+        };
+    }
+    return response;
+}
+
+fn toResponseAuthorizationList(
+    allocator: std.mem.Allocator,
+    authorization_list: []const primitives.Authorization.Authorization,
+) ![]const jsonrpc.types.TransactionResponse.AuthorizationEntry {
+    const response = try allocator.alloc(jsonrpc.types.TransactionResponse.AuthorizationEntry, authorization_list.len);
+    for (authorization_list, 0..) |entry, i| {
+        response[i] = .{
+            .chain_id = entry.chain_id,
+            .address = .{ .bytes = entry.address.bytes },
+            .nonce = entry.nonce,
+            .y_parity = @intCast(entry.v & 1),
+            .r = entry.r,
+            .s = entry.s,
+        };
+    }
+    return response;
+}
+
+fn toBlobVersionedHashes(
+    allocator: std.mem.Allocator,
+    hashes: []const primitives.Blob.VersionedHash,
+) ![]const [32]u8 {
+    const out = try allocator.alloc([32]u8, hashes.len);
+    for (hashes, 0..) |hash, i| {
+        out[i] = hash.bytes;
+    }
+    return out;
 }
 
 test {

@@ -13,7 +13,7 @@ test "eth_chainId returns configured chain id" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
-    defer rt.deinit();
+    defer rt.deinit(std.testing.allocator);
 
     const result = try eth_read.handleEthChainId(arena.allocator(), &rt, .{});
     try expectQuantityStr(result.value, "0x7a69"); // 31337
@@ -23,7 +23,7 @@ test "eth_chainId returns custom chain id" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, .{ .chain_id = 1 });
-    defer rt.deinit();
+    defer rt.deinit(std.testing.allocator);
 
     const result = try eth_read.handleEthChainId(arena.allocator(), &rt, .{});
     try expectQuantityStr(result.value, "0x1");
@@ -35,7 +35,7 @@ test "eth_blockNumber returns current head number" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
-    defer rt.deinit();
+    defer rt.deinit(std.testing.allocator);
 
     const result = try eth_read.handleEthBlockNumber(arena.allocator(), &rt, .{});
     try expectQuantityStr(result.value, "0x0");
@@ -45,7 +45,7 @@ test "eth_blockNumber reflects updated head" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
-    defer rt.deinit();
+    defer rt.deinit(std.testing.allocator);
     rt.head_block_number = 42;
 
     const result = try eth_read.handleEthBlockNumber(arena.allocator(), &rt, .{});
@@ -58,7 +58,7 @@ test "eth_getBalance returns dev account balance at latest" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
-    defer rt.deinit();
+    defer rt.deinit(std.testing.allocator);
 
     const result = try eth_read.handleEthGetBalance(
         arena.allocator(),
@@ -77,7 +77,7 @@ test "eth_getBalance returns 0 for unknown address" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
-    defer rt.deinit();
+    defer rt.deinit(std.testing.allocator);
 
     const result = try eth_read.handleEthGetBalance(
         arena.allocator(),
@@ -96,7 +96,7 @@ test "eth_getTransactionCount returns 0 for fresh account" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
-    defer rt.deinit();
+    defer rt.deinit(std.testing.allocator);
 
     const result = try eth_read.handleEthGetTransactionCount(
         arena.allocator(),
@@ -113,7 +113,7 @@ test "eth_getTransactionCount returns 0 for fresh account" {
 
 test "eth_coinbase returns default coinbase" {
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
-    defer rt.deinit();
+    defer rt.deinit(std.testing.allocator);
 
     const result = try eth_read.handleEthCoinbase(std.testing.allocator, &rt, .{});
     try std.testing.expectEqual(runtime.DEFAULT_DEV_ACCOUNTS[0].bytes, result.value.bytes);
@@ -123,7 +123,7 @@ test "eth_coinbase returns default coinbase" {
 
 test "eth_accounts returns 10 dev accounts" {
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
-    defer rt.deinit();
+    defer rt.deinit(std.testing.allocator);
 
     const result = try eth_read.handleEthAccounts(std.testing.allocator, &rt, .{});
     defer std.testing.allocator.free(result.value);
@@ -139,7 +139,7 @@ test "eth_gasPrice returns default gas price" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
-    defer rt.deinit();
+    defer rt.deinit(std.testing.allocator);
 
     const result = try eth_read.handleEthGasPrice(arena.allocator(), &rt, .{});
     // 2 gwei = 2_000_000_000 = 0x77359400
@@ -152,7 +152,7 @@ test "eth_maxPriorityFeePerGas returns default" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
-    defer rt.deinit();
+    defer rt.deinit(std.testing.allocator);
 
     const result = try eth_read.handleEthMaxPriorityFeePerGas(arena.allocator(), &rt, .{});
     // 1 gwei = 1_000_000_000 = 0x3b9aca00
@@ -165,7 +165,7 @@ test "eth_blobBaseFee returns default" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
-    defer rt.deinit();
+    defer rt.deinit(std.testing.allocator);
 
     const result = try eth_read.handleEthBlobBaseFee(arena.allocator(), &rt, .{});
     try expectQuantityStr(result.value, "0x1");
@@ -177,7 +177,7 @@ test "eth_feeHistory returns correct shape" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
-    defer rt.deinit();
+    defer rt.deinit(std.testing.allocator);
 
     const result = try eth_read.handleEthFeeHistory(
         arena.allocator(),

@@ -2,6 +2,8 @@ const std = @import("std");
 const jsonrpc = @import("jsonrpc");
 
 pub const HandlerRegistry = struct {
+    context: ?*anyopaque = null,
+    on_method_with_context: ?*const fn (context: *anyopaque, allocator: std.mem.Allocator, method_name: []const u8, params: ?std.json.Value) anyerror!std.json.Value = null,
     on_method: ?*const fn (allocator: std.mem.Allocator, method_name: []const u8, params: ?std.json.Value) anyerror!std.json.Value = null,
 };
 
@@ -15,12 +17,23 @@ pub fn dispatch(allocator: std.mem.Allocator, request: jsonrpc.envelope.RequestE
         },
     };
 
-    if (handlers.on_method == null) {
+    if (handlers.on_method_with_context == null and handlers.on_method == null) {
         return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND, "Method not found");
     }
 
-    const result = handlers.on_method.?(allocator, request.method, request.params) catch {
-        return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.INTERNAL_ERROR, "Internal error");
+    const result = if (handlers.on_method_with_context) |with_context| blk: {
+        const context = handlers.context orelse {
+            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.INTERNAL_ERROR, "Internal error");
+        };
+        break :blk with_context(context, allocator, request.method, request.params) catch |err| switch (err) {
+            error.MethodNotFound => return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND, "Method not found"),
+            error.InvalidParams => return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.INVALID_PARAMS, "Invalid params"),
+            else => return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.INTERNAL_ERROR, "Internal error"),
+        };
+    } else handlers.on_method.?(allocator, request.method, request.params) catch |err| switch (err) {
+        error.MethodNotFound => return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND, "Method not found"),
+        error.InvalidParams => return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.INVALID_PARAMS, "Invalid params"),
+        else => return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.INTERNAL_ERROR, "Internal error"),
     };
 
     return jsonrpc.envelope.ResponseEnvelope.makeSuccess(request.id, result);
@@ -51,6 +64,33 @@ fn validateParamsForMethod(allocator: std.mem.Allocator, method_name: []const u8
     if (jsonrpc.engine.EngineMethod.fromMethodName(method_name)) |_| {
         return;
     } else |_| {}
+
+    if (jsonrpc.evm.EvmMethod.fromMethodName(method_name)) |_| {
+        return;
+    } else |_| {}
+
+    if (jsonrpc.hardhat.HardhatMethod.fromMethodName(method_name)) |_| {
+        return;
+    } else |_| {}
+
+    if (jsonrpc.anvil.AnvilMethod.fromMethodName(method_name)) |_| {
+        return;
+    } else |_| {}
+
+    if (std.mem.eql(u8, method_name, "evm_mine") or
+        std.mem.eql(u8, method_name, "hardhat_mine") or
+        std.mem.eql(u8, method_name, "evm_increaseTime") or
+        std.mem.eql(u8, method_name, "evm_setNextBlockTimestamp") or
+        std.mem.eql(u8, method_name, "hardhat_setPrevRandao") or
+        std.mem.eql(u8, method_name, "hardhat_impersonateAccount") or
+        std.mem.eql(u8, method_name, "hardhat_stopImpersonatingAccount") or
+        std.mem.eql(u8, method_name, "debug_traceCall") or
+        std.mem.eql(u8, method_name, "debug_traceTransaction") or
+        std.mem.eql(u8, method_name, "eth_subscribe") or
+        std.mem.eql(u8, method_name, "eth_unsubscribe"))
+    {
+        return;
+    }
 
     return error.UnknownMethod;
 }

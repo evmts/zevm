@@ -4,7 +4,7 @@ const mining = @import("../mining.zig");
 
 test "NodeRuntime.init uses deterministic defaults" {
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
-    defer rt.deinit();
+    defer rt.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(u64, 31337), rt.chain_id);
     try std.testing.expectEqual(@as(u64, 0), rt.head_block_number);
@@ -13,7 +13,7 @@ test "NodeRuntime.init uses deterministic defaults" {
 
 test "NodeRuntime.init seeds dev account balances" {
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
-    defer rt.deinit();
+    defer rt.deinit(std.testing.allocator);
 
     for (&runtime.DEFAULT_DEV_ACCOUNTS) |addr| {
         const balance = try rt.state.getBalance(addr);
@@ -27,7 +27,7 @@ test "NodeRuntime.init respects custom config" {
         .coinbase_index = 2,
         .initial_balance = 42,
     });
-    defer rt.deinit();
+    defer rt.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(u64, 1), rt.chain_id);
     try std.testing.expectEqual(runtime.DEFAULT_DEV_ACCOUNTS[2], rt.coinbase);
@@ -38,27 +38,27 @@ test "NodeRuntime.init respects custom config" {
 
 test "NodeRuntime.init head block number starts at 0" {
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
-    defer rt.deinit();
+    defer rt.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(u64, 0), rt.head_block_number);
 }
 
 test "NodeRuntime.deinit releases state" {
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
-    rt.deinit();
+    rt.deinit(std.testing.allocator);
     // If allocator leaks, testing.allocator will detect it
 }
 
 test "NodeRuntime initializes with default auto mining config" {
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
-    defer rt.deinit();
+    defer rt.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(mining.MiningConfigType.auto, std.meta.activeTag(rt.mining_config));
 }
 
 test "NodeRuntime setMiningConfig updates to interval" {
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
-    defer rt.deinit();
+    defer rt.deinit(std.testing.allocator);
 
     rt.setMiningConfig(.{ .interval = .{ .block_time = 12 } });
     try std.testing.expectEqual(mining.MiningConfigType.interval, std.meta.activeTag(rt.mining_config));
@@ -70,7 +70,7 @@ test "NodeRuntime setMiningConfig updates to interval" {
 
 test "NodeRuntime setMiningConfig updates to manual" {
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
-    defer rt.deinit();
+    defer rt.deinit(std.testing.allocator);
 
     rt.setMiningConfig(.manual);
     try std.testing.expectEqual(mining.MiningConfigType.manual, std.meta.activeTag(rt.mining_config));
@@ -80,7 +80,15 @@ test "NodeRuntime init respects custom mining config" {
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, .{
         .mining_config = .{ .interval = .{ .block_time = 5 } },
     });
-    defer rt.deinit();
+    defer rt.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(mining.MiningConfigType.interval, std.meta.activeTag(rt.mining_config));
+}
+
+test "NodeRuntime initializes blockchain and txpool" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(u64, 0), rt.blockchain.getHeadBlockNumber() orelse 0);
+    try std.testing.expectEqual(@as(usize, 0), rt.pool.pendingCount());
 }

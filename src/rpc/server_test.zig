@@ -185,6 +185,7 @@ test "parseConfig defaults to 127.0.0.1:8545" {
 
     try std.testing.expectEqualStrings("127.0.0.1", config.host);
     try std.testing.expectEqual(@as(u16, 8545), config.port);
+    try std.testing.expect(config.fork_url == null);
 }
 
 test "parseConfig parses --host and --port" {
@@ -195,4 +196,14 @@ test "parseConfig parses --host and --port" {
 
     try std.testing.expectEqualStrings("0.0.0.0", config.host);
     try std.testing.expectEqual(@as(u16, 9555), config.port);
+}
+
+test "parseConfig parses --fork-url" {
+    const config = try server.parseConfig(
+        std.testing.allocator,
+        &[_][]const u8{ "--fork-url", "https://example.rpc" },
+    );
+
+    try std.testing.expect(config.fork_url != null);
+    try std.testing.expectEqualStrings("https://example.rpc", config.fork_url.?);
 }
