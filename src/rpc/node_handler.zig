@@ -212,12 +212,38 @@ pub const NodeHandler = struct {
         }
         if (std.mem.eql(u8, method_name, "eth_sendRawTransaction")) {
             const parsed = try parseParams(jsonrpc.eth.SendRawTransaction.Params, temp_allocator, params);
-            const result = try tx_submission.handleSendRawTransaction(allocator, &self.node_runtime, parsed);
+            const result = tx_submission.handleSendRawTransaction(allocator, &self.node_runtime, parsed) catch |err| switch (err) {
+                tx_submission.TxSubmissionError.InvalidHexData,
+                tx_submission.TxSubmissionError.DecodeFailed,
+                tx_submission.TxSubmissionError.SenderRecoveryFailed,
+                tx_submission.TxSubmissionError.ChainIdMismatch,
+                tx_submission.TxSubmissionError.NonceMismatch,
+                tx_submission.TxSubmissionError.InsufficientBalance,
+                tx_submission.TxSubmissionError.IntrinsicGasExceedsLimit,
+                tx_submission.TxSubmissionError.PoolInsertFailed,
+                tx_submission.TxSubmissionError.UnmanagedAccount,
+                tx_submission.TxSubmissionError.SigningFailed,
+                => return error.InvalidParams,
+                else => return err,
+            };
             return try toJsonValue(allocator, result);
         }
         if (std.mem.eql(u8, method_name, "eth_sendTransaction")) {
             const parsed = try parseParams(jsonrpc.eth.SendTransaction.Params, temp_allocator, params);
-            const result = try tx_submission.handleSendTransaction(allocator, &self.node_runtime, parsed);
+            const result = tx_submission.handleSendTransaction(allocator, &self.node_runtime, parsed) catch |err| switch (err) {
+                tx_submission.TxSubmissionError.InvalidHexData,
+                tx_submission.TxSubmissionError.DecodeFailed,
+                tx_submission.TxSubmissionError.SenderRecoveryFailed,
+                tx_submission.TxSubmissionError.ChainIdMismatch,
+                tx_submission.TxSubmissionError.NonceMismatch,
+                tx_submission.TxSubmissionError.InsufficientBalance,
+                tx_submission.TxSubmissionError.IntrinsicGasExceedsLimit,
+                tx_submission.TxSubmissionError.PoolInsertFailed,
+                tx_submission.TxSubmissionError.UnmanagedAccount,
+                tx_submission.TxSubmissionError.SigningFailed,
+                => return error.InvalidParams,
+                else => return err,
+            };
             return try toJsonValue(allocator, result);
         }
         if (std.mem.eql(u8, method_name, "eth_getBlockByNumber")) {
