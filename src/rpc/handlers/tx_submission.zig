@@ -1,5 +1,6 @@
 const std = @import("std");
 const primitives = @import("primitives");
+const crypto = @import("crypto");
 const jsonrpc = @import("jsonrpc");
 const guillotine_mini = @import("guillotine_mini");
 const runtime = @import("../../node/runtime.zig");
@@ -54,7 +55,7 @@ pub fn handleSendRawTransaction(
     const data = extractData(decoded);
 
     // Validate nonce against state
-    const current_nonce = rt.state.getNonce(sender) catch return TxSubmissionError.StateError;
+    const current_nonce = rt.getNonceWithFork(allocator, sender) catch return TxSubmissionError.StateError;
     if (current_nonce != nonce) return TxSubmissionError.NonceMismatch;
 
     // Validate intrinsic gas
@@ -65,7 +66,7 @@ pub fn handleSendRawTransaction(
     // Validate balance covers value + gas cost
     const max_gas_cost = gas_price * @as(u256, gas_limit);
     const total_cost = value + max_gas_cost;
-    const balance = rt.state.getBalance(sender) catch return TxSubmissionError.StateError;
+    const balance = rt.getBalanceWithFork(allocator, sender) catch return TxSubmissionError.StateError;
     if (balance < total_cost) return TxSubmissionError.InsufficientBalance;
 
     // Compute tx hash from raw bytes
@@ -124,7 +125,7 @@ pub fn handleSendTransaction(
         if (tx_obj.get("nonce")) |nonce_val| {
             break :blk parseJsonQuantityToU64(nonce_val) catch return TxSubmissionError.InvalidHexData;
         }
-        break :blk rt.state.getNonce(from_addr) catch return TxSubmissionError.StateError;
+        break :blk rt.getNonceWithFork(allocator, from_addr) catch return TxSubmissionError.StateError;
     };
 
     const gas_limit: u64 = blk: {
@@ -139,6 +140,20 @@ pub fn handleSendTransaction(
             break :blk parseJsonQuantityToU256(gp_val) catch return TxSubmissionError.InvalidHexData;
         }
         break :blk rt.gas_price;
+    };
+
+    const max_priority_fee_per_gas: u256 = blk: {
+        if (tx_obj.get("maxPriorityFeePerGas")) |priority_val| {
+            break :blk parseJsonQuantityToU256(priority_val) catch return TxSubmissionError.InvalidHexData;
+        }
+        break :blk rt.max_priority_fee;
+    };
+
+    const max_fee_per_gas: u256 = blk: {
+        if (tx_obj.get("maxFeePerGas")) |max_fee_val| {
+            break :blk parseJsonQuantityToU256(max_fee_val) catch return TxSubmissionError.InvalidHexData;
+        }
+        break :blk gas_price;
     };
 
     const value: u256 = blk: {
@@ -171,29 +186,97 @@ pub fn handleSendTransaction(
     };
     defer if (data_bytes.len > 0) allocator.free(data_bytes);
 
-    // Build unsigned legacy transaction
-    const unsigned_tx = primitives.Transaction.LegacyTransaction{
-        .nonce = nonce,
-        .gas_price = gas_price,
-        .gas_limit = gas_limit,
-        .to = to,
-        .value = value,
-        .data = data_bytes,
-        .v = 0,
-        .r = [_]u8{0} ** 32,
-        .s = [_]u8{0} ** 32,
-    };
+    const tx_type = parseSendTransactionType(tx_obj) catch return TxSubmissionError.InvalidHexData;
+    const access_list = parseAccessList(allocator, tx_obj) catch return TxSubmissionError.InvalidHexData;
+    defer deinitAccessList(allocator, access_list);
 
-    // Encode the transaction to raw RLP bytes.
-    // Impersonated accounts use unsigned payload encoding.
-    const encoded = if (private_key) |pk| blk: {
-        const signed_tx = primitives.Transaction.signLegacyTransaction(allocator, unsigned_tx, pk, rt.chain_id) catch
-            return TxSubmissionError.SigningFailed;
-        break :blk primitives.Transaction.encodeLegacyForSigning(allocator, signed_tx, rt.chain_id) catch
-            return TxSubmissionError.OutOfMemory;
-    } else blk: {
-        break :blk primitives.Transaction.encodeLegacyForSigning(allocator, unsigned_tx, rt.chain_id) catch
-            return TxSubmissionError.OutOfMemory;
+    // Encode the transaction to raw bytes.
+    // Impersonated accounts keep unsigned legacy compatibility semantics.
+    const encoded = blk: {
+        if (private_key == null and rt.isImpersonated(from_addr)) {
+            const unsigned_legacy = primitives.Transaction.LegacyTransaction{
+                .nonce = nonce,
+                .gas_price = gas_price,
+                .gas_limit = gas_limit,
+                .to = to,
+                .value = value,
+                .data = data_bytes,
+                .v = 0,
+                .r = [_]u8{0} ** 32,
+                .s = [_]u8{0} ** 32,
+            };
+            break :blk primitives.Transaction.encodeLegacyForSigning(allocator, unsigned_legacy, rt.chain_id) catch
+                return TxSubmissionError.OutOfMemory;
+        }
+
+        const pk = private_key orelse return TxSubmissionError.SigningFailed;
+        switch (tx_type) {
+            .legacy => {
+                const unsigned_legacy = primitives.Transaction.LegacyTransaction{
+                    .nonce = nonce,
+                    .gas_price = gas_price,
+                    .gas_limit = gas_limit,
+                    .to = to,
+                    .value = value,
+                    .data = data_bytes,
+                    .v = 0,
+                    .r = [_]u8{0} ** 32,
+                    .s = [_]u8{0} ** 32,
+                };
+                const signed_legacy = primitives.Transaction.signLegacyTransaction(allocator, unsigned_legacy, pk, rt.chain_id) catch
+                    return TxSubmissionError.SigningFailed;
+                break :blk primitives.Transaction.encodeLegacyForSigning(allocator, signed_legacy, rt.chain_id) catch
+                    return TxSubmissionError.OutOfMemory;
+            },
+            .eip2930 => {
+                const unsigned_2930 = primitives.Transaction.Eip2930Transaction{
+                    .chain_id = rt.chain_id,
+                    .nonce = nonce,
+                    .gas_price = gas_price,
+                    .gas_limit = gas_limit,
+                    .to = to,
+                    .value = value,
+                    .data = data_bytes,
+                    .access_list = access_list,
+                    .y_parity = 0,
+                    .r = [_]u8{0} ** 32,
+                    .s = [_]u8{0} ** 32,
+                };
+                const signed_2930 = primitives.Transaction.signEip2930Transaction(allocator, unsigned_2930, pk) catch
+                    return TxSubmissionError.SigningFailed;
+                break :blk primitives.Transaction.encodeEip2930ForSigning(allocator, signed_2930) catch
+                    return TxSubmissionError.OutOfMemory;
+            },
+            .eip1559 => {
+                var signed_1559 = primitives.Transaction.Eip1559Transaction{
+                    .chain_id = rt.chain_id,
+                    .nonce = nonce,
+                    .max_priority_fee_per_gas = max_priority_fee_per_gas,
+                    .max_fee_per_gas = max_fee_per_gas,
+                    .gas_limit = gas_limit,
+                    .to = to,
+                    .value = value,
+                    .data = data_bytes,
+                    .access_list = access_list,
+                    .y_parity = 0,
+                    .r = [_]u8{0} ** 32,
+                    .s = [_]u8{0} ** 32,
+                };
+                const signing_payload = primitives.Transaction.encodeEip1559ForSigning(allocator, signed_1559) catch
+                    return TxSubmissionError.OutOfMemory;
+                defer allocator.free(signing_payload);
+
+                const signing_hash = crypto.Hash.keccak256(signing_payload);
+                const signature = crypto.Crypto.unaudited_signHash(signing_hash, pk) catch
+                    return TxSubmissionError.SigningFailed;
+                signed_1559.y_parity = signature.recoveryId();
+                std.mem.writeInt(u256, &signed_1559.r, signature.r, .big);
+                std.mem.writeInt(u256, &signed_1559.s, signature.s, .big);
+
+                break :blk primitives.Transaction.encodeEip1559ForSigning(allocator, signed_1559) catch
+                    return TxSubmissionError.OutOfMemory;
+            },
+        }
     };
     defer allocator.free(encoded);
 
@@ -201,7 +284,7 @@ pub fn handleSendTransaction(
     const tx_hash = computeTxHash(encoded);
 
     // Validate nonce
-    const current_nonce = rt.state.getNonce(from_addr) catch return TxSubmissionError.StateError;
+    const current_nonce = rt.getNonceWithFork(allocator, from_addr) catch return TxSubmissionError.StateError;
     if (current_nonce != nonce) return TxSubmissionError.NonceMismatch;
 
     // Validate intrinsic gas
@@ -209,9 +292,13 @@ pub fn handleSendTransaction(
     if (intrinsic > gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
 
     // Validate balance
-    const max_gas_cost = gas_price * @as(u256, gas_limit);
+    const max_gas_cost = (switch (tx_type) {
+        .legacy => gas_price,
+        .eip2930 => gas_price,
+        .eip1559 => max_fee_per_gas,
+    }) * @as(u256, gas_limit);
     const total_cost = value + max_gas_cost;
-    const balance = rt.state.getBalance(from_addr) catch return TxSubmissionError.StateError;
+    const balance = rt.getBalanceWithFork(allocator, from_addr) catch return TxSubmissionError.StateError;
     if (balance < total_cost) return TxSubmissionError.InsufficientBalance;
 
     // Insert into txpool
@@ -220,8 +307,16 @@ pub fn handleSendTransaction(
         .sender = from_addr,
         .nonce = nonce,
         .gas_limit = gas_limit,
-        .max_fee_per_gas = gas_price,
-        .max_priority_fee_per_gas = gas_price,
+        .max_fee_per_gas = switch (tx_type) {
+            .legacy => gas_price,
+            .eip2930 => gas_price,
+            .eip1559 => max_fee_per_gas,
+        },
+        .max_priority_fee_per_gas = switch (tx_type) {
+            .legacy => gas_price,
+            .eip2930 => gas_price,
+            .eip1559 => max_priority_fee_per_gas,
+        },
         .hash = tx_hash,
     }) catch |err| switch (err) {
         error.ReplacementUnderpriced => return TxSubmissionError.PoolInsertFailed,
@@ -332,6 +427,20 @@ fn executionTxFromDecoded(
             .caller = sender,
             .tx = tx,
         },
+        .eip2930 => |tx| .{
+            .caller = sender,
+            .tx = .{
+                .nonce = tx.nonce,
+                .gas_price = tx.gas_price,
+                .gas_limit = tx.gas_limit,
+                .to = tx.to,
+                .value = tx.value,
+                .data = tx.data,
+                .v = tx.y_parity,
+                .r = tx.r,
+                .s = tx.s,
+            },
+        },
         .eip1559 => |tx| .{
             .caller = sender,
             .tx = .{
@@ -380,6 +489,7 @@ fn executionTxFromDecoded(
 fn extractNonce(decoded: primitives.Transaction.DecodedTransaction) u64 {
     return switch (decoded) {
         .legacy => |t| t.nonce,
+        .eip2930 => |t| t.nonce,
         .eip1559 => |t| t.nonce,
         .eip4844 => |t| t.nonce,
         .eip7702 => |t| t.nonce,
@@ -389,6 +499,7 @@ fn extractNonce(decoded: primitives.Transaction.DecodedTransaction) u64 {
 fn extractGasLimit(decoded: primitives.Transaction.DecodedTransaction) u64 {
     return switch (decoded) {
         .legacy => |t| t.gas_limit,
+        .eip2930 => |t| t.gas_limit,
         .eip1559 => |t| t.gas_limit,
         .eip4844 => |t| t.gas_limit,
         .eip7702 => |t| t.gas_limit,
@@ -398,6 +509,7 @@ fn extractGasLimit(decoded: primitives.Transaction.DecodedTransaction) u64 {
 fn extractGasPrice(decoded: primitives.Transaction.DecodedTransaction) u256 {
     return switch (decoded) {
         .legacy => |t| t.gas_price,
+        .eip2930 => |t| t.gas_price,
         .eip1559 => |t| t.max_fee_per_gas,
         .eip4844 => |t| t.max_fee_per_gas,
         .eip7702 => |t| t.max_fee_per_gas,
@@ -407,6 +519,7 @@ fn extractGasPrice(decoded: primitives.Transaction.DecodedTransaction) u256 {
 fn extractPriorityFee(decoded: primitives.Transaction.DecodedTransaction) u256 {
     return switch (decoded) {
         .legacy => |t| t.gas_price,
+        .eip2930 => |t| t.gas_price,
         .eip1559 => |t| t.max_priority_fee_per_gas,
         .eip4844 => |t| t.max_priority_fee_per_gas,
         .eip7702 => |t| t.max_priority_fee_per_gas,
@@ -416,6 +529,7 @@ fn extractPriorityFee(decoded: primitives.Transaction.DecodedTransaction) u256 {
 fn extractValue(decoded: primitives.Transaction.DecodedTransaction) u256 {
     return switch (decoded) {
         .legacy => |t| t.value,
+        .eip2930 => |t| t.value,
         .eip1559 => |t| t.value,
         .eip4844 => |t| t.value,
         .eip7702 => |t| t.value,
@@ -425,6 +539,7 @@ fn extractValue(decoded: primitives.Transaction.DecodedTransaction) u256 {
 fn extractTo(decoded: primitives.Transaction.DecodedTransaction) ?primitives.Address {
     return switch (decoded) {
         .legacy => |t| t.to,
+        .eip2930 => |t| t.to,
         .eip1559 => |t| t.to,
         .eip4844 => |t| .{ .bytes = t.to.bytes },
         .eip7702 => |t| t.to,
@@ -434,6 +549,7 @@ fn extractTo(decoded: primitives.Transaction.DecodedTransaction) ?primitives.Add
 fn extractData(decoded: primitives.Transaction.DecodedTransaction) []const u8 {
     return switch (decoded) {
         .legacy => |t| t.data,
+        .eip2930 => |t| t.data,
         .eip1559 => |t| t.data,
         .eip4844 => |t| t.data,
         .eip7702 => |t| t.data,
@@ -470,4 +586,88 @@ fn parseJsonQuantityToU256(val: std.json.Value) !u256 {
         },
         else => return error.InvalidQuantity,
     }
+}
+
+const SendTransactionType = enum {
+    legacy,
+    eip2930,
+    eip1559,
+};
+
+fn parseSendTransactionType(tx_obj: std.json.ObjectMap) !SendTransactionType {
+    if (tx_obj.get("type")) |type_value| {
+        const type_id = parseJsonQuantityToU64(type_value) catch return error.InvalidType;
+        return switch (type_id) {
+            0 => .legacy,
+            1 => .eip2930,
+            2 => .eip1559,
+            else => error.InvalidType,
+        };
+    }
+
+    if (tx_obj.get("maxFeePerGas") != null or tx_obj.get("maxPriorityFeePerGas") != null) {
+        return .eip1559;
+    }
+    if (tx_obj.get("accessList") != null) {
+        return .eip2930;
+    }
+    return .legacy;
+}
+
+fn parseAccessList(
+    allocator: std.mem.Allocator,
+    tx_obj: std.json.ObjectMap,
+) ![]const primitives.Transaction.AccessListItem {
+    const access_list_value = tx_obj.get("accessList") orelse return allocator.alloc(primitives.Transaction.AccessListItem, 0);
+    const access_items = switch (access_list_value) {
+        .array => |array| array.items,
+        else => return error.InvalidAccessList,
+    };
+
+    const access_list = try allocator.alloc(primitives.Transaction.AccessListItem, access_items.len);
+    errdefer allocator.free(access_list);
+
+    for (access_items, 0..) |entry, i| {
+        const entry_obj = switch (entry) {
+            .object => |obj| obj,
+            else => return error.InvalidAccessList,
+        };
+
+        const address_value = entry_obj.get("address") orelse return error.InvalidAccessList;
+        const address_string = switch (address_value) {
+            .string => |s| s,
+            else => return error.InvalidAccessList,
+        };
+        const address = primitives.Address.fromHex(address_string) catch return error.InvalidAccessList;
+
+        const storage_keys_value = entry_obj.get("storageKeys") orelse return error.InvalidAccessList;
+        const storage_keys_items = switch (storage_keys_value) {
+            .array => |array| array.items,
+            else => return error.InvalidAccessList,
+        };
+
+        const storage_keys = try allocator.alloc([32]u8, storage_keys_items.len);
+        errdefer allocator.free(storage_keys);
+        for (storage_keys_items, 0..) |key, j| {
+            const key_string = switch (key) {
+                .string => |s| s,
+                else => return error.InvalidAccessList,
+            };
+            storage_keys[j] = primitives.Hex.hexToBytesFixed(32, key_string) catch return error.InvalidAccessList;
+        }
+
+        access_list[i] = .{
+            .address = address,
+            .storage_keys = storage_keys,
+        };
+    }
+
+    return access_list;
+}
+
+fn deinitAccessList(allocator: std.mem.Allocator, access_list: []const primitives.Transaction.AccessListItem) void {
+    for (access_list) |entry| {
+        allocator.free(entry.storage_keys);
+    }
+    allocator.free(access_list);
 }

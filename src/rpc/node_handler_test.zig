@@ -143,3 +143,52 @@ test "NodeHandler hardhat impersonation allows eth_sendTransaction" {
         else => return error.ExpectedHashString,
     }
 }
+
+test "NodeHandler eth_call executes and returns hex data" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var tx_object = std.json.ObjectMap.init(allocator);
+    defer tx_object.deinit();
+    try tx_object.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try tx_object.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try tx_object.put("data", .{ .string = "0x" });
+
+    var params = std.json.Array.init(allocator);
+    defer params.deinit();
+    try params.append(.{ .object = tx_object });
+    try params.append(.{ .string = "latest" });
+
+    const result = try callMethod(allocator, &handler, "eth_call", .{ .array = params });
+    switch (result) {
+        .string => |value| try std.testing.expect(std.mem.startsWith(u8, value, "0x")),
+        else => return error.ExpectedStringResult,
+    }
+}
+
+test "NodeHandler eth_estimateGas uses execution search" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var tx_object = std.json.ObjectMap.init(allocator);
+    defer tx_object.deinit();
+    try tx_object.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try tx_object.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try tx_object.put("value", .{ .string = "0x1" });
+
+    var params = std.json.Array.init(allocator);
+    defer params.deinit();
+    try params.append(.{ .object = tx_object });
+
+    const result = try callMethod(allocator, &handler, "eth_estimateGas", .{ .array = params });
+    switch (result) {
+        .string => |value| try std.testing.expectEqualStrings("0x5208", value),
+        else => return error.ExpectedStringResult,
+    }
+}

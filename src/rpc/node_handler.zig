@@ -1,6 +1,8 @@
 const std = @import("std");
 const jsonrpc = @import("jsonrpc");
 const primitives = @import("primitives");
+const guillotine_mini = @import("guillotine_mini");
+const state_manager = @import("state-manager");
 const runtime = @import("../node/runtime.zig");
 const tx_submission = @import("handlers/tx_submission.zig");
 const eth_read = @import("handlers/eth_read.zig");
@@ -10,6 +12,7 @@ const dev_handlers = @import("dev_handlers.zig");
 const receipt_index = @import("../receipt_index.zig");
 const log_index = @import("../log_index.zig");
 const tx_processor = @import("../tx_processor.zig");
+const host_adapter = @import("../host_adapter.zig");
 
 const FilterKind = enum {
     log,
@@ -21,6 +24,16 @@ const FilterKind = enum {
 const FilterState = struct {
     kind: FilterKind,
     last_block: u64,
+};
+
+const CallRequest = struct {
+    from: primitives.Address,
+    to: ?primitives.Address,
+    gas: u64,
+    gas_price: u256,
+    value: u256,
+    nonce: ?u64,
+    data: []u8,
 };
 
 pub const NodeHandler = struct {
@@ -176,14 +189,17 @@ pub const NodeHandler = struct {
             return try toJsonValue(allocator, result);
         }
         if (std.mem.eql(u8, method_name, "eth_call")) {
-            return .{ .string = "0x" };
+            const call_result = try self.executeEthCall(allocator, params);
+            return .{ .string = call_result };
         }
         if (std.mem.eql(u8, method_name, "eth_estimateGas")) {
-            const tx = parseCallLikeTransaction(params) orelse return error.InvalidParams;
-            const intrinsic = intrinsicGasFromHexData(tx.data_hex, tx.to == null);
-            return .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{intrinsic}) };
+            const estimated = try self.estimateGas(allocator, params);
+            return .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{estimated}) };
         }
         if (std.mem.eql(u8, method_name, "evm_snapshot")) {
+            self.dev_runtime.config.coinbase = self.node_runtime.coinbase;
+            self.dev_runtime.config.next_block_base_fee_per_gas = self.node_runtime.next_block_base_fee_override;
+            self.dev_runtime.config.block_gas_limit = self.node_runtime.block_gas_limit;
             const result = try dev_handlers.handleEvmSnapshot(
                 allocator,
                 &self.dev_runtime,
@@ -193,6 +209,8 @@ pub const NodeHandler = struct {
             return result;
         }
         if (std.mem.eql(u8, method_name, "evm_revert")) {
+            const snapshot_id = parseFirstU64(params) orelse return error.InvalidParams;
+            const snapshot_entry = self.dev_runtime.snapshots.get(snapshot_id) orelse return .{ .bool = false };
             const result = try dev_handlers.handleEvmRevert(
                 allocator,
                 &self.dev_runtime,
@@ -200,10 +218,18 @@ pub const NodeHandler = struct {
                 &self.node_runtime.blockchain,
                 params,
             );
+            if (result.bool) {
+                self.node_runtime.head_block_number = snapshot_entry.block_number;
+                self.node_runtime.coinbase = snapshot_entry.config.coinbase;
+                self.node_runtime.next_block_base_fee_override = snapshot_entry.config.next_block_base_fee_per_gas;
+                self.node_runtime.block_gas_limit = snapshot_entry.config.block_gas_limit;
+            }
             return result;
         }
         if (std.mem.eql(u8, method_name, "evm_setBlockGasLimit")) {
-            return try dev_handlers.handleEvmSetBlockGasLimit(&self.dev_runtime, params);
+            const result = try dev_handlers.handleEvmSetBlockGasLimit(&self.dev_runtime, params);
+            self.node_runtime.block_gas_limit = self.dev_runtime.config.block_gas_limit;
+            return result;
         }
         if (std.mem.eql(u8, method_name, "hardhat_setBalance") or std.mem.eql(u8, method_name, "anvil_setBalance")) {
             return try dev_handlers.handleHardhatSetBalance(&self.node_runtime.state, params);
@@ -218,7 +244,9 @@ pub const NodeHandler = struct {
             return try dev_handlers.handleHardhatSetStorageAt(&self.node_runtime.state, params);
         }
         if (std.mem.eql(u8, method_name, "hardhat_setCoinbase") or std.mem.eql(u8, method_name, "anvil_setCoinbase")) {
-            return try dev_handlers.handleHardhatSetCoinbase(&self.dev_runtime, params);
+            const result = try dev_handlers.handleHardhatSetCoinbase(&self.dev_runtime, params);
+            self.node_runtime.coinbase = self.dev_runtime.config.coinbase;
+            return result;
         }
         if (std.mem.eql(u8, method_name, "hardhat_setNextBlockBaseFeePerGas") or std.mem.eql(u8, method_name, "anvil_setNextBlockBaseFeePerGas")) {
             const result = try dev_handlers.handleHardhatSetNextBlockBaseFeePerGas(&self.dev_runtime, params);
@@ -315,6 +343,168 @@ pub const NodeHandler = struct {
         return error.MethodNotFound;
     }
 
+    fn executeEthCall(
+        self: *NodeHandler,
+        allocator: std.mem.Allocator,
+        params: ?std.json.Value,
+    ) ![]const u8 {
+        const call = parseCallRequest(
+            allocator,
+            params,
+            self.node_runtime.coinbase,
+            self.node_runtime.block_gas_limit,
+            self.node_runtime.gas_price,
+        ) catch return error.InvalidParams;
+        defer allocator.free(call.data);
+
+        const overrides = extractStateOverrides(params);
+
+        try self.node_runtime.state.checkpoint();
+        defer self.node_runtime.state.revert();
+
+        if (overrides) |value| {
+            try applyStateOverrides(allocator, &self.node_runtime.state, value);
+        }
+
+        const block_ctx = guillotine_mini.BlockContext{
+            .chain_id = self.node_runtime.chain_id,
+            .block_number = self.node_runtime.head_block_number,
+            .block_timestamp = self.node_runtime.current_timestamp,
+            .block_difficulty = 0,
+            .block_prevrandao = self.node_runtime.prev_randao,
+            .block_coinbase = self.node_runtime.coinbase,
+            .block_gas_limit = self.node_runtime.block_gas_limit,
+            .block_base_fee = self.node_runtime.base_fee,
+            .blob_base_fee = self.node_runtime.blob_base_fee,
+        };
+
+        var adapter = host_adapter.HostAdapter{ .state = &self.node_runtime.state };
+        const host_iface = adapter.hostInterface();
+
+        const EvmType = guillotine_mini.Evm(.{});
+        var evm: EvmType = undefined;
+        evm.init(allocator, host_iface, null, block_ctx, null) catch return error.InvalidParams;
+        defer evm.deinit();
+        evm.initTransactionState(null) catch return error.InvalidParams;
+
+        const gas_limit = @min(call.gas, self.node_runtime.block_gas_limit);
+        const call_params: EvmType.CallParams = if (call.to) |to|
+            .{ .call = .{
+                .caller = call.from,
+                .to = to,
+                .value = call.value,
+                .input = call.data,
+                .gas = gas_limit,
+            } }
+        else
+            .{ .create = .{
+                .caller = call.from,
+                .value = call.value,
+                .init_code = call.data,
+                .gas = gas_limit,
+            } };
+
+        var result = evm.call(call_params).toOwnedResult(allocator) catch return error.InvalidParams;
+        defer result.deinit(allocator);
+
+        return try std.fmt.allocPrint(allocator, "0x{x}", .{result.output});
+    }
+
+    fn estimateGas(
+        self: *NodeHandler,
+        allocator: std.mem.Allocator,
+        params: ?std.json.Value,
+    ) !u64 {
+        const call = parseCallRequest(
+            allocator,
+            params,
+            self.node_runtime.coinbase,
+            self.node_runtime.block_gas_limit,
+            self.node_runtime.gas_price,
+        ) catch return error.InvalidParams;
+        defer allocator.free(call.data);
+
+        const overrides = extractStateOverrides(params);
+        const lower_bound = tx_processor.intrinsicGas(call.data, call.to == null);
+        var upper_bound = @min(call.gas, self.node_runtime.block_gas_limit);
+        if (upper_bound == 0) upper_bound = self.node_runtime.block_gas_limit;
+        if (upper_bound < lower_bound) return error.InvalidParams;
+
+        if (!(try self.simulateEstimateCandidate(allocator, call, overrides, upper_bound))) {
+            return error.InvalidParams;
+        }
+
+        var low = lower_bound;
+        var high = upper_bound;
+        while (low < high) {
+            const mid = low + (high - low) / 2;
+            if (try self.simulateEstimateCandidate(allocator, call, overrides, mid)) {
+                high = mid;
+            } else {
+                low = mid + 1;
+            }
+        }
+        return low;
+    }
+
+    fn simulateEstimateCandidate(
+        self: *NodeHandler,
+        allocator: std.mem.Allocator,
+        call: CallRequest,
+        overrides: ?std.json.Value,
+        gas_limit: u64,
+    ) !bool {
+        try self.node_runtime.state.checkpoint();
+        defer self.node_runtime.state.revert();
+
+        if (overrides) |value| {
+            try applyStateOverrides(allocator, &self.node_runtime.state, value);
+        }
+
+        const nonce = call.nonce orelse (self.node_runtime.getNonceWithFork(allocator, call.from) catch return false);
+
+        const tx = primitives.Transaction.LegacyTransaction{
+            .nonce = nonce,
+            .gas_price = call.gas_price,
+            .gas_limit = gas_limit,
+            .to = call.to,
+            .value = call.value,
+            .data = call.data,
+            .v = 0,
+            .r = [_]u8{0} ** 32,
+            .s = [_]u8{0} ** 32,
+        };
+
+        const block_ctx = guillotine_mini.BlockContext{
+            .chain_id = self.node_runtime.chain_id,
+            .block_number = self.node_runtime.head_block_number,
+            .block_timestamp = self.node_runtime.current_timestamp,
+            .block_difficulty = 0,
+            .block_prevrandao = self.node_runtime.prev_randao,
+            .block_coinbase = self.node_runtime.coinbase,
+            .block_gas_limit = self.node_runtime.block_gas_limit,
+            .block_base_fee = self.node_runtime.base_fee,
+            .blob_base_fee = self.node_runtime.blob_base_fee,
+        };
+
+        var adapter = host_adapter.HostAdapter{ .state = &self.node_runtime.state };
+        const host_iface = adapter.hostInterface();
+        var receipt = tx_processor.processTransaction(
+            allocator,
+            &self.node_runtime.state,
+            host_iface,
+            call.from,
+            tx,
+            block_ctx,
+        ) catch return false;
+        defer receipt.deinit(allocator);
+
+        if (receipt.status) |status| {
+            return status.success;
+        }
+        return true;
+    }
+
     fn handleGetFilterChanges(
         self: *NodeHandler,
         allocator: std.mem.Allocator,
@@ -376,25 +566,74 @@ fn makeBlockQueryContext(self: *NodeHandler) block_query_handlers.BlockQueryCont
     };
 }
 
-fn parseCallLikeTransaction(params: ?std.json.Value) ?struct { to: ?primitives.Address, data_hex: []const u8 } {
-    const array = switch (params orelse return null) {
+fn parseCallRequest(
+    allocator: std.mem.Allocator,
+    params: ?std.json.Value,
+    default_from: primitives.Address,
+    default_gas: u64,
+    default_gas_price: u256,
+) !CallRequest {
+    const array = switch (params orelse return error.InvalidParams) {
         .array => |arr| arr.items,
-        else => return null,
+        else => return error.InvalidParams,
     };
-    if (array.len == 0) return null;
+    if (array.len == 0) return error.InvalidParams;
 
     const object = switch (array[0]) {
         .object => |obj| obj,
-        else => return null,
+        else => return error.InvalidParams,
+    };
+
+    const from = blk: {
+        if (object.get("from")) |from_value| {
+            const from_string = switch (from_value) {
+                .string => |string| string,
+                else => break :blk default_from,
+            };
+            break :blk parseAddressFromHex(from_string) orelse return error.InvalidParams;
+        }
+        break :blk default_from;
     };
 
     const to = blk: {
         if (object.get("to")) |to_value| {
             const to_string = switch (to_value) {
                 .string => |string| string,
-                else => break :blk null,
+                .null => break :blk null,
+                else => return error.InvalidParams,
             };
-            break :blk parseAddressFromHex(to_string);
+            break :blk parseAddressFromHex(to_string) orelse return error.InvalidParams;
+        }
+        break :blk null;
+    };
+
+    const gas = blk: {
+        if (object.get("gas")) |gas_value| {
+            break :blk parseJsonQuantityToU64(gas_value) orelse return error.InvalidParams;
+        }
+        break :blk default_gas;
+    };
+
+    const gas_price = blk: {
+        if (object.get("gasPrice")) |gas_price_value| {
+            break :blk parseJsonQuantityToU256(gas_price_value) orelse return error.InvalidParams;
+        }
+        if (object.get("maxFeePerGas")) |max_fee| {
+            break :blk parseJsonQuantityToU256(max_fee) orelse return error.InvalidParams;
+        }
+        break :blk default_gas_price;
+    };
+
+    const value = blk: {
+        if (object.get("value")) |value_field| {
+            break :blk parseJsonQuantityToU256(value_field) orelse return error.InvalidParams;
+        }
+        break :blk 0;
+    };
+
+    const nonce = blk: {
+        if (object.get("nonce")) |nonce_value| {
+            break :blk parseJsonQuantityToU64(nonce_value) orelse return error.InvalidParams;
         }
         break :blk null;
     };
@@ -403,14 +642,95 @@ fn parseCallLikeTransaction(params: ?std.json.Value) ?struct { to: ?primitives.A
         if (object.get("data") orelse object.get("input")) |data_value| {
             const data_string = switch (data_value) {
                 .string => |string| string,
-                else => break :blk "0x",
+                else => return error.InvalidParams,
             };
             break :blk data_string;
         }
         break :blk "0x";
     };
 
-    return .{ .to = to, .data_hex = data_hex };
+    const data = try parseHexBytesOwned(allocator, data_hex);
+    return .{
+        .from = from,
+        .to = to,
+        .gas = gas,
+        .gas_price = gas_price,
+        .value = value,
+        .nonce = nonce,
+        .data = data,
+    };
+}
+
+fn extractStateOverrides(params: ?std.json.Value) ?std.json.Value {
+    const array = switch (params orelse return null) {
+        .array => |arr| arr.items,
+        else => return null,
+    };
+    if (array.len < 3) return null;
+    return array[2];
+}
+
+fn applyStateOverrides(
+    allocator: std.mem.Allocator,
+    state: *state_manager.StateManager,
+    overrides: std.json.Value,
+) !void {
+    const accounts = switch (overrides) {
+        .object => |obj| obj,
+        .null => return,
+        else => return error.InvalidParams,
+    };
+
+    var account_it = accounts.iterator();
+    while (account_it.next()) |entry| {
+        const address = parseAddressFromHex(entry.key_ptr.*) orelse return error.InvalidParams;
+        const account_override = switch (entry.value_ptr.*) {
+            .object => |obj| obj,
+            else => return error.InvalidParams,
+        };
+
+        if (account_override.get("balance")) |balance_value| {
+            const balance = parseJsonQuantityToU256(balance_value) orelse return error.InvalidParams;
+            try state.setBalance(address, balance);
+        }
+        if (account_override.get("nonce")) |nonce_value| {
+            const nonce = parseJsonQuantityToU64(nonce_value) orelse return error.InvalidParams;
+            try state.setNonce(address, nonce);
+        }
+        if (account_override.get("code")) |code_value| {
+            const code = try parseHexBytesOwned(allocator, switch (code_value) {
+                .string => |s| s,
+                else => return error.InvalidParams,
+            });
+            defer allocator.free(code);
+            try state.setCode(address, code);
+        }
+
+        if (account_override.get("state")) |full_state| {
+            try applyStorageOverrideMap(state, address, full_state);
+        }
+        if (account_override.get("stateDiff")) |state_diff| {
+            try applyStorageOverrideMap(state, address, state_diff);
+        }
+    }
+}
+
+fn applyStorageOverrideMap(
+    state: *state_manager.StateManager,
+    address: primitives.Address,
+    mapping_value: std.json.Value,
+) !void {
+    const mapping = switch (mapping_value) {
+        .object => |obj| obj,
+        else => return error.InvalidParams,
+    };
+
+    var slot_it = mapping.iterator();
+    while (slot_it.next()) |entry| {
+        const slot = parseHexU256String(entry.key_ptr.*) orelse return error.InvalidParams;
+        const value = parseJsonQuantityToU256(entry.value_ptr.*) orelse return error.InvalidParams;
+        try state.setStorage(address, slot, value);
+    }
 }
 
 fn parseFirstAddress(params: ?std.json.Value) ?primitives.Address {
@@ -432,6 +752,30 @@ fn parseAddressFromHex(hex: []const u8) ?primitives.Address {
     var bytes: [20]u8 = undefined;
     _ = std.fmt.hexToBytes(&bytes, hex[2..]) catch return null;
     return .{ .bytes = bytes };
+}
+
+fn parseHexBytesOwned(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+    var hex = value;
+    if (hex.len >= 2 and hex[0] == '0' and (hex[1] == 'x' or hex[1] == 'X')) {
+        hex = hex[2..];
+    }
+    if (hex.len == 0) {
+        return allocator.alloc(u8, 0);
+    }
+    if (hex.len % 2 != 0) return error.InvalidParams;
+    const bytes = try allocator.alloc(u8, hex.len / 2);
+    errdefer allocator.free(bytes);
+    _ = std.fmt.hexToBytes(bytes, hex) catch return error.InvalidParams;
+    return bytes;
+}
+
+fn parseHexU256String(value: []const u8) ?u256 {
+    var hex = value;
+    if (hex.len >= 2 and hex[0] == '0' and (hex[1] == 'x' or hex[1] == 'X')) {
+        hex = hex[2..];
+    }
+    if (hex.len == 0) return 0;
+    return std.fmt.parseInt(u256, hex, 16) catch null;
 }
 
 fn parseFirstU64(params: ?std.json.Value) ?u64 {

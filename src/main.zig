@@ -6,7 +6,9 @@ pub fn main() !void {
     defer std.process.argsFree(std.heap.page_allocator, args);
 
     const config = try zevm.rpc.server.parseConfig(std.heap.page_allocator, args[1..]);
-    var node_handler = try zevm.rpc.node_handler.NodeHandler.init(std.heap.page_allocator, null);
+    var node_config = zevm.node_runtime.NodeConfig{};
+    node_config.fork_url = config.fork_url;
+    var node_handler = try zevm.rpc.node_handler.NodeHandler.init(std.heap.page_allocator, node_config);
     defer node_handler.deinit(std.heap.page_allocator);
 
     const handlers = zevm.rpc.dispatcher.HandlerRegistry{

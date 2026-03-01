@@ -25,12 +25,15 @@ pub fn handleGetBlockByNumber(
     ctx: *const BlockQueryContext,
     params: jsonrpc.eth.GetBlockByNumber.Params,
 ) !jsonrpc.eth.GetBlockByNumber.Result {
-    const tag = blockSpecToTag(allocator, params.block) catch return .{ .block = null };
-    defer allocator.free(tag);
-
-    const internal = block_queries.getBlockByNumber(allocator, ctx.blockchain, tag, params.hydrated_transactions) catch return .{ .block = null };
-    if (internal) |resp| {
-        return .{ .block = internalBlockToRpc(allocator, resp) catch return .{ .block = null } };
+    const block_number = block_spec.resolveBlockNumber(ctx.rt, params.block) catch return .{ .block = null };
+    const block = ctx.rt.getBlockByNumberWithFork(allocator, block_number) catch return .{ .block = null };
+    if (block) |resolved_block| {
+        const internal = block_queries.blockToResponseFromBlock(
+            allocator,
+            resolved_block,
+            params.hydrated_transactions,
+        ) catch return .{ .block = null };
+        return .{ .block = internalBlockToRpc(allocator, internal) catch return .{ .block = null } };
     }
     return .{ .block = null };
 }
@@ -44,9 +47,14 @@ pub fn handleGetBlockByHash(
     ctx: *const BlockQueryContext,
     params: jsonrpc.eth.GetBlockByHash.Params,
 ) !jsonrpc.eth.GetBlockByHash.Result {
-    const internal = block_queries.getBlockByHash(allocator, ctx.blockchain, params.block_hash.bytes, params.hydrated_transactions) catch return .{ .block = null };
-    if (internal) |resp| {
-        return .{ .block = internalBlockToRpc(allocator, resp) catch return .{ .block = null } };
+    const block = ctx.rt.getBlockByHashWithFork(allocator, params.block_hash.bytes) catch return .{ .block = null };
+    if (block) |resolved_block| {
+        const internal = block_queries.blockToResponseFromBlock(
+            allocator,
+            resolved_block,
+            params.hydrated_transactions,
+        ) catch return .{ .block = null };
+        return .{ .block = internalBlockToRpc(allocator, internal) catch return .{ .block = null } };
     }
     return .{ .block = null };
 }
@@ -76,19 +84,22 @@ pub fn handleGetBlockReceipts(
     ctx: *const BlockQueryContext,
     params: jsonrpc.eth.GetBlockReceipts.Params,
 ) !jsonrpc.eth.GetBlockReceipts.Result {
-    const tag = blockSpecToTag(allocator, params.block) catch return .{ .value = null };
-    defer allocator.free(tag);
+    const block_number = block_spec.resolveBlockNumber(ctx.rt, params.block) catch return .{ .value = null };
+    const block = ctx.rt.getBlockByNumberWithFork(allocator, block_number) catch return .{ .value = null };
+    if (block == null) return .{ .value = null };
 
-    const internal = block_queries.getBlockReceipts(allocator, ctx.blockchain, ctx.receipt_index, tag) catch return .{ .value = null };
-    if (internal) |resps| {
-        defer allocator.free(resps);
-        const rpc_receipts = allocator.alloc(jsonrpc.types.ReceiptResponse, resps.len) catch return .{ .value = null };
-        for (resps, 0..) |resp, i| {
-            rpc_receipts[i] = internalReceiptToRpc(allocator, resp) catch return .{ .value = null };
-        }
-        return .{ .value = rpc_receipts };
+    const receipts = ctx.receipt_index.getByBlockHash(block.?.hash) orelse return .{ .value = null };
+    const internal = try allocator.alloc(block_queries.ReceiptResponse, receipts.len);
+    defer allocator.free(internal);
+    for (receipts, 0..) |receipt, i| {
+        internal[i] = try block_queries.receiptToResponse(allocator, receipt);
     }
-    return .{ .value = null };
+
+    const rpc_receipts = allocator.alloc(jsonrpc.types.ReceiptResponse, internal.len) catch return .{ .value = null };
+    for (internal, 0..) |resp, i| {
+        rpc_receipts[i] = internalReceiptToRpc(allocator, resp) catch return .{ .value = null };
+    }
+    return .{ .value = rpc_receipts };
 }
 
 // ============================================================================
@@ -113,7 +124,7 @@ pub fn handleGetLogs(
 }
 
 // ============================================================================
-// eth_getTransactionByHash (stub — no tx index exists yet)
+// eth_getTransactionByHash
 // ============================================================================
 
 pub fn handleGetTransactionByHash(
@@ -149,6 +160,22 @@ pub fn handleGetTransactionByHash(
                     .r = tx.r,
                     .s = tx.s,
                     .chain_id = ctx.rt.chain_id,
+                },
+            },
+            .eip2930 => |tx| .{
+                .eip2930 = .{
+                    .metadata = metadata,
+                    .chain_id = tx.chain_id,
+                    .nonce = tx.nonce,
+                    .gas_price = tx.gas_price,
+                    .gas = tx.gas_limit,
+                    .to = if (tx.to) |to| .{ .bytes = to.bytes } else null,
+                    .value = tx.value,
+                    .input = try allocator.dupe(u8, tx.data),
+                    .access_list = try toResponseAccessList(allocator, tx.access_list),
+                    .y_parity = tx.y_parity,
+                    .r = tx.r,
+                    .s = tx.s,
                 },
             },
             .eip1559 => |tx| .{

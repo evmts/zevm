@@ -135,6 +135,14 @@ pub fn getBlockByHash(
     return @as(?BlockResponse, try blockToResponse(allocator, block, full_txs));
 }
 
+pub fn blockToResponseFromBlock(
+    allocator: std.mem.Allocator,
+    block: primitives.Block.Block,
+    full_txs: bool,
+) !BlockResponse {
+    return blockToResponse(allocator, block, full_txs);
+}
+
 pub fn getBlockTxCountByNumber(
     bc: *blockchain_mod.Blockchain,
     tag: []const u8,
@@ -300,6 +308,19 @@ fn transactionToResponse(
             .value = tx.value,
             .type_field = 0,
         },
+        .eip2930 => |tx| .{
+            .blockHash = block_hash,
+            .blockNumber = block_number,
+            .from = sender,
+            .gas = tx.gas_limit,
+            .hash = hash,
+            .input = try allocator.dupe(u8, tx.data),
+            .nonce = tx.nonce,
+            .to = tx.to,
+            .transactionIndex = transaction_index,
+            .value = tx.value,
+            .type_field = 1,
+        },
         .eip1559 => |tx| .{
             .blockHash = block_hash,
             .blockNumber = block_number,
@@ -358,7 +379,7 @@ fn txTypeToU8(t: primitives.Receipt.TransactionType) u8 {
     };
 }
 
-fn receiptToResponse(
+pub fn receiptToResponse(
     allocator: std.mem.Allocator,
     receipt: primitives.Receipt.Receipt,
 ) !ReceiptResponse {

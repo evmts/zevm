@@ -42,19 +42,18 @@ pub fn handleEthGetBalance(
     params: jsonrpc.eth.GetBalance.Params,
 ) !jsonrpc.eth.GetBalance.Result {
     _ = try block_spec.resolveBlockNumber(rt, params.block);
-    const balance = try rt.state.getBalance(.{ .bytes = params.address.bytes });
+    const balance = try rt.getBalanceWithFork(allocator, .{ .bytes = params.address.bytes });
     return .{ .value = .{ .value = .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{balance}) } } };
 }
 
 pub fn handleEthGetCode(
-    _: std.mem.Allocator,
+    allocator: std.mem.Allocator,
     rt: *runtime.NodeRuntime,
     params: jsonrpc.eth.GetCode.Params,
 ) !jsonrpc.eth.GetCode.Result {
     _ = try block_spec.resolveBlockNumber(rt, params.block);
-    const code = try rt.state.getCode(.{ .bytes = params.address.bytes });
-    _ = code;
-    return .{ .value = .{ .value = .{ .string = "0x" } } };
+    const code = try rt.getCodeWithFork(allocator, .{ .bytes = params.address.bytes });
+    return .{ .value = .{ .value = .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{code}) } } };
 }
 
 pub fn handleEthGetStorageAt(
@@ -64,7 +63,7 @@ pub fn handleEthGetStorageAt(
 ) !jsonrpc.eth.GetStorageAt.Result {
     _ = try block_spec.resolveBlockNumber(rt, params.block);
     const slot = parseQuantityToU256(params.storage_slot) catch return .{ .value = .{ .value = .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{@as(u256, 0)}) } } };
-    const value = try rt.state.getStorage(.{ .bytes = params.address.bytes }, slot);
+    const value = try rt.getStorageWithFork(allocator, .{ .bytes = params.address.bytes }, slot);
     return .{ .value = .{ .value = .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{value}) } } };
 }
 
@@ -74,7 +73,7 @@ pub fn handleEthGetTransactionCount(
     params: jsonrpc.eth.GetTransactionCount.Params,
 ) !jsonrpc.eth.GetTransactionCount.Result {
     _ = try block_spec.resolveBlockNumber(rt, params.block);
-    const nonce = try rt.state.getNonce(.{ .bytes = params.address.bytes });
+    const nonce = try rt.getNonceWithFork(allocator, .{ .bytes = params.address.bytes });
     return .{ .value = .{ .value = .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{nonce}) } } };
 }
 

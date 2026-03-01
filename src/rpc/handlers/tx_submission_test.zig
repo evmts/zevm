@@ -259,3 +259,70 @@ test "eth_sendTransaction unmanaged account returns error" {
     const result = tx_submission.handleSendTransaction(std.testing.allocator, &rt, params);
     try std.testing.expectError(tx_submission.TxSubmissionError.UnmanagedAccount, result);
 }
+
+test "eth_sendTransaction supports EIP-1559 typed transactions" {
+    var rt = try makeRuntime();
+    defer rt.deinit(std.testing.allocator);
+    rt.mining_mode = .manual;
+
+    var obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try obj.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try obj.put("value", .{ .string = "0x1" });
+    try obj.put("gas", .{ .string = "0x5208" });
+    try obj.put("maxPriorityFeePerGas", .{ .string = "0x3b9aca00" }); // 1 gwei
+    try obj.put("maxFeePerGas", .{ .string = "0x77359400" }); // 2 gwei
+    try obj.put("type", .{ .string = "0x2" });
+
+    const params = jsonrpc.eth.SendTransaction.Params{
+        .transaction = .{ .value = .{ .object = obj } },
+    };
+
+    const result = try tx_submission.handleSendTransaction(std.testing.allocator, &rt, params);
+    const record = rt.getTransactionRecord(result.value.bytes) orelse return error.ExpectedTransactionRecord;
+    const decoded = try primitives.Transaction.decodeRawTransaction(std.testing.allocator, record.raw);
+    defer primitives.Transaction.deinitDecodedTransaction(std.testing.allocator, decoded);
+
+    try std.testing.expect(decoded == .eip1559);
+}
+
+test "eth_sendTransaction supports EIP-2930 typed transactions" {
+    var rt = try makeRuntime();
+    defer rt.deinit(std.testing.allocator);
+    rt.mining_mode = .manual;
+
+    var access_entry = std.json.ObjectMap.init(std.testing.allocator);
+    defer access_entry.deinit();
+    try access_entry.put("address", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+
+    var storage_keys = std.json.Array.init(std.testing.allocator);
+    defer storage_keys.deinit();
+    try storage_keys.append(.{ .string = "0x0000000000000000000000000000000000000000000000000000000000000000" });
+    try access_entry.put("storageKeys", .{ .array = storage_keys });
+
+    var access_list = std.json.Array.init(std.testing.allocator);
+    defer access_list.deinit();
+    try access_list.append(.{ .object = access_entry });
+
+    var obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try obj.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try obj.put("value", .{ .string = "0x1" });
+    try obj.put("gas", .{ .string = "0x5208" });
+    try obj.put("gasPrice", .{ .string = "0x77359400" }); // 2 gwei
+    try obj.put("type", .{ .string = "0x1" });
+    try obj.put("accessList", .{ .array = access_list });
+
+    const params = jsonrpc.eth.SendTransaction.Params{
+        .transaction = .{ .value = .{ .object = obj } },
+    };
+
+    const result = try tx_submission.handleSendTransaction(std.testing.allocator, &rt, params);
+    const record = rt.getTransactionRecord(result.value.bytes) orelse return error.ExpectedTransactionRecord;
+    const decoded = try primitives.Transaction.decodeRawTransaction(std.testing.allocator, record.raw);
+    defer primitives.Transaction.deinitDecodedTransaction(std.testing.allocator, decoded);
+
+    try std.testing.expect(decoded == .eip2930);
+}
