@@ -31,7 +31,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 
 ## Validation
 
-- Full test suite: **201/201 passing** (`zig build test --summary all`)
+- Full test suite: **205/205 passing** (`zig build test --summary all`)
 - Full build: **passing** (`zig build`)
 
 ## Recent Completion Highlights
@@ -47,6 +47,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 - Added server-context regression tests for NodeHandler responses (`eth_chainId`, `hardhat_mine`, `eth_feeHistory`, `eth_getBlockByNumber`).
 - Mapped unknown filter lookups to JSON-RPC server error `-32000` (`Filter not found`) and validated via tests.
 - Expanded subscription coverage (`newHeads` notifications and `eth_unsubscribe` lifecycle semantics).
+- Implemented JSON-RPC notification suppression semantics (`204` for notifications without `id`; `id: null` still responds).
 
 ## Notes
 
