@@ -179,6 +179,7 @@ fn parseRewardPercentiles(
     };
 
     const parsed = try allocator.alloc(f64, items.len);
+    errdefer allocator.free(parsed);
     var previous: f64 = -1.0;
     for (items, 0..) |item, i| {
         const percentile: f64 = switch (item) {
