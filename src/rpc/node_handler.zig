@@ -372,7 +372,7 @@ pub const NodeHandler = struct {
             return .{ .bool = true };
         }
         if (std.mem.eql(u8, method_name, "hardhat_setIntervalMining") or std.mem.eql(u8, method_name, "evm_setIntervalMining") or std.mem.eql(u8, method_name, "anvil_setIntervalMining")) {
-            const interval_millis = parseFirstU64(params) orelse 0;
+            const interval_millis = parseOptionalFirstU64(params, 0) catch return error.InvalidParams;
             if (interval_millis == 0) {
                 self.node_runtime.setMiningConfig(.manual);
                 self.last_interval_mine_ns = null;
@@ -410,7 +410,7 @@ pub const NodeHandler = struct {
             return .{ .bool = true };
         }
         if (std.mem.eql(u8, method_name, "evm_mine") or std.mem.eql(u8, method_name, "hardhat_mine")) {
-            const count = parseOptionalCount(params);
+            const count = parseOptionalFirstU64(params, 1) catch return error.InvalidParams;
             var i: u64 = 0;
             while (i < count) : (i += 1) {
                 if (self.node_runtime.pool.pendingCount() > 0) {
@@ -1577,13 +1577,13 @@ fn parseFirstU256(params: ?std.json.Value) ?u256 {
     return parseJsonQuantityToU256(array[0]);
 }
 
-fn parseOptionalCount(params: ?std.json.Value) u64 {
-    const array = switch (params orelse return 1) {
+fn parseOptionalFirstU64(params: ?std.json.Value, default_value: u64) !u64 {
+    const array = switch (params orelse return default_value) {
         .array => |arr| arr.items,
-        else => return 1,
+        else => return error.InvalidParams,
     };
-    if (array.len == 0) return 1;
-    return parseJsonQuantityToU64(array[0]) orelse 1;
+    if (array.len == 0) return default_value;
+    return parseJsonQuantityToU64(array[0]) orelse return error.InvalidParams;
 }
 
 fn parseJsonQuantityToU64(value: std.json.Value) ?u64 {

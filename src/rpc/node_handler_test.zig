@@ -847,6 +847,40 @@ test "NodeHandler interval mining tick mines pending transactions" {
     try std.testing.expectEqual(initial_block_number + 1, handler.node_runtime.head_block_number);
 }
 
+test "NodeHandler hardhat_setIntervalMining rejects malformed interval" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var interval_params = std.json.Array.init(allocator);
+    defer interval_params.deinit();
+    try interval_params.append(.{ .string = "0xZZ" });
+
+    try std.testing.expectError(
+        error.InvalidParams,
+        callMethod(allocator, &handler, "hardhat_setIntervalMining", .{ .array = interval_params }),
+    );
+}
+
+test "NodeHandler evm_mine rejects malformed count" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var mine_params = std.json.Array.init(allocator);
+    defer mine_params.deinit();
+    try mine_params.append(.{ .string = "0xZZ" });
+
+    try std.testing.expectError(
+        error.InvalidParams,
+        callMethod(allocator, &handler, "evm_mine", .{ .array = mine_params }),
+    );
+}
+
 test "NodeHandler evm_setBlockGasLimit constrains automine inclusion" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

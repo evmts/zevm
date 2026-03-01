@@ -31,7 +31,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 
 ## Validation
 
-- Full test suite: **271/271 passing** (`zig build test --summary all`)
+- Full test suite: **275/275 passing** (`zig build test --summary all`)
 - Full build: **passing** (`zig build`)
 
 ## Recent Completion Highlights
@@ -93,6 +93,10 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
   - validates reward percentiles (finite, 0..100, nondecreasing) and maps invalid input to `Invalid params`.
 - Fixed block response conversion to preserve real `extraData` bytes instead of always returning `"0x"`, with regression coverage.
 - Added NodeHandler/server regression coverage for `eth_feeHistory` extended outputs (blob fee fields and reward matrix path).
+- Hardened mining-control RPC input parsing:
+  - malformed `hardhat_setIntervalMining` / `evm_setIntervalMining` arguments now return `Invalid params`,
+  - malformed `evm_mine` / `hardhat_mine` count arguments now return `Invalid params`,
+  - added NodeHandler and server-level `-32602` regressions.
 
 ## Notes
 
