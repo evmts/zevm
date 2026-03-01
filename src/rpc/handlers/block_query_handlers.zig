@@ -29,14 +29,14 @@ pub fn handleGetBlockByNumber(
         error.InvalidBlockSpec => return error.InvalidParams,
         error.BlockOutOfRange => return .{ .block = null },
     };
-    const block = ctx.rt.getBlockByNumberWithFork(allocator, block_number) catch return .{ .block = null };
+    const block = try ctx.rt.getBlockByNumberWithFork(allocator, block_number);
     if (block) |resolved_block| {
-        const internal = block_queries.blockToResponseFromBlock(
+        const internal = try block_queries.blockToResponseFromBlock(
             allocator,
             resolved_block,
             params.hydrated_transactions,
-        ) catch return .{ .block = null };
-        return .{ .block = internalBlockToRpc(allocator, internal) catch return .{ .block = null } };
+        );
+        return .{ .block = try internalBlockToRpc(allocator, internal) };
     }
     return .{ .block = null };
 }
@@ -50,14 +50,14 @@ pub fn handleGetBlockByHash(
     ctx: *const BlockQueryContext,
     params: jsonrpc.eth.GetBlockByHash.Params,
 ) !jsonrpc.eth.GetBlockByHash.Result {
-    const block = ctx.rt.getBlockByHashWithFork(allocator, params.block_hash.bytes) catch return .{ .block = null };
+    const block = try ctx.rt.getBlockByHashWithFork(allocator, params.block_hash.bytes);
     if (block) |resolved_block| {
-        const internal = block_queries.blockToResponseFromBlock(
+        const internal = try block_queries.blockToResponseFromBlock(
             allocator,
             resolved_block,
             params.hydrated_transactions,
-        ) catch return .{ .block = null };
-        return .{ .block = internalBlockToRpc(allocator, internal) catch return .{ .block = null } };
+        );
+        return .{ .block = try internalBlockToRpc(allocator, internal) };
     }
     return .{ .block = null };
 }
@@ -71,9 +71,9 @@ pub fn handleGetTransactionReceipt(
     ctx: *const BlockQueryContext,
     params: jsonrpc.eth.GetTransactionReceipt.Params,
 ) !jsonrpc.eth.GetTransactionReceipt.Result {
-    const internal = block_queries.getTransactionReceipt(allocator, ctx.receipt_index, params.transaction_hash.bytes) catch return .{ .value = null };
+    const internal = try block_queries.getTransactionReceipt(allocator, ctx.receipt_index, params.transaction_hash.bytes);
     if (internal) |resp| {
-        return .{ .value = internalReceiptToRpc(allocator, resp) catch return .{ .value = null } };
+        return .{ .value = try internalReceiptToRpc(allocator, resp) };
     }
     return .{ .value = null };
 }
@@ -91,7 +91,7 @@ pub fn handleGetBlockReceipts(
         error.InvalidBlockSpec => return error.InvalidParams,
         error.BlockOutOfRange => return .{ .value = null },
     };
-    const block = ctx.rt.getBlockByNumberWithFork(allocator, block_number) catch return .{ .value = null };
+    const block = try ctx.rt.getBlockByNumberWithFork(allocator, block_number);
     if (block == null) return .{ .value = null };
 
     const receipts = ctx.receipt_index.getByBlockHash(block.?.hash) orelse return .{ .value = null };
@@ -101,9 +101,9 @@ pub fn handleGetBlockReceipts(
         internal[i] = try block_queries.receiptToResponse(allocator, receipt);
     }
 
-    const rpc_receipts = allocator.alloc(jsonrpc.types.ReceiptResponse, internal.len) catch return .{ .value = null };
+    const rpc_receipts = try allocator.alloc(jsonrpc.types.ReceiptResponse, internal.len);
     for (internal, 0..) |resp, i| {
-        rpc_receipts[i] = internalReceiptToRpc(allocator, resp) catch return .{ .value = null };
+        rpc_receipts[i] = try internalReceiptToRpc(allocator, resp);
     }
     return .{ .value = rpc_receipts };
 }
@@ -142,7 +142,7 @@ pub fn handleGetTransactionByHash(
     params: jsonrpc.eth.GetTransactionByHash.Params,
 ) !jsonrpc.eth.GetTransactionByHash.Result {
     const record = ctx.rt.getTransactionRecord(params.transaction_hash.bytes) orelse return .{ .value = null };
-    const decoded = primitives.Transaction.decodeRawTransaction(allocator, record.raw) catch return .{ .value = null };
+    const decoded = try primitives.Transaction.decodeRawTransaction(allocator, record.raw);
     defer primitives.Transaction.deinitDecodedTransaction(allocator, decoded);
 
     const metadata = jsonrpc.types.TransactionResponse.Metadata{
