@@ -432,12 +432,12 @@ fn rpcFilterToInternal(allocator: std.mem.Allocator, filter: anytype) !log_index
 
     if (@hasField(@TypeOf(filter), "fromBlock")) {
         if (filter.fromBlock) |fb| {
-            result.from_block = parseQuantityToU64(fb) catch null;
+            result.from_block = try parseQuantityToU64(fb);
         }
     }
     if (@hasField(@TypeOf(filter), "toBlock")) {
         if (filter.toBlock) |tb| {
-            result.to_block = parseQuantityToU64(tb) catch null;
+            result.to_block = try parseQuantityToU64(tb);
         }
     }
     if (@hasField(@TypeOf(filter), "blockHash")) {

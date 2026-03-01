@@ -472,6 +472,35 @@ test "handleGetLogs: invalid filter returns InvalidParams" {
     );
 }
 
+test "handleGetLogs: malformed block range quantity returns InvalidParams" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var state = try setupCtx(allocator);
+    defer state.deinit(allocator);
+
+    var ctx = state.getCtx();
+    const filter_json =
+        \\[{"fromBlock":"0xZZ","toBlock":"0x1"}]
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, arena.allocator(), filter_json, .{});
+    const params = try std.json.innerParseFromValue(
+        jsonrpc.eth.GetLogs.Params,
+        arena.allocator(),
+        parsed.value,
+        .{},
+    );
+    try std.testing.expectError(
+        error.InvalidParams,
+        block_query_handlers.handleGetLogs(
+            arena.allocator(),
+            &ctx,
+            params,
+        ),
+    );
+}
+
 test "handleGetBlockByNumber: invalid block spec returns InvalidParams" {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
