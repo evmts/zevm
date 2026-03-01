@@ -1052,24 +1052,49 @@ pub const NodeHandler = struct {
                     state.last_block = self.node_runtime.head_block_number;
                 },
                 .logs => {
-                    if (self.node_runtime.head_block_number > state.last_block) {
-                        var arena_state = std.heap.ArenaAllocator.init(allocator);
-                        defer arena_state.deinit();
-                        const arena = arena_state.allocator();
+                    var arena_state = std.heap.ArenaAllocator.init(allocator);
+                    defer arena_state.deinit();
+                    const arena = arena_state.allocator();
+                    const stored_filter = try parseStoredFilter(arena, state.filter_json);
+                    const has_block_hash = stored_filter.blockHash != null;
 
-                        const from_block = state.last_block + 1;
-                        const to_block = self.node_runtime.head_block_number;
-                        const logs_value = try self.queryFilterLogs(arena, state, from_block, to_block);
-                        const log_items = switch (logs_value) {
-                            .array => |array| array.items,
-                            else => &[_]std.json.Value{},
-                        };
-                        for (log_items) |log_item| {
-                            const message = try buildSubscriptionMessage(allocator, id, log_item);
-                            try messages.append(allocator, message);
+                    if (has_block_hash) {
+                        if (state.event_cursor == 0) {
+                            const logs_value = try self.queryFilterLogs(arena, state, null, null);
+                            const log_items = switch (logs_value) {
+                                .array => |array| array.items,
+                                else => &[_]std.json.Value{},
+                            };
+                            for (log_items) |log_item| {
+                                const message = try buildSubscriptionMessage(allocator, id, log_item);
+                                try messages.append(allocator, message);
+                            }
+                            state.event_cursor = 1;
+                            state.last_block = self.node_runtime.head_block_number;
                         }
-                        state.last_block = self.node_runtime.head_block_number;
+                        continue;
                     }
+
+                    if (self.node_runtime.head_block_number < state.last_block) {
+                        state.last_block = self.node_runtime.head_block_number;
+                        continue;
+                    }
+                    if (self.node_runtime.head_block_number == state.last_block) {
+                        continue;
+                    }
+
+                    const from_block = state.last_block + 1;
+                    const to_block = self.node_runtime.head_block_number;
+                    const logs_value = try self.queryFilterLogs(arena, state, from_block, to_block);
+                    const log_items = switch (logs_value) {
+                        .array => |array| array.items,
+                        else => &[_]std.json.Value{},
+                    };
+                    for (log_items) |log_item| {
+                        const message = try buildSubscriptionMessage(allocator, id, log_item);
+                        try messages.append(allocator, message);
+                    }
+                    state.last_block = self.node_runtime.head_block_number;
                 },
                 .new_pending_transactions => {
                     var index = state.event_cursor;

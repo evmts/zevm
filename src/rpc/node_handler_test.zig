@@ -1128,6 +1128,117 @@ test "NodeHandler eth_subscribe logs rejects non-object filter" {
     );
 }
 
+test "NodeHandler eth_subscribe logs with blockHash emits once and does not replay" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    _ = try callMethod(allocator, &handler, "evm_mine", null);
+
+    const block_1 = (try handler.node_runtime.blockchain.getBlockByNumber(1)) orelse return error.ExpectedBlock;
+    var receipt_1 = try makeReceiptWithSingleLog(allocator, block_1.hash, 1, 0x71);
+    defer receipt_1.deinit(allocator);
+    try handler.log_index.appendBlockLogs(allocator, 1, block_1.hash, &[_]primitives.Receipt.Receipt{receipt_1});
+
+    const block_1_hex = try std.fmt.allocPrint(allocator, "0x{x}", .{block_1.hash});
+
+    var filter_object = std.json.ObjectMap.init(allocator);
+    defer filter_object.deinit();
+    try filter_object.put("blockHash", .{ .string = block_1_hex });
+
+    var subscribe_params = std.json.Array.init(allocator);
+    defer subscribe_params.deinit();
+    try subscribe_params.append(.{ .string = "logs" });
+    try subscribe_params.append(.{ .object = filter_object });
+    const subscribe_result = try callMethod(allocator, &handler, "eth_subscribe", .{ .array = subscribe_params });
+    const subscription_id = switch (subscribe_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    const first_messages = try handler.collectSubscriptionMessages(allocator);
+    defer {
+        for (first_messages) |message| allocator.free(message);
+        allocator.free(first_messages);
+    }
+    try std.testing.expectEqual(@as(usize, 1), first_messages.len);
+    try std.testing.expect(std.mem.indexOf(u8, first_messages[0], subscription_id) != null);
+
+    _ = try callMethod(allocator, &handler, "evm_mine", null);
+
+    const second_messages = try handler.collectSubscriptionMessages(allocator);
+    defer {
+        for (second_messages) |message| allocator.free(message);
+        allocator.free(second_messages);
+    }
+    try std.testing.expectEqual(@as(usize, 0), second_messages.len);
+}
+
+test "NodeHandler eth_subscribe logs resumes after evm_revert head rewind" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    const snapshot_result = try callMethod(allocator, &handler, "evm_snapshot", .{ .array = std.json.Array.init(allocator) });
+    const snapshot_id = switch (snapshot_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    var filter_object = std.json.ObjectMap.init(allocator);
+    defer filter_object.deinit();
+
+    var subscribe_params = std.json.Array.init(allocator);
+    defer subscribe_params.deinit();
+    try subscribe_params.append(.{ .string = "logs" });
+    try subscribe_params.append(.{ .object = filter_object });
+    _ = try callMethod(allocator, &handler, "eth_subscribe", .{ .array = subscribe_params });
+
+    _ = try callMethod(allocator, &handler, "evm_mine", null);
+    const first_block = (try handler.node_runtime.blockchain.getBlockByNumber(1)) orelse return error.ExpectedBlock;
+    var first_receipt = try makeReceiptWithSingleLog(allocator, first_block.hash, 1, 0x72);
+    defer first_receipt.deinit(allocator);
+    try handler.log_index.appendBlockLogs(allocator, 1, first_block.hash, &[_]primitives.Receipt.Receipt{first_receipt});
+
+    const first_messages = try handler.collectSubscriptionMessages(allocator);
+    defer {
+        for (first_messages) |message| allocator.free(message);
+        allocator.free(first_messages);
+    }
+    try std.testing.expectEqual(@as(usize, 1), first_messages.len);
+
+    var revert_params = std.json.Array.init(allocator);
+    defer revert_params.deinit();
+    try revert_params.append(.{ .string = snapshot_id });
+    const revert_result = try callMethod(allocator, &handler, "evm_revert", .{ .array = revert_params });
+    try std.testing.expect(revert_result.bool);
+    try std.testing.expectEqual(@as(u64, 0), handler.node_runtime.head_block_number);
+
+    const rewind_messages = try handler.collectSubscriptionMessages(allocator);
+    defer {
+        for (rewind_messages) |message| allocator.free(message);
+        allocator.free(rewind_messages);
+    }
+    try std.testing.expectEqual(@as(usize, 0), rewind_messages.len);
+
+    _ = try callMethod(allocator, &handler, "evm_mine", null);
+    const rebuilt_block = (try handler.node_runtime.blockchain.getBlockByNumber(1)) orelse return error.ExpectedBlock;
+    var rebuilt_receipt = try makeReceiptWithSingleLog(allocator, rebuilt_block.hash, 1, 0x73);
+    defer rebuilt_receipt.deinit(allocator);
+    try handler.log_index.appendBlockLogs(allocator, 1, rebuilt_block.hash, &[_]primitives.Receipt.Receipt{rebuilt_receipt});
+
+    const resumed_messages = try handler.collectSubscriptionMessages(allocator);
+    defer {
+        for (resumed_messages) |message| allocator.free(message);
+        allocator.free(resumed_messages);
+    }
+    try std.testing.expectEqual(@as(usize, 1), resumed_messages.len);
+}
+
 test "NodeHandler eth_subscribe newHeads emits websocket messages after mining" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

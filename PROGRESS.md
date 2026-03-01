@@ -31,7 +31,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 
 ## Validation
 
-- Full test suite: **295/295 passing** (`zig build test --summary all`)
+- Full test suite: **297/297 passing** (`zig build test --summary all`)
 - Full build: **passing** (`zig build`)
 
 ## Recent Completion Highlights
@@ -128,6 +128,9 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 - Hardened log-filter polling across chain movement:
   - `blockHash` filters no longer replay duplicate logs after unrelated head advances,
   - log filters now recover correctly after `evm_revert` head rewinds instead of stalling permanently.
+- Hardened websocket `eth_subscribe` logs polling semantics:
+  - `blockHash` subscriptions now emit once and do not replay on later head advancement,
+  - log subscriptions recover correctly after `evm_revert` head rewinds.
 
 ## Notes
 
