@@ -31,7 +31,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 
 ## Validation
 
-- Full test suite: **301/301 passing** (`zig build test --summary all`)
+- Full test suite: **303/303 passing** (`zig build test --summary all`)
 - Full build: **passing** (`zig build`)
 
 ## Recent Completion Highlights
@@ -137,6 +137,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 - Added cursor-safe event-journal pruning for long-running nodes:
   - mined-block and pending-transaction event buffers now prune consumed prefixes,
   - pruning waits for the slowest active filter/subscription cursor to preserve correctness.
+- Added server-level JSON-RPC regressions for filter/subscription ID ownership semantics (`eth_uninstallFilter` vs `eth_unsubscribe`).
 
 ## Notes
 

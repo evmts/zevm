@@ -1096,6 +1096,125 @@ test "server with NodeHandler context maps eth_subscribe logs non-object filter 
     try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.INVALID_PARAMS), (try getObjectField(error_object, "code")).integer);
 }
 
+test "server with NodeHandler context eth_unsubscribe returns false for filter ids" {
+    var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
+    defer handler.deinit(std.testing.allocator);
+
+    const handlers = dispatcher.HandlerRegistry{
+        .context = &handler,
+        .on_method_with_context = &node_handler.NodeHandler.onMethod,
+    };
+
+    var create_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_newFilter\",\"params\":[{}]}",
+        &handlers,
+    );
+    defer create_response.deinit(std.testing.allocator);
+    const create_parsed = try parseJson(create_response.body.?);
+    defer create_parsed.deinit();
+    const filter_id = switch (try getObjectField(create_parsed.value, "result")) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    const unsubscribe_body = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_unsubscribe\",\"params\":[\"{s}\"]}}",
+        .{filter_id},
+    );
+    defer std.testing.allocator.free(unsubscribe_body);
+    var unsubscribe_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        unsubscribe_body,
+        &handlers,
+    );
+    defer unsubscribe_response.deinit(std.testing.allocator);
+    const unsubscribe_parsed = try parseJson(unsubscribe_response.body.?);
+    defer unsubscribe_parsed.deinit();
+    try std.testing.expect(!(try getObjectField(unsubscribe_parsed.value, "result")).bool);
+
+    const get_logs_body = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"eth_getFilterLogs\",\"params\":[\"{s}\"]}}",
+        .{filter_id},
+    );
+    defer std.testing.allocator.free(get_logs_body);
+    var get_logs_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        get_logs_body,
+        &handlers,
+    );
+    defer get_logs_response.deinit(std.testing.allocator);
+    const get_logs_parsed = try parseJson(get_logs_response.body.?);
+    defer get_logs_parsed.deinit();
+    switch (try getObjectField(get_logs_parsed.value, "result")) {
+        .array => {},
+        else => return error.ExpectedArrayResult,
+    }
+}
+
+test "server with NodeHandler context eth_uninstallFilter returns false for subscription ids" {
+    var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
+    defer handler.deinit(std.testing.allocator);
+
+    const handlers = dispatcher.HandlerRegistry{
+        .context = &handler,
+        .on_method_with_context = &node_handler.NodeHandler.onMethod,
+    };
+
+    var subscribe_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_subscribe\",\"params\":[\"newPendingTransactions\"]}",
+        &handlers,
+    );
+    defer subscribe_response.deinit(std.testing.allocator);
+    const subscribe_parsed = try parseJson(subscribe_response.body.?);
+    defer subscribe_parsed.deinit();
+    const subscription_id = switch (try getObjectField(subscribe_parsed.value, "result")) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    const uninstall_body = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_uninstallFilter\",\"params\":[\"{s}\"]}}",
+        .{subscription_id},
+    );
+    defer std.testing.allocator.free(uninstall_body);
+    var uninstall_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        uninstall_body,
+        &handlers,
+    );
+    defer uninstall_response.deinit(std.testing.allocator);
+    const uninstall_parsed = try parseJson(uninstall_response.body.?);
+    defer uninstall_parsed.deinit();
+    try std.testing.expect(!(try getObjectField(uninstall_parsed.value, "result")).bool);
+
+    const unsubscribe_body = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"eth_unsubscribe\",\"params\":[\"{s}\"]}}",
+        .{subscription_id},
+    );
+    defer std.testing.allocator.free(unsubscribe_body);
+    var unsubscribe_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        unsubscribe_body,
+        &handlers,
+    );
+    defer unsubscribe_response.deinit(std.testing.allocator);
+    const unsubscribe_parsed = try parseJson(unsubscribe_response.body.?);
+    defer unsubscribe_parsed.deinit();
+    try std.testing.expect((try getObjectField(unsubscribe_parsed.value, "result")).bool);
+}
+
 test "server with NodeHandler context maps eth_call non-string from to -32602" {
     var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
     defer handler.deinit(std.testing.allocator);
