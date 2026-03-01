@@ -505,6 +505,10 @@ pub const NodeHandler = struct {
         }
         if (std.mem.eql(u8, method_name, "eth_uninstallFilter")) {
             const id = parseFirstU64(params) orelse return error.InvalidParams;
+            const state = self.filters.get(id) orelse return .{ .bool = false };
+            if (state.kind == .subscription) {
+                return .{ .bool = false };
+            }
             if (self.filters.fetchRemove(id)) |entry| {
                 if (entry.value.filter_json) |json| {
                     allocator.free(json);
@@ -538,6 +542,10 @@ pub const NodeHandler = struct {
         }
         if (std.mem.eql(u8, method_name, "eth_unsubscribe")) {
             const id = parseFirstU64(params) orelse return error.InvalidParams;
+            const state = self.filters.get(id) orelse return .{ .bool = false };
+            if (state.kind != .subscription) {
+                return .{ .bool = false };
+            }
             if (self.filters.fetchRemove(id)) |entry| {
                 if (entry.value.filter_json) |json| {
                     allocator.free(json);

@@ -31,7 +31,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 
 ## Validation
 
-- Full test suite: **297/297 passing** (`zig build test --summary all`)
+- Full test suite: **299/299 passing** (`zig build test --summary all`)
 - Full build: **passing** (`zig build`)
 
 ## Recent Completion Highlights
@@ -131,6 +131,9 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 - Hardened websocket `eth_subscribe` logs polling semantics:
   - `blockHash` subscriptions now emit once and do not replay on later head advancement,
   - log subscriptions recover correctly after `evm_revert` head rewinds.
+- Tightened filter/subscription ID ownership semantics:
+  - `eth_uninstallFilter` now rejects subscription IDs (returns `false`),
+  - `eth_unsubscribe` now rejects non-subscription filter IDs (returns `false`).
 
 ## Notes
 

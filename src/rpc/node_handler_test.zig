@@ -1305,6 +1305,40 @@ test "NodeHandler eth_unsubscribe returns true then false for subscription id" {
     try std.testing.expect(!second_result.bool);
 }
 
+test "NodeHandler eth_unsubscribe returns false for non-subscription filter id" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var filter_object = std.json.ObjectMap.init(allocator);
+    defer filter_object.deinit();
+    var create_params = std.json.Array.init(allocator);
+    defer create_params.deinit();
+    try create_params.append(.{ .object = filter_object });
+    const create_result = try callMethod(allocator, &handler, "eth_newFilter", .{ .array = create_params });
+    const filter_id = switch (create_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    var unsubscribe_params = std.json.Array.init(allocator);
+    defer unsubscribe_params.deinit();
+    try unsubscribe_params.append(.{ .string = filter_id });
+    const unsubscribe_result = try callMethod(allocator, &handler, "eth_unsubscribe", .{ .array = unsubscribe_params });
+    try std.testing.expect(!unsubscribe_result.bool);
+
+    var filter_logs_params = std.json.Array.init(allocator);
+    defer filter_logs_params.deinit();
+    try filter_logs_params.append(.{ .string = filter_id });
+    const filter_logs_result = try callMethod(allocator, &handler, "eth_getFilterLogs", .{ .array = filter_logs_params });
+    switch (filter_logs_result) {
+        .array => {},
+        else => return error.ExpectedArrayResult,
+    }
+}
+
 test "NodeHandler eth_subscribe syncing emits false once" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1780,6 +1814,35 @@ test "NodeHandler eth_uninstallFilter returns true then false" {
     try second_remove_params.append(.{ .string = filter_id });
     const second_remove = try callMethod(allocator, &handler, "eth_uninstallFilter", .{ .array = second_remove_params });
     try std.testing.expect(!second_remove.bool);
+}
+
+test "NodeHandler eth_uninstallFilter returns false for subscription id" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var subscribe_params = std.json.Array.init(allocator);
+    defer subscribe_params.deinit();
+    try subscribe_params.append(.{ .string = "newPendingTransactions" });
+    const subscribe_result = try callMethod(allocator, &handler, "eth_subscribe", .{ .array = subscribe_params });
+    const subscription_id = switch (subscribe_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    var uninstall_params = std.json.Array.init(allocator);
+    defer uninstall_params.deinit();
+    try uninstall_params.append(.{ .string = subscription_id });
+    const uninstall_result = try callMethod(allocator, &handler, "eth_uninstallFilter", .{ .array = uninstall_params });
+    try std.testing.expect(!uninstall_result.bool);
+
+    var unsubscribe_params = std.json.Array.init(allocator);
+    defer unsubscribe_params.deinit();
+    try unsubscribe_params.append(.{ .string = subscription_id });
+    const unsubscribe_result = try callMethod(allocator, &handler, "eth_unsubscribe", .{ .array = unsubscribe_params });
+    try std.testing.expect(unsubscribe_result.bool);
 }
 
 test "NodeHandler automine aliases toggle mining mode" {
