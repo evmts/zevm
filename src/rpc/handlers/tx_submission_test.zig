@@ -492,3 +492,34 @@ test "eth_sendTransaction EIP-4844 requires blobVersionedHashes and maxFeePerBlo
     const result = tx_submission.handleSendTransaction(std.testing.allocator, &rt, params);
     try std.testing.expectError(tx_submission.TxSubmissionError.InvalidHexData, result);
 }
+
+test "eth_sendTransaction supports EIP-7702 typed transactions" {
+    var rt = try makeRuntime();
+    defer rt.deinit(std.testing.allocator);
+    rt.mining_mode = .manual;
+
+    var authorization_list = std.json.Array.init(std.testing.allocator);
+    defer authorization_list.deinit();
+
+    var obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try obj.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try obj.put("value", .{ .string = "0x1" });
+    try obj.put("gas", .{ .string = "0x5208" });
+    try obj.put("maxPriorityFeePerGas", .{ .string = "0x3b9aca00" });
+    try obj.put("maxFeePerGas", .{ .string = "0x77359400" });
+    try obj.put("authorizationList", .{ .array = authorization_list });
+    try obj.put("type", .{ .string = "0x4" });
+
+    const params = jsonrpc.eth.SendTransaction.Params{
+        .transaction = .{ .value = .{ .object = obj } },
+    };
+
+    const result = try tx_submission.handleSendTransaction(std.testing.allocator, &rt, params);
+    const record = rt.getTransactionRecord(result.value.bytes) orelse return error.ExpectedTransactionRecord;
+    const decoded = try primitives.Transaction.decodeRawTransaction(std.testing.allocator, record.raw);
+    defer primitives.Transaction.deinitDecodedTransaction(std.testing.allocator, decoded);
+
+    try std.testing.expect(decoded == .eip7702);
+}

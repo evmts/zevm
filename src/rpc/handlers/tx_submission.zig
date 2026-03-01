@@ -209,6 +209,8 @@ pub fn handleSendTransaction(
     defer deinitAccessList(allocator, access_list);
     const blob_versioned_hashes = parseBlobVersionedHashes(allocator, tx_obj, tx_type == .eip4844) catch return TxSubmissionError.InvalidHexData;
     defer allocator.free(blob_versioned_hashes);
+    const authorization_list = parseAuthorizationList(allocator, tx_obj) catch return TxSubmissionError.InvalidHexData;
+    defer allocator.free(authorization_list);
 
     if (tx_type == .eip4844 and max_fee_per_blob_gas == 0) {
         return TxSubmissionError.InvalidHexData;
@@ -331,6 +333,36 @@ pub fn handleSendTransaction(
                 break :blk primitives.Transaction.encodeEip4844ForSigning(allocator, signed_4844) catch
                     return TxSubmissionError.OutOfMemory;
             },
+            .eip7702 => {
+                var signed_7702 = primitives.Transaction.Eip7702Transaction{
+                    .chain_id = rt.chain_id,
+                    .nonce = nonce,
+                    .max_priority_fee_per_gas = max_priority_fee_per_gas,
+                    .max_fee_per_gas = max_fee_per_gas,
+                    .gas_limit = gas_limit,
+                    .to = to,
+                    .value = value,
+                    .data = data_bytes,
+                    .access_list = access_list,
+                    .authorization_list = authorization_list,
+                    .y_parity = 0,
+                    .r = [_]u8{0} ** 32,
+                    .s = [_]u8{0} ** 32,
+                };
+                const signing_payload = primitives.Transaction.encodeEip7702ForSigning(allocator, signed_7702) catch
+                    return TxSubmissionError.OutOfMemory;
+                defer allocator.free(signing_payload);
+
+                const signing_hash = crypto.Hash.keccak256(signing_payload);
+                const signature = crypto.Crypto.unaudited_signHash(signing_hash, pk) catch
+                    return TxSubmissionError.SigningFailed;
+                signed_7702.y_parity = signature.recoveryId();
+                std.mem.writeInt(u256, &signed_7702.r, signature.r, .big);
+                std.mem.writeInt(u256, &signed_7702.s, signature.s, .big);
+
+                break :blk primitives.Transaction.encodeEip7702ForSigning(allocator, signed_7702) catch
+                    return TxSubmissionError.OutOfMemory;
+            },
         }
     };
     defer allocator.free(encoded);
@@ -352,6 +384,7 @@ pub fn handleSendTransaction(
         .eip2930 => gas_price,
         .eip1559 => max_fee_per_gas,
         .eip4844 => max_fee_per_gas,
+        .eip7702 => max_fee_per_gas,
     }) * @as(u256, gas_limit);
     const total_cost = value + max_gas_cost;
     const balance = rt.getBalanceWithFork(allocator, from_addr) catch return TxSubmissionError.StateError;
@@ -368,12 +401,14 @@ pub fn handleSendTransaction(
             .eip2930 => gas_price,
             .eip1559 => max_fee_per_gas,
             .eip4844 => max_fee_per_gas,
+            .eip7702 => max_fee_per_gas,
         },
         .max_priority_fee_per_gas = switch (tx_type) {
             .legacy => gas_price,
             .eip2930 => gas_price,
             .eip1559 => max_priority_fee_per_gas,
             .eip4844 => max_priority_fee_per_gas,
+            .eip7702 => max_priority_fee_per_gas,
         },
         .hash = tx_hash,
     }) catch |err| switch (err) {
@@ -679,6 +714,7 @@ const SendTransactionType = enum {
     eip2930,
     eip1559,
     eip4844,
+    eip7702,
 };
 
 fn parseSendTransactionType(tx_obj: std.json.ObjectMap) !SendTransactionType {
@@ -689,10 +725,14 @@ fn parseSendTransactionType(tx_obj: std.json.ObjectMap) !SendTransactionType {
             1 => .eip2930,
             2 => .eip1559,
             3 => .eip4844,
+            4 => .eip7702,
             else => error.InvalidType,
         };
     }
 
+    if (tx_obj.get("authorizationList") != null) {
+        return .eip7702;
+    }
     if (tx_obj.get("maxFeePerBlobGas") != null or tx_obj.get("blobVersionedHashes") != null) {
         return .eip4844;
     }
@@ -734,6 +774,68 @@ fn parseBlobVersionedHashes(
     }
 
     return hashes;
+}
+
+fn parseAuthorizationList(
+    allocator: std.mem.Allocator,
+    tx_obj: std.json.ObjectMap,
+) ![]const primitives.Authorization.Authorization {
+    const auth_value = tx_obj.get("authorizationList") orelse return allocator.alloc(primitives.Authorization.Authorization, 0);
+    const auth_items = switch (auth_value) {
+        .array => |array| array.items,
+        else => return error.InvalidAuthorizationList,
+    };
+
+    const authorizations = try allocator.alloc(primitives.Authorization.Authorization, auth_items.len);
+    errdefer allocator.free(authorizations);
+
+    for (auth_items, 0..) |entry, i| {
+        const auth_obj = switch (entry) {
+            .object => |obj| obj,
+            else => return error.InvalidAuthorizationList,
+        };
+
+        const chain_id = parseJsonQuantityToU64(auth_obj.get("chainId") orelse return error.InvalidAuthorizationList) catch
+            return error.InvalidAuthorizationList;
+        const address_string = switch (auth_obj.get("address") orelse return error.InvalidAuthorizationList) {
+            .string => |value| value,
+            else => return error.InvalidAuthorizationList,
+        };
+        const address = primitives.Address.fromHex(address_string) catch return error.InvalidAuthorizationList;
+        const auth_nonce = parseJsonQuantityToU64(auth_obj.get("nonce") orelse return error.InvalidAuthorizationList) catch
+            return error.InvalidAuthorizationList;
+
+        const y_parity = blk: {
+            if (auth_obj.get("yParity")) |y_parity_value| {
+                break :blk parseJsonQuantityToU64(y_parity_value) catch return error.InvalidAuthorizationList;
+            }
+            if (auth_obj.get("v")) |v_value| {
+                break :blk parseJsonQuantityToU64(v_value) catch return error.InvalidAuthorizationList;
+            }
+            return error.InvalidAuthorizationList;
+        };
+        if (y_parity > 1) return error.InvalidAuthorizationList;
+
+        const r_hex = switch (auth_obj.get("r") orelse return error.InvalidAuthorizationList) {
+            .string => |value| value,
+            else => return error.InvalidAuthorizationList,
+        };
+        const s_hex = switch (auth_obj.get("s") orelse return error.InvalidAuthorizationList) {
+            .string => |value| value,
+            else => return error.InvalidAuthorizationList,
+        };
+
+        authorizations[i] = .{
+            .chain_id = chain_id,
+            .address = address,
+            .nonce = auth_nonce,
+            .v = y_parity,
+            .r = primitives.Hex.hexToBytesFixed(32, r_hex) catch return error.InvalidAuthorizationList,
+            .s = primitives.Hex.hexToBytesFixed(32, s_hex) catch return error.InvalidAuthorizationList,
+        };
+    }
+
+    return authorizations;
 }
 
 fn parseAccessList(
