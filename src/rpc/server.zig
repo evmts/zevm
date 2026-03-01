@@ -7,6 +7,7 @@ pub const ServerConfig = struct {
     host: []const u8 = "127.0.0.1",
     port: u16 = 8545,
     fork_url: ?[]const u8 = null,
+    fork_block_number: ?u64 = null,
 };
 
 pub const TestHttpResponse = struct {
@@ -82,6 +83,20 @@ pub fn parseConfig(allocator: std.mem.Allocator, args: []const []const u8) !Serv
                 return error.MissingForkUrlValue;
             }
             config.fork_url = args[index];
+            continue;
+        }
+
+        if (std.mem.eql(u8, args[index], "--fork-block-number")) {
+            index += 1;
+            if (index >= args.len) {
+                return error.MissingForkBlockNumberValue;
+            }
+
+            const raw = args[index];
+            config.fork_block_number = if (std.mem.startsWith(u8, raw, "0x") or std.mem.startsWith(u8, raw, "0X"))
+                std.fmt.parseInt(u64, raw[2..], 16) catch return error.InvalidForkBlockNumber
+            else
+                std.fmt.parseInt(u64, raw, 10) catch return error.InvalidForkBlockNumber;
             continue;
         }
 

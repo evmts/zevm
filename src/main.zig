@@ -8,6 +8,7 @@ pub fn main() !void {
     const config = try zevm.rpc.server.parseConfig(std.heap.page_allocator, args[1..]);
     var node_config = zevm.node_runtime.NodeConfig{};
     node_config.fork_url = config.fork_url;
+    node_config.fork_block_number = config.fork_block_number;
     var node_handler = try zevm.rpc.node_handler.NodeHandler.init(std.heap.page_allocator, node_config);
     defer node_handler.deinit(std.heap.page_allocator);
 

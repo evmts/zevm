@@ -31,7 +31,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 
 ## Validation
 
-- Full test suite: **210/210 passing** (`zig build test --summary all`)
+- Full test suite: **214/214 passing** (`zig build test --summary all`)
 - Full build: **passing** (`zig build`)
 
 ## Recent Completion Highlights
@@ -51,6 +51,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 - Added coverage that notifications still execute side effects while suppressing responses (single and mixed batch).
 - Improved batch compliance for mixed-validity payloads by returning per-item `-32600` errors for invalid batch entries.
 - Expanded notification tests to cover unknown-method suppression behavior in both single and mixed batch requests.
+- Added CLI support for deterministic fork pinning via `--fork-block-number` (decimal or hex).
 
 ## Notes
 

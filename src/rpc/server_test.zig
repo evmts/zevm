@@ -399,6 +399,7 @@ test "parseConfig defaults to 127.0.0.1:8545" {
     try std.testing.expectEqualStrings("127.0.0.1", config.host);
     try std.testing.expectEqual(@as(u16, 8545), config.port);
     try std.testing.expect(config.fork_url == null);
+    try std.testing.expect(config.fork_block_number == null);
 }
 
 test "parseConfig parses --host and --port" {
@@ -419,6 +420,39 @@ test "parseConfig parses --fork-url" {
 
     try std.testing.expect(config.fork_url != null);
     try std.testing.expectEqualStrings("https://example.rpc", config.fork_url.?);
+    try std.testing.expect(config.fork_block_number == null);
+}
+
+test "parseConfig parses --fork-block-number decimal" {
+    const config = try server.parseConfig(
+        std.testing.allocator,
+        &[_][]const u8{ "--fork-block-number", "12345678" },
+    );
+
+    try std.testing.expectEqual(@as(u64, 12_345_678), config.fork_block_number.?);
+}
+
+test "parseConfig parses --fork-block-number hex" {
+    const config = try server.parseConfig(
+        std.testing.allocator,
+        &[_][]const u8{ "--fork-block-number", "0xbc614e" },
+    );
+
+    try std.testing.expectEqual(@as(u64, 12_345_678), config.fork_block_number.?);
+}
+
+test "parseConfig rejects missing --fork-block-number value" {
+    try std.testing.expectError(
+        error.MissingForkBlockNumberValue,
+        server.parseConfig(std.testing.allocator, &[_][]const u8{"--fork-block-number"}),
+    );
+}
+
+test "parseConfig rejects invalid --fork-block-number value" {
+    try std.testing.expectError(
+        error.InvalidForkBlockNumber,
+        server.parseConfig(std.testing.allocator, &[_][]const u8{ "--fork-block-number", "not-a-number" }),
+    );
 }
 
 test "server with NodeHandler context handles eth_chainId response ownership safely" {
