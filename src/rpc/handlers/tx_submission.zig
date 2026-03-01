@@ -167,6 +167,13 @@ pub fn handleSendTransaction(
         break :blk gas_price;
     };
 
+    const max_fee_per_blob_gas: u256 = blk: {
+        if (tx_obj.get("maxFeePerBlobGas")) |blob_fee_val| {
+            break :blk parseJsonQuantityToU256(blob_fee_val) catch return TxSubmissionError.InvalidHexData;
+        }
+        break :blk 0;
+    };
+
     const value: u256 = blk: {
         if (tx_obj.get("value")) |v_val| {
             break :blk parseJsonQuantityToU256(v_val) catch return TxSubmissionError.InvalidHexData;
@@ -200,6 +207,12 @@ pub fn handleSendTransaction(
     const tx_type = parseSendTransactionType(tx_obj) catch return TxSubmissionError.InvalidHexData;
     const access_list = parseAccessList(allocator, tx_obj) catch return TxSubmissionError.InvalidHexData;
     defer deinitAccessList(allocator, access_list);
+    const blob_versioned_hashes = parseBlobVersionedHashes(allocator, tx_obj, tx_type == .eip4844) catch return TxSubmissionError.InvalidHexData;
+    defer allocator.free(blob_versioned_hashes);
+
+    if (tx_type == .eip4844 and max_fee_per_blob_gas == 0) {
+        return TxSubmissionError.InvalidHexData;
+    }
 
     // Encode the transaction to raw bytes.
     // Impersonated accounts keep unsigned legacy compatibility semantics.
@@ -287,6 +300,37 @@ pub fn handleSendTransaction(
                 break :blk primitives.Transaction.encodeEip1559ForSigning(allocator, signed_1559) catch
                     return TxSubmissionError.OutOfMemory;
             },
+            .eip4844 => {
+                var signed_4844 = primitives.Transaction.Eip4844Transaction{
+                    .chain_id = rt.chain_id,
+                    .nonce = nonce,
+                    .max_priority_fee_per_gas = max_priority_fee_per_gas,
+                    .max_fee_per_gas = max_fee_per_gas,
+                    .gas_limit = gas_limit,
+                    .to = to orelse return TxSubmissionError.InvalidHexData,
+                    .value = value,
+                    .data = data_bytes,
+                    .access_list = access_list,
+                    .max_fee_per_blob_gas = max_fee_per_blob_gas,
+                    .blob_versioned_hashes = blob_versioned_hashes,
+                    .y_parity = 0,
+                    .r = [_]u8{0} ** 32,
+                    .s = [_]u8{0} ** 32,
+                };
+                const signing_payload = primitives.Transaction.encodeEip4844ForSigning(allocator, signed_4844) catch
+                    return TxSubmissionError.OutOfMemory;
+                defer allocator.free(signing_payload);
+
+                const signing_hash = crypto.Hash.keccak256(signing_payload);
+                const signature = crypto.Crypto.unaudited_signHash(signing_hash, pk) catch
+                    return TxSubmissionError.SigningFailed;
+                signed_4844.y_parity = signature.recoveryId();
+                std.mem.writeInt(u256, &signed_4844.r, signature.r, .big);
+                std.mem.writeInt(u256, &signed_4844.s, signature.s, .big);
+
+                break :blk primitives.Transaction.encodeEip4844ForSigning(allocator, signed_4844) catch
+                    return TxSubmissionError.OutOfMemory;
+            },
         }
     };
     defer allocator.free(encoded);
@@ -307,6 +351,7 @@ pub fn handleSendTransaction(
         .legacy => gas_price,
         .eip2930 => gas_price,
         .eip1559 => max_fee_per_gas,
+        .eip4844 => max_fee_per_gas,
     }) * @as(u256, gas_limit);
     const total_cost = value + max_gas_cost;
     const balance = rt.getBalanceWithFork(allocator, from_addr) catch return TxSubmissionError.StateError;
@@ -322,11 +367,13 @@ pub fn handleSendTransaction(
             .legacy => gas_price,
             .eip2930 => gas_price,
             .eip1559 => max_fee_per_gas,
+            .eip4844 => max_fee_per_gas,
         },
         .max_priority_fee_per_gas = switch (tx_type) {
             .legacy => gas_price,
             .eip2930 => gas_price,
             .eip1559 => max_priority_fee_per_gas,
+            .eip4844 => max_priority_fee_per_gas,
         },
         .hash = tx_hash,
     }) catch |err| switch (err) {
@@ -631,6 +678,7 @@ const SendTransactionType = enum {
     legacy,
     eip2930,
     eip1559,
+    eip4844,
 };
 
 fn parseSendTransactionType(tx_obj: std.json.ObjectMap) !SendTransactionType {
@@ -640,10 +688,14 @@ fn parseSendTransactionType(tx_obj: std.json.ObjectMap) !SendTransactionType {
             0 => .legacy,
             1 => .eip2930,
             2 => .eip1559,
+            3 => .eip4844,
             else => error.InvalidType,
         };
     }
 
+    if (tx_obj.get("maxFeePerBlobGas") != null or tx_obj.get("blobVersionedHashes") != null) {
+        return .eip4844;
+    }
     if (tx_obj.get("maxFeePerGas") != null or tx_obj.get("maxPriorityFeePerGas") != null) {
         return .eip1559;
     }
@@ -651,6 +703,37 @@ fn parseSendTransactionType(tx_obj: std.json.ObjectMap) !SendTransactionType {
         return .eip2930;
     }
     return .legacy;
+}
+
+fn parseBlobVersionedHashes(
+    allocator: std.mem.Allocator,
+    tx_obj: std.json.ObjectMap,
+    required: bool,
+) ![]const primitives.Blob.VersionedHash {
+    const hashes_value = tx_obj.get("blobVersionedHashes") orelse {
+        if (required) return error.InvalidBlobVersionedHashes;
+        return allocator.alloc(primitives.Blob.VersionedHash, 0);
+    };
+    const hash_items = switch (hashes_value) {
+        .array => |array| array.items,
+        else => return error.InvalidBlobVersionedHashes,
+    };
+    if (required and hash_items.len == 0) return error.InvalidBlobVersionedHashes;
+
+    const hashes = try allocator.alloc(primitives.Blob.VersionedHash, hash_items.len);
+    errdefer allocator.free(hashes);
+
+    for (hash_items, 0..) |item, i| {
+        const hash_string = switch (item) {
+            .string => |value| value,
+            else => return error.InvalidBlobVersionedHashes,
+        };
+        hashes[i] = .{
+            .bytes = primitives.Hex.hexToBytesFixed(32, hash_string) catch return error.InvalidBlobVersionedHashes,
+        };
+    }
+
+    return hashes;
 }
 
 fn parseAccessList(

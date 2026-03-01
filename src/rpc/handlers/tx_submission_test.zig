@@ -436,3 +436,59 @@ test "eth_sendTransaction supports EIP-2930 typed transactions" {
 
     try std.testing.expect(decoded == .eip2930);
 }
+
+test "eth_sendTransaction supports EIP-4844 typed transactions" {
+    var rt = try makeRuntime();
+    defer rt.deinit(std.testing.allocator);
+    rt.mining_mode = .manual;
+
+    var blob_hashes = std.json.Array.init(std.testing.allocator);
+    defer blob_hashes.deinit();
+    try blob_hashes.append(.{ .string = "0x0100000000000000000000000000000000000000000000000000000000000000" });
+
+    var obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try obj.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try obj.put("value", .{ .string = "0x1" });
+    try obj.put("gas", .{ .string = "0x5208" });
+    try obj.put("maxPriorityFeePerGas", .{ .string = "0x3b9aca00" }); // 1 gwei
+    try obj.put("maxFeePerGas", .{ .string = "0x77359400" }); // 2 gwei
+    try obj.put("maxFeePerBlobGas", .{ .string = "0x1" });
+    try obj.put("blobVersionedHashes", .{ .array = blob_hashes });
+    try obj.put("type", .{ .string = "0x3" });
+
+    const params = jsonrpc.eth.SendTransaction.Params{
+        .transaction = .{ .value = .{ .object = obj } },
+    };
+
+    const result = try tx_submission.handleSendTransaction(std.testing.allocator, &rt, params);
+    const record = rt.getTransactionRecord(result.value.bytes) orelse return error.ExpectedTransactionRecord;
+    const decoded = try primitives.Transaction.decodeRawTransaction(std.testing.allocator, record.raw);
+    defer primitives.Transaction.deinitDecodedTransaction(std.testing.allocator, decoded);
+
+    try std.testing.expect(decoded == .eip4844);
+}
+
+test "eth_sendTransaction EIP-4844 requires blobVersionedHashes and maxFeePerBlobGas" {
+    var rt = try makeRuntime();
+    defer rt.deinit(std.testing.allocator);
+    rt.mining_mode = .manual;
+
+    var obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try obj.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try obj.put("value", .{ .string = "0x1" });
+    try obj.put("gas", .{ .string = "0x5208" });
+    try obj.put("maxPriorityFeePerGas", .{ .string = "0x3b9aca00" });
+    try obj.put("maxFeePerGas", .{ .string = "0x77359400" });
+    try obj.put("type", .{ .string = "0x3" });
+
+    const params = jsonrpc.eth.SendTransaction.Params{
+        .transaction = .{ .value = .{ .object = obj } },
+    };
+
+    const result = tx_submission.handleSendTransaction(std.testing.allocator, &rt, params);
+    try std.testing.expectError(tx_submission.TxSubmissionError.InvalidHexData, result);
+}

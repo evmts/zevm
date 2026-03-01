@@ -164,6 +164,52 @@ test "NodeHandler eth_sendTransaction rejects malformed to address" {
     try std.testing.expectError(error.InvalidParams, callMethod(allocator, &handler, "eth_sendTransaction", .{ .array = send_params }));
 }
 
+test "NodeHandler eth_sendTransaction supports EIP-4844 typed transactions" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    // Keep tx in pool/index for direct decode assertions.
+    var disable_automine_params = std.json.Array.init(allocator);
+    defer disable_automine_params.deinit();
+    try disable_automine_params.append(.{ .bool = false });
+    _ = try callMethod(allocator, &handler, "hardhat_setAutomine", .{ .array = disable_automine_params });
+
+    var blob_hashes = std.json.Array.init(allocator);
+    defer blob_hashes.deinit();
+    try blob_hashes.append(.{ .string = "0x0100000000000000000000000000000000000000000000000000000000000000" });
+
+    var tx_object = std.json.ObjectMap.init(allocator);
+    defer tx_object.deinit();
+    try tx_object.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try tx_object.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try tx_object.put("value", .{ .string = "0x1" });
+    try tx_object.put("gas", .{ .string = "0x5208" });
+    try tx_object.put("maxPriorityFeePerGas", .{ .string = "0x3b9aca00" });
+    try tx_object.put("maxFeePerGas", .{ .string = "0x77359400" });
+    try tx_object.put("maxFeePerBlobGas", .{ .string = "0x1" });
+    try tx_object.put("blobVersionedHashes", .{ .array = blob_hashes });
+    try tx_object.put("type", .{ .string = "0x3" });
+
+    var send_params = std.json.Array.init(allocator);
+    defer send_params.deinit();
+    try send_params.append(.{ .object = tx_object });
+
+    const send_result = try callMethod(allocator, &handler, "eth_sendTransaction", .{ .array = send_params });
+    const tx_hash = switch (send_result) {
+        .string => |value| value,
+        else => return error.ExpectedStringResult,
+    };
+
+    const tx_hash_bytes = primitives.Hex.hexToBytesFixed(32, tx_hash) catch return error.InvalidHexData;
+    const record = handler.node_runtime.getTransactionRecord(tx_hash_bytes) orelse return error.ExpectedTransactionRecord;
+    const decoded = try primitives.Transaction.decodeRawTransaction(allocator, record.raw);
+    defer primitives.Transaction.deinitDecodedTransaction(allocator, decoded);
+    try std.testing.expect(decoded == .eip4844);
+}
+
 test "NodeHandler eth_call executes and returns hex data" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

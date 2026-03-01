@@ -31,7 +31,7 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 
 ## Validation
 
-- Full test suite: **235/235 passing** (`zig build test --summary all`)
+- Full test suite: **238/238 passing** (`zig build test --summary all`)
 - Full build: **passing** (`zig build`)
 
 ## Recent Completion Highlights
@@ -66,6 +66,9 @@ ZEVM now provides a functional Hardhat/Anvil-style Ethereum dev node and light-c
 - Added NodeHandler-level regression coverage for malformed `eth_sendTransaction` input mapping to `InvalidParams`.
 - Added NodeHandler-level regression coverage that `evm_setBlockGasLimit` constrains automine inclusion.
 - Added server-level guardrails against unsafe float request IDs (fractional/out-of-range), preventing parser trap risk and returning compliant `-32600` invalid-request responses.
+- Added `eth_sendTransaction` support for EIP-4844 typed transactions (`type: 0x3`) including blob-fee/hash field parsing, signing, and tx indexing.
+- Added regression coverage for EIP-4844 typed send success and required-field validation.
+- Added NodeHandler-level regression coverage for EIP-4844 typed `eth_sendTransaction`.
 
 ## Notes
 
