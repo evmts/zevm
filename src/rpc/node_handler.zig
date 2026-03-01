@@ -837,7 +837,7 @@ pub const NodeHandler = struct {
         params: ?std.json.Value,
     ) !std.json.Value {
         const id = parseFirstU64(params) orelse return error.InvalidParams;
-        const state = self.filters.getPtr(id) orelse return .{ .array = std.json.Array.init(allocator) };
+        const state = self.filters.getPtr(id) orelse return error.FilterNotFound;
 
         switch (state.kind) {
             .block => {
@@ -882,7 +882,7 @@ pub const NodeHandler = struct {
         params: ?std.json.Value,
     ) !std.json.Value {
         const id = parseFirstU64(params) orelse return error.InvalidParams;
-        const state = self.filters.getPtr(id) orelse return .{ .array = std.json.Array.init(allocator) };
+        const state = self.filters.getPtr(id) orelse return error.FilterNotFound;
         if (state.kind != .log) {
             return .{ .array = std.json.Array.init(allocator) };
         }

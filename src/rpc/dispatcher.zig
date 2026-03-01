@@ -28,11 +28,13 @@ pub fn dispatch(allocator: std.mem.Allocator, request: jsonrpc.envelope.RequestE
         break :blk with_context(context, allocator, request.method, request.params) catch |err| switch (err) {
             error.MethodNotFound => return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND, "Method not found"),
             error.InvalidParams => return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.INVALID_PARAMS, "Invalid params"),
+            error.FilterNotFound => return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.SERVER_ERROR, "Filter not found"),
             else => return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.INTERNAL_ERROR, "Internal error"),
         };
     } else handlers.on_method.?(allocator, request.method, request.params) catch |err| switch (err) {
         error.MethodNotFound => return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND, "Method not found"),
         error.InvalidParams => return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.INVALID_PARAMS, "Invalid params"),
+        error.FilterNotFound => return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.SERVER_ERROR, "Filter not found"),
         else => return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.INTERNAL_ERROR, "Internal error"),
     };
 
