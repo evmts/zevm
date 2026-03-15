@@ -3,20 +3,23 @@
  * TOON imports these via `imports.schemas`.
  */
 
-export { ralphOutputSchemas as TicketSchedule } from "super-ralph";
-export { ralphOutputSchemas as Discover } from "super-ralph";
-export { ralphOutputSchemas as Progress } from "super-ralph";
-export { ralphOutputSchemas as Research } from "super-ralph";
-export { ralphOutputSchemas as Plan } from "super-ralph";
-export { ralphOutputSchemas as Implement } from "super-ralph";
-export { ralphOutputSchemas as TestResults } from "super-ralph";
-export { ralphOutputSchemas as BuildVerify } from "super-ralph";
-export { ralphOutputSchemas as SpecReview } from "super-ralph";
-export { ralphOutputSchemas as CodeReview } from "super-ralph";
-export { ralphOutputSchemas as CodeReviewCodex } from "super-ralph";
-export { ralphOutputSchemas as CodeReviewGemini } from "super-ralph";
-export { ralphOutputSchemas as ReviewFix } from "super-ralph";
-export { ralphOutputSchemas as Report } from "super-ralph";
-export { ralphOutputSchemas as IntegrationTest } from "super-ralph";
-export { ralphOutputSchemas as CategoryReview } from "super-ralph";
-export { ralphOutputSchemas as Land } from "super-ralph";
+// @ts-ignore — super-ralph linked dependency
+import { ralphOutputSchemas } from "super-ralph";
+
+export const TicketSchedule = ralphOutputSchemas.ticket_schedule;
+export const Discover = ralphOutputSchemas.discover;
+export const Progress = ralphOutputSchemas.progress;
+export const Research = ralphOutputSchemas.research;
+export const Plan = ralphOutputSchemas.plan;
+export const Implement = ralphOutputSchemas.implement;
+export const TestResults = ralphOutputSchemas.test_results;
+export const BuildVerify = ralphOutputSchemas.build_verify;
+export const SpecReview = ralphOutputSchemas.spec_review;
+export const CodeReview = ralphOutputSchemas.code_review;
+export const CodeReviewCodex = ralphOutputSchemas.code_review_codex;
+export const CodeReviewGemini = ralphOutputSchemas.code_review_gemini;
+export const ReviewFix = ralphOutputSchemas.review_fix;
+export const Report = ralphOutputSchemas.report;
+export const IntegrationTest = ralphOutputSchemas.integration_test;
+export const CategoryReview = ralphOutputSchemas.category_review;
+export const Land = ralphOutputSchemas.land;

@@ -2,15 +2,19 @@
  * ZEVM Slop Factory — Effect Builder Pattern Version
  *
  * This is the Effect.ts builder equivalent of workflow.tsx.
- * It uses Smithers.workflow().build($) to define the same SuperRalph-driven
- * ticket pipeline with typed step handles, explicit needs, and Effect services.
+ * It uses Smithers.workflow().build($) to define the same ticket pipeline
+ * with typed step handles, explicit needs, and composable control flow.
+ *
+ * NOTE: Requires `effect` as a dependency. Install with:
+ *   bun add effect @effect/schema
  *
  * Usage:
  *   bun run smithers-orchestrator/src/cli/index.ts run components/workflow-effect.ts \
  *     --root /path/to/zevm --max-concurrency 4 --hot
  */
 
-import { Context, Effect, Layer, Schema } from "effect";
+// @ts-ignore — effect must be installed: bun add effect @effect/schema
+import { Effect, Schema } from "effect";
 import { Smithers } from "smithers-orchestrator";
 import {
   AmpAgent,
@@ -18,10 +22,9 @@ import {
   GeminiAgent,
   KimiAgent,
 } from "smithers-orchestrator";
+// @ts-ignore — super-ralph linked dependency
 import { ralphOutputSchemas } from "super-ralph";
 import { focuses } from "./focuses";
-import { focusTestSuites } from "./focusTestSuites";
-import { focusDirs } from "./focusDirs";
 import { getTarget } from "../targets";
 import { WORKFLOW_MAX_CONCURRENCY, WORKFLOW_TASK_RETRIES } from "../config";
 import { readFileSync } from "node:fs";
@@ -73,10 +76,10 @@ ZIG STYLE:
 // ---------------------------------------------------------------------------
 
 const ampDeep = new AmpAgent({
-  mode: "deep",
+  model: "amp-deep",
   systemPrompt: SYSTEM_PROMPT,
   cwd: REPO_ROOT,
-  label: "zevm-workflow",
+  yolo: true,
   timeoutMs: 60 * 60 * 1000,
 });
 
@@ -85,14 +88,13 @@ const codex = new CodexAgent({
   systemPrompt: SYSTEM_PROMPT,
   cwd: REPO_ROOT,
   yolo: true,
-  config: { model_reasoning_effort: "xhigh" },
   timeoutMs: 60 * 60 * 1000,
 });
 
 const amp = new AmpAgent({
   systemPrompt: SYSTEM_PROMPT,
   cwd: REPO_ROOT,
-  label: "zevm-workflow",
+  yolo: true,
   timeoutMs: 60 * 60 * 1000,
 });
 
@@ -108,52 +110,13 @@ const kimi = new KimiAgent({
   systemPrompt: SYSTEM_PROMPT,
   cwd: REPO_ROOT,
   timeoutMs: 60 * 60 * 1000,
-  finalMessageOnly: true,
 });
 
-const agentPool = {
-  "amp-deep": {
-    agent: ampDeep,
-    description: "Best orchestrator and deepest thinker. Expensive — reserve for high-stakes work.",
-  },
-  codex: {
-    agent: codex,
-    description: "Main workhorse for bulk implementation. Good at Zig code.",
-  },
-  amp: {
-    agent: amp,
-    description: "Fast Amp agent for testing, review-fix cycles, and lighter research.",
-    isScheduler: true,
-    isMergeQueue: true,
-  },
-  gemini: {
-    agent: gemini,
-    description: "Large context window. Best for planning and architecture analysis. Unreliable at tool calls.",
-  },
-  kimi: {
-    agent: kimi,
-    description: "Cheapest agent. Use for simple work: RPC handler wiring, boilerplate.",
-  },
-};
-
 // ---------------------------------------------------------------------------
-// Output Schemas (from ralphOutputSchemas — re-exported as Effect Schema.Class)
+// Output Schemas (from ralphOutputSchemas)
 // ---------------------------------------------------------------------------
 
-// The ralphOutputSchemas are Zod schemas. The Effect builder accepts them
-// directly via Smithers' Zod→Effect bridge, so we pass them through as-is.
 const out = ralphOutputSchemas;
-
-// ---------------------------------------------------------------------------
-// Service Tags — thin wrappers for agent invocation
-// ---------------------------------------------------------------------------
-
-class AgentPoolService extends Context.Tag("AgentPoolService")<
-  AgentPoolService,
-  typeof agentPool
->() {}
-
-const AgentPoolLive = Layer.succeed(AgentPoolService, agentPool);
 
 // ---------------------------------------------------------------------------
 // Workflow Definition
@@ -173,100 +136,60 @@ const ZevmWorkflow = Smithers.workflow({
   // -----------------------------------------------------------------------
   const ticketScheduler = $.step("ticket-scheduler", {
     output: out.ticket_schedule,
-    run: ({ input }) =>
-      Effect.gen(function* () {
-        const pool = yield* AgentPoolService;
-        const schedulerAgentId = Object.entries(pool).find(([, e]) => e.isScheduler)?.[0] ?? Object.keys(pool)[0];
-        const schedulerAgent = pool[schedulerAgentId as keyof typeof pool].agent;
-
-        // The scheduler prompt would be built from focuses, pipeline state, etc.
-        // In practice this delegates to the SuperRalph TicketScheduler component logic.
-        return yield* Effect.promise(() =>
-          schedulerAgent.generate({
-            prompt: buildSchedulerPrompt(focuses, target),
-            outputSchema: out.ticket_schedule,
-          }),
-        );
-      }),
+    run: () =>
+      Effect.promise(() =>
+        amp.generate({
+          prompt: buildSchedulerPrompt(),
+          outputSchema: out.ticket_schedule,
+        }),
+      ),
     timeout: "10m",
     retry: 2,
   });
 
   // -----------------------------------------------------------------------
-  // Step 2: Execute scheduled jobs in parallel
+  // Step 2: Discovery & Progress (parallel)
   // -----------------------------------------------------------------------
-  // Each job type maps to a pipeline stage. In the full implementation,
-  // these would dynamically dispatch based on the scheduler output.
-  // Here we show the static structure:
 
   const discover = $.step("discover", {
     output: out.discover,
-    needs: { schedule: ticketScheduler },
-    run: ({ schedule }) =>
-      Effect.gen(function* () {
-        const pool = yield* AgentPoolService;
-        const discoveryJob = schedule.jobs.find((j) => j.jobType === "discovery");
-        if (!discoveryJob) return yield* Effect.fail(new Error("No discovery job scheduled"));
-        const agent = pool[discoveryJob.agentId as keyof typeof pool]?.agent ?? Object.values(pool)[0].agent;
-        return yield* Effect.promise(() =>
-          agent.generate({
-            prompt: buildDiscoverPrompt(target, focuses),
-            outputSchema: out.discover,
-          }),
-        );
-      }),
-    skipIf: (ctx) => {
-      const schedule = ctx.needs?.schedule;
-      return !schedule?.jobs?.some((j: any) => j.jobType === "discovery");
-    },
+    run: () =>
+      Effect.promise(() =>
+        ampDeep.generate({
+          prompt: buildDiscoverPrompt(),
+          outputSchema: out.discover,
+        }),
+      ),
     timeout: "30m",
     retry: WORKFLOW_TASK_RETRIES,
   });
 
   const progressUpdate = $.step("progress-update", {
     output: out.progress,
-    needs: { schedule: ticketScheduler },
-    run: ({ schedule }) =>
-      Effect.gen(function* () {
-        const pool = yield* AgentPoolService;
-        const job = schedule.jobs.find((j) => j.jobType === "progress-update");
-        if (!job) return yield* Effect.fail(new Error("No progress-update job scheduled"));
-        const agent = pool[job.agentId as keyof typeof pool]?.agent ?? Object.values(pool)[0].agent;
-        return yield* Effect.promise(() =>
-          agent.generate({
-            prompt: `Update PROGRESS.md for ${target.name}. Summarize completed tickets and remaining work.`,
-            outputSchema: out.progress,
-          }),
-        );
-      }),
-    skipIf: (ctx) => {
-      const schedule = ctx.needs?.schedule;
-      return !schedule?.jobs?.some((j: any) => j.jobType === "progress-update");
-    },
+    run: () =>
+      Effect.promise(() =>
+        kimi.generate({
+          prompt: `Update PROGRESS.md for ${target.name}. Summarize completed tickets and remaining work.`,
+          outputSchema: out.progress,
+        }),
+      ),
     timeout: "15m",
     retry: WORKFLOW_TASK_RETRIES,
   });
 
   // -----------------------------------------------------------------------
-  // Ticket pipeline stages — research → plan → implement → test → review → report
+  // Ticket pipeline stages
   // -----------------------------------------------------------------------
 
   const research = $.step("research", {
     output: out.research,
-    needs: { schedule: ticketScheduler },
-    run: ({ schedule }) =>
-      Effect.gen(function* () {
-        const pool = yield* AgentPoolService;
-        const job = schedule.jobs.find((j) => j.jobType === "ticket:research");
-        if (!job) return yield* Effect.fail(new Error("No research job"));
-        const agent = pool[job.agentId as keyof typeof pool]?.agent ?? Object.values(pool)[0].agent;
-        return yield* Effect.promise(() =>
-          agent.generate({
-            prompt: `Research ticket ${job.ticketId}. Check voltaire and guillotine-mini first.`,
-            outputSchema: out.research,
-          }),
-        );
-      }),
+    run: () =>
+      Effect.promise(() =>
+        ampDeep.generate({
+          prompt: `Research the next ticket. Check voltaire and guillotine-mini first.`,
+          outputSchema: out.research,
+        }),
+      ),
     timeout: "30m",
     retry: WORKFLOW_TASK_RETRIES,
   });
@@ -274,17 +197,13 @@ const ZevmWorkflow = Smithers.workflow({
   const plan = $.step("plan", {
     output: out.plan,
     needs: { researchResult: research },
-    run: ({ researchResult }) =>
-      Effect.gen(function* () {
-        const pool = yield* AgentPoolService;
-        const agent = Object.values(pool)[0].agent;
-        return yield* Effect.promise(() =>
-          agent.generate({
-            prompt: `Create implementation plan based on research: ${researchResult.summary}`,
-            outputSchema: out.plan,
-          }),
-        );
-      }),
+    run: ({ researchResult }: any) =>
+      Effect.promise(() =>
+        gemini.generate({
+          prompt: `Create implementation plan based on research: ${researchResult.summary}`,
+          outputSchema: out.plan,
+        }),
+      ),
     timeout: "20m",
     retry: WORKFLOW_TASK_RETRIES,
   });
@@ -292,17 +211,13 @@ const ZevmWorkflow = Smithers.workflow({
   const implement = $.step("implement", {
     output: out.implement,
     needs: { planResult: plan },
-    run: ({ planResult }) =>
-      Effect.gen(function* () {
-        const pool = yield* AgentPoolService;
-        const agent = pool.codex.agent; // codex is the main workhorse
-        return yield* Effect.promise(() =>
-          agent.generate({
-            prompt: `Implement the plan at ${planResult.planFilePath}. Follow steps: ${(planResult.implementationSteps ?? []).join(", ")}`,
-            outputSchema: out.implement,
-          }),
-        );
-      }),
+    run: ({ planResult }: any) =>
+      Effect.promise(() =>
+        codex.generate({
+          prompt: `Implement the plan at ${planResult.planFilePath}. Follow steps: ${(planResult.implementationSteps ?? []).join(", ")}`,
+          outputSchema: out.implement,
+        }),
+      ),
     timeout: "60m",
     retry: WORKFLOW_TASK_RETRIES,
   });
@@ -310,17 +225,13 @@ const ZevmWorkflow = Smithers.workflow({
   const test = $.step("test", {
     output: out.test_results,
     needs: { implResult: implement },
-    run: ({ implResult }) =>
-      Effect.gen(function* () {
-        const pool = yield* AgentPoolService;
-        const agent = pool.sonnet.agent; // sonnet for test runs
-        return yield* Effect.promise(() =>
-          agent.generate({
-            prompt: `Run tests after implementation: ${implResult.whatWasDone}. Commands: ${Object.values(target.testCmds).join(", ")}`,
-            outputSchema: out.test_results,
-          }),
-        );
-      }),
+    run: ({ implResult }: any) =>
+      Effect.promise(() =>
+        amp.generate({
+          prompt: `Run tests after implementation: ${implResult.whatWasDone}. Commands: ${Object.values(target.testCmds).join(", ")}`,
+          outputSchema: out.test_results,
+        }),
+      ),
     timeout: "30m",
     retry: WORKFLOW_TASK_RETRIES,
   });
@@ -328,17 +239,13 @@ const ZevmWorkflow = Smithers.workflow({
   const specReview = $.step("spec-review", {
     output: out.spec_review,
     needs: { implResult: implement, testResult: test },
-    run: ({ implResult, testResult }) =>
-      Effect.gen(function* () {
-        const pool = yield* AgentPoolService;
-        const agent = pool.gemini.agent; // gemini for deep review
-        return yield* Effect.promise(() =>
-          agent.generate({
-            prompt: `Review implementation against specs. Files: ${[...(implResult.filesCreated ?? []), ...(implResult.filesModified ?? [])].join(", ")}. Tests: ${testResult.goTestsPassed ? "PASS" : "FAIL"}`,
-            outputSchema: out.spec_review,
-          }),
-        );
-      }),
+    run: ({ implResult, testResult }: any) =>
+      Effect.promise(() =>
+        gemini.generate({
+          prompt: `Review implementation against specs. Files: ${[...(implResult.filesCreated ?? []), ...(implResult.filesModified ?? [])].join(", ")}. Tests: ${testResult.goTestsPassed ? "PASS" : "FAIL"}`,
+          outputSchema: out.spec_review,
+        }),
+      ),
     timeout: "20m",
     retry: WORKFLOW_TASK_RETRIES,
   });
@@ -346,43 +253,36 @@ const ZevmWorkflow = Smithers.workflow({
   const codeReview = $.step("code-review", {
     output: out.code_review,
     needs: { implResult: implement },
-    run: ({ implResult }) =>
-      Effect.gen(function* () {
-        const pool = yield* AgentPoolService;
-        const agent = pool.opus.agent; // opus for quality review
-        return yield* Effect.promise(() =>
-          agent.generate({
-            prompt: `Code review files: ${[...(implResult.filesCreated ?? []), ...(implResult.filesModified ?? [])].join(", ")}. Checklist: ${target.reviewChecklist.join("; ")}`,
-            outputSchema: out.code_review,
-          }),
-        );
-      }),
+    run: ({ implResult }: any) =>
+      Effect.promise(() =>
+        ampDeep.generate({
+          prompt: `Code review files: ${[...(implResult.filesCreated ?? []), ...(implResult.filesModified ?? [])].join(", ")}. Checklist: ${target.reviewChecklist.join("; ")}`,
+          outputSchema: out.code_review,
+        }),
+      ),
     timeout: "20m",
     retry: WORKFLOW_TASK_RETRIES,
   });
 
   // -----------------------------------------------------------------------
-  // Review-fix loop — iterate until reviews pass
+  // Review-fix loop
   // -----------------------------------------------------------------------
 
   const reviewFix = $.step("review-fix", {
     output: out.review_fix,
     needs: { specResult: specReview, codeResult: codeReview },
-    run: ({ specResult, codeResult }) =>
-      Effect.gen(function* () {
-        const pool = yield* AgentPoolService;
-        const agent = pool.codex.agent;
-        const allClear = specResult.severity === "none" && codeResult.severity === "none";
-        if (allClear) {
-          return { allIssuesResolved: true, summary: "All reviews passed." };
-        }
-        return yield* Effect.promise(() =>
-          agent.generate({
-            prompt: `Fix review issues. Spec: ${specResult.feedback}. Code: ${codeResult.feedback}`,
-            outputSchema: out.review_fix,
-          }),
-        );
-      }),
+    run: ({ specResult, codeResult }: any) => {
+      const allClear = specResult.severity === "none" && codeResult.severity === "none";
+      if (allClear) {
+        return Effect.succeed({ allIssuesResolved: true, summary: "All reviews passed." });
+      }
+      return Effect.promise(() =>
+        codex.generate({
+          prompt: `Fix review issues. Spec: ${specResult.feedback}. Code: ${codeResult.feedback}`,
+          outputSchema: out.review_fix,
+        }),
+      );
+    },
     timeout: "30m",
     retry: WORKFLOW_TASK_RETRIES,
   });
@@ -390,48 +290,40 @@ const ZevmWorkflow = Smithers.workflow({
   const report = $.step("report", {
     output: out.report,
     needs: { fixResult: reviewFix },
-    run: ({ fixResult }) =>
-      Effect.gen(function* () {
-        const pool = yield* AgentPoolService;
-        const agent = pool.sonnet.agent;
-        return yield* Effect.promise(() =>
-          agent.generate({
-            prompt: `Generate ticket report. Issues resolved: ${fixResult.allIssuesResolved}. ${fixResult.summary}`,
-            outputSchema: out.report,
-          }),
-        );
-      }),
+    run: ({ fixResult }: any) =>
+      Effect.promise(() =>
+        amp.generate({
+          prompt: `Generate ticket report. Issues resolved: ${fixResult.allIssuesResolved}. ${fixResult.summary}`,
+          outputSchema: out.report,
+        }),
+      ),
     timeout: "15m",
     retry: WORKFLOW_TASK_RETRIES,
   });
 
   // -----------------------------------------------------------------------
-  // Merge queue — land completed tickets
+  // Merge queue
   // -----------------------------------------------------------------------
 
   const mergeQueue = $.step("merge-queue", {
     output: out.land,
     needs: { reportResult: report },
-    run: ({ reportResult }) =>
-      Effect.gen(function* () {
-        const pool = yield* AgentPoolService;
-        const mqAgentId = Object.entries(pool).find(([, e]) => e.isMergeQueue)?.[0] ?? Object.keys(pool)[0];
-        const agent = pool[mqAgentId as keyof typeof pool].agent;
-        if (reportResult.status !== "complete") {
-          return {
-            merged: false, mergeCommit: null, ciPassed: false,
-            summary: `Ticket ${reportResult.ticketId} not complete: ${reportResult.status}`,
-            evicted: false, evictionReason: null, evictionDetails: null,
-            attemptedLog: null, attemptedDiffSummary: null, landedOnMainSinceBranch: null,
-          };
-        }
-        return yield* Effect.promise(() =>
-          agent.generate({
-            prompt: `Land ticket ${reportResult.ticketId} to main. Run CI: ${Object.values(target.testCmds).join(", ")}`,
-            outputSchema: out.land,
-          }),
-        );
-      }),
+    run: ({ reportResult }: any) => {
+      if (reportResult.status !== "complete") {
+        return Effect.succeed({
+          merged: false, mergeCommit: null, ciPassed: false,
+          summary: `Ticket ${reportResult.ticketId} not complete: ${reportResult.status}`,
+          evicted: false, evictionReason: null, evictionDetails: null,
+          attemptedLog: null, attemptedDiffSummary: null, landedOnMainSinceBranch: null,
+        });
+      }
+      return Effect.promise(() =>
+        amp.generate({
+          prompt: `Land ticket ${reportResult.ticketId} to main. Run CI: ${Object.values(target.testCmds).join(", ")}`,
+          outputSchema: out.land,
+        }),
+      );
+    },
     timeout: "15m",
     retry: 2,
   });
@@ -459,48 +351,44 @@ const ZevmWorkflow = Smithers.workflow({
         maxConcurrency: WORKFLOW_MAX_CONCURRENCY,
       }),
     ),
-    until: () => false, // runs forever — Ctrl+C to stop
+    until: () => false,
     maxIterations: Infinity,
     onMaxReached: "return-last",
   });
 });
 
 // ---------------------------------------------------------------------------
-// Prompt builders (simplified — full versions live in super-ralph MDX prompts)
+// Prompt builders
 // ---------------------------------------------------------------------------
 
-function buildSchedulerPrompt(
-  focusList: ReadonlyArray<{ readonly id: string; readonly name: string }>,
-  tgt: ReturnType<typeof getTarget>,
-): string {
-  const focusTable = focusList
+function buildSchedulerPrompt(): string {
+  const focusTable = focuses
     .map((f) => `- ${f.id}: ${f.name}`)
     .join("\n");
-  return `You are the ticket scheduler for ${tgt.name}.
+  return `You are the ticket scheduler for ${target.name}.
 
 Available focuses:
 ${focusTable}
 
 Available agents:
-${Object.entries(agentPool)
-    .map(([id, { description }]) => `- ${id}: ${description}`)
-    .join("\n")}
+- amp-deep: Best orchestrator and deepest thinker. Expensive — reserve for high-stakes work.
+- codex: Main workhorse for bulk implementation. Good at Zig code.
+- amp: Fast Amp agent for testing, review-fix cycles, and lighter research.
+- gemini: Large context window. Best for planning and architecture analysis. Unreliable at tool calls.
+- kimi: Cheapest agent. Use for simple work: RPC handler wiring, boilerplate.
 
 Schedule the next batch of jobs. Consider pipeline stages, dependencies, and agent strengths.
 Max concurrency: ${WORKFLOW_MAX_CONCURRENCY}. Task retries: ${WORKFLOW_TASK_RETRIES}.`;
 }
 
-function buildDiscoverPrompt(
-  tgt: ReturnType<typeof getTarget>,
-  focusList: ReadonlyArray<{ readonly id: string; readonly name: string }>,
-): string {
-  return `Discover implementation tickets for ${tgt.name}.
+function buildDiscoverPrompt(): string {
+  return `Discover implementation tickets for ${target.name}.
 
 Focuses:
-${focusList.map((f) => `- ${f.id}: ${f.name}`).join("\n")}
+${focuses.map((f) => `- ${f.id}: ${f.name}`).join("\n")}
 
-Check ${tgt.specsPath} for specs. Check voltaire and guillotine-mini before creating tickets.
-Reference files: ${tgt.referenceFiles.join(", ")}`;
+Check ${target.specsPath} for specs. Check voltaire and guillotine-mini before creating tickets.
+Reference files: ${target.referenceFiles.join(", ")}`;
 }
 
 // ---------------------------------------------------------------------------

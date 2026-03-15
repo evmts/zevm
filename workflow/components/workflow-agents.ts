@@ -25,10 +25,10 @@ ZIG STYLE: No local type aliases. No stored allocators. Fully qualified paths on
 `;
 
 export const ampDeep = new AmpAgent({
-  mode: "deep",
+  model: "amp-deep",
   systemPrompt: SYSTEM_PROMPT,
   cwd: REPO_ROOT,
-  label: "zevm-workflow",
+  yolo: true,
   timeoutMs: 60 * 60 * 1000,
 });
 
@@ -37,14 +37,13 @@ export const codex = new CodexAgent({
   systemPrompt: SYSTEM_PROMPT,
   cwd: REPO_ROOT,
   yolo: true,
-  config: { model_reasoning_effort: "xhigh" },
   timeoutMs: 60 * 60 * 1000,
 });
 
 export const amp = new AmpAgent({
   systemPrompt: SYSTEM_PROMPT,
   cwd: REPO_ROOT,
-  label: "zevm-workflow",
+  yolo: true,
   timeoutMs: 60 * 60 * 1000,
 });
 
@@ -60,5 +59,4 @@ export const kimi = new KimiAgent({
   systemPrompt: SYSTEM_PROMPT,
   cwd: REPO_ROOT,
   timeoutMs: 60 * 60 * 1000,
-  finalMessageOnly: true,
 });
