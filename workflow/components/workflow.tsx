@@ -53,7 +53,7 @@ REFERENCE IMPLEMENTATIONS (read for behavior/edge cases, do not copy wholesale):
 6. foundry anvil (foundry/) — Rust dev node reference
 7. If the reference implementation includes e2e or integration tests that are a black box and can be easily replicated we should flag them and make sure we port them
 
-ALREADY DONE in zevm 
+ALREADY DONE in zevm
 Explore zevm to learn what has and has not been done
 
 ZIG STYLE:
@@ -80,6 +80,67 @@ ZIG STYLE:
 - Minimize abstractions in favor of inlining code except where abstraction is high leverage
 `;
 
+const target = getTarget();
+
+const agents = {
+  "amp-deep": {
+    agent: new AmpAgent({
+      mode: "deep",
+      systemPrompt: SYSTEM_PROMPT,
+      cwd: REPO_ROOT,
+      label: "zevm-workflow",
+      timeoutMs: 60 * 60 * 1000,
+    }),
+    description:
+      "Best orchestrator and deepest thinker. Use for the most important research tasks that require careful reasoning about how to integrate voltaire/guillotine-mini. Expensive — reserve for high-stakes work.",
+  },
+  codex: {
+    agent: new CodexAgent({
+      model: "gpt-5.3-codex",
+      systemPrompt: SYSTEM_PROMPT,
+      cwd: REPO_ROOT,
+      yolo: true,
+      config: { model_reasoning_effort: "xhigh" },
+      timeoutMs: 60 * 60 * 1000,
+    }),
+    description:
+      "Main workhorse for bulk implementation. Good at following instructions and writing Zig code. Use for most implementation tickets.",
+  },
+  amp: {
+    agent: new AmpAgent({
+      systemPrompt: SYSTEM_PROMPT,
+      cwd: REPO_ROOT,
+      label: "zevm-workflow",
+      timeoutMs: 60 * 60 * 1000,
+    }),
+    description:
+      "Fast Amp agent for testing, review-fix cycles, and lighter research. Good balance of speed and quality.",
+    isScheduler: true,
+    isMergeQueue: true,
+  },
+  gemini: {
+    agent: new GeminiAgent({
+      model: "gemini-3.1-pro-preview",
+      systemPrompt: SYSTEM_PROMPT,
+      cwd: REPO_ROOT,
+      yolo: true,
+      timeoutMs: 30 * 60 * 1000,
+    }),
+    description:
+      "Very smart with large context window. Best for planning, reading reference implementations (edr, tevm-monorepo), and architecture analysis. Unreliable at tool calls.",
+  },
+  kimi: {
+    agent: new KimiAgent({
+      systemPrompt: SYSTEM_PROMPT,
+      cwd: REPO_ROOT,
+      timeoutMs: 60 * 60 * 1000,
+      finalMessageOnly: true,
+    }),
+    description:
+      "Cheapest agent. Use as much as possible for simple work: straightforward RPC handler wiring, boilerplate, and low-complexity tickets.",
+  },
+};
+
 export default smithers((ctx) => {
   return (
     <Workflow name="zevm-slop-factory">
@@ -87,74 +148,17 @@ export default smithers((ctx) => {
         ctx={ctx}
         outputs={outputs}
         focuses={focuses}
-        projectId={getTarget().id}
-        projectName={getTarget().name}
-        specsPath={getTarget().specsPath}
-        referenceFiles={getTarget().referenceFiles}
-        buildCmds={getTarget().buildCmds}
-        testCmds={getTarget().testCmds}
-        codeStyle={getTarget().codeStyle}
-        reviewChecklist={getTarget().reviewChecklist}
+        projectId={target.id}
+        projectName={target.name}
+        specsPath={target.specsPath}
+        referenceFiles={target.referenceFiles}
+        buildCmds={target.buildCmds}
+        testCmds={target.testCmds}
+        codeStyle={target.codeStyle}
+        reviewChecklist={target.reviewChecklist}
         maxConcurrency={WORKFLOW_MAX_CONCURRENCY}
         taskRetries={WORKFLOW_TASK_RETRIES}
-        agents={{
-          "amp-deep": {
-            agent: new AmpAgent({
-              mode: "deep",
-              systemPrompt: SYSTEM_PROMPT,
-              cwd: REPO_ROOT,
-              label: "zevm-workflow",
-              timeoutMs: 60 * 60 * 1000,
-            }),
-            description:
-              "Best orchestrator and deepest thinker. Use for the most important research tasks that require careful reasoning about how to integrate voltaire/guillotine-mini. Expensive — reserve for high-stakes work.",
-          },
-          codex: {
-            agent: new CodexAgent({
-              model: "gpt-5.3-codex",
-              systemPrompt: SYSTEM_PROMPT,
-              cwd: REPO_ROOT,
-              yolo: true,
-              config: { model_reasoning_effort: "xhigh" },
-              timeoutMs: 60 * 60 * 1000,
-            }),
-            description:
-              "Main workhorse for bulk implementation. Good at following instructions and writing Zig code. Use for most implementation tickets.",
-          },
-          amp: {
-            agent: new AmpAgent({
-              systemPrompt: SYSTEM_PROMPT,
-              cwd: REPO_ROOT,
-              label: "zevm-workflow",
-              timeoutMs: 60 * 60 * 1000,
-            }),
-            description:
-              "Fast Amp agent for testing, review-fix cycles, and lighter research. Good balance of speed and quality.",
-            isScheduler: true,
-            isMergeQueue: true,
-          },
-          gemini: {
-            agent: new GeminiAgent({
-              model: "gemini-3.1-pro-preview",
-              systemPrompt: SYSTEM_PROMPT,
-              cwd: REPO_ROOT,
-              yolo: true,
-              timeoutMs: 30 * 60 * 1000,
-            }),
-            description:
-              "Very smart with large context window. Best for planning, reading reference implementations (edr, tevm-monorepo), and architecture analysis. Unreliable at tool calls.",
-          },
-          kimi: {
-            agent: new KimiAgent({
-              systemPrompt: SYSTEM_PROMPT,
-              cwd: REPO_ROOT,
-              timeoutMs: 60 * 60 * 1000,
-              finalMessageOnly: true,
-            }),
-            description:
-              "Cheapest agent. Use as much as possible for simple work: straightforward RPC handler wiring, boilerplate, and low-complexity tickets.",
-          },
-        }}
+        agents={agents}
         focusTestSuites={focusTestSuites}
         focusDirs={focusDirs}
       />
