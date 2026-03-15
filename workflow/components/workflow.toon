@@ -1,8 +1,8 @@
 imports:
-  agents[5]:
+  agents[1]:
     - from: ./workflow-agents.ts
       use[5]: ampDeep,codex,amp,gemini,kimi
-  schemas[17]:
+  schemas[1]:
     - from: ./workflow-schemas.ts
       use[17]: TicketSchedule,Discover,Progress,Research,Plan,Implement,TestResults,BuildVerify,SpecReview,CodeReview,CodeReviewCodex,CodeReviewGemini,ReviewFix,Report,IntegrationTest,CategoryReview,Land
 
@@ -13,7 +13,7 @@ agents:
     type: api
     provider: anthropic
     model: amp-deep
-    instructions: "Best orchestrator and deepest thinker. Use for the most important research tasks that require careful reasoning about how to integrate voltaire/guillotine-mini. Expensive — reserve for high-stakes work."
+    instructions: "Best orchestrator and deepest thinker. Use for the most important research tasks that require careful reasoning about how to integrate voltaire/guillotine-mini. Expensive \u2014 reserve for high-stakes work."
     timeoutMs: 3600000
   codex:
     type: codex
@@ -49,57 +49,46 @@ schemas:
     ticketId: string?
     focusId: string?
     reason: string
-
   TicketSchedule:
     jobs: "TicketScheduleJob[]"
     reasoning: string
-
   Discover:
     tickets: "DiscoverTicket[]"
     reasoning: string
     completionEstimate: string
-
   Progress:
     progressFilePath: string?
     summary: string
     ticketsCompleted: "string[]?"
     ticketsRemaining: "string[]?"
-
   Research:
     contextFilePath: string
     summary: string
-
   Plan:
     planFilePath: string
     implementationSteps: "string[]?"
-
   Implement:
     whatWasDone: string
     filesCreated: "string[]?"
     filesModified: "string[]?"
     nextSteps: string?
-
   TestResults:
     goTestsPassed: boolean
     rustTestsPassed: boolean
     e2eTestsPassed: boolean
     sqlcGenPassed: boolean
     failingSummary: string?
-
   SpecReview:
     severity: "none" | "minor" | "major" | "critical"
     feedback: string
     issues: "string[]?"
-
   CodeReview:
     severity: "none" | "minor" | "major" | "critical"
     feedback: string
     issues: "string[]?"
-
   ReviewFix:
     allIssuesResolved: boolean
     summary: string
-
   Report:
     ticketId: string
     status: "partial" | "complete" | "blocked"
@@ -109,7 +98,6 @@ schemas:
     reviewRounds: number
     struggles: "string[]?"
     lessonsLearned: "string[]?"
-
   Land:
     merged: boolean
     mergeCommit: string?
@@ -133,18 +121,7 @@ components:
         timeout: 30m
         retry:
           maxAttempts: 3
-        prompt: |
-          Research ticket {params.ticketId}: {params.ticketTitle}
-
-          Description: {params.ticketDescription}
-          Category: {params.ticketCategory}
-
-          CRITICAL — check voltaire and guillotine-mini FIRST:
-          1. voltaire (../voltaire/packages/voltaire-zig/src/) — JSON-RPC types, StateManager, ForkBackend, Blockchain, EVM, crypto, precompiles, primitives
-          2. guillotine-mini (../bench/guillotine-mini/) — EVM interpreter, RPC dispatch/routing, envelope parsing, response serialization
-          3. If they're MISSING something, add it THERE, not in zevm
-
-          Write research context to docs/context/{params.ticketId}.md
+        prompt: "Research ticket {params.ticketId}: {params.ticketTitle}\n\nDescription: {params.ticketDescription}\nCategory: {params.ticketCategory}\n\nCRITICAL \u2014 check voltaire and guillotine-mini FIRST:\n1. voltaire (../voltaire/packages/voltaire-zig/src/) \u2014 JSON-RPC types, StateManager, ForkBackend, Blockchain, EVM, crypto, precompiles, primitives\n2. guillotine-mini (../bench/guillotine-mini/) \u2014 EVM interpreter, RPC dispatch/routing, envelope parsing, response serialization\n3. If they're MISSING something, add it THERE, not in zevm\n\nWrite research context to docs/context/{params.ticketId}.md"
 
       - id: "{id}-plan"
         agent: gemini
@@ -152,16 +129,7 @@ components:
         timeout: 20m
         retry:
           maxAttempts: 3
-        prompt: |
-          Create implementation plan for ticket {params.ticketId}: {params.ticketTitle}
-
-          Research summary: {{id}-research.summary}
-          Context file: {{id}-research.contextFilePath}
-
-          Write TDD plan: tests FIRST, then implementation.
-          Write plan to docs/plans/{params.ticketId}.md
-
-          ZIG STYLE: No local type aliases. No stored allocators. Fully qualified paths only.
+        prompt: "Create implementation plan for ticket {params.ticketId}: {params.ticketTitle}\n\nResearch summary: {{id}-research.summary}\nContext file: {{id}-research.contextFilePath}\n\nWrite TDD plan: tests FIRST, then implementation.\nWrite plan to docs/plans/{params.ticketId}.md\n\nZIG STYLE: No local type aliases. No stored allocators. Fully qualified paths only."
 
       - id: "{id}-implement"
         agent: codex
@@ -169,17 +137,7 @@ components:
         timeout: 60m
         retry:
           maxAttempts: 3
-        prompt: |
-          Implement ticket {params.ticketId}: {params.ticketTitle}
-
-          Plan: {{id}-plan.planFilePath}
-          Steps: {{id}-plan.implementationSteps}
-
-          Follow the plan exactly. Write tests first, then implementation.
-          Run `zig build test` to verify. Run `zig fmt src/` to format.
-
-          ZIG STYLE: No local type aliases. No stored allocators. Fully qualified paths only.
-          DO NOT reinvent voltaire or guillotine-mini functionality.
+        prompt: "Implement ticket {params.ticketId}: {params.ticketTitle}\n\nPlan: {{id}-plan.planFilePath}\nSteps: {{id}-plan.implementationSteps}\n\nFollow the plan exactly. Write tests first, then implementation.\nRun zig build test to verify. Run zig fmt src/ to format.\n\nZIG STYLE: No local type aliases. No stored allocators. Fully qualified paths only.\nDO NOT reinvent voltaire or guillotine-mini functionality."
 
       - id: "{id}-test"
         agent: amp
@@ -187,15 +145,7 @@ components:
         timeout: 30m
         retry:
           maxAttempts: 3
-        prompt: |
-          Run all tests for ticket {params.ticketId}: {params.ticketTitle}
-
-          Implementation: {{id}-implement.whatWasDone}
-
-          Commands:
-          - zig build test
-
-          Fix any failing tests. Commit fixes with 🐛 fix prefix.
+        prompt: "Run all tests for ticket {params.ticketId}: {params.ticketTitle}\n\nImplementation: {{id}-implement.whatWasDone}\n\nCommands: zig build test\n\nFix any failing tests. Commit fixes with fix prefix."
 
       - kind: parallel
         children[2]:
@@ -205,17 +155,7 @@ components:
             timeout: 20m
             retry:
               maxAttempts: 3
-            prompt: |
-              Review implementation of {params.ticketId} against specs.
-
-              Files created: {{id}-implement.filesCreated}
-              Files modified: {{id}-implement.filesModified}
-              Tests: {{id}-test.goTestsPassed ? "PASS" : "FAIL"}
-
-              Check against:
-              - Zig style: no local type aliases, no stored allocators, fully qualified paths
-              - Architecture: zevm is thin integration layer, heavy logic in voltaire/guillotine-mini
-              - Test coverage: every RPC handler has a unit test
+            prompt: "Review implementation of {params.ticketId} against specs.\n\nFiles created: {{id}-implement.filesCreated}\nFiles modified: {{id}-implement.filesModified}\nTests: {{id}-test.goTestsPassed ? 'PASS' : 'FAIL'}\n\nCheck against:\n1. Zig style: no local type aliases, no stored allocators, fully qualified paths\n2. Architecture: zevm is thin integration layer, heavy logic in voltaire/guillotine-mini\n3. Test coverage: every RPC handler has a unit test"
 
           - id: "{id}-code-review"
             agent: amp-deep
@@ -223,17 +163,7 @@ components:
             timeout: 20m
             retry:
               maxAttempts: 3
-            prompt: |
-              Code review for ticket {params.ticketId}: {params.ticketTitle}
-
-              Files created: {{id}-implement.filesCreated}
-              Files modified: {{id}-implement.filesModified}
-
-              Review checklist:
-              - DO NOT REINVENT — check voltaire and guillotine-mini first
-              - UPSTREAM FIRST — add missing features to voltaire/guillotine-mini, not zevm
-              - Zig style — no local type aliases, no stored allocators
-              - Security — no command injection, proper input validation
+            prompt: "Code review for ticket {params.ticketId}: {params.ticketTitle}\n\nFiles created: {{id}-implement.filesCreated}\nFiles modified: {{id}-implement.filesModified}\n\nReview checklist:\n1. DO NOT REINVENT \u2014 check voltaire and guillotine-mini first\n2. UPSTREAM FIRST \u2014 add missing features to voltaire/guillotine-mini, not zevm\n3. Zig style \u2014 no local type aliases, no stored allocators\n4. Security \u2014 no command injection, proper input validation"
 
       - kind: loop
         id: "{id}-review-loop"
@@ -247,16 +177,7 @@ components:
             timeout: 30m
             retry:
               maxAttempts: 3
-            prompt: |
-              Fix review issues for ticket {params.ticketId}.
-
-              Spec review ({{{id}-spec-review.severity}}): {{id}-spec-review.feedback}
-              Spec issues: {{id}-spec-review.issues}
-
-              Code review ({{{id}-code-review.severity}}): {{id}-code-review.feedback}
-              Code issues: {{id}-code-review.issues}
-
-              Fix all issues. Run `zig build test` to verify. Run `zig fmt src/`.
+            prompt: "Fix review issues for ticket {params.ticketId}.\n\nSpec review ({{{id}-spec-review.severity}}): {{id}-spec-review.feedback}\nSpec issues: {{id}-spec-review.issues}\n\nCode review ({{{id}-code-review.severity}}): {{id}-code-review.feedback}\nCode issues: {{id}-code-review.issues}\n\nFix all issues. Run zig build test to verify. Run zig fmt src/."
 
       - id: "{id}-report"
         agent: amp
@@ -264,13 +185,7 @@ components:
         timeout: 15m
         retry:
           maxAttempts: 3
-        prompt: |
-          Generate completion report for ticket {params.ticketId}: {params.ticketTitle}
-
-          Reviews resolved: {{id}-review-fix.allIssuesResolved}
-          Summary: {{id}-review-fix.summary}
-          Implementation: {{id}-implement.whatWasDone}
-          Files: {{id}-implement.filesCreated}, {{id}-implement.filesModified}
+        prompt: "Generate completion report for ticket {params.ticketId}: {params.ticketTitle}\n\nReviews resolved: {{id}-review-fix.allIssuesResolved}\nSummary: {{id}-review-fix.summary}\nImplementation: {{id}-implement.whatWasDone}\nFiles: {{id}-implement.filesCreated}, {{id}-implement.filesModified}"
 
 steps[1]:
   - kind: loop
@@ -285,46 +200,7 @@ steps[1]:
         timeout: 10m
         retry:
           maxAttempts: 2
-        prompt: |
-          You are the ticket scheduler for ZEVM — Zig Ethereum Virtual Machine.
-
-          Schedule the next batch of jobs. Consider pipeline stages, dependencies, and agent strengths.
-          Max concurrency: {input.maxConcurrency}. Task retries: {input.taskRetries}.
-
-          Available agents:
-          | Agent ID | Description |
-          |----------|-------------|
-          | amp-deep | Best orchestrator and deepest thinker. Expensive — reserve for high-stakes work. |
-          | codex | Main workhorse for bulk implementation. Good at Zig code. |
-          | amp | Fast Amp agent for testing, review-fix cycles, and lighter research. |
-          | gemini | Large context window. Best for planning and architecture analysis. |
-          | kimi | Cheapest agent. Use for simple work: RPC handler wiring, boilerplate. |
-
-          Available focuses (implementation):
-          - cat-1-rpc-server: HTTP JSON-RPC Server
-          - cat-2-eth-read: Read-only eth_* Methods
-          - cat-3-eth-call: eth_call + eth_estimateGas
-          - cat-4-eth-send: eth_sendTransaction + Transaction Pool
-          - cat-5-block-queries: Block Query Methods
-          - cat-6-mining: Mining Modes
-          - cat-7-snapshots: Snapshot & Revert
-          - cat-8-state-manip: State Manipulation
-          - cat-9-impersonation: Account Impersonation
-          - cat-10-forking: Fork Mode
-          - cat-11-tracing: Debug & Tracing
-          - cat-12-filters: Filters & Subscriptions
-          - cat-13-time: Time Manipulation
-
-          Available focuses (test suites):
-          - test-rlp, test-trie, test-transaction, test-blockchain
-          - test-difficulty, test-abi, test-eof
-          - test-state-frontier, test-state-berlin, test-state-cancun
-          - test-hive-rpc
-
-          Job types: discovery, progress-update, codebase-review, integration-test,
-          ticket:research, ticket:plan, ticket:implement, ticket:test,
-          ticket:build-verify, ticket:spec-review, ticket:code-review,
-          ticket:review-fix, ticket:report
+        prompt: "You are the ticket scheduler for ZEVM \u2014 Zig Ethereum Virtual Machine.\n\nSchedule the next batch of jobs. Consider pipeline stages, dependencies, and agent strengths.\nMax concurrency: {input.maxConcurrency}. Task retries: {input.taskRetries}.\n\nAvailable agents:\namp-deep: Best orchestrator and deepest thinker. Expensive.\ncodex: Main workhorse for bulk implementation. Good at Zig code.\namp: Fast Amp agent for testing, review-fix cycles, and lighter research.\ngemini: Large context window. Best for planning and architecture analysis.\nkimi: Cheapest agent. Use for simple work: RPC handler wiring, boilerplate.\n\nAvailable focuses (implementation):\ncat-1-rpc-server, cat-2-eth-read, cat-3-eth-call, cat-4-eth-send, cat-5-block-queries, cat-6-mining, cat-7-snapshots, cat-8-state-manip, cat-9-impersonation, cat-10-forking, cat-11-tracing, cat-12-filters, cat-13-time\n\nAvailable focuses (test suites):\ntest-rlp, test-trie, test-transaction, test-blockchain, test-difficulty, test-abi, test-eof, test-state-frontier, test-state-berlin, test-state-cancun, test-hive-rpc\n\nJob types: discovery, progress-update, codebase-review, integration-test, ticket:research, ticket:plan, ticket:implement, ticket:test, ticket:build-verify, ticket:spec-review, ticket:code-review, ticket:review-fix, ticket:report"
 
       - kind: parallel
         maxConcurrency: 4
@@ -335,14 +211,7 @@ steps[1]:
             timeout: 30m
             retry:
               maxAttempts: 3
-            prompt: |
-              Discover implementation tickets for ZEVM.
-
-              Check voltaire (../voltaire/packages/voltaire-zig/src/) and guillotine-mini (../bench/guillotine-mini/) FIRST.
-              Check what's already done in zevm before creating tickets.
-
-              Explore specs at docs/specs/ for reference.
-              Reference: edr/crates/edr_provider/src/requests/, foundry/, ../tevm-monorepo/packages/actions/src/
+            prompt: "Discover implementation tickets for ZEVM.\n\nCheck voltaire (../voltaire/packages/voltaire-zig/src/) and guillotine-mini (../bench/guillotine-mini/) FIRST.\nCheck what's already done in zevm before creating tickets.\n\nExplore specs at docs/specs/ for reference.\nReference: edr/crates/edr_provider/src/requests/, foundry/, ../tevm-monorepo/packages/actions/src/"
 
           - id: progress-update
             agent: kimi
@@ -350,9 +219,7 @@ steps[1]:
             timeout: 15m
             retry:
               maxAttempts: 3
-            prompt: |
-              Update PROGRESS.md for ZEVM — Zig Ethereum Virtual Machine.
-              Summarize completed tickets, remaining work, and current status.
+            prompt: "Update PROGRESS.md for ZEVM \u2014 Zig Ethereum Virtual Machine.\nSummarize completed tickets, remaining work, and current status."
 
       - kind: parallel
         maxConcurrency: 4
@@ -362,6 +229,6 @@ steps[1]:
             use: TicketPipeline
             with:
               ticketId: "{ticket-scheduler.jobs[0].ticketId}"
-              ticketTitle: "Scheduled ticket"
-              ticketDescription: "Implementation ticket from scheduler"
-              ticketCategory: "implementation"
+              ticketTitle: Scheduled ticket
+              ticketDescription: Implementation ticket from scheduler
+              ticketCategory: implementation
