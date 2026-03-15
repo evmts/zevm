@@ -1,40 +1,17 @@
 imports:
-  agents[1]:
-    - from: ./workflow-agents.ts
-      use[5]: ampDeep,codex,amp,gemini,kimi
-  schemas[1]:
-    - from: ./workflow-schemas.ts
-      use[17]: TicketSchedule,Discover,Progress,Research,Plan,Implement,TestResults,BuildVerify,SpecReview,CodeReview,CodeReviewCodex,CodeReviewGemini,ReviewFix,Report,IntegrationTest,CategoryReview,Land
+  agents[1]{from,use}:
+    ./workflow-agents.ts,"ampDeep,codex,amp,gemini,kimi"
+  schemas[1]{from,use}:
+    ./workflow-schemas.ts,"TicketSchedule,Discover,Progress,Research,Plan,Implement,TestResults,BuildVerify,SpecReview,CodeReview,CodeReviewCodex,CodeReviewGemini,ReviewFix,Report,IntegrationTest,CategoryReview,Land"
 
 name: zevm-slop-factory
 
-agents:
-  amp-deep:
-    type: api
-    provider: anthropic
-    model: amp-deep
-    instructions: "Best orchestrator and deepest thinker. Use for the most important research tasks that require careful reasoning about how to integrate voltaire/guillotine-mini. Expensive \u2014 reserve for high-stakes work."
-    timeoutMs: 3600000
-  codex:
-    type: codex
-    model: gpt-5.3-codex
-    instructions: "Main workhorse for bulk implementation. Good at following instructions and writing Zig code. Use for most implementation tickets."
-    timeoutMs: 3600000
-  amp:
-    type: api
-    provider: anthropic
-    model: amp
-    instructions: "Fast Amp agent for testing, review-fix cycles, and lighter research. Good balance of speed and quality."
-    timeoutMs: 3600000
-  gemini:
-    type: gemini
-    model: gemini-3.1-pro-preview
-    instructions: "Very smart with large context window. Best for planning, reading reference implementations (edr, tevm-monorepo), and architecture analysis. Unreliable at tool calls."
-    timeoutMs: 1800000
-  kimi:
-    type: kimi
-    instructions: "Cheapest agent. Use as much as possible for simple work: straightforward RPC handler wiring, boilerplate, and low-complexity tickets."
-    timeoutMs: 3600000
+agents[5]{name,type,provider,model,instructions,timeoutMs}:
+  amp-deep,api,anthropic,amp-deep,"Best orchestrator and deepest thinker. Expensive \u2014 reserve for high-stakes work.",3600000
+  codex,codex,,gpt-5.3-codex,"Main workhorse for bulk implementation. Good at Zig code.",3600000
+  amp,api,anthropic,amp,"Fast Amp agent for testing and review-fix cycles.",3600000
+  gemini,gemini,,gemini-3.1-pro-preview,"Large context window. Best for planning and architecture analysis.",1800000
+  kimi,kimi,,,"Cheapest agent. Use for simple work: RPC handler wiring and boilerplate.",3600000
 
 input:
   maxConcurrency: number
