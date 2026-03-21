@@ -1,0 +1,61 @@
+---
+title: Runtime Modes
+description: Exact trusted-mode versus light-mode boundaries.
+---
+
+import CurrentHeadNote from '../_snippets/current-head-note.mdx'
+
+# Runtime Modes
+
+ZEVM has exactly two runtime modes and no hybrid third mode.
+
+<CurrentHeadNote />
+
+## Mode Comparison
+
+| Mode | Primary role | Writable state | Finality semantics | Status surface |
+| --- | --- | --- | --- | --- |
+| trusted | local dev node | yes | no real finality; compatibility aliases only | none |
+| light | consensus-backed verified reads | no | real `safe` and `finalized` semantics | `zevm_lightSyncStatus` |
+
+## Method Boundary
+
+| Surface | Trusted mode | Light mode |
+| --- | --- | --- |
+| `eth_chainId`, `eth_blockNumber` | yes | yes |
+| `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getTransactionCount` | trusted local state | proof-backed only |
+| `eth_call`, `eth_estimateGas` | yes | no |
+| transaction submission and mining | yes | no |
+| canonical block/receipt/log queries | yes | no |
+| snapshots, state mutation, impersonation, time controls | yes | no |
+| `zevm_lightSyncStatus` | no | yes |
+
+## Block-Tag Semantics
+
+Trusted mode:
+
+- `latest` = current local head
+- `pending` = compatibility alias of `latest`
+- `safe` = compatibility alias of `latest`
+- `finalized` = compatibility alias of `latest`
+- `earliest` = block `0`
+
+Light mode:
+
+- `latest` = latest verified optimistic execution head
+- `safe` = consensus-backed safe head
+- `finalized` = consensus-finalized head
+- `pending` = unsupported
+- `earliest` = block `0`
+
+## Current Repo State
+
+- current `HEAD` does not yet expose `--mode`
+- trusted startup is not yet a runnable public node path
+- light-mode consensus code exists, but light mode is not exposed as a public runtime
+
+## Next Pages
+
+- [Trusted Mode](./trusted-mode)
+- [Light Mode](./light-mode)
+- [Configuration Overview](../reference/configuration/overview)

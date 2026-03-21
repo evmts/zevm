@@ -1,0 +1,72 @@
+---
+title: JSON-RPC Overview
+description: Exact transport, mode-gating, method coverage, and error behavior.
+---
+
+import CurrentHeadNote from '../../_snippets/current-head-note.mdx'
+
+# JSON-RPC Overview
+
+<CurrentHeadNote />
+
+## Transport
+
+| Surface | Contract |
+| --- | --- |
+| transport | HTTP |
+| path | `/` |
+| request method | `POST` |
+| non-`POST` behavior | HTTP `405` |
+| JSON-RPC response status | HTTP `200` |
+| notification-only status | HTTP `204` with empty body |
+| content type | `application/json` |
+
+## Notification Semantics
+
+- notification = request object with no `id`
+- notifications produce no JSON-RPC response
+- notification-only batches produce no JSON-RPC response body
+- mixed batches produce responses only for items with an `id`
+- `"id": null` is not a notification and receives a response with `id: null`
+
+## Method Surface By Mode
+
+| Mode | Methods |
+| --- | --- |
+| trusted | trusted reads, execution and submission, canonical queries, dev controls |
+| light | `eth_chainId`, `eth_blockNumber`, proof-backed core reads, `zevm_lightSyncStatus` |
+
+## Mode-Gating Error
+
+Methods that are unavailable in the active mode fail with `-32010`.
+
+## Error Codes
+
+| Condition | Code |
+| --- | --- |
+| parse error | `-32700` |
+| invalid request | `-32600` |
+| method not found | `-32601` |
+| invalid params | `-32602` |
+| internal error | `-32603` |
+| unsupported in current mode | `-32010` |
+| light mode not ready | `-32011` |
+| checkpoint too old under strict policy | `-32012` |
+| invalid or corrupt checkpoint | `-32013` |
+| proof verification failure | `-32014` |
+| malformed upstream response | `-32015` |
+
+## Current Repo State
+
+- the executable path still points at a newer transport stack that does not build cleanly
+- an older local transport stack remains in-tree but is not the intended shipping path
+- both in-tree paths still violate the documented notification contract
+- light-mode status and proof-backed read methods are not yet wired
+
+## Reference Pages
+
+- [Trusted Reads](./trusted-reads)
+- [Execution And Submission](./execution-and-submission)
+- [Canonical Queries](./canonical-queries)
+- [Dev Controls](./dev-controls)
+- [Deferred Surfaces](./deferred-surfaces)

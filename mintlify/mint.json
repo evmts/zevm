@@ -1,0 +1,52 @@
+{
+  "name": "ZEVM",
+  "theme": "mint",
+  "colors": {
+    "primary": "#0f766e",
+    "light": "#99f6e4",
+    "dark": "#134e4a"
+  },
+  "navigation": [
+    {
+      "group": "Overview",
+      "pages": [
+        "index"
+      ]
+    },
+    {
+      "group": "Quickstart",
+      "pages": [
+        "quickstart/run-trusted-mode",
+        "quickstart/connect-json-rpc"
+      ]
+    },
+    {
+      "group": "Concepts",
+      "pages": [
+        "concepts/runtime-modes",
+        "concepts/trusted-mode",
+        "concepts/light-mode",
+        "concepts/state-forking-and-snapshots"
+      ]
+    },
+    {
+      "group": "Configuration Reference",
+      "pages": [
+        "reference/configuration/overview",
+        "reference/configuration/trusted-mode",
+        "reference/configuration/light-mode"
+      ]
+    },
+    {
+      "group": "JSON-RPC Reference",
+      "pages": [
+        "reference/json-rpc/overview",
+        "reference/json-rpc/trusted-reads",
+        "reference/json-rpc/execution-and-submission",
+        "reference/json-rpc/canonical-queries",
+        "reference/json-rpc/dev-controls",
+        "reference/json-rpc/deferred-surfaces"
+      ]
+    }
+  ]
+}

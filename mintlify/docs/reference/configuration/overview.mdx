@@ -1,0 +1,94 @@
+---
+title: Configuration Overview
+description: Exact shared startup contract, config shape, precedence, and validation rules.
+---
+
+import CurrentHeadNote from '../../_snippets/current-head-note.mdx'
+
+# Configuration Overview
+
+ZEVM uses one shared startup contract with a tagged `mode` branch.
+
+<CurrentHeadNote />
+
+## Shared Flags
+
+| Flag | Default | Notes |
+| --- | --- | --- |
+| `--config` | none | Optional JSON config file path |
+| `--mode` | `trusted` | `trusted` or `light` |
+| `--host` | `127.0.0.1` | HTTP bind host |
+| `--port` | `8545` | HTTP bind port |
+
+## Canonical Config Shape
+
+```json
+{
+  "rpc": {
+    "host": "127.0.0.1",
+    "port": 8545
+  },
+  "mode": {
+    "trusted": {}
+  }
+}
+```
+
+or
+
+```json
+{
+  "rpc": {
+    "host": "127.0.0.1",
+    "port": 8545
+  },
+  "mode": {
+    "light": {}
+  }
+}
+```
+
+Rules:
+
+- `mode` must contain exactly one of `trusted` or `light`
+- CLI overrides config-file values
+- CLI `--mode` may confirm the config-file mode, but it may not conflict with it
+
+## Precedence
+
+ZEVM resolves startup input in this order:
+
+1. CLI flags
+2. config-file fields from `--config`
+3. persisted light-mode checkpoint, if applicable
+4. baked defaults
+
+Light-mode checkpoint precedence is:
+
+1. explicit user checkpoint
+2. persisted checkpoint
+3. baked network default
+
+## Hard Failure Cases
+
+ZEVM fails startup before opening the HTTP listener when:
+
+- a flag is unknown
+- a value-taking flag is missing its value
+- an integer or wei literal is invalid
+- the config file is malformed
+- the config file declares both `mode.trusted` and `mode.light`
+- CLI `--mode` conflicts with the config-file mode
+- mode-specific flags are used in the wrong mode
+
+## Current Repo State
+
+- `src/main.zig` currently exposes only `--host` and `--port`
+- no config-file loader is wired
+- no mode selector is wired
+- no startup validation path yet enforces the full contract
+
+## Next Pages
+
+- [Trusted-Mode Configuration](./trusted-mode)
+- [Light-Mode Configuration](./light-mode)

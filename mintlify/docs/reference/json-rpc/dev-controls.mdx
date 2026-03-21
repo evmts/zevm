@@ -1,0 +1,54 @@
+---
+title: Dev Controls
+description: Exact trusted-mode snapshot, state-mutation, impersonation, and time-control contract.
+---
+
+import CurrentHeadNote from '../../_snippets/current-head-note.mdx'
+
+# Dev Controls
+
+<CurrentHeadNote />
+
+## Methods
+
+| Method | Contract |
+| --- | --- |
+| `evm_snapshot` | capture the full trusted-mode mutable shell |
+| `evm_revert` | restore the captured trusted-mode mutable shell |
+| `hardhat_setBalance` | set account balance |
+| `hardhat_setCode` | set account code |
+| `hardhat_setNonce` | set account nonce |
+| `hardhat_setStorageAt` | set account storage |
+| `hardhat_setCoinbase` | set trusted coinbase |
+| `hardhat_setNextBlockBaseFeePerGas` | set next block base fee |
+| `evm_setBlockGasLimit` | set block gas limit |
+| `hardhat_impersonateAccount` | enable impersonation for an address |
+| `hardhat_stopImpersonatingAccount` | disable impersonation for an address |
+| `evm_increaseTime` | advance trusted-mode time |
+| `evm_setNextBlockTimestamp` | set the next block timestamp |
+| `hardhat_setPrevRandao` | override the next block `prevRandao` |
+
+## Snapshot Boundary
+
+`evm_snapshot` captures:
+
+- state journal checkpoint or local overlay
+- canonical local chain head
+- receipt and log indexes
+- pending txpool state
+- mining configuration
+- block-environment overrides
+- impersonation state
+- time controls
+
+It does not capture:
+
+- light-mode checkpoint-sync state
+- the remote fork source itself
+
+## Current Repo State
+
+- snapshot and revert prototypes exist, but they are unwired and narrower than the intended contract
+- several state-mutation handlers exist as prototypes
+- impersonation controls were not found
+- time controls were not found

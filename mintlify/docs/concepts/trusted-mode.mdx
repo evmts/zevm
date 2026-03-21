@@ -1,0 +1,79 @@
+---
+title: Trusted Mode
+description: Exact trusted-mode behavior, defaults, and current implementation gaps.
+---
+
+import CurrentHeadNote from '../_snippets/current-head-note.mdx'
+import TrustedManagedWallet from '../_snippets/trusted-managed-wallet.mdx'
+
+# Trusted Mode
+
+Trusted mode is ZEVM's phase-1 local execution runtime.
+
+<CurrentHeadNote />
+
+## Intended Behavior
+
+Trusted mode provides:
+
+- local writable execution state
+- managed development accounts
+- exact startup defaults for fees, balances, and mining
+- execution simulation through checkpoint-and-revert behavior
+- transaction submission and local mining
+- snapshots, revert, state mutation, impersonation, and time controls
+- optional fork-backed reads without becoming a separate runtime mode
+
+## Defaults
+
+| Setting | Default |
+| --- | --- |
+| chain ID | `31337` |
+| managed accounts | `10` deterministic accounts |
+| initial balance | `10000 ETH` each |
+| coinbase index | `0` |
+| gas price | `2000000000` |
+| base fee | `1000000000` |
+| blob base fee | `1` |
+| max priority fee per gas | `1000000000` |
+| block gas limit | `30000000` |
+| mining mode | `auto` |
+
+## Block Tags
+
+Trusted mode supports:
+
+- `latest`
+- `pending`
+- `safe`
+- `finalized`
+- `earliest`
+- numeric quantities
+
+But in trusted mode:
+
+- `pending` is a compatibility alias of `latest`
+- `safe` is a compatibility alias of `latest`
+- `finalized` is a compatibility alias of `latest`
+
+Those aliases do **not** provide consensus-backed finality.
+
+## Managed Account Boundary
+
+<TrustedManagedWallet />
+
+## Current Repo State
+
+- some read helpers exist
+- richer read handlers exist on a second path, but they are unwired
+- `eth_call` and `eth_estimateGas` are absent
+- transaction submission and mining logic are disconnected prototypes
+- canonical queries still contain placeholders or stubs in key paths
+- `src/node/runtime.zig` and `src/genesis.zig` both contradict the documented canonical managed-wallet contract
+
+## Related Pages
+
+- [State Forking And Snapshots](./state-forking-and-snapshots)
+- [Trusted Reads](../reference/json-rpc/trusted-reads)
+- [Execution And Submission](../reference/json-rpc/execution-and-submission)
+- [Canonical Queries](../reference/json-rpc/canonical-queries)

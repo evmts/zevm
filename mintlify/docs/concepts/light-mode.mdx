@@ -1,0 +1,72 @@
+---
+title: Light Mode
+description: Exact light-mode checkpoint, status, and verified-read behavior.
+---
+
+import CurrentHeadNote from '../_snippets/current-head-note.mdx'
+
+# Light Mode
+
+Light mode is ZEVM's phase-2 consensus-backed verified-read runtime.
+
+<CurrentHeadNote />
+
+## Intended Behavior
+
+Light mode:
+
+- selects `mainnet`, `sepolia`, or `holesky`
+- boots from an explicit checkpoint, persisted checkpoint, or baked default checkpoint
+- exposes readiness and sync status through `zevm_lightSyncStatus`
+- serves proof-backed `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, and `eth_getTransactionCount`
+- exposes real `safe` and `finalized` semantics
+- never serves unverified execution reads
+
+## Checkpoint Precedence
+
+Light mode selects its startup checkpoint in this order:
+
+1. explicit user checkpoint from `--checkpoint` or `mode.light.checkpoint`
+2. persisted checkpoint from `checkpointDir/checkpoint`
+3. baked network default
+
+## Status Method
+
+`zevm_lightSyncStatus` takes no params and returns:
+
+```json
+{
+  "ready": true,
+  "status": "synced",
+  "network": "mainnet",
+  "checkpointSource": "explicit",
+  "lastCheckpoint": "0x9b41a80f58c52068a00e8535b8d6704769c7577a5fd506af5e0c018687991d55",
+  "optimisticSlot": "0x1234",
+  "finalizedSlot": "0x1230"
+}
+```
+
+While `ready` is `false`, proof-backed read methods fail with `-32011` instead of serving unverified data.
+
+## Block Tags
+
+| Tag | Meaning |
+| --- | --- |
+| `latest` | latest verified optimistic execution head |
+| `safe` | consensus-backed safe head |
+| `finalized` | consensus-finalized head |
+| `earliest` | block `0` |
+| `pending` | unsupported |
+
+## Current Repo State
+
+- the repo contains real consensus code in `src/consensus_sync.zig`, `src/beacon_api.zig`, `src/consensus_verifier.zig`, and `src/checkpoint.zig`
+- no startup path exposes light mode publicly
+- no public status method is wired
+- no proof-backed execution-read bridge is wired
+
+## Related Pages
+
+- [Runtime Modes](./runtime-modes)
+- [Light-Mode Configuration](../reference/configuration/light-mode)
+- [JSON-RPC Overview](../reference/json-rpc/overview)

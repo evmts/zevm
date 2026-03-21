@@ -1,0 +1,53 @@
+---
+title: State Forking And Snapshots
+description: Exact trusted-mode fork layering and snapshot boundaries.
+---
+
+import CurrentHeadNote from '../_snippets/current-head-note.mdx'
+
+# State Forking And Snapshots
+
+Trusted mode owns writable local execution state. Forking is configuration inside trusted mode, not a separate runtime.
+
+<CurrentHeadNote />
+
+## Fork Layering
+
+Fork-backed trusted mode works like this:
+
+- remote execution RPC provides the backing read source
+- ZEVM resolves local overlay first
+- remote fork data fills in what the local overlay does not override
+- all writes remain local to ZEVM
+- snapshots and revert operate on local trusted state, not on the remote source
+
+## Snapshot Boundary
+
+A trusted-mode snapshot captures:
+
+- state journal checkpoint or local overlay
+- canonical local chain head
+- receipt and log indexes derived from local canonical blocks
+- pending txpool state
+- mining configuration
+- block-environment overrides
+- impersonation state
+- time controls
+
+A trusted-mode snapshot does **not** capture:
+
+- consensus or light-mode checkpoint-sync state
+- the remote fork source itself
+
+## Current Repo State
+
+- no fork-backed startup path is wired into the executable runtime
+- snapshot and revert code exists only as an unwired prototype
+- snapshot coverage is narrower than the intended contract
+- some state-mutation handlers exist, but impersonation and time controls were not found
+
+## Related Pages
+
+- [Trusted Mode](./trusted-mode)
+- [Trusted-Mode Configuration](../reference/configuration/trusted-mode)
+- [Dev Controls](../reference/json-rpc/dev-controls)

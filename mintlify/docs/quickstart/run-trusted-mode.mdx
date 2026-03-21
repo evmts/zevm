@@ -1,0 +1,112 @@
+---
+title: Run Trusted Mode
+description: Exact trusted-mode startup commands, defaults, and repo gaps.
+---
+
+import CurrentHeadNote from '../_snippets/current-head-note.mdx'
+import TrustedManagedWallet from '../_snippets/trusted-managed-wallet.mdx'
+
+# Run Trusted Mode
+
+Trusted mode is the default ZEVM startup path.
+
+<CurrentHeadNote />
+
+## Intended Startup Commands
+
+Default trusted-mode startup:
+
+```bash
+zevm
+```
+
+Equivalent explicit startup:
+
+```bash
+zevm --mode trusted --host 127.0.0.1 --port 8545
+```
+
+Trusted mode with manual mining:
+
+```bash
+zevm --mode trusted --mining manual
+```
+
+Trusted mode with interval mining:
+
+```bash
+zevm --mode trusted --mining interval --block-time 12
+```
+
+Trusted mode with fork backing:
+
+```bash
+zevm --mode trusted --fork-url https://rpc.example --fork-block-number 22000000
+```
+
+## Intended Defaults
+
+| Setting | Default |
+| --- | --- |
+| `chainId` | `31337` |
+| `coinbaseIndex` | `0` |
+| `initialBalance` | `10000000000000000000000` |
+| `gasPrice` | `2000000000` |
+| `baseFee` | `1000000000` |
+| `blobBaseFee` | `1` |
+| `maxPriorityFeePerGas` | `1000000000` |
+| `blockGasLimit` | `30000000` |
+| `mining` | `auto` |
+
+## Trusted-Mode Config Example
+
+```json
+{
+  "rpc": {
+    "host": "127.0.0.1",
+    "port": 8545
+  },
+  "mode": {
+    "trusted": {
+      "chainId": 31337,
+      "coinbaseIndex": 0,
+      "initialBalance": "10000000000000000000000",
+      "gasPrice": "2000000000",
+      "baseFee": "1000000000",
+      "blobBaseFee": "1",
+      "maxPriorityFeePerGas": "1000000000",
+      "blockGasLimit": 30000000,
+      "mining": {
+        "type": "auto"
+      },
+      "fork": null
+    }
+  }
+}
+```
+
+<TrustedManagedWallet />
+
+## Invalid Startup Cases
+
+Trusted mode must fail before opening the listener when:
+
+- `--block-time` is provided without `--mining interval`
+- `--mining interval` is selected without `--block-time`
+- `--fork-block-number` is provided without `--fork-url`
+- a light-mode-only flag is supplied
+- `coinbaseIndex` is outside the managed-account range
+
+## Current Repo State
+
+- `src/main.zig` only parses `--host` and `--port`
+- no trusted runtime is composed into startup
+- current transport startup is not yet a validated trusted-node path
+- current `HEAD` does not yet expose fork startup, mining controls, or managed-account startup through the executable path
+- `src/node/runtime.zig` and `src/genesis.zig` both contradict the documented canonical managed-wallet contract
+
+## Next Pages
+
+- [Trusted Mode](../concepts/trusted-mode)
+- [Trusted-Mode Configuration](../reference/configuration/trusted-mode)
+- [Trusted Reads](../reference/json-rpc/trusted-reads)

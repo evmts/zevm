@@ -1,0 +1,84 @@
+---
+title: Light-Mode Configuration
+description: Exact light-mode flags, config fields, checkpoint contract, and validation rules.
+---
+
+import CurrentHeadNote from '../../_snippets/current-head-note.mdx'
+
+# Light-Mode Configuration
+
+<CurrentHeadNote />
+
+## Exact Fields
+
+| CLI flag | Config field | Default |
+| --- | --- | --- |
+| `--network` | `mode.light.network` | `mainnet` |
+| `--consensus-rpc-url` | `mode.light.consensusRpcUrl` | required |
+| `--checkpoint` | `mode.light.checkpoint` | none |
+| `--checkpoint-dir` | `mode.light.checkpointDir` | `.zevm/checkpoints/<network>` |
+| `--max-checkpoint-age-seconds` | `mode.light.maxCheckpointAgeSeconds` | `1209600` |
+| `--strict-checkpoint-age` | `mode.light.strictCheckpointAge` | `false` |
+
+## Checkpoint Precedence
+
+Light mode selects its checkpoint in this order:
+
+1. explicit user checkpoint from CLI or config
+2. persisted checkpoint from `checkpointDir/checkpoint`
+3. baked network default
+
+## Persisted Checkpoint Contract
+
+The persisted checkpoint file is part of the intended startup contract:
+
+- path: `checkpointDir/checkpoint`
+- contents: exactly 64 hex characters
+- `0x` prefix: not stored on disk
+- surrounding whitespace is ignored when loading
+- malformed persisted data is a startup failure
+
+## Baked Network Defaults
+
+| Network | Chain ID | Default checkpoint |
+| --- | --- | --- |
+| `mainnet` | `1` | `0x9b41a80f58c52068a00e8535b8d6704769c7577a5fd506af5e0c018687991d55` |
+| `sepolia` | `11155111` | `0x4065c2509eaa15dbe60e1f80cff5205a532aa95aaa1d73c1c286f7f8535555d4` |
+| `holesky` | `17000` | `0xe1f575f0b691404fe82cce68a09c2c98af197816de14ce53c0fe9f9bd02d2399` |
+
+## Validation Rules
+
+ZEVM fails startup when:
+
+- `consensusRpcUrl` is missing in light mode
+- a trusted-mode-only field is supplied
+- `checkpoint` is not a `0x`-prefixed 32-byte hex string
+- the persisted checkpoint file is malformed
+- the selected checkpoint is too old and `strictCheckpointAge = true`
+
+## Example
+
+```json
+{
+  "rpc": {
+    "host": "127.0.0.1",
+    "port": 8545
+  },
+  "mode": {
+    "light": {
+      "network": "sepolia",
+      "consensusRpcUrl": "https://beacon.example",
+      "checkpoint": null,
+      "checkpointDir": ".zevm/checkpoints/sepolia",
+      "maxCheckpointAgeSeconds": 1209600,
+      "strictCheckpointAge": false
+    }
+  }
+}
+```
+
+## Current Repo State
+
+- `src/consensus_sync.zig` already exposes baked network defaults and age-policy fields
+- `src/checkpoint.zig` already exposes the persisted filename and 64-hex format
+- no executable startup path currently exposes this light-mode config contract

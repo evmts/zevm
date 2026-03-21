@@ -1,0 +1,54 @@
+---
+title: Trusted Reads
+description: Exact trusted-mode read methods and tag semantics.
+---
+
+import CurrentHeadNote from '../../_snippets/current-head-note.mdx'
+
+# Trusted Reads
+
+<CurrentHeadNote />
+
+## Methods
+
+| Method | Notes |
+| --- | --- |
+| `eth_chainId` | returns the trusted-mode chain ID |
+| `eth_blockNumber` | returns the canonical local head number |
+| `eth_getBalance` | reads trusted local balance |
+| `eth_getCode` | reads trusted local bytecode |
+| `eth_getStorageAt` | reads trusted local storage |
+| `eth_getTransactionCount` | reads trusted local nonce |
+| `eth_accounts` | returns the deterministic managed-account set |
+| `eth_coinbase` | returns the configured trusted-mode coinbase |
+| `eth_gasPrice` | returns trusted-mode gas-price default or override |
+| `eth_maxPriorityFeePerGas` | returns trusted-mode fee default or override |
+| `eth_blobBaseFee` | returns trusted-mode blob-base-fee default or override |
+| `eth_feeHistory` | returns trusted-mode fee history surface |
+
+## Supported Block Tags
+
+| Tag | Meaning in trusted mode |
+| --- | --- |
+| `latest` | current local head |
+| `pending` | alias of `latest` |
+| `safe` | alias of `latest` |
+| `finalized` | alias of `latest` |
+| `earliest` | block `0` |
+| numeric quantity | exact local block |
+
+`pending`, `safe`, and `finalized` are compatibility aliases only. They do not provide real finality.
+
+## Managed-Account Return Contract
+
+- `eth_accounts` returns the canonical 10-address managed-wallet contract in index order `0` through `9`
+- that wallet contract is derived from mnemonic `test test test test test test test test test test test junk`
+- the derivation path root is `m/44'/60'/0'/0/`
+- `eth_coinbase` defaults to entry `0` unless `coinbaseIndex` overrides it
+
+## Current Repo State
+
+- minimal helper coverage exists for `eth_chainId` and `eth_blockNumber`
+- richer read handlers exist but are not on the executable path
+- `eth_getCode` currently returns `"0x"` instead of real stored code
+- current helper code already aliases `pending`, `safe`, and `finalized` to the head

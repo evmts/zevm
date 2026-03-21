@@ -1,0 +1,46 @@
+---
+title: ZEVM
+description: The docs-first product contract for ZEVM.
+---
+
+import CurrentHeadNote from './_snippets/current-head-note.mdx'
+
+# ZEVM
+
+ZEVM has two runtime modes:
+
+- trusted mode for local execution, writable dev-node workflows, and optional fork-backed development
+- light mode for consensus-backed verification and proof-backed reads
+
+<CurrentHeadNote />
+
+## What These Docs Promise
+
+These docs specify the intended ZEVM contract, including:
+
+- exact startup flags
+- exact config-file fields
+- defaults
+- precedence rules
+- invalid combinations
+- JSON-RPC method names
+- notification behavior
+- mode-specific block-tag semantics
+- error behavior
+
+## Current Repo State
+
+Current `HEAD` is still behind the documented contract:
+
+- trusted-mode startup is not yet composed into the executable path
+- the transport path still violates notification semantics
+- light mode is not yet exposed as a public runtime
+- proof-backed reads are not yet wired
+
+## Start Here
+
+- [Run Trusted Mode](./quickstart/run-trusted-mode)
+- [Connect Over JSON-RPC](./quickstart/connect-json-rpc)
+- [Runtime Modes](./concepts/runtime-modes)
+- [Configuration Overview](./reference/configuration/overview)
+- [JSON-RPC Overview](./reference/json-rpc/overview)

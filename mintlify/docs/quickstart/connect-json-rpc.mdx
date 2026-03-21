@@ -1,0 +1,93 @@
+---
+title: Connect Over JSON-RPC
+description: Exact HTTP JSON-RPC request, batch, notification, and error semantics.
+---
+
+import CurrentHeadNote from '../_snippets/current-head-note.mdx'
+
+# Connect Over JSON-RPC
+
+ZEVM exposes one canonical HTTP JSON-RPC 2.0 transport on `/`.
+
+<CurrentHeadNote />
+
+## Transport Contract
+
+| Surface | Contract |
+| --- | --- |
+| path | `/` |
+| HTTP method | `POST` |
+| non-`POST` behavior | HTTP `405` |
+| JSON-RPC response status | HTTP `200` |
+| notification-only status | HTTP `204` with empty body |
+| content type | `application/json` |
+
+## Single Request
+
+```bash
+curl http://127.0.0.1:8545 \
+  -X POST \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}'
+```
+
+## Batch Request
+
+```bash
+curl http://127.0.0.1:8545 \
+  -X POST \
+  -H 'content-type: application/json' \
+  -d '[
+    {"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]},
+    {"jsonrpc":"2.0","id":2,"method":"eth_blockNumber","params":[]}
+  ]'
+```
+
+## Notification Contract
+
+A notification is a request object with no `id` member.
+
+Notification example:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "eth_chainId",
+  "params": []
+}
+```
+
+Notification rules:
+
+- ZEVM does not send a JSON-RPC response for notifications
+- a notification-only batch also returns no JSON-RPC response body
+- mixed batches return responses only for the items that included an `id`
+- `"id": null` is not a notification and receives a response with `id: null`
+
+## Error Contract
+
+| Condition | Code |
+| --- | --- |
+| parse error | `-32700` |
+| invalid request | `-32600` |
+| method not found | `-32601` |
+| invalid params | `-32602` |
+| internal error | `-32603` |
+| unsupported in current mode | `-32010` |
+| light mode not ready | `-32011` |
+| checkpoint too old under strict policy | `-32012` |
+| invalid or corrupt checkpoint | `-32013` |
+| proof verification failure | `-32014` |
+| malformed upstream response | `-32015` |
+
+## Current Repo State
+
+- the executable path points at `src/rpc/server.zig` and `src/rpc/dispatcher.zig`
+- that path does not currently build cleanly because it still references upstream `jsonrpc.envelope`
+- the older in-tree `src/rpc/envelope.zig` plus `src/rpc/router.zig` path is not the intended shipping transport
+- both in-tree paths currently emit responses for notification-shaped requests, which violates the documented contract
+
+## Next Pages
+
+- [JSON-RPC Overview](../reference/json-rpc/overview)
+- [Trusted Reads](../reference/json-rpc/trusted-reads)

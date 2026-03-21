@@ -1,0 +1,85 @@
+---
+title: Trusted-Mode Configuration
+description: Exact trusted-mode flags, config fields, defaults, and validation rules.
+---
+
+import CurrentHeadNote from '../../_snippets/current-head-note.mdx'
+import TrustedManagedWallet from '../../_snippets/trusted-managed-wallet.mdx'
+
+# Trusted-Mode Configuration
+
+<CurrentHeadNote />
+
+## Exact Fields
+
+| CLI flag | Config field | Default |
+| --- | --- | --- |
+| `--chain-id` | `mode.trusted.chainId` | `31337` |
+| `--coinbase-index` | `mode.trusted.coinbaseIndex` | `0` |
+| `--initial-balance` | `mode.trusted.initialBalance` | `10000000000000000000000` |
+| `--gas-price` | `mode.trusted.gasPrice` | `2000000000` |
+| `--base-fee` | `mode.trusted.baseFee` | `1000000000` |
+| `--blob-base-fee` | `mode.trusted.blobBaseFee` | `1` |
+| `--max-priority-fee-per-gas` | `mode.trusted.maxPriorityFeePerGas` | `1000000000` |
+| `--block-gas-limit` | `mode.trusted.blockGasLimit` | `30000000` |
+| `--mining` | `mode.trusted.mining.type` | `auto` |
+| `--block-time` | `mode.trusted.mining.blockTime` | none |
+| `--fork-url` | `mode.trusted.fork.url` | none |
+| `--fork-block-number` | `mode.trusted.fork.blockNumber` | none |
+
+## Mining Rules
+
+| Mining type | Required fields | Invalid fields |
+| --- | --- | --- |
+| `auto` | none | `blockTime` |
+| `manual` | none | `blockTime` |
+| `interval` | `blockTime` | none |
+
+## Fork Rules
+
+- `fork.blockNumber` is invalid without `fork.url`
+- forking stays inside trusted mode; it does not create a third mode
+- `chainId` remains a local trusted-mode setting and is not inferred from `fork.url`
+
+## Example
+
+```json
+{
+  "rpc": {
+    "host": "127.0.0.1",
+    "port": 8545
+  },
+  "mode": {
+    "trusted": {
+      "chainId": 31337,
+      "coinbaseIndex": 0,
+      "initialBalance": "10000000000000000000000",
+      "gasPrice": "2000000000",
+      "baseFee": "1000000000",
+      "blobBaseFee": "1",
+      "maxPriorityFeePerGas": "1000000000",
+      "blockGasLimit": 30000000,
+      "mining": {
+        "type": "interval",
+        "blockTime": 12
+      },
+      "fork": {
+        "url": "https://rpc.example",
+        "blockNumber": 22000000
+      }
+    }
+  }
+}
+```
+
+## Managed Accounts
+
+<TrustedManagedWallet />
+
+## Current Repo State
+
+- deterministic balance and fee defaults exist in `src/node/runtime.zig`
+- genesis defaults, mnemonic, and private keys exist in `src/genesis.zig`
+- `src/node/runtime.zig` and `src/genesis.zig` both contradict the documented canonical managed-wallet contract
+- fork-backed startup is not wired
+- the executable path does not yet expose this trusted-mode config contract
