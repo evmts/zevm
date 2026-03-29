@@ -1,68 +1,122 @@
 # ZEVM Final Risk Report
 
-Last updated: 2026-03-21
+Last updated: 2026-03-29
 
 ## Verification Baseline
 
-- authoritative docs reviewed: `docs/specs/prd.md`, `docs/specs/docs-first-process.md`
-- implementation reality reviewed: `src/` and tests
-- secondary repo evidence reviewed: `docs/issues/*`, `docs/context/*`, `docs/plans/*`, `PROGRESS.md`
-- `git status --short` on 2026-03-21 shows the docs tree as local work in progress
-- current repo state baseline on 2026-03-21 still includes a failing `zig build test` and an executable path that only wires transport host/port parsing
+- authoritative docs read:
+  - `docs/specs/prd.md`
+  - `docs/specs/docs-first-process.md`
+  - `docs/specs/maintainer-decisions.md`
+  - `docs/specs/json-rpc-contract.md`
+  - `docs/specs/open-questions.md`
+  - `docs/specs/source-evidence-matrix.md`
+  - `docs/specs/public-docs-sources.md`
+  - `docs/specs/page-ownership.md`
+  - `docs/specs/contradiction-inventory.md`
+- repo-context docs read:
+  - `PROGRESS.md`
+  - `docs/issues/*`
+  - `docs/context/*`
+  - `docs/plans/*`
+- repo health commands run on `2026-03-29`:
+  - `git status --short`
+  - `zig build`
+  - `zig build test`
+- repo health result:
+  - worktree is dirty with docs/control changes plus Mintlify IA additions, removals, and renames
+  - `zig build` fails first in `src/rpc/server.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope`
+  - `zig build test` fails in `src/rpc/dispatcher_test.zig` and `src/rpc/server.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope`, and in `src/tx_processor.zig` because current `guillotine-mini` requires a wider `evm.init` signature
+  - `src/main.zig` still only wires `src/rpc/server.zig.parseConfig`, and `parseConfig` still only accepts `--host` and `--port`
+- independent review passes completed in this pass:
+  - cold reread of the authority docs plus support-layer controls under the PRD-first hierarchy
+  - traceability audit across page-local traceability blocks, `public-docs-sources.md`, `source-evidence-matrix.md`, `page-ownership.md`, `mintlify/mint.json`, and shared snippets
+  - semantic authority audit covering light-mode `eth_blockNumber`, `--config` loader failures, and empty-batch `[]` behavior
+  - public-reference audit covering managed-wallet self-containment, transport contradiction handling, and stale March 29 current-`HEAD` wording
 
-## Audit Result
+## Current Gate Status
 
-The documentation-control pass is materially stronger after this remediation:
+These gates measure documentation-control completeness, not runnable-product readiness. Current `HEAD` remains red under `C-002`.
 
-- the docs-first rule now explicitly requires the full spec rather than conceptual buckets
-- startup and configuration are now documented with exact flags, config fields, defaults, precedence, invalid combinations, and failure behavior
-- notification semantics are now documented as a settled contract and current violation
-- trusted-mode tag semantics are now explicit and consistent across internal and public docs
-- light-mode status and checkpoint precedence are now documented as exact contract surfaces
-- traceability files now target the same claim IDs, contradiction IDs, question IDs, and public pages
-- a shared Mintlify snippet now carries the dated current-`HEAD` caveat to reduce drift
+- Gate A: `pass`
+  - authority order is explicit, support docs do not silently override it, the `eth_getLogs` deferred-scope clarification remains explicit, and the former semantic blockers are now settled in the authority layer through `DEC-021`, `DEC-022`, and `DEC-023`
+- Gate B: `pass`
+  - page-local traceability blocks, `public-docs-sources.md`, `source-evidence-matrix.md`, and `page-ownership.md` are reconciled across the pages updated in this pass, including the shared public artifacts `mintlify/mint.json`, `mintlify/docs/_snippets/current-head-note.mdx`, and `mintlify/docs/_snippets/trusted-managed-wallet.mdx`
+  - the earlier `BOOT-02` drift on `mintlify/docs/concepts/trusted-mode.mdx` is repaired in the matrix and the page-mapping tables
+  - this is not a blanket guarantee about untouched future pages; it reflects the pages explicitly re-read and updated in this repair pass
+- Gate C: `pass`
+  - supported-surface public JSON-RPC reference pages are self-contained exact contracts where the repo authority settles semantics
+  - `mintlify/docs/reference/json-rpc/core-reads.mdx` and `mintlify/docs/reference/json-rpc/transactions-and-mining.mdx` now carry the exact managed-wallet contract locally through the shared snippet, and the former `Q-004` / `Q-005` / `Q-006` surfaces now publish the settled contract directly instead of blocker language
+- Gate D: `pass`
+  - the required Mintlify tree and required shared public artifacts are present on the repaired surfaces, canonical `zevm_*` naming is consistent there, deferred-filter wording explicitly excludes `eth_getLogs`, public config docs no longer freeze baked checkpoint hashes as contract literals, and the transport docs now state the `/` path contradiction plus the exact empty-batch invalid-request contract explicitly
+- Gate E: `pass`
+  - merged reconciliation reran on dates, source IDs, contradiction IDs, question IDs, affected-page lists, self-contained reference-page claims, and intended-vs-`HEAD` separation
+  - the closed-question audit trail remains linked through `Q-001` / `DEC-010`, `Q-002` / `DEC-011`, `Q-003` / `DEC-019`, `Q-004` / `DEC-021`, `Q-005` / `DEC-022`, and `Q-006` / `DEC-023`, and the baked-checkpoint policy is recorded in `DEC-020`
 
-## Meta-Risks Addressed By This Pass
+## Highest-Risk Contradictions
 
-These review findings are now treated as addressed at the documentation layer:
+1. `C-003` transport and notification semantics
+   - impact: current transport code still drifts from the settled notification contract and from the intended server composition
+2. `C-004` trusted-mode core reads
+   - impact: current helper paths still contradict the intended core-read contract, including malformed `eth_getStorageAt` slot handling returning zero instead of `-32602` and synthetic `eth_feeHistory` output that ignores `newestBlock`
+3. `C-007` canonical trusted queries
+   - impact: current helper coverage does not make the canonical query surface release-ready; transaction, receipt, and log paths still carry stub or lossy behavior
+4. `C-006` transaction submission and mining runtime
+   - impact: phase-1 send and mine behavior is still disconnected from the executable path
+5. `C-008` exact managed-account contract
+   - impact: published managed-wallet defaults remain exact, but runtime and genesis helpers still disagree internally
+6. `C-009` trusted-mode control runtime
+   - impact: the canonical `zevm_*` control inventory and exact alias surface remain docs-first contract only on current `HEAD`
+7. `C-011` light-mode startup contract
+   - impact: light-mode startup, checkpoint selection, and network selection are still not exposed through the binary entrypoint
+8. `C-012` light-mode status and verified reads
+   - impact: there is still no public `zevm_lightSyncStatus` method, no proof-backed read bridge on the live RPC path, and no live retained-history numeric-selector implementation
+9. `C-013` ownership drift
+   - impact: duplicate transport and handler paths still blur the intended upstream and integration-shell boundary
 
-1. **Docs-first incompleteness**
-   - previously: the docs-first process did not state the exhaustive full-spec rule strongly enough
-   - now: `docs/specs/docs-first-process.md` makes the full-spec requirement explicit
-2. **Notification contract mismatch being framed too softly**
-   - previously: some docs treated notifications as wording drift
-   - now: the contract is explicit and the current behavior is logged as a contradiction
-3. **Broken traceability**
-   - previously: matrix, page map, ownership, questions, and risks drifted apart
-   - now: those control docs share one claim/question/contradiction set
-4. **Evidence-boundary drift**
-   - previously: non-primary evidence could dominate the docs story
-   - now: repo-primary authority is explicit and external/upstream references are secondary
-5. **Write-scope and snippet drift**
-   - previously: ownership discipline and repeated dated caveats were too hand-wavy
-   - now: page ownership includes write-scope rules and Mintlify pages share a single dated caveat snippet
+## Open Questions
 
-## Remaining Blockers
+None. `Q-004`, `Q-005`, and `Q-006` were closed on `2026-03-29` by `DEC-021`, `DEC-022`, and `DEC-023`.
 
-1. `C-001` through `C-012` still block any claim that current `HEAD` satisfies the documented product contract.
-2. `C-002` remains especially significant because the current transport still violates the now-settled notification contract.
-3. `C-007` remains especially significant because the managed-wallet contract is now exact and public while current `HEAD` still contains conflicting sources of truth.
-4. `C-011` and `C-012` remain especially significant because light mode is now fully specified but still not publicly exposed in code.
+## Control-Layer Risks Addressed In This Pass
 
-## Shipment Gate
-
-- documentation-control gate: pass
-- product-shipment gate: fail
-
-Shipment remains blocked because the repo still has multiple implementation contradictions (`C-001` through `C-012`).
+- authority order is explicit and consistent across `docs-first-process.md`, `prd.md`, `maintainer-decisions.md`, and the public docs
+- `docs/specs/json-rpc-contract.md` now exists as the exact JSON-RPC backfill for phase 1 and the light-mode read surface without claiming silent override power over the PRD or process docs
+- canonical nonstandard naming is consistently `zevm_*`, with the exact accepted `anvil_*`, `hardhat_*`, and `evm_*` alias inventory carried in authoritative repo-local specs
+- the shared traceability layer is aligned across `source-evidence-matrix.md`, `public-docs-sources.md`, `page-ownership.md`, contradiction IDs, question IDs, `mintlify/mint.json`, and the shared snippet artifacts updated in this pass
+- closed-question handling is explicit on the repaired control surfaces: the former light-mode numeric-selector blocker remains auditable through resolved `Q-003`, and the former March 29 semantic blockers now remain auditable through resolved `Q-004`, `Q-005`, and `Q-006`
+- repaired public JSON-RPC pages now publish exact tuples, object shapes, field rules, return payloads, and method-level semantics directly
+- public concept pages no longer tell readers to consult internal docs for exact method inventories, alias mappings, or JSON-RPC payload details
+- startup/config exactness is explicit for CLI `--mode light` selection, `coinbaseIndex` `0..9`, `--fork-block-number` without `--fork-url`, default-startup vs config-file shape, and light-mode checkpoint startup behavior
+- the light-mode checkpoint surface is now classified without overstating shipped readiness: helper code still matches the persisted-file format, but `LIGHT-02` no longer reads as product-level alignment while light-mode startup remains a prototype gap under `C-011`
+- `RPC-TAGS-LIGHT` is now classified as a contradiction rather than a generic prototype gap, and the bounded retained numeric-selector window plus the `-32011` versus `-32602` split are explicit in the control layer and public docs
+- baked default checkpoints are now documented as precedence inputs without freezing their current literal hashes as public contract
+- `PROC-01` is now evidenced by repaired public docs artifacts rather than by build or test output alone
+- the `eth_getStorageAt` malformed-slot behavior and the synthetic `eth_feeHistory` helper output are now classified as live contradictions under `C-004` across the control layer, internal support docs, and repaired public docs
+- internal support docs plus trusted canonical-query concept pages now carry `C-007` directly instead of implying that helper presence is equivalent to supported user-facing quality
+- the transport contradiction inventory now records that the intended `/` path is settled while current `src/rpc/server.zig` still does not enforce it, and public transport docs carry the exact empty-batch contract instead of leaving it unresolved
+- the March 29 current-`HEAD` baseline is refreshed to the exact rerun results from this workspace instead of preserving older March 27 or stale `blst` caveats
 
 ## Residual Risks
 
-1. The docs now specify more exact contract detail than `HEAD` implements, so current-state caveats must keep pace with future code changes.
-2. The shared Mintlify snippet reduces drift for the dated baseline, but page-specific “Current Repo State” sections still require maintenance.
-3. The managed-wallet policy is now settled, so the remaining drift risk is implementation drift against the exact documented account table rather than policy ambiguity.
-4. Even though the control-doc machinery now agrees internally, a future partial edit that changes claim IDs or contradictions without updating the control docs would quickly reintroduce traceability risk.
+1. The current repo baseline remains red, so public docs still need dated current-`HEAD` caveats until code catches up.
+2. No blocking semantic gap remains in the docs authority layer, but current `HEAD` still does not implement several of the now-settled contracts.
+3. Residual implementation contradictions still span `C-001`, `C-003`, `C-004`, `C-005`, `C-006`, `C-007`, `C-008`, `C-009`, `C-010`, `C-011`, `C-012`, and `C-013`; see `docs/specs/contradiction-inventory.md` for the per-surface public-doc stance.
+4. Public docs now reconcile the control layer on the pages updated in this pass, but the repo still depends on continued merged updates whenever source IDs, contradiction IDs, question IDs, affected-page lists, or page-local traceability change again.
+5. Several public pages still necessarily describe intended-only behavior because the underlying surfaces are not live in `HEAD`, especially light-mode verified reads, light-mode startup, trusted canonical queries, and fork-backed startup.
 
-## Current State
+## Readiness
 
-This docs pass is now a real audit artifact rather than a loose summary. It is not ready to support shipment claims, but it is materially closer to being a reliable source of truth for future implementation work.
+- documentation state: reconciled for downstream review on the repaired surfaces in this pass, with no remaining open blocking semantic question in the current repo authority layer
+- product state: not ready to describe current `HEAD` as runnable or contract-complete
+- reason:
+  - required shared control docs, shared public artifacts, and the required Mintlify tree are present and aligned on the repaired surfaces
+  - repaired public pages now expose the intended contract directly instead of outsourcing exactness to internal docs, and the managed-wallet contract is locally available on the relevant trusted reference pages
+  - formerly unsettled semantics are now closed and propagated rather than left ambiguous
+  - current `HEAD` still fails to build and still carries multiple implementation contradictions
+
+## Next Actions
+
+1. Implement the settled `DEC-021`, `DEC-022`, and `DEC-023` contracts on current `HEAD` so light-mode `eth_blockNumber`, shared `--config` loader failures, and empty-batch transport behavior stop being docs-only commitments.
+2. Use `C-003`, `C-004`, `C-006`, `C-007`, `C-011`, and `C-012` to drive the next implementation pass on transport, trusted core reads, canonical queries, startup, mining, and light-mode execution routing.
+3. Re-run the same merged doc reconciliation whenever page-local traceability, shared public artifacts, method inventories, or deferred-surface scope changes again.

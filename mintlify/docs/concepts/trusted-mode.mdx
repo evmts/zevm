@@ -1,79 +1,119 @@
 ---
 title: Trusted Mode
-description: Exact trusted-mode behavior, defaults, and current implementation gaps.
+description: ZEVM's writable local dev node, canonical ZEVM controls, and startup config.
 ---
-
-import CurrentHeadNote from '../_snippets/current-head-note.mdx'
-import TrustedManagedWallet from '../_snippets/trusted-managed-wallet.mdx'
 
 # Trusted Mode
 
-Trusted mode is ZEVM's phase-1 local execution runtime.
-
-<CurrentHeadNote />
+Trusted mode is ZEVM's writable local dev node. Startup enters trusted mode unless CLI `--mode light` or a config file whose sole runtime branch is `mode.light` selects light mode.
 
 ## Intended Behavior
 
-Trusted mode provides:
+Trusted mode owns local state, mining, snapshots, impersonation, time controls, and fork-backed development. It is the canonical surface for local writes.
 
-- local writable execution state
-- managed development accounts
-- exact startup defaults for fees, balances, and mining
-- execution simulation through checkpoint-and-revert behavior
-- transaction submission and local mining
-- snapshots, revert, state mutation, impersonation, and time controls
-- optional fork-backed reads without becoming a separate runtime mode
+Public naming rules are explicit:
+
+- canonical nonstandard methods use the `zevm_*` namespace
+- a fixed compatibility-alias set is accepted under `anvil_*`, a limited `hardhat_*` subset, and selected `evm_*` names
+- `zevm_*` is the public canonical naming for ZEVM-owned trusted-mode controls, not a docs convention
+
+Trusted mode supports standard reads plus local execution:
+
+- `eth_*` core reads against local state
+- canonical block, receipt, and log queries, including `eth_getLogs`, against local state
+- `eth_call` and `eth_estimateGas`
+- managed development accounts with exact account data, coinbase selection, and signing boundaries
+- transaction submission and mining
+- snapshot and revert behavior
+- state mutation, impersonation, and time controls
+
+Trusted mode includes canonical log queries such as `eth_getLogs`, but filter lifecycle APIs beyond that query remain deferred.
+
+Canonical block, transaction, receipt, and log queries are part of the intended trusted-mode surface. Current `HEAD` still carries live `C-007` contradictions on that surface, so helper presence must not be read as contract-complete support quality.
+
+Exact method tuples, payloads, selectors, and accepted alias inventories are published on the public JSON-RPC reference pages: [Core Reads](../reference/json-rpc/core-reads), [Simulation](../reference/json-rpc/simulation), [Transactions And Mining](../reference/json-rpc/transactions-and-mining), [Blocks, Receipts, And Logs](../reference/json-rpc/blocks-receipts-and-logs), and [ZEVM Controls](../reference/json-rpc/dev-controls).
+
+## Canonical ZEVM Controls
+
+These are the trusted-mode capability families that public docs should name with `zevm_*` first:
+
+| Capability | Canonical surface | Compatibility aliases |
+| --- | --- | --- |
+| Mining and automine | canonical `zevm_*` mining controls | trusted mode only |
+| Snapshots and revert | canonical `zevm_*` snapshot controls | trusted mode only |
+| Impersonation | canonical `zevm_*` impersonation controls | trusted mode only |
+| State mutation | canonical `zevm_*` state-mutation controls | trusted mode only |
+| Environment and time | canonical `zevm_*` environment and time controls | trusted mode only |
+| State import and export | canonical `zevm_*` state import and export controls | trusted mode only |
+
+Use the `zevm_*` names in public docs even when a compatibility alias exists. The accepted alias inventory is fixed rather than open-ended and does not expand by same-suffix family matching.
+
+Tracing and other advanced testing helpers are not part of the phase-1 exact trusted-mode contract. Their compatibility aliases stay deferred with them.
 
 ## Defaults
 
 | Setting | Default |
 | --- | --- |
-| chain ID | `31337` |
-| managed accounts | `10` deterministic accounts |
-| initial balance | `10000 ETH` each |
-| coinbase index | `0` |
-| gas price | `2000000000` |
-| base fee | `1000000000` |
-| blob base fee | `1` |
-| max priority fee per gas | `1000000000` |
-| block gas limit | `30000000` |
-| mining mode | `auto` |
+| `chainId` | `31337` |
+| `coinbaseIndex` | `0` (valid range `0..9`) |
+| `initialBalance` | `10000000000000000000000` |
+| `gasPrice` | `2000000000` |
+| `baseFee` | `1000000000` |
+| `blobBaseFee` | `1` |
+| `maxPriorityFeePerGas` | `1000000000` |
+| `blockGasLimit` | `30000000` |
+| `mining` | `auto` |
+
+## Trusted-Mode Config
+
+The resolved config unions are:
+
+```json
+{
+  "mode": {
+    "trusted": {
+      "chainId": 31337,
+      "mining": { "type": "auto" },
+      "fork": null
+    }
+  }
+}
+```
+
+- `mode.trusted.mining`: `{ "type": "auto" }`, `{ "type": "manual" }`, or `{ "type": "interval", "blockTime": <seconds> }`
+- `mode.trusted.fork`: `null`, `{ "url": "https://..." }`, or `{ "url": "https://...", "blockNumber": <u64> }`
+- `mode.trusted.chainId` stays outside the fork object
 
 ## Block Tags
 
-Trusted mode supports:
+| Tag | Meaning |
+| --- | --- |
+| `latest` | current canonical local head |
+| `pending` | compatibility alias of `latest` |
+| `safe` | compatibility alias of `latest` |
+| `finalized` | compatibility alias of `latest` |
+| `earliest` | block `0` |
+| numeric quantity | exact local block number |
 
-- `latest`
-- `pending`
-- `safe`
-- `finalized`
-- `earliest`
-- numeric quantities
+Trusted-mode `pending`, `safe`, and `finalized` are compatibility aliases only. They do not provide consensus-backed finality.
 
-But in trusted mode:
+## Current HEAD As Of 2026-03-29
 
-- `pending` is a compatibility alias of `latest`
-- `safe` is a compatibility alias of `latest`
-- `finalized` is a compatibility alias of `latest`
+- `zig build` fails first in `src/rpc/server.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope`, and `zig build test` fails in `src/rpc/dispatcher_test.zig`, `src/rpc/server.zig`, and `src/tx_processor.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope` and current `guillotine-mini` requires a wider `evm.init` signature
+- `src/main.zig` still forwards argv to `src/rpc/server.zig.parseConfig`, and that parser still only accepts `--host` and `--port`
+- `src/main.zig` still constructs an empty `dispatcher.HandlerRegistry`, so the live listener has no registered trusted-mode surface yet
+- canonical query helpers remain contradictory on current `HEAD`: `eth_getTransactionByHash` is still a stub, block and receipt hydration still use placeholders, and invalid log filters can still collapse to `[]` instead of `-32602`
+- the canonical `zevm_*` naming and alias policy are product-contract rules, not runtime wiring
 
-Those aliases do **not** provide consensus-backed finality.
+## Traceability
 
-## Managed Account Boundary
-
-<TrustedManagedWallet />
-
-## Current Repo State
-
-- some read helpers exist
-- richer read handlers exist on a second path, but they are unwired
-- `eth_call` and `eth_estimateGas` are absent
-- transaction submission and mining logic are disconnected prototypes
-- canonical queries still contain placeholders or stubs in key paths
-- `src/node/runtime.zig` and `src/genesis.zig` both contradict the documented canonical managed-wallet contract
+- Source IDs: `PROC-01`, `HEAD-01`, `BOOT-01`, `BOOT-02`, `BOOT-04`, `TRUST-01`, `TRUST-02`, `TRUST-03`, `TRUST-04`, `TRUST-07`, `TRUST-08`, `TRUST-09`, `TRUST-10`, `TRUST-11`, `DEFER-01`
+- Contradiction IDs: `C-001`, `C-002`, `C-006`, `C-007`, `C-008`, `C-009`, `C-010`
+- Question IDs: -
+- Internal support docs: `trusted-mode-semantics.md`, `state-fork-and-snapshot-semantics.md`
 
 ## Related Pages
 
-- [State Forking And Snapshots](./state-forking-and-snapshots)
-- [Trusted Reads](../reference/json-rpc/trusted-reads)
-- [Execution And Submission](../reference/json-rpc/execution-and-submission)
-- [Canonical Queries](../reference/json-rpc/canonical-queries)
+- [Runtime Modes](./runtime-modes)
+- [State Fork And Snapshots](./state-fork-and-snapshots)
+- [Method Support By Mode](./method-support-by-mode)

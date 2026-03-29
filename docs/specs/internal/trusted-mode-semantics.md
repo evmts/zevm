@@ -1,8 +1,10 @@
 # ZEVM Internal Support: Trusted Mode Semantics
 
-Last updated: 2026-03-21
+Last updated: 2026-03-27
 
 ## Defaults And Managed Accounts
+
+### Intended behavior
 
 Trusted mode is a local dev chain with these intended defaults:
 
@@ -19,6 +21,9 @@ Trusted mode is a local dev chain with these intended defaults:
 - max priority fee per gas `1000000000`
 - block gas limit `30000000`
 - mining mode `auto`
+- canonical nonstandard methods use the `zevm_*` namespace
+- the exact accepted compatibility-alias set from `docs/specs/json-rpc-contract.md` is accepted in trusted mode only
+- `zevm_*` is an authoritative product-contract rule, not a docs convention
 
 Exact managed-account table:
 
@@ -35,11 +40,34 @@ Exact managed-account table:
 | `8` | `0x23618e81E3f5cdF7f54C3d65f7FBc0aBf5B21E8f` | `0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97` |
 | `9` | `0xa0Ee7A142d267C1f36714E4a8F75612F20a79720` | `0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6` |
 
-- current repo reality: `src/node/runtime.zig` provides the fee and balance defaults and most of the canonical addresses, but it omits the private-key table and hardcodes a different account `#7`; `src/genesis.zig` provides a mnemonic, banner, and private-key table, but its account `#7` and private-key table do not match this documented contract
-- source IDs: `TRUST-01`
-- contradiction IDs: `C-007`
+### Observed code constraints
+
+- `src/node/runtime.zig` provides the fee and balance defaults and most of the canonical addresses, but it omits the private-key table and hardcodes a different account `#7`.
+- `src/genesis.zig` provides a mnemonic, banner, and private-key table, but its account `#7` and private-key table do not match this documented contract.
+- `src/node/runtime.zig` is the authoritative trusted-mode runtime/config model in source; `src/rpc/dev_runtime.zig` is only a narrow snapshot helper prototype and must not be read as the runtime contract.
+- This is a contradiction, not an ambiguity: the public contract stays exact even while current code drifts from it.
+
+### Unresolved ambiguity
+
+- None in the published managed-account contract.
+- The account table is settled; the current repo mismatch is implementation drift.
+
+### Affected public pages
+
+- `mintlify/docs/concepts/trusted-mode.mdx`
+- `mintlify/docs/reference/configuration/trusted-mode.mdx`
+- `mintlify/docs/reference/json-rpc/core-reads.mdx`
+- `mintlify/docs/reference/json-rpc/transactions-and-mining.mdx`
+
+### Source IDs
+
+- `TRUST-01`
+- `TRUST-02`
+- `TRUST-03`
 
 ## Read Surface
+
+### Intended behavior
 
 Phase-1 trusted-mode reads:
 
@@ -58,15 +86,40 @@ Phase-1 trusted-mode reads:
 
 Read semantics:
 
-- reads are against trusted local state
-- when a fork source is configured, ZEVM resolves local overlay first and remote fork backing second
-- `eth_getCode` must return deployed bytecode, not a placeholder
+- Reads are against trusted local state.
+- When a fork source is configured, ZEVM resolves local overlay first and remote fork backing second.
+- `eth_getCode` must return deployed bytecode, not a placeholder.
+- Exact request tuples, return payloads, and error behavior for these methods live in `docs/specs/json-rpc-contract.md`.
 
-- current repo reality: `eth_chainId` and `eth_blockNumber` have minimal helper coverage; richer read handlers exist in `src/rpc/handlers/eth_read.zig` but are not on the executable path; `eth_getCode` currently returns `"0x"` regardless of stored code
-- source IDs: `RPC-04`, `TRUST-03`
-- contradiction IDs: `C-003`
+### Observed code constraints
+
+- `eth_chainId` and `eth_blockNumber` have minimal helper coverage.
+- Richer read handlers exist in `src/rpc/handlers/eth_read.zig`, but they are not on the executable path.
+- `eth_getCode` currently returns `"0x"` regardless of stored code.
+- `eth_getStorageAt` currently catches malformed slot quantities and returns zero instead of surfacing the intended `-32602` invalid-params failure.
+- `eth_feeHistory` is still synthetic: it repeats the current base fee, zeroes `gasUsedRatio`, ignores `newestBlock` and reward-percentile behavior, and defaults malformed `blockCount` instead of surfacing the intended `-32602` failure.
+
+### Unresolved ambiguity
+
+- None in the intended read contract.
+- The unresolved work is wiring and coverage, not the read semantics themselves.
+
+### Affected public pages
+
+- `mintlify/docs/concepts/trusted-mode.mdx`
+- `mintlify/docs/reference/json-rpc/core-reads.mdx`
+- `mintlify/docs/concepts/method-support-by-mode.mdx`
+
+### Source IDs
+
+- `RPC-04`
+- `TRUST-03`
+- `TRUST-05`
+- `RPC-ETH-FEEHISTORY`
 
 ## Execution, Submission, And Mining
+
+### Intended behavior
 
 Phase-1 trusted-mode execution and write surface:
 
@@ -80,30 +133,59 @@ Phase-1 trusted-mode execution and write surface:
 
 Execution rules:
 
-- `eth_call` and `eth_estimateGas` run on a checkpoint-and-revert path
-- simulation must not mutate canonical local state
-- simulation honors state overrides
-- `eth_sendTransaction` signs only for the canonical managed-account set above or explicitly impersonated accounts
-- `eth_sendRawTransaction` accepts pre-signed transactions
-- pending ordering is nonce-aware
+- `eth_call` and `eth_estimateGas` run on a checkpoint-and-revert path.
+- Simulation must not mutate canonical local state.
+- Simulation honors state overrides.
+- `eth_sendTransaction` signs only for the canonical managed-account set above or explicitly impersonated accounts.
+- `eth_sendRawTransaction` accepts pre-signed transactions.
+- Pending ordering is nonce-aware.
+- Canonical nonstandard control methods are documented with the `zevm_*` prefix.
+- The exact accepted compatibility-alias set from `docs/specs/json-rpc-contract.md` is accepted only in trusted mode.
 
-- current repo reality: no `eth_call` or `eth_estimateGas` implementation exists; transaction submission and mining logic live only in disconnected prototypes; tests under `src/rpc/handlers/tx_submission_test.zig` reference runtime members that do not exist in `src/node/runtime.zig`
-- source IDs: `RPC-05`, `TRUST-01`
-- contradiction IDs: `C-004`, `C-005`
+Resolved trusted-mode config shapes:
+
+- `mode.trusted.mining`: `{ "type": "auto" }`, `{ "type": "manual" }`, or `{ "type": "interval", "blockTime": <seconds> }`
+- `mode.trusted.fork`: `null`, `{ "url": "https://..." }`, or `{ "url": "https://...", "blockNumber": <u64> }`
+- `mode.trusted.chainId` remains a trusted-mode setting and is not inferred from `fork.url`
+
+### Observed code constraints
+
+- No `eth_call` or `eth_estimateGas` implementation exists.
+- Transaction submission and mining logic live only in disconnected prototypes.
+- Tests under `src/rpc/handlers/tx_submission_test.zig` reference runtime members that do not exist in `src/node/runtime.zig`.
+
+### Unresolved ambiguity
+
+- None. The canonical namespace, alias policy, and trusted-mode config shapes are settled for public docs.
+
+### Affected public pages
+
+- `mintlify/docs/concepts/trusted-mode.mdx`
+- `mintlify/docs/reference/json-rpc/transactions-and-mining.mdx`
+- `mintlify/docs/concepts/method-support-by-mode.mdx`
+- `mintlify/docs/concepts/state-fork-and-snapshots.mdx`
+
+### Source IDs
+
+- `TRUST-06`
+- `TRUST-07`
+- `TRUST-11`
 
 ## Tag And Query Semantics
 
+### Intended behavior
+
 Trusted-mode tags:
 
-- `latest`, `pending`, `safe`, and `finalized` resolve to the current canonical local head
-- `earliest` resolves to block `0`
-- numeric quantities resolve exact local blocks
+- `latest`, `pending`, `safe`, and `finalized` resolve to the current canonical local head.
+- `earliest` resolves to block `0`.
+- Numeric quantities resolve exact local blocks.
 
 Important documentation rule:
 
-- trusted-mode `pending`, `safe`, and `finalized` are compatibility aliases only
-- they do not provide real finality
-- real `safe` and `finalized` semantics belong to light mode
+- Trusted-mode `pending`, `safe`, and `finalized` are compatibility aliases only.
+- They do not provide real finality.
+- Real `safe` and `finalized` semantics belong to light mode.
 
 Phase-1 canonical query surface:
 
@@ -114,6 +196,39 @@ Phase-1 canonical query surface:
 - `eth_getBlockReceipts`
 - `eth_getLogs`
 
-- current repo reality: trusted-mode helper code already aliases `pending`, `safe`, and `finalized` to head; query helpers remain unwired; some response paths still synthesize or drop important fields; `eth_getTransactionByHash` is still a stub
-- source IDs: `TRUST-02`, `RPC-06`
-- contradiction IDs: `C-006`, `C-007`
+### Observed code constraints
+
+- Trusted-mode helper code already aliases `pending`, `safe`, and `finalized` to head.
+- Query helpers remain unwired.
+- `eth_getTransactionByHash` is still a stub that always returns `null`.
+- Block hydration and receipt or log serialization still synthesize or drop important fields.
+- Receipt and log indexes are not populated by the executable path after mining.
+- Invalid log filters can still collapse to `[]` instead of surfacing the intended `-32602` failure.
+
+### Unresolved ambiguity
+
+- None about the intended tag split between trusted and light mode.
+- The remaining gap is execution-path wiring and query completeness.
+
+### Affected public pages
+
+- `mintlify/docs/concepts/trusted-mode.mdx`
+- `mintlify/docs/concepts/light-mode.mdx`
+- `mintlify/docs/reference/json-rpc/core-reads.mdx`
+- `mintlify/docs/reference/json-rpc/blocks-receipts-and-logs.mdx`
+
+### Source IDs
+
+- `TRUST-04`
+- `TRUST-08`
+- `LIGHT-05`
+
+### Internal support docs
+
+- `docs/specs/json-rpc-contract.md`
+- `docs/specs/internal/rpc-support-matrix.md`
+- `docs/specs/internal/state-fork-and-snapshot-semantics.md`
+
+### Notes
+
+- Canonical `zevm_*` naming is a product-contract rule, and the exact alias inventory is closed-world in `docs/specs/json-rpc-contract.md`.

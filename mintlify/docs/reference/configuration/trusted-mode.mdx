@@ -1,47 +1,136 @@
 ---
 title: Trusted-Mode Configuration
-description: Exact trusted-mode flags, config fields, defaults, and validation rules.
+description: Exact trusted-mode CLI flags, JSON shapes, defaults, and validation.
 ---
-
-import CurrentHeadNote from '../../_snippets/current-head-note.mdx'
-import TrustedManagedWallet from '../../_snippets/trusted-managed-wallet.mdx'
 
 # Trusted-Mode Configuration
 
-<CurrentHeadNote />
+## Intended Behavior
 
-## Exact Fields
+Trusted mode is ZEVM's phase-1 writable local dev-node runtime. Its canonical nonstandard methods are `zevm_*`, and the accepted compatibility-alias inventory is documented in the repo-local reference pages.
 
-| CLI flag | Config field | Default |
-| --- | --- | --- |
-| `--chain-id` | `mode.trusted.chainId` | `31337` |
-| `--coinbase-index` | `mode.trusted.coinbaseIndex` | `0` |
-| `--initial-balance` | `mode.trusted.initialBalance` | `10000000000000000000000` |
-| `--gas-price` | `mode.trusted.gasPrice` | `2000000000` |
-| `--base-fee` | `mode.trusted.baseFee` | `1000000000` |
-| `--blob-base-fee` | `mode.trusted.blobBaseFee` | `1` |
-| `--max-priority-fee-per-gas` | `mode.trusted.maxPriorityFeePerGas` | `1000000000` |
-| `--block-gas-limit` | `mode.trusted.blockGasLimit` | `30000000` |
-| `--mining` | `mode.trusted.mining.type` | `auto` |
-| `--block-time` | `mode.trusted.mining.blockTime` | none |
-| `--fork-url` | `mode.trusted.fork.url` | none |
-| `--fork-block-number` | `mode.trusted.fork.blockNumber` | none |
+Trusted-mode config lives under `mode.trusted`.
 
-## Mining Rules
+If a config file already selects `mode.trusted`, `--mode trusted` is optional and may confirm that branch, but it may not conflict with it.
 
-| Mining type | Required fields | Invalid fields |
-| --- | --- | --- |
-| `auto` | none | `blockTime` |
-| `manual` | none | `blockTime` |
-| `interval` | `blockTime` | none |
+If `--config` points to a missing file, an unreadable file, or malformed JSON, ZEVM fails startup before opening the listener, exits non-zero, reports an operator-facing error that names the path and failure class, and does not fall back to defaults.
 
-## Fork Rules
+## Field Map
 
-- `fork.blockNumber` is invalid without `fork.url`
-- forking stays inside trusted mode; it does not create a third mode
-- `chainId` remains a local trusted-mode setting and is not inferred from `fork.url`
+| CLI flag | Config field | Default | Notes |
+| --- | --- | --- | --- |
+| `--chain-id` | `mode.trusted.chainId` | `31337` | top-level identity for the local chain |
+| `--coinbase-index` | `mode.trusted.coinbaseIndex` | `0` | selects a managed account; default is `0` and valid values are `0..9` |
+| `--initial-balance` | `mode.trusted.initialBalance` | `10000000000000000000000` | wei string |
+| `--gas-price` | `mode.trusted.gasPrice` | `2000000000` | wei string |
+| `--base-fee` | `mode.trusted.baseFee` | `1000000000` | wei string |
+| `--blob-base-fee` | `mode.trusted.blobBaseFee` | `1` | wei string |
+| `--max-priority-fee-per-gas` | `mode.trusted.maxPriorityFeePerGas` | `1000000000` | wei string |
+| `--block-gas-limit` | `mode.trusted.blockGasLimit` | `30000000` | integer |
+| `--mining` | `mode.trusted.mining.type` | `auto` | `auto`, `manual`, or `interval`; `interval` requires `blockTime` |
+| `--block-time` | `mode.trusted.mining.blockTime` | none | seconds, only valid with `interval` |
+| `--fork-url` | `mode.trusted.fork.url` | none | upstream RPC endpoint |
+| `--fork-block-number` | `mode.trusted.fork.blockNumber` | none | optional fork pin; hard-fails without `--fork-url` |
 
-## Example
+Trusted-mode literal domains are exact:
+
+- `chainId`, `coinbaseIndex`, `blockGasLimit`, `blockTime`, and `fork.blockNumber` are integer fields
+- `initialBalance`, `gasPrice`, `baseFee`, `blobBaseFee`, and `maxPriorityFeePerGas` are wei decimal strings
+- malformed or out-of-range integer and wei literals are hard startup failures under the shared startup contract
+
+## Mining Shapes
+
+`mode.trusted.mining` accepts only these JSON shapes:
+
+```json
+{ "type": "auto" }
+```
+
+```json
+{ "type": "manual" }
+```
+
+```json
+{ "type": "interval", "blockTime": 12 }
+```
+
+`blockTime` is an integer number of seconds and is valid only when `type` is `interval`.
+
+## Fork Shapes
+
+`mode.trusted.fork` accepts only these JSON shapes:
+
+```json
+null
+```
+
+```json
+{ "url": "https://rpc.example" }
+```
+
+```json
+{ "url": "https://rpc.example", "blockNumber": 22000000 }
+```
+
+`fork.url` mirrors CLI `--fork-url`. `fork.blockNumber` mirrors CLI `--fork-block-number`. Omitting `blockNumber` means fork from the upstream latest block. `fork` does not implicitly change `chainId`.
+
+## Exact Examples
+
+### Auto Mining
+
+```json
+{
+  "rpc": {
+    "host": "127.0.0.1",
+    "port": 8545
+  },
+  "mode": {
+    "trusted": {
+      "chainId": 31337,
+      "coinbaseIndex": 0,
+      "initialBalance": "10000000000000000000000",
+      "gasPrice": "2000000000",
+      "baseFee": "1000000000",
+      "blobBaseFee": "1",
+      "maxPriorityFeePerGas": "1000000000",
+      "blockGasLimit": 30000000,
+      "mining": {
+        "type": "auto"
+      },
+      "fork": null
+    }
+  }
+}
+```
+
+### Manual Mining
+
+```json
+{
+  "rpc": {
+    "host": "127.0.0.1",
+    "port": 8545
+  },
+  "mode": {
+    "trusted": {
+      "chainId": 31337,
+      "coinbaseIndex": 0,
+      "initialBalance": "10000000000000000000000",
+      "gasPrice": "2000000000",
+      "baseFee": "1000000000",
+      "blobBaseFee": "1",
+      "maxPriorityFeePerGas": "1000000000",
+      "blockGasLimit": 30000000,
+      "mining": {
+        "type": "manual"
+      },
+      "fork": null
+    }
+  }
+}
+```
+
+### Interval Mining
 
 ```json
 {
@@ -63,6 +152,33 @@ import TrustedManagedWallet from '../../_snippets/trusted-managed-wallet.mdx'
         "type": "interval",
         "blockTime": 12
       },
+      "fork": null
+    }
+  }
+}
+```
+
+### Forked Trusted Mode
+
+```json
+{
+  "rpc": {
+    "host": "127.0.0.1",
+    "port": 8545
+  },
+  "mode": {
+    "trusted": {
+      "chainId": 31337,
+      "coinbaseIndex": 0,
+      "initialBalance": "10000000000000000000000",
+      "gasPrice": "2000000000",
+      "baseFee": "1000000000",
+      "blobBaseFee": "1",
+      "maxPriorityFeePerGas": "1000000000",
+      "blockGasLimit": 30000000,
+      "mining": {
+        "type": "manual"
+      },
       "fork": {
         "url": "https://rpc.example",
         "blockNumber": 22000000
@@ -72,14 +188,42 @@ import TrustedManagedWallet from '../../_snippets/trusted-managed-wallet.mdx'
 }
 ```
 
-## Managed Accounts
+## Validation Rules
 
-<TrustedManagedWallet />
+Startup fails when:
 
-## Current Repo State
+- an unknown CLI flag is supplied
+- `chainId`, `coinbaseIndex`, `blockGasLimit`, `blockTime`, or `fork.blockNumber` uses an invalid or out-of-range integer literal
+- `initialBalance`, `gasPrice`, `baseFee`, `blobBaseFee`, or `maxPriorityFeePerGas` uses an invalid or out-of-range wei literal
+- `blockTime` is supplied outside `interval` mining
+- `interval` mining is selected without `blockTime`
+- `--block-time` is supplied without `--mining interval`
+- `fork.blockNumber` is supplied without `fork.url`
+- `coinbaseIndex` is outside `0..9`
+- any trusted-only field is supplied in light mode
 
-- deterministic balance and fee defaults exist in `src/node/runtime.zig`
-- genesis defaults, mnemonic, and private keys exist in `src/genesis.zig`
-- `src/node/runtime.zig` and `src/genesis.zig` both contradict the documented canonical managed-wallet contract
-- fork-backed startup is not wired
-- the executable path does not yet expose this trusted-mode config contract
+The fork hard-failure rule applies to both CLI input and config-file input.
+
+## Current HEAD
+
+On March 29, 2026, current `HEAD` still has these constraints:
+
+- `src/main.zig` does not ingest config files yet
+- `src/main.zig` does not wire trusted-mode startup yet
+- mining, fork startup, and managed-account startup are not reachable through the executable path
+- `src/node/runtime.zig` and `src/genesis.zig` still diverge from the published managed-wallet contract
+- `zig build` fails first in `src/rpc/server.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope`, and `zig build test` fails in `src/rpc/dispatcher_test.zig`, `src/rpc/server.zig`, and `src/tx_processor.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope` and current `guillotine-mini` requires a wider `evm.init` signature
+
+## Traceability
+
+- Source IDs: `HEAD-01`, `BOOT-02`, `BOOT-04`, `BOOT-07`, `BOOT-08`, `TRUST-02`, `TRUST-03`, `TRUST-09`
+- Contradiction IDs: `C-001`, `C-002`, `C-008`, `C-010`
+- Question IDs: `Q-005`
+- Internal support docs: `startup-and-configuration.md`, `trusted-mode-semantics.md`
+- Notes: Exact trusted-mode aliases are documented in the trusted-mode and JSON-RPC reference pages in this repo.
+
+## Related Pages
+
+- [Configuration Overview](./overview)
+- [Run Trusted Mode](../../quickstart/run-trusted-mode)
+- [Forked Dev Node](../../quickstart/forked-dev-node)

@@ -1,40 +1,55 @@
 ---
 title: Configuration Overview
-description: Exact shared startup contract, config shape, precedence, and validation rules.
+description: Exact ZEVM config-file layout, precedence, and mode selection.
 ---
-
-import CurrentHeadNote from '../../_snippets/current-head-note.mdx'
 
 # Configuration Overview
 
-ZEVM uses one shared startup contract with a tagged `mode` branch.
+## Intended Behavior
 
-<CurrentHeadNote />
+ZEVM config files have a single shared `rpc` block and exactly one runtime branch under `mode`.
 
-## Shared Flags
+Default startup behavior is separate from config-file shape:
 
-| Flag | Default | Notes |
+- trusted mode is the default runtime when no explicit mode branch is selected at startup
+- CLI `--mode light` can itself select light mode, and it may also confirm a config-selected light runtime
+- a valid config file still must contain exactly one runtime branch under `mode`
+
+The public contract is:
+
+- CLI flags override config-file values
+- `--config` is loaded before CLI overrides
+- `--mode` may select the active runtime or confirm the config-selected runtime, but it may not conflict with it
+- `mode.trusted` and `mode.light` are mutually exclusive
+- unknown CLI flags fail startup before ZEVM listens
+- malformed or out-of-range integer and wei literals fail startup before ZEVM listens
+- if `--config` points to a missing file, an unreadable file, or malformed JSON, ZEVM fails startup before opening the listener, exits non-zero, reports an operator-facing error that names the path and failure class, and does not fall back to defaults
+
+This page is the canonical source for shared listener fields, precedence, and cross-mode startup failures. The trusted-mode and light-mode configuration pages add only their mode-specific fields, defaults, and hard failures.
+
+## Shared Startup Flags
+
+The shared startup surface is:
+
+| CLI flag | Default | Exact contract |
 | --- | --- | --- |
-| `--config` | none | Optional JSON config file path |
+| `--config` | none | path to a JSON config file using the exact shapes on this page |
 | `--mode` | `trusted` | `trusted` or `light` |
-| `--host` | `127.0.0.1` | HTTP bind host |
-| `--port` | `8545` | HTTP bind port |
+| `--host` | `127.0.0.1` | listener bind host |
+| `--port` | `8545` | listener bind port; must fit `u16` |
 
-## Canonical Config Shape
+The shared listener config is the same in CLI and config form:
 
-```json
-{
-  "rpc": {
-    "host": "127.0.0.1",
-    "port": 8545
-  },
-  "mode": {
-    "trusted": {}
-  }
-}
-```
+| CLI flag | Config field | Default | Validation |
+| --- | --- | --- | --- |
+| `--host` | `rpc.host` | `127.0.0.1` | missing value fails startup |
+| `--port` | `rpc.port` | `8545` | missing value fails startup; value must fit `u16` |
 
-or
+The current executable path only threads `--host` and `--port`, but the public config contract keeps the same `rpc` surface for both runtime branches.
+
+## Exact Shape
+
+Trusted-mode config files use this exact shape:
 
 ```json
 {
@@ -43,52 +58,114 @@ or
     "port": 8545
   },
   "mode": {
-    "light": {}
+    "trusted": {
+      "chainId": 31337,
+      "coinbaseIndex": 0,
+      "initialBalance": "10000000000000000000000",
+      "gasPrice": "2000000000",
+      "baseFee": "1000000000",
+      "blobBaseFee": "1",
+      "maxPriorityFeePerGas": "1000000000",
+      "blockGasLimit": 30000000,
+      "mining": {
+        "type": "auto"
+      },
+      "fork": null
+    }
   }
 }
 ```
 
-Rules:
+Light-mode config files use this exact shape:
 
-- `mode` must contain exactly one of `trusted` or `light`
-- CLI overrides config-file values
-- CLI `--mode` may confirm the config-file mode, but it may not conflict with it
+```json
+{
+  "rpc": {
+    "host": "127.0.0.1",
+    "port": 8545
+  },
+  "mode": {
+    "light": {
+      "network": "mainnet",
+      "consensusRpcUrl": "https://beacon.example",
+      "checkpoint": null,
+      "checkpointDir": ".zevm/checkpoints/mainnet",
+      "maxCheckpointAgeSeconds": 1209600,
+      "strictCheckpointAge": false
+    }
+  }
+}
+```
 
-## Precedence
+## Branch Rules
 
-ZEVM resolves startup input in this order:
+| Branch | Purpose |
+| --- | --- |
+| `mode.trusted` | writable local dev node, optional upstream fork, managed accounts, mining controls |
+| `mode.light` | consensus-backed verified-read runtime |
+
+Only one branch may be present in a valid config file.
+
+## Precedence Rules
+
+Startup resolves values in this order:
 
 1. CLI flags
-2. config-file fields from `--config`
-3. persisted light-mode checkpoint, if applicable
-4. baked defaults
+2. config-file fields loaded by `--config`
+3. persisted light-mode checkpoint, if light mode is selected and no explicit checkpoint was provided
+4. baked defaults for the selected mode
 
-Light-mode checkpoint precedence is:
+`--mode` is a direct runtime selector. If a config file is also present, the selected runtime must match the runtime branch in that config file.
 
-1. explicit user checkpoint
-2. persisted checkpoint
-3. baked network default
+## Validation Rules
 
-## Hard Failure Cases
+Startup fails when:
 
-ZEVM fails startup before opening the HTTP listener when:
+- an unknown CLI flag is supplied
+- `--host` is missing a value
+- `--port` is missing a value
+- `--port` is not a valid `u16`
+- a startup integer or wei field uses an invalid literal
+- both `mode.trusted` and `mode.light` are present
+- neither mode branch is present
+- `--mode` conflicts with the config-file branch
+- a trusted-only field is supplied in light mode
+- a light-only field is supplied in trusted mode
+- `--network` or `mode.light.network` is outside `mainnet`, `sepolia`, or `holesky`
+- `--consensus-rpc-url` is missing in light mode
+- `--block-time` is missing for interval mining
+- interval mining is selected without `blockTime`
+- `--block-time` is supplied outside interval mining
+- `--fork-block-number` is supplied without `--fork-url`
+- `coinbaseIndex` is outside `0..9`
+- the persisted checkpoint file is malformed
+- the selected checkpoint age is greater than `maxCheckpointAgeSeconds` and `strictCheckpointAge = true`
 
-- a flag is unknown
-- a value-taking flag is missing its value
-- an integer or wei literal is invalid
-- the config file is malformed
-- the config file declares both `mode.trusted` and `mode.light`
-- CLI `--mode` conflicts with the config-file mode
-- mode-specific flags are used in the wrong mode
+When `strictCheckpointAge = false`, a stale light-mode checkpoint emits a warning and startup continues. A checkpoint whose age is exactly `maxCheckpointAgeSeconds` is still valid by contract, even though the current helper code still treats equality as stale.
 
-## Current Repo State
+## Current HEAD
 
-- `src/main.zig` currently exposes only `--host` and `--port`
-- no config-file loader is wired
-- no mode selector is wired
-- no startup validation path yet enforces the full contract
+On March 29, 2026, current `HEAD` still has these constraints:
 
-## Next Pages
+- `src/main.zig` does not load config files yet
+- `src/main.zig` does not apply mode selection yet
+- the executable path still only threads `--host` and `--port`
+- the current parser already hard-fails unknown CLI arguments and malformed `--port` values, but the broader invalid-literal contract is not wired because no executable path ingests the full startup surface yet
+- `zig build` fails first in `src/rpc/server.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope`, and `zig build test` fails in `src/rpc/dispatcher_test.zig`, `src/rpc/server.zig`, and `src/tx_processor.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope` and current `guillotine-mini` requires a wider `evm.init` signature
+- current `HEAD` still has no executable `--config` loader path, so the settled loader-failure contract is documented here but not yet exercised by the binary
+- these docs define the intended config contract, not the current implementation boundary
+
+## Traceability
+
+- Source IDs: `PROC-01`, `HEAD-01`, `BOOT-01`, `BOOT-04`, `BOOT-05`, `BOOT-06`, `BOOT-07`, `BOOT-08`, `LIGHT-03`
+- Contradiction IDs: `C-001`, `C-002`, `C-010`, `C-011`
+- Question IDs: `Q-005`
+- Internal support docs: `startup-and-configuration.md`
+- Notes: Default startup behavior is separate from config-file shape; the config file still requires exactly one runtime branch.
+
+## Related Pages
 
 - [Trusted-Mode Configuration](./trusted-mode)
 - [Light-Mode Configuration](./light-mode)
+- [Run Trusted Mode](../../quickstart/run-trusted-mode)
+- [Forked Dev Node](../../quickstart/forked-dev-node)

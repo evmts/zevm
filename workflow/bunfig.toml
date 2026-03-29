@@ -1,1 +1,1 @@
-preload = ["/Users/williamcory/super-ralph/preload.ts"]
+preload = ["./preload.ts"]

@@ -16,8 +16,9 @@
     {
       "group": "Quickstart",
       "pages": [
+        "quickstart/installation",
         "quickstart/run-trusted-mode",
-        "quickstart/connect-json-rpc"
+        "quickstart/forked-dev-node"
       ]
     },
     {
@@ -26,7 +27,9 @@
         "concepts/runtime-modes",
         "concepts/trusted-mode",
         "concepts/light-mode",
-        "concepts/state-forking-and-snapshots"
+        "concepts/state-fork-and-snapshots",
+        "concepts/method-support-by-mode",
+        "concepts/architecture-and-upstream-ownership"
       ]
     },
     {
@@ -41,11 +44,13 @@
       "group": "JSON-RPC Reference",
       "pages": [
         "reference/json-rpc/overview",
-        "reference/json-rpc/trusted-reads",
-        "reference/json-rpc/execution-and-submission",
-        "reference/json-rpc/canonical-queries",
+        "reference/json-rpc/core-reads",
+        "reference/json-rpc/simulation",
+        "reference/json-rpc/transactions-and-mining",
+        "reference/json-rpc/blocks-receipts-and-logs",
         "reference/json-rpc/dev-controls",
-        "reference/json-rpc/deferred-surfaces"
+        "reference/json-rpc/verified-light-mode-reads",
+        "reference/json-rpc/unsupported-and-deferred"
       ]
     }
   ]

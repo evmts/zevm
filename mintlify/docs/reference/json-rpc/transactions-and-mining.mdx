@@ -1,0 +1,181 @@
+---
+title: Transactions And Mining
+description: Exact trusted-mode transaction submission, pool management, and mining controls.
+---
+
+import TrustedManagedWallet from '../../_snippets/trusted-managed-wallet.mdx'
+
+# Transactions And Mining
+
+## Intended Contract
+
+This page is the exact trusted-mode contract for transaction submission, txpool control, manual mining, block-time controls, and fork-source resets.
+
+State mutation, snapshots, impersonation, funding helpers, and node metadata live on the companion `ZEVM Controls` page.
+
+Rules:
+
+- every method on this page is trusted-mode only; the canonical `zevm_*` name and every accepted alias fail with `-32010` in light mode
+- accepted compatibility aliases are closed-world and share ZEVM params, return payloads, mode gating, and error behavior exactly
+- alias names do not preserve foreign return-shape quirks; for example, `evm_mine` returns the ZEVM `zevm_mine` result, which is JSON boolean `true`
+- if a method or alias is not listed on this page, it is not part of this surface and fails with `-32601`
+- malformed request objects, malformed tuple lengths, malformed quantities, malformed hashes, malformed addresses, and malformed URLs fail with `-32602`
+- unexpected internal failures use `-32603`
+
+### Common Types
+
+| Type | Exact contract |
+| --- | --- |
+| `QuantityHex` | `0x`-prefixed unsigned integer with no leading zero padding except `0x0` |
+| `Address` | `0x`-prefixed 20-byte hex address |
+| `Hash32` | `0x`-prefixed 32-byte hex value |
+| `HexData` | `0x`-prefixed hex byte string, including `0x` for empty bytes |
+
+### `TransactionRequest`
+
+`eth_sendTransaction` accepts this exact request object:
+
+```json
+{
+  "from": "0x...",
+  "to": "0x...",
+  "gas": "0x...",
+  "gasPrice": "0x...",
+  "value": "0x...",
+  "nonce": "0x...",
+  "data": "0x...",
+  "input": "0x..."
+}
+```
+
+Allowed fields:
+
+| Field | Type | Rule |
+| --- | --- | --- |
+| `from` | `Address` | required for `eth_sendTransaction` |
+| `to` | `Address` or `null` | omit or use `null` for contract creation |
+| `gas` | `QuantityHex` | optional |
+| `gasPrice` | `QuantityHex` | optional |
+| `value` | `QuantityHex` | optional |
+| `nonce` | `QuantityHex` | optional |
+| `data` | `HexData` | optional |
+| `input` | `HexData` | optional alias of `data` |
+
+Rules:
+
+- `data` and `input` may both be omitted
+- if both `data` and `input` are present, they must be byte-for-byte equal or the request fails with `-32602`
+- any field not listed above is invalid in the phase-1 ZEVM contract and fails with `-32602`
+- `eth_sendTransaction` may sign only for the 10 managed trusted-mode accounts unless impersonation is active
+
+## Managed Accounts
+
+The exact managed-wallet contract used by `eth_sendTransaction`, `eth_accounts`, `eth_coinbase`, and `coinbaseIndex` is part of this surface.
+
+<TrustedManagedWallet />
+
+### `MinedBlockSummary`
+
+`zevm_mineDetailed` and `anvil_mineDetailed` return one object per mined block using this exact shape:
+
+```json
+{
+  "number": "0x1",
+  "hash": "0x...",
+  "timestamp": "0x1"
+}
+```
+
+Field rules:
+
+- `number`: `QuantityHex`
+- `hash`: `Hash32`
+- `timestamp`: `QuantityHex`
+
+### `ForkConfig`
+
+`zevm_reset` accepts only these exact fork-config shapes:
+
+- `null`
+- `{ "url": "https://..." }`
+- `{ "url": "https://...", "blockNumber": "0x..." }`
+
+Rules:
+
+- `url` is required when `forkConfig` is an object
+- `blockNumber` is optional and remains a `QuantityHex`
+- `chainId` remains a trusted-mode setting and is not inferred from `fork.url`
+- these controls change the upstream fork source; they do not change trusted mode into light mode
+
+## Transaction Submission
+
+| Canonical method | Exact params | Exact result | Accepted aliases | Exact errors |
+| --- | --- | --- | --- | --- |
+| `eth_sendTransaction` | `[tx]` where `tx` is the exact `TransactionRequest` object above | `Hash32` tx hash | none | `-32602` for malformed tx object; `-32603` for unmanaged account, nonce mismatch, insufficient balance, intrinsic gas failure, or signing failure |
+| `eth_sendRawTransaction` | `[rawTx]` where `rawTx` is `HexData` | `Hash32` tx hash | none | `-32602` for malformed hex or decode failure; `-32603` for chain-id mismatch, nonce mismatch, insufficient balance, or intrinsic gas failure |
+
+Rules:
+
+- `eth_sendRawTransaction` accepts a pre-signed raw transaction
+- these submission methods are trusted-mode only even though they use the standard `eth_*` namespace
+
+## Mining And Txpool Control
+
+| Canonical method | Exact params | Exact result | Accepted aliases | Exact errors |
+| --- | --- | --- | --- | --- |
+| `zevm_getAutomine` | `[]` or omitted | JSON boolean | `anvil_getAutomine`, `hardhat_getAutomine` | `-32602` for non-empty params |
+| `zevm_setAutomine` | `[enabled]` where `enabled` is boolean | `true` | `anvil_setAutomine`, `evm_setAutomine` | `-32602` for malformed boolean |
+| `zevm_getIntervalMining` | `[]` or omitted | `QuantityHex` seconds; `0x0` means disabled | `anvil_getIntervalMining` | `-32602` for non-empty params |
+| `zevm_setIntervalMining` | `[seconds]` where `seconds` is `QuantityHex` | `true` | `anvil_setIntervalMining`, `evm_setIntervalMining` | `-32602` for malformed quantity |
+| `zevm_mine` | `[]`, `[count]`, or `[count, intervalSeconds]`, where `count` and `intervalSeconds` are `QuantityHex` | `true` | `anvil_mine`, `hardhat_mine`, `evm_mine` | `-32602` for malformed tuple length or quantity |
+| `zevm_mineDetailed` | `[]`, `[count]`, or `[count, intervalSeconds]`, where `count` and `intervalSeconds` are `QuantityHex` | array of `MinedBlockSummary` | `anvil_mineDetailed` | `-32602` for malformed tuple length or quantity |
+| `zevm_dropTransaction` | `[transactionHash]` where `transactionHash` is `Hash32` | JSON boolean | `anvil_dropTransaction`, `hardhat_dropTransaction` | `-32602` for malformed hash |
+| `zevm_dropAllTransactions` | `[]` or omitted | `QuantityHex` removed-count | `anvil_dropAllTransactions` | `-32602` for non-empty params |
+| `zevm_removePoolTransactions` | `[transactionHashes]` where `transactionHashes` is an array of `Hash32` | `QuantityHex` removed-count | `anvil_removePoolTransactions` | `-32602` for malformed hash array |
+
+Rules:
+
+- `[]` or omitted for `zevm_mine` and `zevm_mineDetailed` mines exactly one block
+- `[count]` mines exactly `count` consecutive blocks
+- `[count, intervalSeconds]` mines exactly `count` consecutive blocks and applies `intervalSeconds` as the timestamp spacing between the produced blocks
+- `zevm_mineDetailed` returns one `MinedBlockSummary` per mined block
+- `zevm_dropTransaction` returns `false` when the target transaction is not in the pool
+- `zevm_setIntervalMining(["0x0"])` disables interval mining and leaves trusted mode in non-interval operation
+
+## Block Environment And Time Control
+
+| Canonical method | Exact params | Exact result | Accepted aliases | Exact errors |
+| --- | --- | --- | --- | --- |
+| `zevm_setCoinbase` | `[address]` where `address` is `Address` | `true` | `anvil_setCoinbase`, `hardhat_setCoinbase` | `-32602` for malformed address |
+| `zevm_setBlockGasLimit` | `[gasLimit]` where `gasLimit` is `QuantityHex` | `true` | `anvil_setBlockGasLimit`, `evm_setBlockGasLimit` | `-32602` for malformed quantity |
+| `zevm_setNextBlockBaseFeePerGas` | `[baseFee]` where `baseFee` is `QuantityHex` | `true` | `anvil_setNextBlockBaseFeePerGas`, `hardhat_setNextBlockBaseFeePerGas` | `-32602` for malformed quantity |
+| `zevm_setMinGasPrice` | `[gasPrice]` where `gasPrice` is `QuantityHex` | `true` | `anvil_setMinGasPrice`, `hardhat_setMinGasPrice` | `-32602` for malformed quantity |
+| `zevm_increaseTime` | `[seconds]` where `seconds` is `QuantityHex` | `QuantityHex` new accumulated time offset | `anvil_increaseTime`, `evm_increaseTime` | `-32602` for malformed quantity |
+| `zevm_setNextBlockTimestamp` | `[timestamp]` where `timestamp` is `QuantityHex` | `true` | `anvil_setNextBlockTimestamp`, `evm_setNextBlockTimestamp` | `-32602` for malformed quantity |
+| `zevm_setTime` | `[timestamp]` where `timestamp` is `QuantityHex` | `QuantityHex` effective current timestamp | `anvil_setTime` | `-32602` for malformed quantity |
+| `zevm_setBlockTimestampInterval` | `[seconds]` where `seconds` is `QuantityHex` | `true` | `anvil_setBlockTimestampInterval` | `-32602` for malformed quantity |
+| `zevm_removeBlockTimestampInterval` | `[]` or omitted | `true` | `anvil_removeBlockTimestampInterval` | `-32602` for non-empty params |
+
+## Fork-Source Control
+
+| Canonical method | Exact params | Exact result | Accepted aliases | Exact errors |
+| --- | --- | --- | --- | --- |
+| `zevm_reset` | `[]` or omitted, or `[forkConfig]` where `forkConfig` is the exact `ForkConfig` contract above | `true` | `anvil_reset`, `hardhat_reset` | `-32602` for malformed fork config |
+| `zevm_setRpcUrl` | `[url]` where `url` is an HTTP(S) string | `true` | `anvil_setRpcUrl` | `-32602` for malformed URL |
+
+## Current HEAD As Of 2026-03-29
+
+- `zig build` fails first in `src/rpc/server.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope`, and `zig build test` fails in `src/rpc/dispatcher_test.zig`, `src/rpc/server.zig`, and `src/tx_processor.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope` and current `guillotine-mini` requires a wider `evm.init` signature
+- the active executable path in `src/main.zig` passes CLI args only to `src/rpc/server.zig`, and `parseConfig` there recognizes only `--host` and `--port`
+- the live server path starts with an empty `HandlerRegistry` in `src/main.zig`, so the listener does not register `zevm_*`, `anvil_*`, `hardhat_*`, `evm_*`, `eth_sendTransaction`, or `eth_sendRawTransaction`
+- `src/rpc/dispatcher.zig` returns `-32601` when no handler is registered, so the live listener does not currently expose the contract documented on this page
+- `src/rpc/handlers/tx_submission.zig` contains transaction-submission helpers and tests, but those helpers are not wired into the live HTTP path
+- `src/rpc/handlers/tx_submission.zig` expects runtime members such as `rt.pool`, `rt.mining_mode`, and `runtime.NodeRuntime.lookupManagedAccount`, while `src/node/runtime.zig` does not expose those members on the active runtime type, so those helpers are not the authoritative live-listener implementation
+
+## Traceability
+
+- Source IDs: `AUTH-02`, `PROC-01`, `HEAD-01`, `TRUST-03`, `TRUST-07`, `TRUST-11`
+- Contradiction IDs: `C-002`, `C-006`, `C-008`, `C-009`
+- Question IDs: -
+- Internal support docs: `trusted-mode-semantics.md`, `state-fork-and-snapshot-semantics.md`, `rpc-support-matrix.md`
+- Notes: Self-contained exact trusted-mode submission, mining, pool, and fork-control contract with the fixed accepted alias inventory.

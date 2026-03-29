@@ -3,13 +3,17 @@ title: Light-Mode Configuration
 description: Exact light-mode flags, config fields, checkpoint contract, and validation rules.
 ---
 
-import CurrentHeadNote from '../../_snippets/current-head-note.mdx'
-
 # Light-Mode Configuration
 
-<CurrentHeadNote />
+## Intended Behavior
 
-## Exact Fields
+Default startup remains trusted mode; `mode.light` is explicit.
+
+CLI `--mode light` can itself select light mode. If a config file already selects `mode.light`, `--mode light` is optional and may confirm that branch, but it may not conflict with it.
+
+If `--config` points to a missing file, an unreadable file, or malformed JSON, ZEVM fails startup before opening the listener, exits non-zero, reports an operator-facing error that names the path and failure class, and does not fall back to defaults.
+
+### Exact Fields
 
 | CLI flag | Config field | Default |
 | --- | --- | --- |
@@ -20,7 +24,21 @@ import CurrentHeadNote from '../../_snippets/current-head-note.mdx'
 | `--max-checkpoint-age-seconds` | `mode.light.maxCheckpointAgeSeconds` | `1209600` |
 | `--strict-checkpoint-age` | `mode.light.strictCheckpointAge` | `false` |
 
-## Checkpoint Precedence
+`--network` and `mode.light.network` accept only `mainnet`, `sepolia`, or `holesky`. Any other value is invalid and fails startup before ZEVM listens.
+
+`maxCheckpointAgeSeconds` must be a valid `u64`. Malformed or out-of-range integer literals fail startup before ZEVM listens.
+
+`strictCheckpointAge` is a boolean. `checkpoint` must be a `0x`-prefixed 32-byte hex string when provided.
+
+### Allowed Network Values
+
+| Value | Chain ID | Default checkpoint dir |
+| --- | --- | --- |
+| `mainnet` | `1` | `.zevm/checkpoints/mainnet` |
+| `sepolia` | `11155111` | `.zevm/checkpoints/sepolia` |
+| `holesky` | `17000` | `.zevm/checkpoints/holesky` |
+
+### Checkpoint Precedence
 
 Light mode selects its checkpoint in this order:
 
@@ -28,9 +46,9 @@ Light mode selects its checkpoint in this order:
 2. persisted checkpoint from `checkpointDir/checkpoint`
 3. baked network default
 
-## Persisted Checkpoint Contract
+### Persisted Checkpoint Contract
 
-The persisted checkpoint file is part of the intended startup contract:
+The persisted checkpoint file is part of the startup contract:
 
 - path: `checkpointDir/checkpoint`
 - contents: exactly 64 hex characters
@@ -38,25 +56,28 @@ The persisted checkpoint file is part of the intended startup contract:
 - surrounding whitespace is ignored when loading
 - malformed persisted data is a startup failure
 
-## Baked Network Defaults
+### Baked Network Defaults
 
-| Network | Chain ID | Default checkpoint |
-| --- | --- | --- |
-| `mainnet` | `1` | `0x9b41a80f58c52068a00e8535b8d6704769c7577a5fd506af5e0c018687991d55` |
-| `sepolia` | `11155111` | `0x4065c2509eaa15dbe60e1f80cff5205a532aa95aaa1d73c1c286f7f8535555d4` |
-| `holesky` | `17000` | `0xe1f575f0b691404fe82cce68a09c2c98af197816de14ce53c0fe9f9bd02d2399` |
+ZEVM ships baked default checkpoints for `mainnet`, `sepolia`, and `holesky`, and those defaults participate in precedence after explicit and persisted checkpoints.
 
-## Validation Rules
+The public contract does not freeze the exact literal default hashes. Current code may update those implementation defaults in `src/consensus_sync.zig` without changing the public compatibility contract, as long as baked defaults still exist and obey the documented precedence rules.
+
+### Validation Rules
 
 ZEVM fails startup when:
 
+- an unknown CLI flag is supplied
+- `network` is outside `mainnet`, `sepolia`, or `holesky`
 - `consensusRpcUrl` is missing in light mode
+- `maxCheckpointAgeSeconds` uses an invalid or out-of-range integer literal
 - a trusted-mode-only field is supplied
 - `checkpoint` is not a `0x`-prefixed 32-byte hex string
 - the persisted checkpoint file is malformed
-- the selected checkpoint is too old and `strictCheckpointAge = true`
+- the selected checkpoint age is greater than `maxCheckpointAgeSeconds` and `strictCheckpointAge = true`
 
-## Example
+When `strictCheckpointAge = false`, a stale checkpoint emits a warning and startup continues. A checkpoint whose age is exactly `maxCheckpointAgeSeconds` is still valid by contract, even though the current helper code still treats equality as stale.
+
+### Example
 
 ```json
 {
@@ -77,8 +98,20 @@ ZEVM fails startup when:
 }
 ```
 
-## Current Repo State
+## Current HEAD As Of 2026-03-29
 
-- `src/consensus_sync.zig` already exposes baked network defaults and age-policy fields
-- `src/checkpoint.zig` already exposes the persisted filename and 64-hex format
-- no executable startup path currently exposes this light-mode config contract
+On March 29, 2026, current `HEAD` still has these constraints:
+
+- `src/main.zig` does not expose a light-mode startup branch yet
+- the executable path does not wire network selection, checkpoint persistence, or readiness gating
+- the checkpoint helpers and consensus sync helpers exist, but they are not surfaced through startup
+- the exact baked default checkpoint hashes visible in `src/consensus_sync.zig` are current implementation defaults, not a public API guarantee
+- `zig build` fails first in `src/rpc/server.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope`, and `zig build test` fails in `src/rpc/dispatcher_test.zig`, `src/rpc/server.zig`, and `src/tx_processor.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope` and current `guillotine-mini` requires a wider `evm.init` signature
+
+## Traceability
+
+- Source IDs: `PROC-01`, `HEAD-01`, `BOOT-03`, `BOOT-04`, `BOOT-05`, `BOOT-06`, `BOOT-08`, `LIGHT-01`, `LIGHT-02`, `LIGHT-03`, `LIGHT-06`
+- Contradiction IDs: `C-001`, `C-002`, `C-011`
+- Question IDs: `Q-005`
+- Internal support docs: `startup-and-configuration.md`, `light-mode-semantics.md`
+- Notes: Default startup remains trusted when startup inputs do not select a mode; CLI `--mode light` can itself select light mode, config plus CLI must agree when both are present, and baked defaults participate in precedence without freezing literal hashes as public contract.

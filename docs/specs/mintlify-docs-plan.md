@@ -1,78 +1,150 @@
 # ZEVM Mintlify Docs Plan
 
-Last updated: 2026-03-21
+Last updated: 2026-03-29
 
-## Scope
+## Authority
 
-This plan covers the public Mintlify docs tree plus the supporting control docs that keep it auditable.
-
-Authoritative order:
+Hard source hierarchy for this docs pass:
 
 1. `docs/specs/prd.md`
 2. `docs/specs/docs-first-process.md`
-3. `src/` and tests
-4. `docs/issues/*`, `docs/context/*`, `docs/plans/*`, `PROGRESS.md`
+3. `src/` and tests as contradiction detector only
+4. `docs/issues/*`, `docs/context/*`, `docs/plans/*`, `PROGRESS.md` as non-normative evidence only
 
-## Public Page Set
+This is docs-only work. Existing Mintlify pages and older review artifacts are audit inputs, not normative authority. Repo-local control docs such as `docs/specs/maintainer-decisions.md` and `docs/specs/json-rpc-contract.md` are support-layer inputs that may backfill exact detail or record an explicit contradiction plus public-doc stance, but they must not silently override the hierarchy above.
 
-The public tree is the 16-page navigation listed in `mintlify/mint.json`:
+## Repo Baseline
 
+- `git status --short` on `2026-03-29`: dirty worktree with docs/control changes plus Mintlify IA additions, removals, and renames
+- `zig build` on `2026-03-29`: failed first in `src/rpc/server.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope`
+- `zig build test` on `2026-03-29`: failed in `src/rpc/dispatcher_test.zig` and `src/rpc/server.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope`, and in `src/tx_processor.zig` because current `guillotine-mini` requires a wider `evm.init` signature
+- dated failure themes:
+  - current upstream `jsonrpc` no longer exposes `jsonrpc.envelope`, but ZEVM server and dispatcher tests still reference it
+  - current `guillotine-mini` expects a wider `evm.init` signature than ZEVM currently passes from `src/tx_processor.zig`
+  - `src/main.zig` still only wires `src/rpc/server.zig.parseConfig`, and `parseConfig` still only accepts `--host` and `--port`
+- secondary evidence inspected: `docs/issues/*`, `docs/context/*`, `docs/plans/*`, `PROGRESS.md`
+
+## Surface Classification
+
+- docs governance and evidence hierarchy: `aligned`
+- integration-shell or upstream-ownership boundary: `contradiction`
+- startup, mode selection, and shared config contract: `prototype gap`
+- exact `--config` loader failure behavior for missing file, unreadable file, and malformed JSON: `prototype gap`
+- trusted-mode config JSON subshapes for non-auto mining and non-null fork config: `prototype gap`
+- canonical HTTP JSON-RPC transport and notifications: `contradiction`
+- exact empty-batch `[]` transport behavior: `contradiction`
+- trusted core reads: `contradiction`
+- trusted simulation: `prototype gap`
+- transaction submission and mining runtime: `contradiction`
+- canonical block, receipt, log, and tx queries: `contradiction`
+- snapshot boundary and nonstandard dev controls: `contradiction`
+- exact nonstandard dev-control method inventory and alias policy: `contradiction`
+- light-mode startup, status, and verified reads: `prototype gap`
+- exact light-mode `eth_blockNumber` meaning and while-not-ready behavior: `prototype gap`
+- checkpoint file contract: `prototype gap`
+- checkpoint-age equality boundary and light-mode selector semantics: `contradiction`
+- tracing, filter lifecycle APIs beyond `eth_getLogs`, subscriptions, and WebSocket transport: `deferred`
+
+See `docs/specs/source-evidence-matrix.md` for claim-by-claim evidence, `docs/specs/contradiction-inventory.md` for mismatches, and `docs/specs/open-questions.md` for the March 29 closed-question record.
+
+## Target Public Tree
+
+Required Mintlify tree for this pass:
+
+- `mintlify/mint.json`
 - `mintlify/docs/index.mdx`
+- `mintlify/docs/quickstart/installation.mdx`
 - `mintlify/docs/quickstart/run-trusted-mode.mdx`
-- `mintlify/docs/quickstart/connect-json-rpc.mdx`
+- `mintlify/docs/quickstart/forked-dev-node.mdx`
 - `mintlify/docs/concepts/runtime-modes.mdx`
 - `mintlify/docs/concepts/trusted-mode.mdx`
 - `mintlify/docs/concepts/light-mode.mdx`
-- `mintlify/docs/concepts/state-forking-and-snapshots.mdx`
+- `mintlify/docs/concepts/state-fork-and-snapshots.mdx`
+- `mintlify/docs/concepts/method-support-by-mode.mdx`
+- `mintlify/docs/concepts/architecture-and-upstream-ownership.mdx`
 - `mintlify/docs/reference/configuration/overview.mdx`
 - `mintlify/docs/reference/configuration/trusted-mode.mdx`
 - `mintlify/docs/reference/configuration/light-mode.mdx`
 - `mintlify/docs/reference/json-rpc/overview.mdx`
-- `mintlify/docs/reference/json-rpc/trusted-reads.mdx`
-- `mintlify/docs/reference/json-rpc/execution-and-submission.mdx`
-- `mintlify/docs/reference/json-rpc/canonical-queries.mdx`
+- `mintlify/docs/reference/json-rpc/core-reads.mdx`
+- `mintlify/docs/reference/json-rpc/simulation.mdx`
+- `mintlify/docs/reference/json-rpc/transactions-and-mining.mdx`
+- `mintlify/docs/reference/json-rpc/blocks-receipts-and-logs.mdx`
 - `mintlify/docs/reference/json-rpc/dev-controls.mdx`
-- `mintlify/docs/reference/json-rpc/deferred-surfaces.mdx`
+- `mintlify/docs/reference/json-rpc/verified-light-mode-reads.mdx`
+- `mintlify/docs/reference/json-rpc/unsupported-and-deferred.mdx`
+- `mintlify/docs/_snippets/*`
 
-Shared public assets:
+## IA Migration From The Legacy Tree
 
-- `mintlify/mint.json`
-- `mintlify/docs/_snippets/current-head-note.mdx`
-- `mintlify/docs/_snippets/trusted-managed-wallet.mdx`
+- retire `mintlify/docs/quickstart/connect-json-rpc.mdx`; move transport semantics into `mintlify/docs/reference/json-rpc/overview.mdx`
+- split `mintlify/docs/reference/json-rpc/trusted-reads.mdx` into `core-reads.mdx` plus `concepts/method-support-by-mode.mdx`
+- split `mintlify/docs/reference/json-rpc/execution-and-submission.mdx` into `simulation.mdx` plus `transactions-and-mining.mdx`
+- rename `mintlify/docs/reference/json-rpc/canonical-queries.mdx` to `blocks-receipts-and-logs.mdx`
+- rename `mintlify/docs/reference/json-rpc/deferred-surfaces.mdx` to `unsupported-and-deferred.mdx`
+- add new required pages:
+  - `mintlify/docs/quickstart/installation.mdx`
+  - `mintlify/docs/quickstart/forked-dev-node.mdx`
+  - `mintlify/docs/concepts/method-support-by-mode.mdx`
+  - `mintlify/docs/concepts/architecture-and-upstream-ownership.mdx`
+  - `mintlify/docs/reference/json-rpc/verified-light-mode-reads.mdx`
 
-## Drafting Rules
+## Worker Slices
 
-- public docs describe the intended ZEVM contract exactly
-- public docs keep intended behavior separate from current `HEAD`
-- public docs do not silently narrow the contract just because `HEAD` is incomplete
-- repeated dated current-state caveats live in shared snippets where possible
+- `contract-core-slice`
+  - `docs/specs/internal/phase-1-product-shape.md`
+  - `docs/specs/internal/upstream-ownership-and-boundaries.md`
+  - `mintlify/docs/index.mdx`
+  - `mintlify/docs/concepts/architecture-and-upstream-ownership.mdx`
+- `startup-config-slice`
+  - `docs/specs/internal/startup-and-configuration.md`
+  - `mintlify/docs/quickstart/installation.mdx`
+  - `mintlify/docs/quickstart/run-trusted-mode.mdx`
+  - `mintlify/docs/quickstart/forked-dev-node.mdx`
+  - `mintlify/docs/reference/configuration/overview.mdx`
+  - `mintlify/docs/reference/configuration/trusted-mode.mdx`
+  - `mintlify/docs/reference/configuration/light-mode.mdx`
+- `modes-slice`
+  - `docs/specs/internal/runtime-modes-and-boundaries.md`
+  - `docs/specs/internal/trusted-mode-semantics.md`
+  - `docs/specs/internal/light-mode-semantics.md`
+  - `docs/specs/internal/state-fork-and-snapshot-semantics.md`
+  - `mintlify/docs/concepts/runtime-modes.mdx`
+  - `mintlify/docs/concepts/trusted-mode.mdx`
+  - `mintlify/docs/concepts/light-mode.mdx`
+  - `mintlify/docs/concepts/state-fork-and-snapshots.mdx`
+  - `mintlify/docs/concepts/method-support-by-mode.mdx`
+- `rpc-slice`
+  - `docs/specs/internal/rpc-support-matrix.md`
+  - `docs/specs/internal/transport-and-error-semantics.md`
+  - `mintlify/docs/reference/json-rpc/overview.mdx`
+  - `mintlify/docs/reference/json-rpc/core-reads.mdx`
+  - `mintlify/docs/reference/json-rpc/simulation.mdx`
+  - `mintlify/docs/reference/json-rpc/transactions-and-mining.mdx`
+  - `mintlify/docs/reference/json-rpc/blocks-receipts-and-logs.mdx`
+  - `mintlify/docs/reference/json-rpc/dev-controls.mdx`
+  - `mintlify/docs/reference/json-rpc/verified-light-mode-reads.mdx`
+  - `mintlify/docs/reference/json-rpc/unsupported-and-deferred.mdx`
 
-## Control-Doc Requirements
+Shared-file ownership stays in the main thread for all `docs/specs/*` control docs, `mintlify/mint.json`, and `mintlify/docs/_snippets/*`.
 
-Every public-doc pass must keep these files in sync:
+## Gate Status
 
-- `docs/specs/source-evidence-matrix.md`
-- `docs/specs/public-docs-sources.md`
-- `docs/specs/page-ownership.md`
-- `docs/specs/contradiction-inventory.md`
-- `docs/specs/open-questions.md`
-- `docs/specs/maintainer-decisions.md`
-- `docs/specs/final-risk-report.md`
+These gates measure documentation-control completeness, not runnable-product readiness. Current `HEAD` remains red under `C-002`.
 
-## Gate Conditions
-
-The documentation-control gate passes only if:
-
-- every public page maps to source IDs
-- every referenced contradiction ID exists
-- every referenced question ID exists
-- public docs use the same contract language as the PRD
-- notification semantics are consistent across public, internal, and control docs
-- trusted-mode tag semantics are consistent across public, internal, and control docs
-- light-mode status and checkpoint precedence are consistent across public, internal, and control docs
-- shared snippets are actually used for repeated dated caveats unless there is a documented reason not to
-
-## Current Gate Result
-
-- documentation-control gate on 2026-03-21: pass
-- shipment gate on 2026-03-21: fail, because current `HEAD` does not yet satisfy the documented contract
+- Gate A: `pass`
+  - authority order now matches the PRD-first audit hierarchy, support docs no longer claim silent override power, and the former semantic blockers are now settled in the authority layer through `DEC-021`, `DEC-022`, and `DEC-023`
+  - the exact phase-1 JSON-RPC contract is backfilled in `docs/specs/json-rpc-contract.md` as a subordinate support artifact
+- Gate B: `pass`
+  - page ownership is frozen in `docs/specs/page-ownership.md`
+  - shared traceability is aligned across the matrix, public source map, page ownership, contradiction inventory, open questions, shared public artifacts, and the page-local blocks updated in this pass, including the earlier `BOOT-02` drift on `mintlify/docs/concepts/trusted-mode.mdx`
+- Gate C: `pass`
+  - supported-surface public JSON-RPC reference pages are self-contained exact contracts where higher-order authority settles semantics
+  - concept pages summarize directly and point to those public reference pages instead of outsourcing contract detail to internal docs, and the former `Q-004` / `Q-005` / `Q-006` surfaces now publish the settled contract directly
+- Gate D: `pass`
+  - the full required Mintlify tree is present
+  - canonical nonstandard method naming is `zevm_*`
+  - deferred-filter wording now explicitly excludes `eth_getLogs`, required shared artifacts are mapped, and the transport plus config surfaces now separate the exact settled contract from the remaining current-`HEAD` contradictions
+- Gate E: `pass`
+  - merged reconciliation reran on source IDs, contradiction IDs, question IDs, affected-page lists, dates, terminology, shared public artifacts, and self-contained reference-page claims
+  - the closed-question audit trail is linked through `Q-001` / `DEC-010`, `Q-002` / `DEC-011`, `Q-003` / `DEC-019`, `Q-004` / `DEC-021`, `Q-005` / `DEC-022`, and `Q-006` / `DEC-023`, and the baked-checkpoint policy is recorded in `DEC-020`

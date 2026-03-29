@@ -1,0 +1,39 @@
+---
+title: Unsupported And Deferred
+description: JSON-RPC and transport surfaces intentionally deferred beyond the first deliveries.
+---
+
+# Unsupported And Deferred
+
+This page tracks surfaces that remain intentionally out of scope for the trusted-mode and light-mode contracts already defined elsewhere. `eth_getLogs` is not part of this deferred set; it is supported in trusted mode and documented on the blocks, receipts, and logs page.
+
+## Intended Contract
+
+The deferred set includes:
+
+- debug tracing: `debug_traceCall`, `debug_traceTransaction`
+- filter lifecycle APIs beyond `eth_getLogs`: `eth_newFilter`, `eth_getFilterChanges`, `eth_getFilterLogs`, `eth_uninstallFilter`, `eth_newBlockFilter`, `eth_newPendingTransactionFilter`
+- subscriptions: `eth_subscribe`, `eth_unsubscribe`
+- WebSocket transport
+- advanced helpers: `zevm_enableTraces`, `zevm_addCompilationResult`, `zevm_setPrevRandao`
+- accepted deferred aliases for those advanced helpers: `anvil_enableTraces`, `hardhat_addCompilationResult`, `hardhat_setLoggingEnabled`, and `hardhat_setPrevRandao`
+
+`hardhat_setLoggingEnabled` is treated as the deferred compatibility alias for `zevm_enableTraces`.
+
+This page intentionally does not define request tuples, return payloads, or error details for those deferred surfaces.
+
+Deferred does not mean forgotten. It means the surface exists in the product plan, but it is not part of the first shipping trusted-mode or light-mode contracts.
+
+## Current HEAD As Of 2026-03-29
+
+- `zig build` fails first in `src/rpc/server.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope`, and `zig build test` fails in `src/rpc/dispatcher_test.zig`, `src/rpc/server.zig`, and `src/tx_processor.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope` and current `guillotine-mini` requires a wider `evm.init` signature
+- no shipping tracing, filter lifecycle, subscription, WebSocket, or advanced-helper surface is exposed on current `HEAD`
+- these families remain deferred plan surfaces rather than partially supported public contract pages
+
+## Traceability
+
+- Source IDs: `AUTH-02`, `PROC-01`, `HEAD-01`, `DEFER-01`
+- Contradiction IDs: `C-002`
+- Question IDs: -
+- Internal support docs: `rpc-support-matrix.md`, `phase-1-product-shape.md`
+- Notes: Reserved for intentionally unsupported or later-scope surfaces, not prototype gaps elsewhere in the current repository.

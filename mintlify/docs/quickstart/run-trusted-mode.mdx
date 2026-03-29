@@ -3,48 +3,78 @@ title: Run Trusted Mode
 description: Exact trusted-mode startup commands, defaults, and repo gaps.
 ---
 
-import CurrentHeadNote from '../_snippets/current-head-note.mdx'
 import TrustedManagedWallet from '../_snippets/trusted-managed-wallet.mdx'
 
 # Run Trusted Mode
 
-Trusted mode is the default ZEVM startup path.
+Trusted mode is the default ZEVM runtime. The source-build contract installs `zevm` to `./zig-out/bin/zevm`.
 
-<CurrentHeadNote />
+## Current HEAD As Of 2026-03-29
 
-## Intended Startup Commands
+- `zig build` currently fails first in `src/rpc/server.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope`
+- `zig build test` currently fails in `src/rpc/dispatcher_test.zig`, `src/rpc/server.zig`, and `src/tx_processor.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope` and current `guillotine-mini` requires a wider `evm.init` signature
+- `src/rpc/server.zig.parseConfig` still only parses `--host` and `--port`
+- there is no executable trusted-mode startup path yet
+- mining, fork startup, and managed-account startup are not wired through the executable path
+- core-read helpers still carry live `C-004` contradictions, including placeholder `eth_getCode`, malformed-slot handling in `eth_getStorageAt`, and synthetic `eth_feeHistory`
+- `src/node/runtime.zig` and `src/genesis.zig` still disagree with the published managed-wallet contract
+- the commands and first-call examples below are contract examples only; current `HEAD` does not run them on March 29, 2026
 
-Default trusted-mode startup:
+## Intended Behavior
 
-```bash
-zevm
-```
+Trusted mode is the writable local dev-node runtime. Its canonical nonstandard methods are `zevm_*`, and the accepted compatibility aliases are documented in the repo-local reference pages.
 
-Equivalent explicit startup:
+### Intended Startup
 
-```bash
-zevm --mode trusted --host 127.0.0.1 --port 8545
-```
-
-Trusted mode with manual mining:
-
-```bash
-zevm --mode trusted --mining manual
-```
-
-Trusted mode with interval mining:
+Trusted mode starts by default:
 
 ```bash
-zevm --mode trusted --mining interval --block-time 12
+./zig-out/bin/zevm
 ```
 
-Trusted mode with fork backing:
+The equivalent explicit startup is:
 
 ```bash
-zevm --mode trusted --fork-url https://rpc.example --fork-block-number 22000000
+./zig-out/bin/zevm --mode trusted --host 127.0.0.1 --port 8545
 ```
 
-## Intended Defaults
+If a config file already selects `mode.trusted`, `--mode trusted` is optional and only confirms the branch.
+
+Trusted mode also accepts the phase-1 development flags defined by the PRD:
+
+```bash
+./zig-out/bin/zevm --mode trusted --mining manual
+```
+
+```bash
+./zig-out/bin/zevm --mode trusted --mining interval --block-time 12
+```
+
+```bash
+./zig-out/bin/zevm --mode trusted --fork-url https://rpc.example --fork-block-number 22000000
+```
+
+### Mining Modes
+
+`--mining` maps to `mode.trusted.mining`:
+
+- `auto` uses automatic block production
+- `manual` mines only when requested
+- `interval` requires `--block-time <seconds>`
+
+`--block-time` is only valid with `--mining interval`.
+`--mining interval` without `--block-time` fails startup.
+
+### Forked Startup
+
+Forking stays inside trusted mode and does not change `chainId`.
+
+- `--fork-url` mirrors `mode.trusted.fork.url`
+- `--fork-block-number` mirrors `mode.trusted.fork.blockNumber`
+- omitting the block number forks from the upstream latest block
+- `--fork-block-number` without `--fork-url` is a hard startup failure
+
+### Defaults
 
 | Setting | Default |
 | --- | --- |
@@ -58,7 +88,59 @@ zevm --mode trusted --fork-url https://rpc.example --fork-block-number 22000000
 | `blockGasLimit` | `30000000` |
 | `mining` | `auto` |
 
-## Trusted-Mode Config Example
+`coinbaseIndex` defaults to `0` and valid values are `0` through `9`.
+
+### Managed Accounts
+
+The exact 10-account managed-wallet table is part of the trusted-mode contract. `coinbaseIndex` selects from that table, `eth_accounts` returns it in ascending index order, and `eth_sendTransaction` signs only for those managed accounts unless impersonation is active.
+
+<TrustedManagedWallet />
+
+### First Successful Calls
+
+These are contract examples for the first calls that should succeed against a fresh trusted node once the documented startup path exists. They are not a claim about current runnable `HEAD`.
+
+The quickstart-owned first-call surface is the trusted identity and default-read baseline: `eth_chainId`, `eth_blockNumber`, `eth_accounts`, `eth_coinbase`, `eth_getBalance`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, and `eth_blobBaseFee`.
+
+```json
+{ "jsonrpc": "2.0", "id": 1, "method": "eth_chainId", "params": [] }
+```
+
+Returns `0x7a69` by default.
+
+```json
+{ "jsonrpc": "2.0", "id": 2, "method": "eth_blockNumber", "params": [] }
+```
+
+Returns `0x0` on a fresh trusted node before additional mining.
+
+```json
+{ "jsonrpc": "2.0", "id": 3, "method": "eth_accounts", "params": [] }
+```
+
+Returns the exact 10-address managed-account table above in ascending index order.
+
+```json
+{ "jsonrpc": "2.0", "id": 4, "method": "eth_coinbase", "params": [] }
+```
+
+Returns the managed account selected by `coinbaseIndex`, which is account `0` by default.
+
+```json
+{ "jsonrpc": "2.0", "id": 5, "method": "eth_getBalance", "params": ["0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266", "latest"] }
+```
+
+Returns that account's configured trusted-mode balance at the current local head. Exact tuple and error rules for these calls live on [Core Reads](../reference/json-rpc/core-reads).
+
+```json
+{ "jsonrpc": "2.0", "id": 6, "method": "eth_gasPrice", "params": [] }
+```
+
+Returns `0x77359400` by default. On the same fresh node, `eth_maxPriorityFeePerGas` returns `0x3b9aca00` and `eth_blobBaseFee` returns `0x1`.
+
+### Config Examples
+
+The JSON snippets below show the exact settled trusted-mode shapes.
 
 ```json
 {
@@ -77,7 +159,7 @@ zevm --mode trusted --fork-url https://rpc.example --fork-block-number 22000000
       "maxPriorityFeePerGas": "1000000000",
       "blockGasLimit": 30000000,
       "mining": {
-        "type": "auto"
+        "type": "manual"
       },
       "fork": null
     }
@@ -85,28 +167,79 @@ zevm --mode trusted --fork-url https://rpc.example --fork-block-number 22000000
 }
 ```
 
-<TrustedManagedWallet />
+```json
+{
+  "rpc": {
+    "host": "127.0.0.1",
+    "port": 8545
+  },
+  "mode": {
+    "trusted": {
+      "chainId": 31337,
+      "coinbaseIndex": 0,
+      "initialBalance": "10000000000000000000000",
+      "gasPrice": "2000000000",
+      "baseFee": "1000000000",
+      "blobBaseFee": "1",
+      "maxPriorityFeePerGas": "1000000000",
+      "blockGasLimit": 30000000,
+      "mining": {
+        "type": "interval",
+        "blockTime": 12
+      },
+      "fork": null
+    }
+  }
+}
+```
 
-## Invalid Startup Cases
+```json
+{
+  "rpc": {
+    "host": "127.0.0.1",
+    "port": 8545
+  },
+  "mode": {
+    "trusted": {
+      "chainId": 31337,
+      "coinbaseIndex": 0,
+      "initialBalance": "10000000000000000000000",
+      "gasPrice": "2000000000",
+      "baseFee": "1000000000",
+      "blobBaseFee": "1",
+      "maxPriorityFeePerGas": "1000000000",
+      "blockGasLimit": 30000000,
+      "mining": {
+        "type": "manual"
+      },
+      "fork": {
+        "url": "https://rpc.example",
+        "blockNumber": 22000000
+      }
+    }
+  }
+}
+```
 
-Trusted mode must fail before opening the listener when:
+### Validation Rules
 
-- `--block-time` is provided without `--mining interval`
-- `--mining interval` is selected without `--block-time`
-- `--fork-block-number` is provided without `--fork-url`
-- a light-mode-only flag is supplied
-- `coinbaseIndex` is outside the managed-account range
+Startup fails before opening the listener when:
 
-## Current Repo State
+- `--block-time` is supplied without `--mining interval`
+- `--fork-block-number` is supplied without `--fork-url`
+- `coinbaseIndex` is outside `0..9`
+- any trusted-only field is supplied in light mode
 
-- `src/main.zig` only parses `--host` and `--port`
-- no trusted runtime is composed into startup
-- current transport startup is not yet a validated trusted-node path
-- current `HEAD` does not yet expose fork startup, mining controls, or managed-account startup through the executable path
-- `src/node/runtime.zig` and `src/genesis.zig` both contradict the documented canonical managed-wallet contract
+## Traceability
+
+- Source IDs: `HEAD-01`, `BOOT-01`, `BOOT-02`, `BOOT-07`, `TRUST-01`, `TRUST-02`, `TRUST-03`, `TRUST-04`, `TRUST-05`, `TRUST-09`
+- Contradiction IDs: `C-001`, `C-002`, `C-004`, `C-008`, `C-010`
+- Question IDs: -
+- Internal support docs: `startup-and-configuration.md`, `trusted-mode-semantics.md`, `rpc-support-matrix.md`
+- Notes: These commands and first-call examples are contract examples only; current `HEAD` does not run them on March 29, 2026.
 
 ## Next Pages
 
-- [Trusted Mode](../concepts/trusted-mode)
-- [Trusted-Mode Configuration](../reference/configuration/trusted-mode)
-- [Trusted Reads](../reference/json-rpc/trusted-reads)
+- [Runtime Modes](../concepts/runtime-modes)
+- [Core Reads](../reference/json-rpc/core-reads)
+- [JSON-RPC Overview](../reference/json-rpc/overview)

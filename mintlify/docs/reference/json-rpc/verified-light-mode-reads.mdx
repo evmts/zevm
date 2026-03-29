@@ -1,0 +1,110 @@
+---
+title: Verified Light-Mode Reads
+description: Exact light-mode status, verified reads, and consensus-backed tag behavior.
+---
+
+# Verified Light-Mode Reads
+
+Light mode exposes a public status method, a light-mode identity/head surface, and proof-backed execution reads. The selector model here is `LightBlockSelector`: `latest`, `earliest`, `safe`, `finalized`, or a numeric quantity. `pending` is not part of the light-mode contract.
+
+The numeric-selector contract is intentionally bounded. Light mode does not promise arbitrary checkpoint-to-head historical archive reads.
+
+This page defines light-mode semantics for these method names. Shared method names such as `eth_chainId`, `eth_blockNumber`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, and `eth_getTransactionCount` use the separate trusted-mode contract on the trusted reference pages when ZEVM runs in trusted mode.
+
+## Intended Contract
+
+### Exact Methods
+
+| Method | Exact params | Exact result | Null, readiness, and error behavior |
+| --- | --- | --- | --- |
+| `zevm_lightSyncStatus` | `[]` or omitted | light sync status object | light-mode only; trusted mode fails with `-32010`; non-empty params fail with `-32602` |
+| `eth_chainId` | `[]` or omitted | `QuantityHex` | non-empty params fail with `-32602` |
+| `eth_blockNumber` | `[]` or omitted | `QuantityHex` | non-empty params fail with `-32602`; while `ready = false`, ZEVM fails with `-32011`; once ready, ZEVM returns the block number of the light-mode `latest` head |
+| `eth_getBalance` | `[address, block]` | `QuantityHex` | malformed address or selector fails with `-32602`; while `ready = false`, ZEVM serves no proof-backed reads and fails them with `-32011`; proof verification failure fails with `-32014`; malformed upstream data fails with `-32015` |
+| `eth_getCode` | `[address, block]` | `HexData` | malformed address or selector fails with `-32602`; while `ready = false`, ZEVM serves no proof-backed reads and fails them with `-32011`; proof verification failure fails with `-32014`; malformed upstream data fails with `-32015` |
+| `eth_getStorageAt` | `[address, slot, block]` | `Bytes32` | malformed address, slot, or selector fails with `-32602`; while `ready = false`, ZEVM serves no proof-backed reads and fails them with `-32011`; proof verification failure fails with `-32014`; malformed upstream data fails with `-32015` |
+| `eth_getTransactionCount` | `[address, block]` | `QuantityHex` | malformed address or selector fails with `-32602`; while `ready = false`, ZEVM serves no proof-backed reads and fails them with `-32011`; proof verification failure fails with `-32014`; malformed upstream data fails with `-32015` |
+
+### Light-Mode Selector Behavior
+
+| Selector | Meaning in light mode |
+| --- | --- |
+| `latest` | latest verified optimistic execution head |
+| `safe` | consensus-backed safe head |
+| `finalized` | consensus-finalized head |
+| `earliest` | block `0` |
+| numeric quantity | block `0`, or an exact block inside the retained verified-history window containing the most recent `8191` verified execution blocks when ZEVM can verify that exact execution block and the requested proof-backed read against that block's state root |
+
+Light mode never treats `pending` as a supported selector.
+
+`pending` is unsupported in light mode and fails with `-32010`.
+
+The intended numeric-selector rule is exact:
+
+- while `ready = false`, ZEVM serves no proof-backed reads and fails them with `-32011`
+- once ready, numeric selectors are supported only for block `0` and for exact blocks inside the retained verified-history window containing the most recent `8191` verified execution blocks when ZEVM can verify the exact execution block and the requested proof-backed read against that block's state root
+- if the requested numeric block is outside that retained verified-history window, the request fails with `-32602`
+- if an otherwise-supported proof-backed read cannot be verified against the resolved block state root, the request fails with `-32014`
+- ZEVM does not promise arbitrary checkpoint-to-head historical archive reads
+
+### Exact Type Rules
+
+- `QuantityHex` is a `0x`-prefixed unsigned integer with no leading zero padding except `0x0`.
+- `Address` is a `0x`-prefixed 20-byte hex address.
+- `Bytes32` is a `0x`-prefixed 32-byte hex value.
+- `HexData` is a `0x`-prefixed hex byte string, including `0x` for empty bytes.
+
+### `zevm_lightSyncStatus`
+
+`zevm_lightSyncStatus` returns this exact top-level shape:
+
+```json
+{
+  "ready": true,
+  "status": "synced",
+  "network": "mainnet",
+  "checkpointSource": "explicit",
+  "lastCheckpoint": "0x...",
+  "optimisticSlot": "0x1234",
+  "finalizedSlot": "0x1230"
+}
+```
+
+Field rules:
+
+- `ready` is the boolean gate for proof-backed reads and is `true` only when `status = "synced"` and ZEVM can serve proof-backed reads
+- `status` is `syncing`, `synced`, or `error`
+- `network` is `mainnet`, `sepolia`, or `holesky`
+- `checkpointSource` is `explicit`, `persisted`, or `default`
+- `lastCheckpoint` is a 32-byte hex checkpoint hash or `null`
+- `optimisticSlot` and `finalizedSlot` are `QuantityHex`
+
+### Readiness And Verification Rules
+
+- `zevm_lightSyncStatus` is callable only in light mode
+- `ready = true` only when `status = "synced"` and ZEVM can serve proof-backed reads
+- while `ready = false`, `eth_blockNumber` fails with `-32011`
+- once `ready = true`, `eth_blockNumber` returns the block number of the light-mode `latest` head, meaning the latest verified optimistic execution head
+- while `ready = false`, ZEVM serves no proof-backed reads and fails them with `-32011`
+- once ready, numeric selectors are supported only for block `0` and for exact blocks inside the retained verified-history window containing the most recent `8191` verified execution blocks when ZEVM can verify the exact execution block and the requested proof-backed read against that block's state root
+- when a numeric selector is outside the retained verified-history window, the request fails with `-32602`
+- proof verification failure maps to `-32014`
+- malformed upstream data maps to `-32015`
+- the light-mode startup contract reserves `-32012` for stale checkpoints under strict age policy and `-32013` for malformed or corrupt checkpoint input
+- `eth_call`, `eth_estimateGas`, transaction submission, mining, canonical block or receipt or log queries, trusted-mode `zevm_*` controls, compatibility aliases, filter lifecycle APIs, subscriptions, and WebSocket transport are unsupported in light mode and fail with `-32010`
+
+## Current HEAD As Of 2026-03-29
+
+- `zig build` fails first in `src/rpc/server.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope`, and `zig build test` fails in `src/rpc/dispatcher_test.zig`, `src/rpc/server.zig`, and `src/tx_processor.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope` and current `guillotine-mini` requires a wider `evm.init` signature
+- `src/main.zig` still does not expose a public light-mode selection path or a public `zevm_lightSyncStatus` route
+- no proof-backed read bridge is wired through the shipping RPC surface yet
+- current selector helpers still do not implement the retained verified-history numeric window or the corresponding `-32011` versus `-32602` split
+- the intended light selector and readiness contract is documented here, but it is not yet live in the executable
+
+## Traceability
+
+- Source IDs: `AUTH-02`, `PROC-01`, `HEAD-01`, `LIGHT-04`, `LIGHT-05`, `RPC-TAGS-LIGHT`, `RPC-ETH-BLOCKNUMBER`
+- Contradiction IDs: `C-002`, `C-012`
+- Question IDs: `Q-003`, `Q-004`
+- Internal support docs: `light-mode-semantics.md`, `rpc-support-matrix.md`
+- Notes: Documents the exact light-mode status and proof-backed read contract, including the readiness-gated `eth_blockNumber` rule.

@@ -1,0 +1,47 @@
+---
+title: Installation
+description: Source-build installation path for ZEVM.
+---
+
+# Installation
+
+ZEVM installation is source-build only in the phase-1 public contract.
+
+The settled install path is:
+
+1. Check out ZEVM in a workspace that also contains sibling `../voltaire` and `../guillotine-mini` repositories, because `build.zig.zon` uses local path dependencies.
+2. Run `zig build` from the ZEVM repository root.
+3. Use `./zig-out/bin/zevm` from the build output.
+
+No packaged binary, installer, or package-manager path is part of the public phase-1 stance.
+
+## Source-Build Path
+
+```bash
+zig build
+```
+
+The binary name is `zevm`. This page defines the intended source-build contract, not a claim that current `HEAD` produces a runnable executable.
+
+## Current HEAD As Of 2026-03-29
+
+- `zig build` fails before producing `./zig-out/bin/zevm`
+- `zig build test` fails as well
+- `zig build` currently fails first in `src/rpc/server.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope`
+- `zig build test` currently fails in `src/rpc/dispatcher_test.zig`, `src/rpc/server.zig`, and `src/tx_processor.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope` and current `guillotine-mini` requires a wider `evm.init` signature
+- `src/main.zig` still only forwards startup to `src/rpc/server.zig.parseConfig`, which only parses `--host` and `--port`
+- do not treat the source-build workflow as runnable on current `HEAD`
+
+## Traceability
+
+- Source IDs: `PROC-01`, `HEAD-01`, `BOOT-01`, `RPC-01`
+- Contradiction IDs: `C-001`, `C-002`, `C-003`
+- Question IDs: -
+- Internal support docs: `phase-1-product-shape.md`, `startup-and-configuration.md`, `transport-and-error-semantics.md`
+- Notes: Phase 1 is source-build only, and the current source-build workflow expects sibling `../voltaire` and `../guillotine-mini` repositories because the build uses local path dependencies.
+
+## Next Pages
+
+- [Run Trusted Mode](./run-trusted-mode)
+- [Runtime Modes](../concepts/runtime-modes)
+- [JSON-RPC Overview](../reference/json-rpc/overview)

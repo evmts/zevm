@@ -7,40 +7,45 @@ import CurrentHeadNote from './_snippets/current-head-note.mdx'
 
 # ZEVM
 
-ZEVM has two runtime modes:
+ZEVM is a docs-first Zig Ethereum client with two runtime modes:
 
-- trusted mode for local execution, writable dev-node workflows, and optional fork-backed development
-- light mode for consensus-backed verification and proof-backed reads
+- trusted mode for the phase-1 local dev node, local mutation, and optional fork-backed development
+- light mode for the phase-2 consensus-backed verified-read client
 
-<CurrentHeadNote />
+Forking is configuration inside trusted mode, not a third product mode.
 
 ## What These Docs Promise
 
-These docs specify the intended ZEVM contract, including:
+These docs define the intended ZEVM contract, publishing exact public behavior where the repo authority settles it and explicit blocking questions where it does not, including:
 
-- exact startup flags
-- exact config-file fields
-- defaults
-- precedence rules
-- invalid combinations
-- JSON-RPC method names
-- notification behavior
-- mode-specific block-tag semantics
-- error behavior
+- exact startup flags and config-file fields
+- defaults and precedence rules
+- invalid combinations and startup failure behavior
+- HTTP JSON-RPC transport and notification behavior
+- mode-specific method availability and block-tag semantics
+- canonical `zevm_*` trusted-mode controls, with compatibility aliases captured in the repo-local reference pages
+- explicit phase-3 deferral for advanced tooling that is not part of the phase-1 contract
+- exact separation between intended behavior and current `HEAD`
 
-## Current Repo State
+## Repo Authority
 
-Current `HEAD` is still behind the documented contract:
+The repo-local authority order is PRD first, `docs-first-process` second, current `src/` and tests third as contradiction evidence, and older issue/context/plan docs last as non-normative evidence. Maintainer decisions and other control docs backfill exact detail or record explicit contradiction plus public-doc stance for a surface, but they do not silently override that hierarchy. The public docs here are the contract surface; they do not depend on an external spec file for their exact startup and configuration claims.
 
-- trusted-mode startup is not yet composed into the executable path
-- the transport path still violates notification semantics
-- light mode is not yet exposed as a public runtime
-- proof-backed reads are not yet wired
+<CurrentHeadNote />
+
+## Traceability
+
+- Source IDs: `AUTH-01`, `AUTH-02`, `PROC-01`, `HEAD-01`, `ARCH-01`, `BOOT-01`, `TRUST-01`, `LIGHT-01`, `LIGHT-04`, `LIGHT-05`
+- Contradiction IDs: `C-001`, `C-002`, `C-011`, `C-012`, `C-013`
+- Question IDs: -
+- Internal support docs: `phase-1-product-shape.md`, `runtime-modes-and-boundaries.md`, `upstream-ownership-and-boundaries.md`
+- Notes: Exact RPC request and response details are documented in the JSON-RPC reference pages in this repo.
 
 ## Start Here
 
+- [Installation](./quickstart/installation)
 - [Run Trusted Mode](./quickstart/run-trusted-mode)
-- [Connect Over JSON-RPC](./quickstart/connect-json-rpc)
 - [Runtime Modes](./concepts/runtime-modes)
-- [Configuration Overview](./reference/configuration/overview)
+- [Light Mode](./concepts/light-mode)
+- [Architecture And Upstream Ownership](./concepts/architecture-and-upstream-ownership)
 - [JSON-RPC Overview](./reference/json-rpc/overview)

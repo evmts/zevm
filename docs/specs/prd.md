@@ -23,7 +23,7 @@ The product should not duplicate EVM, state-manager, or JSON-RPC method-model ow
 ZEVM is a thin integration layer on top of two upstream libraries we own:
 
 - `voltaire` (`../voltaire`) - Ethereum primitives, JSON-RPC types, state manager, journal/snapshot support, fork backend, blockchain, crypto, and other execution-layer foundations
-- `guillotine-mini` (`../bench/guillotine-mini`) - EVM interpreter, tracing substrate, and execution host integration
+- `guillotine-mini` (`../guillotine-mini`) - EVM interpreter, tracing substrate, and execution host integration
 
 ZEVM owns:
 
@@ -57,6 +57,15 @@ The PRD and supporting docs must define the full product contract, including:
 - mode-specific method availability
 - startup and runtime error behavior
 
+The authoritative repo-local audit order is:
+
+1. `docs/specs/prd.md`
+2. `docs/specs/docs-first-process.md`
+3. `src/` and tests as implementation reality check and contradiction detector only
+4. `docs/issues/*`, `docs/context/*`, `docs/plans/*`, and `PROGRESS.md` as non-normative evidence only
+
+Supporting control docs such as `docs/specs/maintainer-decisions.md`, `docs/specs/json-rpc-contract.md`, and the files under `docs/specs/internal/` may backfill exact detail or record an explicit contradiction plus public-doc stance for a surface, but they must not silently override this PRD or the process constraint. If a supporting control doc needs to diverge temporarily, it must say so explicitly, name the affected surface, and record the public-doc stance that downstream pages should follow until this PRD and the process docs are backfilled.
+
 Do not preserve a “conceptual only” posture for startup, configuration, or transport surfaces. Those surfaces are part of the product contract and must be specified exactly even when `HEAD` is still incomplete.
 
 ## Runtime Model
@@ -74,7 +83,9 @@ The runtime is assembled once at startup into a mode-specific runtime/handler gr
 
 ZEVM ships one binary, `zevm`.
 
-Default startup enters trusted mode. Light mode is selected explicitly.
+Phase-1 installation promises source-build only. Packaged binaries are outside the published phase-1 contract.
+
+Default startup enters trusted mode when startup inputs do not explicitly select another mode. Light mode may be selected by CLI `--mode light` or by a config file whose sole runtime branch is `mode.light`.
 
 ### Shared CLI Contract
 
@@ -189,6 +200,8 @@ Config rules:
 - a config file that contains neither `mode.trusted` nor `mode.light` is invalid
 - CLI overrides win over config-file values
 - CLI `--mode` may confirm the config-file mode, but it may not conflict with it
+- if `--config` points to a missing file, an unreadable file, or malformed JSON, ZEVM fails startup before opening the HTTP listener, exits non-zero, and reports an operator-facing error that names the path and failure class
+- ZEVM does not ignore an explicit `--config` flag and fall back to defaults when config loading fails
 
 ### Precedence Rules
 
@@ -271,8 +284,15 @@ Light-mode block-tag semantics:
 | `safe` | consensus-backed safe head derived from the optimistic light-client head |
 | `finalized` | consensus-finalized execution head |
 | `earliest` | block `0` |
-| numeric quantity | exact block number when ZEVM can map it to verified state |
+| numeric quantity | block `0`, or an exact block inside the retained verified-history window containing the most recent `8191` verified execution blocks when ZEVM can verify that exact execution block and the requested proof-backed read against that block's state root |
 | `pending` | unsupported in light mode |
+
+Numeric-selector rules:
+
+- while `ready = false`, ZEVM serves no proof-backed reads and fails them with `-32011`
+- once ready, numeric selectors are supported only for block `0` and for exact blocks inside the retained verified-history window containing the most recent `8191` verified execution blocks when ZEVM can verify the exact execution block and the requested proof-backed read against that block's state root
+- if light mode is ready in general but the requested numeric block is outside that retained verified-history window, the request fails with `-32602`
+- ZEVM does **not** promise arbitrary checkpoint-to-head historical archive reads
 
 `zevm_lightSyncStatus` takes no params and returns:
 
@@ -282,7 +302,7 @@ Light-mode block-tag semantics:
   "status": "synced",
   "network": "mainnet",
   "checkpointSource": "explicit",
-  "lastCheckpoint": "0x9b41a80f58c52068a00e8535b8d6704769c7577a5fd506af5e0c018687991d55",
+  "lastCheckpoint": "0x...",
   "optimisticSlot": "0x1234",
   "finalizedSlot": "0x1230"
 }
@@ -304,6 +324,11 @@ Readiness rule:
 
 - `ready = true` only when `status = "synced"` and ZEVM can serve proof-backed reads
 - while `ready = false`, proof-backed read methods must fail with a deterministic light-mode-not-ready JSON-RPC error instead of serving unverified data
+
+`eth_blockNumber` in light mode follows the readiness gate:
+
+- while `ready = false`, it fails with `-32011`
+- once `ready = true`, it returns the block number of the light-mode `latest` head, meaning the latest verified optimistic execution head
 
 Proof-backed `eth_call` is explicitly deferred until there is a clear verified execution story for transient call state.
 
@@ -385,6 +410,7 @@ JSON-RPC framing contract:
 
 - single requests supported
 - batches supported
+- empty batch `[]` is invalid request content and returns HTTP `200` with a single JSON-RPC error object whose `id` is `null` and whose error is `code: -32600`, `message: "Invalid Request"`
 - mixed valid/invalid batch items supported
 - standard JSON-RPC 2.0 error codes supported
 - mode-specific unsupported methods fail deterministically
@@ -415,10 +441,14 @@ ZEVM-specific runtime errors:
 | --- | --- |
 | method unsupported in the active mode | `-32010` |
 | light mode not ready to serve verified reads | `-32011` |
-| checkpoint too old under strict age policy | `-32012` |
-| invalid or corrupt checkpoint input | `-32013` |
+| reserved: checkpoint too old under strict age policy | `-32012` |
+| reserved: invalid or corrupt checkpoint input | `-32013` |
 | proof verification failure | `-32014` |
 | malformed upstream response | `-32015` |
+
+Exact request tuples, request-object shapes, return payloads, compatibility-alias mapping, block-selector rules, and per-method error behavior live in `docs/specs/json-rpc-contract.md`.
+
+For the initially selected light-mode checkpoint used during startup, stale-checkpoint and malformed-checkpoint conditions are startup failures before ZEVM listens. In this pass, `-32012` and `-32013` stay reserved in the error catalog rather than part of the initial proof-backed read request surface.
 
 ## State, Fork, And Snapshot Semantics
 
@@ -465,10 +495,13 @@ Startup behavior:
 - if no explicit checkpoint is provided and `checkpointDir/checkpoint` exists, ZEVM uses the persisted checkpoint
 - if no explicit or persisted checkpoint exists, ZEVM uses the baked network default
 - if a persisted checkpoint file exists but is malformed, ZEVM fails startup instead of silently falling back
-- if the selected checkpoint is older than `maxCheckpointAgeSeconds` and `strictCheckpointAge = false`, ZEVM logs a warning and continues
-- if the selected checkpoint is older than `maxCheckpointAgeSeconds` and `strictCheckpointAge = true`, ZEVM fails startup
+- if the selected checkpoint age is exactly equal to `maxCheckpointAgeSeconds`, the checkpoint remains valid
+- if the selected checkpoint age is greater than `maxCheckpointAgeSeconds` and `strictCheckpointAge = false`, ZEVM logs a warning and continues
+- if the selected checkpoint age is greater than `maxCheckpointAgeSeconds` and `strictCheckpointAge = true`, ZEVM fails startup
 
-The baked network defaults currently come from the network definitions already present in `src/consensus_sync.zig` for `mainnet`, `sepolia`, and `holesky`.
+The baked network defaults currently come from the network definitions already present in `src/consensus_sync.zig` for `mainnet`, `sepolia`, and `holesky`. Their existence and precedence are part of the public contract; their exact literal hash values are implementation defaults rather than frozen public API guarantees.
+
+Their exact literal checkpoint hashes are current implementation defaults, not a frozen public API contract. The public contract is that baked network defaults exist and participate in precedence.
 
 ## Delivery Priorities
 
@@ -530,10 +563,11 @@ Required in phase 1:
    - `eth_getBlockReceipts`
    - `eth_getLogs`
 
-7. **Trusted-mode dev controls**
-   - `evm_snapshot`
-   - `evm_revert`
-   - Hardhat/Anvil-compatible state mutation methods
+7. **Trusted-mode ZEVM controls**
+   - canonical `zevm_*` trusted-mode controls
+   - exact accepted `anvil_*`, `hardhat_*`, and `evm_*` compatibility aliases as defined in `docs/specs/json-rpc-contract.md`
+   - snapshots and revert
+   - state mutation
    - impersonation
    - time controls
    - trusted-mode fork startup via remote RPC
@@ -569,7 +603,6 @@ ZEVM aims for parity with:
 
 - Hardhat EDR (`edr/`) for trusted dev-node behavior, mining controls, snapshots, impersonation, and tracing
 - Foundry Anvil (`foundry/`) for fast forkable dev-node behavior
-- TEVM (`../tevm-monorepo`) for trusted-client handler coverage across `eth`, `anvil`, and `debug`
 - Helios for light-client sync plus proof-verified reads
 
 External references are supporting context only. The repository docs remain the primary ZEVM authority.

@@ -1,0 +1,202 @@
+---
+title: Blocks, Receipts, And Logs
+description: Exact trusted-mode block, receipt, log, and transaction query behavior.
+---
+
+# Blocks, Receipts, And Logs
+
+Trusted mode exposes the canonical query surface for blocks, receipts, logs, and transaction lookups. `eth_getLogs` is part of that trusted-mode contract; it is not deferred.
+
+## Intended Contract
+
+Every method on this page is trusted-mode only. In light mode, each method fails with `-32010`.
+
+### Exact Methods
+
+| Method | Exact params | Exact result | Null and error behavior |
+| --- | --- | --- | --- |
+| `eth_getBlockByNumber` | `[block, fullTransactions]` where `block` is a trusted-mode block selector and `fullTransactions` is a boolean | block object or `null` | malformed selector or boolean fails with `-32602`; unknown block returns `null` |
+| `eth_getBlockByHash` | `[blockHash, fullTransactions]` where `blockHash` is a 32-byte hex hash and `fullTransactions` is a boolean | block object or `null` | malformed hash or boolean fails with `-32602`; unknown block returns `null` |
+| `eth_getTransactionByHash` | `[transactionHash]` | transaction object or `null` | malformed hash fails with `-32602`; unknown transaction returns `null` |
+| `eth_getTransactionReceipt` | `[transactionHash]` | receipt object or `null` | malformed hash fails with `-32602`; unknown transaction returns `null` |
+| `eth_getBlockReceipts` | `[block]` where `block` is a trusted-mode block selector or a 32-byte block hash | array of receipt objects or `null` | malformed selector fails with `-32602`; unknown block returns `null`; an existing block with no stored receipts returns `[]` |
+| `eth_getLogs` | `[filter]` where `filter` is the exact log-filter object below | array of log objects | malformed filter fails with `-32602`; a well-formed filter that matches nothing returns `[]` |
+
+### Trusted-Mode Block Selectors
+
+| Selector | Meaning in trusted mode |
+| --- | --- |
+| `latest` | current local head |
+| `pending` | compatibility alias of `latest` |
+| `safe` | compatibility alias of `latest` |
+| `finalized` | compatibility alias of `latest` |
+| `earliest` | block `0` |
+| numeric quantity | exact local block number |
+
+`pending`, `safe`, and `finalized` are compatibility aliases only in trusted mode. They do not provide consensus-backed finality.
+
+### Exact Type Rules
+
+- `QuantityHex` is a `0x`-prefixed unsigned integer with no leading zero padding except `0x0`.
+- `Address` is a `0x`-prefixed 20-byte hex address.
+- `Hash32` is a `0x`-prefixed 32-byte hex value.
+- `Bytes32` is a `0x`-prefixed 32-byte hex value.
+- `HexData` is a `0x`-prefixed hex byte string, including `0x` for empty bytes.
+
+### Exact Objects
+
+`Block`:
+
+```json
+{
+  "hash": "0x...",
+  "parentHash": "0x...",
+  "sha3Uncles": "0x...",
+  "miner": "0x...",
+  "stateRoot": "0x...",
+  "transactionsRoot": "0x...",
+  "receiptsRoot": "0x...",
+  "logsBloom": "0x...",
+  "number": "0x0",
+  "gasLimit": "0x0",
+  "gasUsed": "0x0",
+  "timestamp": "0x0",
+  "extraData": "0x",
+  "mixHash": "0x...",
+  "nonce": "0x0000000000000000",
+  "size": "0x0",
+  "transactions": [],
+  "uncles": [],
+  "difficulty": "0x0",
+  "totalDifficulty": "0x0",
+  "baseFeePerGas": "0x0",
+  "withdrawalsRoot": "0x...",
+  "blobGasUsed": "0x0",
+  "excessBlobGas": "0x0",
+  "parentBeaconBlockRoot": "0x..."
+}
+```
+
+Field rules:
+
+- `transactions` is an array of transaction hashes when `fullTransactions = false`
+- `transactions` is an array of full transaction objects when `fullTransactions = true`
+- optional fork-era fields may be omitted when they do not apply
+
+`Transaction`:
+
+```json
+{
+  "type": "0x0",
+  "hash": "0x...",
+  "nonce": "0x0",
+  "blockHash": "0x...",
+  "blockNumber": "0x0",
+  "transactionIndex": "0x0",
+  "from": "0x...",
+  "to": "0x...",
+  "value": "0x0",
+  "gas": "0x5208",
+  "input": "0x"
+}
+```
+
+Field rules:
+
+- `type`, `hash`, `nonce`, `from`, `value`, `gas`, and `input` are always present
+- `to` is `null` for contract creation
+- `blockHash`, `blockNumber`, and `transactionIndex` are `null` for pending transactions and populated for mined transactions
+
+`Receipt`:
+
+```json
+{
+  "transactionHash": "0x...",
+  "transactionIndex": "0x0",
+  "blockHash": "0x...",
+  "blockNumber": "0x0",
+  "from": "0x...",
+  "to": "0x...",
+  "cumulativeGasUsed": "0x0",
+  "gasUsed": "0x0",
+  "contractAddress": null,
+  "logs": [],
+  "logsBloom": "0x...",
+  "status": "0x1",
+  "root": null,
+  "effectiveGasPrice": "0x0",
+  "type": "0x0",
+  "blobGasUsed": null,
+  "blobGasPrice": null
+}
+```
+
+Field rules:
+
+- `contractAddress` is `null` when the transaction did not create a contract
+- `root` is `null` in the intended phase-1 contract
+- `blobGasUsed` and `blobGasPrice` are `null` in the intended phase-1 contract
+
+`Log`:
+
+```json
+{
+  "removed": false,
+  "logIndex": "0x0",
+  "transactionIndex": "0x0",
+  "transactionHash": "0x...",
+  "blockHash": "0x...",
+  "blockNumber": "0x0",
+  "address": "0x...",
+  "data": "0x",
+  "topics": []
+}
+```
+
+Field rules:
+
+- `topics` is an ordered array of 32-byte topic hashes
+- `removed` is `false` for canonical trusted-mode logs
+
+`LogFilter`:
+
+```json
+{
+  "fromBlock": "0x0",
+  "toBlock": "latest",
+  "address": ["0x...", "0x..."],
+  "topics": [null, "0x...", ["0x...", "0x..."]]
+}
+```
+
+Field rules:
+
+- allowed fields are `fromBlock`, `toBlock`, `blockHash`, `address`, and `topics`
+- `blockHash` may be supplied instead of `fromBlock` and `toBlock`
+- `blockHash` is mutually exclusive with `fromBlock` and `toBlock`
+- when both range bounds are present, `fromBlock` must be less than or equal to `toBlock`
+- `address` may be a single address or an array of addresses
+- each `topics` entry may be `null`, a single 32-byte topic hash, or an array of 32-byte topic hashes
+
+### Method Rules
+
+- malformed addresses, hashes, selectors, booleans, tuple lengths, and filter combinations fail with `-32602`
+- `eth_getLogs` is supported in trusted mode and returns `[]` when the filter matches no logs
+- `eth_getBlockReceipts` returns `null` only when the selected block does not exist
+- `eth_getTransactionByHash` and `eth_getTransactionReceipt` return `null` when the hash is well formed but does not resolve to an object
+
+## Current HEAD As Of 2026-03-29
+
+- `zig build` fails first in `src/rpc/server.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope`, and `zig build test` fails in `src/rpc/dispatcher_test.zig`, `src/rpc/server.zig`, and `src/tx_processor.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope` and current `guillotine-mini` requires a wider `evm.init` signature
+- this surface still carries live `C-007`: helper coverage exists, but `eth_getTransactionByHash` remains a stub, some block/transaction/receipt/log payloads still rely on placeholder conversion, and invalid log-filter failures can still collapse to `[]` instead of surfacing `-32602`
+- `src/rpc/block_queries.zig` already aliases `pending`, `safe`, and `finalized` to the local head in the current helper path
+- the helper path already rejects invalid `blockHash` plus range combinations and reversed ranges for logs
+- the helper layer is not yet the full shipping JSON-RPC transport surface
+
+## Traceability
+
+- Source IDs: `AUTH-02`, `PROC-01`, `HEAD-01`, `TRUST-04`, `TRUST-08`
+- Contradiction IDs: `C-002`, `C-007`
+- Question IDs: -
+- Internal support docs: `trusted-mode-semantics.md`, `rpc-support-matrix.md`
+- Notes: Uses the exact trusted-mode query contract while keeping current helper gaps explicit.

@@ -3,38 +3,55 @@ title: JSON-RPC Overview
 description: Exact transport, mode-gating, method coverage, and error behavior.
 ---
 
-import CurrentHeadNote from '../../_snippets/current-head-note.mdx'
-
 # JSON-RPC Overview
 
-<CurrentHeadNote />
+Phase 1 defines the trusted-mode HTTP JSON-RPC surface. This page keeps the intended contract separate from current `HEAD`, which still has transport and wiring gaps.
 
 ## Transport
 
-| Surface | Contract |
-| --- | --- |
-| transport | HTTP |
-| path | `/` |
-| request method | `POST` |
-| non-`POST` behavior | HTTP `405` |
-| JSON-RPC response status | HTTP `200` |
-| notification-only status | HTTP `204` with empty body |
-| content type | `application/json` |
+| Surface | Intended contract | Current `HEAD` |
+| --- | --- | --- |
+| transport | HTTP | `src/rpc/server.zig` is the intended shipping path |
+| path | `/` | current `src/rpc/server.zig` does not inspect the request target, so current code does not enforce `/` |
+| request method | `POST` | non-`POST` requests return `405` |
+| JSON-RPC success/error status | HTTP `200` | the helper path returns JSON envelopes for normal requests |
+| notification-only requests | HTTP `204` with an empty body | notification-shaped requests still serialize a response in current `HEAD` |
+| notification-only batches | HTTP `204` with an empty body | current tests do not cover notification suppression or mixed-batch omission |
+| empty batch `[]` | HTTP `200` with one JSON-RPC invalid-request body whose `id` is `null` | prototype `src/rpc/envelope.zig` rejects `[]` as invalid request, but the intended transport path still sits inside the broader `C-003` transport contradiction and does not compile on current `HEAD` |
+| content type | `application/json` | set on JSON-RPC responses |
 
-## Notification Semantics
+A notification is a JSON-RPC request object with no `id`. Mixed batches must return responses only for entries that included an `id`. `id: null` is not a notification and must still receive a response with `id: null`.
 
-- notification = request object with no `id`
-- notifications produce no JSON-RPC response
-- notification-only batches produce no JSON-RPC response body
-- mixed batches produce responses only for items with an `id`
-- `"id": null` is not a notification and receives a response with `id: null`
+Mixed valid and invalid items inside a batch are part of the intended contract. ZEVM evaluates each batch item independently, and the response array includes only the items that carried an `id`.
+Well-formed request items produce their normal success or error envelope, invalid request objects produce `-32600`, and notification items emit no response body entry at all.
+
+For an empty batch, the exact intended body is:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": null,
+  "error": {
+    "code": -32600,
+    "message": "Invalid Request"
+  }
+}
+```
+
+The current test coverage still focuses on helper entry points such as `handleHttpRequestForTest` in `src/rpc/server_test.zig`, not the real socket/listener path. That means notification suppression, mixed-batch omission, and the HTTP `204` bodyless path still need direct coverage.
 
 ## Method Surface By Mode
 
-| Mode | Methods |
-| --- | --- |
-| trusted | trusted reads, execution and submission, canonical queries, dev controls |
-| light | `eth_chainId`, `eth_blockNumber`, proof-backed core reads, `zevm_lightSyncStatus` |
+| Mode | Intended phase-1 surface | Current `HEAD` |
+| --- | --- | --- |
+| trusted | `eth_chainId`, `eth_blockNumber`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getTransactionCount`, `eth_accounts`, `eth_coinbase`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_blobBaseFee`, `eth_feeHistory`, `eth_call`, `eth_estimateGas`, `eth_sendTransaction`, `eth_sendRawTransaction`, `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getTransactionByHash`, `eth_getTransactionReceipt`, `eth_getBlockReceipts`, `eth_getLogs`, and canonical `zevm_*` controls | mode selection is not wired through `src/main.zig`, so the gate is still a documented boundary rather than a shipped runtime switch |
+| light | `zevm_lightSyncStatus`, `eth_chainId`, `eth_blockNumber`, proof-backed `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getTransactionCount` | no public light-mode route is exposed yet |
+
+The intended mode rule is simple: unavailable methods fail with the mode-gating error, and trusted-mode compatibility aliases are accepted only in trusted mode. Current `HEAD` does not yet expose the runtime switch that would make that boundary live.
+
+In light mode, `eth_blockNumber` shares the readiness gate: while `ready = false`, it fails with `-32011`; once ready, it returns the block number of the light-mode `latest` head, meaning the latest verified optimistic execution head.
+
+Filter lifecycle APIs beyond `eth_getLogs`, subscriptions, tracing, and WebSocket transport remain deferred. `eth_getLogs` is part of the trusted-mode supported query surface and is not deferred.
 
 ## Mode-Gating Error
 
@@ -51,22 +68,41 @@ Methods that are unavailable in the active mode fail with `-32010`.
 | internal error | `-32603` |
 | unsupported in current mode | `-32010` |
 | light mode not ready | `-32011` |
-| checkpoint too old under strict policy | `-32012` |
-| invalid or corrupt checkpoint | `-32013` |
+| reserved: checkpoint too old under strict policy | `-32012` |
+| reserved: invalid or corrupt checkpoint | `-32013` |
 | proof verification failure | `-32014` |
 | malformed upstream response | `-32015` |
 
-## Current Repo State
+The intended contract uses the standard JSON-RPC codes exactly and reserves the ZEVM runtime codes above for mode and proof failures. On current `HEAD`, dispatcher validation is shallow and handler failures commonly collapse to `-32603` instead of surfacing the narrower error type.
+Current helper code also still violates some method-level `-32602` mappings, including malformed `eth_getStorageAt` slot parsing collapsing to zero instead of surfacing the intended invalid-params error.
 
-- the executable path still points at a newer transport stack that does not build cleanly
-- an older local transport stack remains in-tree but is not the intended shipping path
-- both in-tree paths still violate the documented notification contract
+## Current HEAD As Of 2026-03-29
+
+- `zig build` fails first in `src/rpc/server.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope`
+- `zig build test` fails in `src/rpc/dispatcher_test.zig`, `src/rpc/server.zig`, and `src/tx_processor.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope` and current `guillotine-mini` requires a wider `evm.init` signature
+- `src/main.zig` only wires `--host` and `--port`, and the live server still starts with an empty handler registry
+- current `src/rpc/server.zig` does not enforce the documented `/` path
+- notification handling still violates the intended contract in current code
+- empty batch `[]` is settled as invalid request in the docs contract, but the transport stack still remains contradictory and not release-ready on current `HEAD`
+- current `HEAD` still carries live `C-004` and `C-007` contradictions on trusted core reads and canonical queries, including malformed `eth_getStorageAt` slot input collapsing to zero, synthetic `eth_feeHistory`, placeholder query hydration, and invalid log-filter failures collapsing to `[]`
 - light-mode status and proof-backed read methods are not yet wired
+- light-mode `eth_blockNumber` semantics are settled in the docs contract, but no live light-mode route exists yet
+- the `zevm_*` trusted-mode namespace is still a docs contract, not a shipped listener surface
+
+## Traceability
+
+- Source IDs: `AUTH-01`, `AUTH-02`, `PROC-01`, `HEAD-01`, `RPC-01`, `RPC-02`, `RPC-03`, `RPC-04`, `RPC-05`, `RPC-ETH-BLOCKNUMBER`, `DEFER-01`
+- Contradiction IDs: `C-002`, `C-003`, `C-004`, `C-005`, `C-006`, `C-007`, `C-009`, `C-012`
+- Question IDs: `Q-004`, `Q-006`
+- Internal support docs: `transport-and-error-semantics.md`, `rpc-support-matrix.md`
+- Notes: Canonical home for transport, notifications, error behavior, exact empty-batch behavior, and the mode-gated JSON-RPC surface summary.
 
 ## Reference Pages
 
-- [Trusted Reads](./trusted-reads)
-- [Execution And Submission](./execution-and-submission)
-- [Canonical Queries](./canonical-queries)
-- [Dev Controls](./dev-controls)
-- [Deferred Surfaces](./deferred-surfaces)
+- [Core Reads](./core-reads)
+- [Simulation](./simulation)
+- [Transactions And Mining](./transactions-and-mining)
+- [ZEVM Controls](./dev-controls)
+- [Blocks, Receipts, And Logs](./blocks-receipts-and-logs)
+- [Verified Light-Mode Reads](./verified-light-mode-reads)
+- [Unsupported And Deferred](./unsupported-and-deferred)

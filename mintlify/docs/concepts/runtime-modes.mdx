@@ -1,61 +1,97 @@
 ---
 title: Runtime Modes
-description: Exact trusted-mode versus light-mode boundaries.
+description: ZEVM's two-mode contract, canonical surfaces, and compatibility aliases.
 ---
-
-import CurrentHeadNote from '../_snippets/current-head-note.mdx'
 
 # Runtime Modes
 
-ZEVM has exactly two runtime modes and no hybrid third mode.
+ZEVM has exactly two runtime modes. Startup defaults to trusted mode unless startup inputs explicitly select light mode. CLI `--mode light` selects light mode directly, and a config file whose sole runtime branch is `mode.light` does the same. Trusted mode is the writable local dev node, and light mode is the consensus-backed verified-read runtime. Forking is configuration inside trusted mode, not a third mode.
 
-<CurrentHeadNote />
+## Intended Behavior
 
-## Mode Comparison
+Public docs use these surface rules:
 
-| Mode | Primary role | Writable state | Finality semantics | Status surface |
-| --- | --- | --- | --- | --- |
-| trusted | local dev node | yes | no real finality; compatibility aliases only | none |
-| light | consensus-backed verified reads | no | real `safe` and `finalized` semantics | `zevm_lightSyncStatus` |
+- standard `eth_*` core reads span both modes
+- trusted mode also owns simulation, transaction submission, and canonical block, receipt, and log queries, including `eth_getLogs`
+- trusted mode's canonical nonstandard controls use the `zevm_*` namespace
+- trusted mode also accepts a fixed compatibility-alias set under `anvil_*`, a limited `hardhat_*` subset, and selected `evm_*` names
+- light mode exposes verified reads and `zevm_lightSyncStatus`, not local dev-node controls, simulation, transaction submission, or canonical block, receipt, and log queries
+- filter lifecycle APIs beyond `eth_getLogs` stay deferred
+- `zevm_*` is the public canonical naming for ZEVM-owned trusted-mode controls, not a docs shorthand
 
-## Method Boundary
+Exact method tuples, payloads, selectors, and accepted alias inventories are published on the public JSON-RPC reference pages: [Core Reads](../reference/json-rpc/core-reads), [Simulation](../reference/json-rpc/simulation), [Transactions And Mining](../reference/json-rpc/transactions-and-mining), [Blocks, Receipts, And Logs](../reference/json-rpc/blocks-receipts-and-logs), [ZEVM Controls](../reference/json-rpc/dev-controls), [Verified Light-Mode Reads](../reference/json-rpc/verified-light-mode-reads), and [Unsupported And Deferred](../reference/json-rpc/unsupported-and-deferred).
+
+## Mode Boundary
 
 | Surface | Trusted mode | Light mode |
 | --- | --- | --- |
-| `eth_chainId`, `eth_blockNumber` | yes | yes |
-| `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getTransactionCount` | trusted local state | proof-backed only |
-| `eth_call`, `eth_estimateGas` | yes | no |
-| transaction submission and mining | yes | no |
-| canonical block/receipt/log queries | yes | no |
-| snapshots, state mutation, impersonation, time controls | yes | no |
+| Core reads such as `eth_chainId` and `eth_blockNumber` | yes | yes |
+| Account, code, storage, and nonce reads | yes, against trusted local state | yes, when backed by verified proofs |
+| `eth_call` and `eth_estimateGas` | yes | no |
+| Transaction submission and mining | yes | no |
+| Canonical block, receipt, and log queries, including `eth_getLogs` | yes | no |
+| `zevm_*` dev-node controls | yes | no |
+| the trusted-mode compatibility aliases under `anvil_*`, `hardhat_*`, and selected `evm_*` names | yes, trusted mode only | no |
 | `zevm_lightSyncStatus` | no | yes |
 
-## Block-Tag Semantics
+Trusted-mode compatibility aliases do not change the public contract. They only provide alternate method names for the same trusted-mode behavior. Deferred filter lifecycle APIs are separate from canonical log queries such as `eth_getLogs`.
+In light mode, `eth_blockNumber` shares the readiness gate: while `ready = false`, it fails with `-32011`; once ready, it returns the block number of the light-mode `latest` head, meaning the latest verified optimistic execution head.
 
-Trusted mode:
+## Block Tags
 
-- `latest` = current local head
-- `pending` = compatibility alias of `latest`
-- `safe` = compatibility alias of `latest`
-- `finalized` = compatibility alias of `latest`
-- `earliest` = block `0`
+| Tag | Trusted mode | Light mode |
+| --- | --- | --- |
+| `latest` | current local head | latest verified optimistic execution head |
+| `pending` | compatibility alias of `latest` | unsupported |
+| `safe` | compatibility alias of `latest` | consensus-backed safe head |
+| `finalized` | compatibility alias of `latest` | consensus-finalized head |
+| `earliest` | block `0` | block `0` |
+| numeric quantity | exact local block number | block `0`, or an exact block inside the retained verified-history window containing the most recent `8191` verified execution blocks when ZEVM can verify that exact execution block and the requested proof-backed read against that block's state root |
 
-Light mode:
+Trusted-mode `pending`, `safe`, and `finalized` are aliases only. They do not imply finality. In light mode, `safe` and `finalized` are real consensus-backed heads rather than aliases.
 
-- `latest` = latest verified optimistic execution head
-- `safe` = consensus-backed safe head
-- `finalized` = consensus-finalized head
-- `pending` = unsupported
-- `earliest` = block `0`
+ZEVM does not promise arbitrary checkpoint-to-head historical archive reads. `ready = true` only when `status = "synced"` and ZEVM can serve proof-backed reads. While `ready = false`, ZEVM serves no proof-backed reads and fails them with `-32011`. Once ready, numeric selectors are supported only for block `0` and for exact blocks inside the retained verified-history window containing the most recent `8191` verified execution blocks when ZEVM can verify the exact execution block and the requested proof-backed read against that block's state root. If the requested numeric block is outside that retained verified-history window, the request fails with `-32602`. Verification failures for otherwise-supported proof-backed reads follow the proof-verification error contract on [Verified Light-Mode Reads](../reference/json-rpc/verified-light-mode-reads).
 
-## Current Repo State
+## Trusted-Mode Config
 
-- current `HEAD` does not yet expose `--mode`
-- trusted startup is not yet a runnable public node path
-- light-mode consensus code exists, but light mode is not exposed as a public runtime
+The trusted-mode config shape is explicit:
 
-## Next Pages
+```json
+{
+  "mode": {
+    "trusted": {
+      "chainId": 31337,
+      "mining": { "type": "auto" },
+      "fork": null
+    }
+  }
+}
+```
+
+The resolved unions are:
+
+- `mode.trusted.mining`: `{ "type": "auto" }`, `{ "type": "manual" }`, or `{ "type": "interval", "blockTime": <seconds> }`
+- `mode.trusted.fork`: `null`, `{ "url": "https://..." }`, or `{ "url": "https://...", "blockNumber": <u64> }`
+
+## Current HEAD As Of 2026-03-29
+
+- `zig build` fails first in `src/rpc/server.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope`, and `zig build test` fails in `src/rpc/dispatcher_test.zig`, `src/rpc/server.zig`, and `src/tx_processor.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope` and current `guillotine-mini` requires a wider `evm.init` signature
+- `src/main.zig` still forwards argv to `src/rpc/server.zig.parseConfig`, and that parser still only accepts `--host` and `--port`
+- `src/main.zig` still constructs an empty `dispatcher.HandlerRegistry`, so the live listener has no registered mode surface yet
+- helper coverage for canonical trusted queries does not mean the user-facing surface is effectively there: current `HEAD` still carries live `C-007` contradictions, including `eth_getTransactionByHash` returning `null`, block hydration and receipt or log serialization using placeholders, and invalid log filters collapsing to `[]` instead of `-32602`
+- light-mode selector helpers still do not implement the bounded retained-history numeric window or its `-32011` versus `-32602` split
+- the public contract on this page is the intended product shape, not the current runtime wiring
+
+## Traceability
+
+- Source IDs: `PROC-01`, `HEAD-01`, `BOOT-01`, `BOOT-03`, `BOOT-04`, `BOOT-07`, `RPC-04`, `RPC-ETH-BLOCKNUMBER`, `TRUST-01`, `TRUST-04`, `TRUST-08`, `TRUST-09`, `LIGHT-01`, `LIGHT-04`, `LIGHT-05`, `RPC-TAGS-LIGHT`, `DEFER-01`
+- Contradiction IDs: `C-001`, `C-002`, `C-007`, `C-010`, `C-011`, `C-012`
+- Question IDs: `Q-003`, `Q-004`
+- Internal support docs: `runtime-modes-and-boundaries.md`, `trusted-mode-semantics.md`, `light-mode-semantics.md`
+
+## Related Pages
 
 - [Trusted Mode](./trusted-mode)
 - [Light Mode](./light-mode)
-- [Configuration Overview](../reference/configuration/overview)
+- [State Fork And Snapshots](./state-fork-and-snapshots)
+- [Method Support By Mode](./method-support-by-mode)
