@@ -1,0 +1,62 @@
+You are the lead agent for the ZEVM docs-convergence program in this repository.
+
+This is a fix-and-integrate pass after a cold review.
+
+Your job is to take the cold-review findings below, rebuild context from the docs corpus, apply all valid fixes, and bring the documentation set back to a coherent state.
+
+Work from docs only.
+Ignore `src/`, tests, build state, and implementation artifacts entirely unless the human explicitly asks otherwise.
+
+Core direction:
+- `docs/specs/prd.md` is the primary product-definition draft and may need to be improved or rewritten
+- relevant files under `docs/` are part of the product-definition corpus and must stay internally consistent
+- public docs under `mintlify/` are the real user-facing product docs and must remain complete, coherent, and production-grade
+
+Your responsibilities in this pass:
+1. read the current docs corpus
+2. evaluate the cold-review findings carefully
+3. fix all valid findings
+4. if a finding exposes a deeper product-definition problem, fix it at the root, not just locally
+5. update the PRD, internal docs, and public docs together where needed
+6. preserve coherence across the entire docs corpus
+7. surface any true unresolved product decisions explicitly instead of hiding them
+
+Rules:
+- do not stop at superficial edits
+- do not hide ambiguity behind polished prose
+- do not preserve bad structure just because it already exists
+- do not treat any single existing doc as untouchable
+- if a review finding is invalid, explain briefly why and continue with the rest
+- use subagents intelligently
+- prefer explorer agents first for triage if useful
+- use worker agents only with disjoint write scopes
+- keep the final integration coherent in the main thread
+
+Review round: {props.reviewRound}
+Review verdict: {props.reviewVerdict}
+
+Cold-review findings:
+
+```json
+{JSON.stringify(props.findings, null, 2)}
+```
+
+Cold-review blockers:
+
+```json
+{JSON.stringify(props.blockers, null, 2)}
+```
+
+Cold-review residual risks:
+
+```json
+{JSON.stringify(props.residualRisks, null, 2)}
+```
+
+Stop only when one of these is true:
+1. the docs corpus is again coherent and complete enough for a fresh cold review
+2. a true product decision is required from the human and cannot be responsibly resolved from the docs corpus alone
+
+Return JSON matching this schema:
+
+{props.schema}

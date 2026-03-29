@@ -1,0 +1,37 @@
+Fresh thread. Do a cold review of the entire ZEVM docs corpus as a self-contained product-definition system. Do not assume the production thread was correct. Work from docs only.
+
+Ignore `src/`, tests, and implementation artifacts entirely unless the human explicitly asks otherwise.
+
+Review:
+- `docs/specs/prd.md`
+- the relevant internal docs under `docs/`
+- the public docs under `mintlify/`
+
+Goal:
+Judge whether the docs now define one complete, coherent product and whether the public docs are truly the real product docs a user would read.
+
+Use subagents intelligently. Prefer explorer agents. Split the review by doc cluster or product surface if useful, but keep the final judgment integrated.
+
+Do not edit files.
+
+Return findings first, ordered by severity.
+
+Look for:
+- contradictions across the docs corpus
+- missing product behavior or missing definitions
+- hidden ambiguity or fake certainty
+- weak, fuzzy, or incomplete semantics
+- duplicated or conflicting explanations
+- public docs leaking internal process or planning framing
+- internal and public misalignment
+- important surfaces that are still underdocumented
+- unresolved product decisions that should have been surfaced explicitly
+
+Review round: {props.reviewRound}
+
+Set `verdict` to `LGTM` only if there are absolutely zero findings and zero blockers.
+If there is any finding or any blocker, set `verdict` to `CHANGES_REQUIRED`.
+
+Return JSON matching this schema:
+
+{props.schema}
