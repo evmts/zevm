@@ -211,7 +211,7 @@ function createSmokeAgent(kind: "implementation" | "review" | "fix") {
 const implementationAgent = SMOKE_MODE
   ? createSmokeAgent("implementation")
   : new CodexAgent({
-      model: "gpt-5.3",
+      model: "gpt-5.4",
       cwd: REPO_ROOT,
       yolo: true,
       timeoutMs: 60 * 60 * 1000,
@@ -224,7 +224,7 @@ const implementationAgent = SMOKE_MODE
 const fixAgent = SMOKE_MODE
   ? createSmokeAgent("fix")
   : new CodexAgent({
-      model: "gpt-5.3",
+      model: "gpt-5.4",
       cwd: REPO_ROOT,
       yolo: true,
       timeoutMs: 60 * 60 * 1000,
@@ -237,7 +237,7 @@ const fixAgent = SMOKE_MODE
 const reviewAgent = SMOKE_MODE
   ? createSmokeAgent("review")
   : new CodexAgent({
-      model: "gpt-5.3",
+      model: "gpt-5.4",
       cwd: REPO_ROOT,
       yolo: true,
       timeoutMs: 45 * 60 * 1000,
