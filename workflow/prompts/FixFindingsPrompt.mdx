@@ -1,0 +1,101 @@
+Template note: this file is a workflow prompt template. `{props.*}` placeholders are intentionally unresolved in source and are resolved by the workflow runtime before execution.
+
+Runtime props contract (required at workflow execution):
+- `props.reviewRound` (string | number): review pass identifier for the findings being addressed.
+- `props.reviewVerdict` (string): cold-review verdict context (expected `LGTM` or `CHANGES_REQUIRED`).
+- `props.findings` (array): structured cold-review findings payload to evaluate and fix.
+- `props.blockers` (array): cold-review blockers payload to evaluate and resolve where valid.
+- `props.residualRisks` (array): cold-review residual risks payload to evaluate during integration.
+- `props.schema` (string): JSON Schema text that defines the required JSON output format for this workflow run.
+
+Execution guard:
+- Unresolved placeholders are valid in repository source templates.
+- After runtime render, any unresolved template placeholder (for example `{props.*}` or `{JSON.stringify(...)}`) is a hard error and the workflow must fail before executing this prompt.
+- The fallback instructions below are only for pasted/raw prompt usage outside the workflow runtime.
+
+You are the lead agent for the ZEVM docs-convergence program in this repository.
+
+This is a fix-and-integrate pass after a cold review.
+
+Your job is to take the cold-review findings below, rebuild context from the docs corpus, apply all valid fixes, and bring the documentation set back to a coherent state.
+
+Work from docs only.
+Ignore `src/`, tests, build state, and implementation artifacts entirely unless the human explicitly asks otherwise.
+
+Core direction:
+- `docs/specs/prd.md` is the primary product-definition draft and may need to be improved or rewritten
+- relevant files under `docs/` are part of the product-definition corpus and must stay internally consistent
+- public docs under `mintlify/` are the real user-facing product docs and must remain complete, coherent, and production-grade
+
+Your responsibilities in this pass:
+1. read the current docs corpus
+2. evaluate the cold-review findings carefully
+3. fix all valid findings
+4. if a finding exposes a deeper product-definition problem, fix it at the root, not just locally
+5. update the PRD, internal docs, and public docs together where needed
+6. preserve coherence across the entire docs corpus
+7. surface any true unresolved product decisions explicitly instead of hiding them
+
+Rules:
+- do not stop at superficial edits
+- do not hide ambiguity behind polished prose
+- do not preserve bad structure just because it already exists
+- do not treat any single existing doc as untouchable
+- if a review finding is invalid, explain briefly why and continue with the rest
+- use subagents intelligently
+- prefer explorer agents first for triage if useful
+- use worker agents only with disjoint write scopes
+- keep the final integration coherent in the main thread
+
+Review round: {props.reviewRound}
+Review verdict: {props.reviewVerdict}
+
+If `Review round: {props.reviewRound}` or `Review verdict: {props.reviewVerdict}` is unresolved template text in a pasted/raw prompt, treat the value as unknown context and continue.
+This fallback is pasted/raw resilience only and must not override runtime render-failure behavior.
+
+Cold-review findings:
+
+```json
+{JSON.stringify(props.findings, null, 2)}
+```
+
+Cold-review blockers:
+
+```json
+{JSON.stringify(props.blockers, null, 2)}
+```
+
+Cold-review residual risks:
+
+```json
+{JSON.stringify(props.residualRisks, null, 2)}
+```
+
+If any cold-review section is unresolved template text (for example raw `{JSON.stringify(...)}` placeholders), treat that section as missing payload, state it briefly, and continue by rebuilding findings from the docs corpus.
+This fallback is pasted/raw resilience only and must not override runtime render-failure behavior.
+
+Stop only when one of these is true:
+1. the docs corpus is again coherent and complete enough for a fresh cold review
+2. a true product decision is required from the human and cannot be responsibly resolved from the docs corpus alone
+
+Return JSON matching this schema:
+
+{props.schema}
+
+If `{props.schema}` is unresolved template text in a pasted/raw prompt, use this fallback output schema and still return valid JSON.
+This fallback is pasted/raw resilience only and must not override runtime render-failure behavior.
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "summary", "filesChanged", "productDecisionsNeeded"],
+  "properties": {
+    "status": { "type": "string", "enum": ["READY_FOR_COLD_REVIEW", "NEEDS_PRODUCT_DECISION"] },
+    "summary": { "type": "string" },
+    "filesChanged": { "type": "array", "items": { "type": "string" } },
+    "productDecisionsNeeded": { "type": "array", "items": { "type": "string" } }
+  }
+}
+```

@@ -1,0 +1,157 @@
+---
+title: Simulation
+description: Trusted-mode eth_call and eth_estimateGas contract, including TransactionRequest and StateOverrideSet.
+---
+
+# Simulation
+
+`eth_call` and `eth_estimateGas` are trusted-mode simulation methods.
+
+- trusted mode: supported
+- light mode: unsupported (`-32010`)
+
+Both methods execute on a checkpoint-and-revert path and do not mutate canonical state.
+
+## Methods
+
+| Method | Exact params | Exact result | Errors |
+| --- | --- | --- | --- |
+| `eth_call` | `[tx, block]` or `[tx, block, stateOverrides]` | `HexData` | `-32602` malformed tx, selector, or overrides; `-32603` runtime execution failure; `-32010` in light mode |
+| `eth_estimateGas` | `[tx]`, `[tx, block]`, or `[tx, block, stateOverrides]` | `QuantityHex` | `-32602` malformed tx, selector, or overrides; `-32603` runtime execution failure; `-32010` in light mode |
+
+Any tuple length not listed above returns `-32602`.
+
+Execution outcome semantics:
+
+- success path:
+  - `eth_call` returns `HexData`
+  - `eth_estimateGas` returns `QuantityHex`
+- runtime execution failure path (for example revert, out-of-gas, invalid execution in simulation context): JSON-RPC `-32603` with no `result`
+- phase-1 implementation-defined details:
+  - exact `error.message` text and optional `error.data` payload for runtime execution failure
+  - gas-search strategy and tie-breaking used by `eth_estimateGas`
+  - internal defaults for omitted simulation fields beyond the required tuple/validation contract on this page
+
+## `TransactionRequest`
+
+Allowed fields only:
+
+| Field | Type | Rule |
+| --- | --- | --- |
+| `from` | `Address` | optional for `eth_call` and `eth_estimateGas` |
+| `to` | `Address` or `null` | omitted or `null` for create |
+| `gas` | `QuantityHex` | optional |
+| `gasPrice` | `QuantityHex` | optional |
+| `value` | `QuantityHex` | optional |
+| `nonce` | `QuantityHex` | optional |
+| `data` | `HexData` | optional |
+| `input` | `HexData` | optional alias of `data` |
+
+Rules:
+
+- `data` and `input` may both be omitted
+- if both are present, they must be byte-identical
+- any field not listed above returns `-32602`
+- unsupported request fields and return `-32602`: `maxFeePerGas`, `maxPriorityFeePerGas`, `maxFeePerBlobGas`, `blobVersionedHashes`, `accessList`, `authorizationList`, `type`, `chainId`
+
+## `StateOverrideSet`
+
+`stateOverrides` is an object keyed by address. Each value may include:
+
+| Field | Type |
+| --- | --- |
+| `balance` | `QuantityHex` |
+| `nonce` | `QuantityHex` |
+| `code` | `HexData` |
+| `storage` | object mapping `Bytes32` slot -> `Bytes32` value |
+
+Example:
+
+```json
+{
+  "0x0000000000000000000000000000000000000001": {
+    "balance": "0xde0b6b3a7640000",
+    "nonce": "0x1",
+    "code": "0x60006000",
+    "storage": {
+      "0x0000000000000000000000000000000000000000000000000000000000000000": "0x0000000000000000000000000000000000000000000000000000000000000001"
+    }
+  }
+}
+```
+
+## Trusted Selector Rules
+
+Simulation selectors use trusted-mode selector semantics:
+
+- `latest`: current local head
+- `pending`, `safe`, `finalized`: aliases of `latest`
+- `earliest`: block `0`
+- numeric quantity: exact local block number
+
+Malformed selectors return `-32602`.
+
+## Example: `eth_call`
+
+Request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "eth_call",
+  "params": [
+    {
+      "to": "0x0000000000000000000000000000000000000001",
+      "data": "0x70a08231000000000000000000000000f39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+    },
+    "latest"
+  ]
+}
+```
+
+Response:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": "0x0000000000000000000000000000000000000000000000000000000000000000"
+}
+```
+
+## Example: `eth_estimateGas`
+
+Request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "eth_estimateGas",
+  "params": [
+    {
+      "from": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "to": "0x0000000000000000000000000000000000000001",
+      "data": "0x"
+    }
+  ]
+}
+```
+
+Response:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": "0x5208"
+}
+```
+
+## Related Pages
+
+- [Core Reads](./core-reads)
+- [Transactions And Mining](./transactions-and-mining)
+- [ZEVM Controls](./dev-controls)
+- [Unsupported And Deferred](./unsupported-and-deferred)

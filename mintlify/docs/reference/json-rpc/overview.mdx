@@ -1,0 +1,201 @@
+---
+title: JSON-RPC Overview
+description: Transport, envelope rules, error codes, selector semantics, and method surface by mode.
+---
+
+# JSON-RPC Overview
+
+This page defines the ZEVM HTTP JSON-RPC 2.0 contract shared across trusted mode and light mode.
+
+## Phase 1 Scope (Public Contract)
+
+In JSON-RPC docs, **phase 1** means the current public ZEVM RPC contract:
+
+- HTTP JSON-RPC transport only on `/`
+- mode-gated method surface (`trusted` vs `light`) with explicit unsupported behavior
+- light-mode readiness gating for proof-backed reads
+- phase 1 installation/distribution guarantee is source-build installation only
+- packaged binaries, installers, and distribution-channel guarantees are out of scope for phase 1
+
+GA posture for this page is scoped to that source-build RPC contract only.
+
+## Transport
+
+- HTTP only
+- JSON-RPC endpoint path is `/` only
+- request path other than `/` returns HTTP `404` with no JSON-RPC body
+- `POST` only on `/`
+- non-`POST` request to `/` returns HTTP `405` with no JSON-RPC body
+- `POST /` request content type must be `application/json` (media-type parameters allowed)
+- unsupported or missing request content type returns HTTP `415` with no JSON-RPC body
+- JSON-RPC success and error envelopes return HTTP `200`
+- notification-only request or notification-only batch returns HTTP `204` with empty body
+- JSON-RPC responses use content type `application/json`
+- WebSocket transport is unsupported; transport absence is handled at HTTP transport level, not as JSON-RPC `-32010`
+- For transport-level debugging/remediation of `404`/`405`/`415`/`204`, see [Troubleshooting -> HTTP Transport Statuses (JSON-RPC)](../../quickstart/troubleshooting#http-transport-statuses-json-rpc)
+
+Canonical ZEVM-owned transport/parser shipping-path requirement:
+
+- ZEVM phase-1 shipping path uses one canonical ZEVM-owned HTTP transport/parser stack for request framing, JSON parsing, and envelope dispatch
+- shipped behavior for notification-only single requests and notification-only batches must be produced by that same canonical stack and must return HTTP `204` with empty body
+- alternate transport/parser stacks are out of contract for shipped phase-1 behavior claims
+
+## Normative Sources
+
+- Product requirements: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md)
+- JSON-RPC contract source: [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md)
+- Contract ownership and docs-first change flow: [Canonical Specs And Docs-First Process](../specs-and-process)
+
+## JSON-RPC Envelope Rules
+
+- protocol version is always `"2.0"`
+- single requests are supported
+- batches are supported
+- notification: request object with no `id`
+- ZEVM sends no JSON-RPC response for notifications
+- mixed batches include responses only for items that had `id`, preserving input order for those items
+- `"id": null` is not a notification and receives a response
+
+Empty batch `[]` returns HTTP `200` with exactly:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": null,
+  "error": {
+    "code": -32600,
+    "message": "Invalid Request"
+  }
+}
+```
+
+## Error Codes
+
+### Standard JSON-RPC codes
+
+| Condition | Code |
+| --- | --- |
+| parse error | `-32700` |
+| invalid request | `-32600` |
+| method not found | `-32601` |
+| invalid params | `-32602` |
+| internal error | `-32603` |
+
+### ZEVM runtime RPC codes
+
+| Condition | Code |
+| --- | --- |
+| method unsupported in active mode | `-32010` |
+| light mode not ready for proof-backed reads | `-32011` |
+| proof verification failed | `-32014` |
+| malformed data from upstream proof source | `-32015` |
+
+### ZEVM startup-reserved codes (pre-listener)
+
+These codes are reserved for startup validation failures and are not emitted as runtime HTTP JSON-RPC responses.
+
+| Condition | Code |
+| --- | --- |
+| selected checkpoint too old under strict startup policy | `-32012` |
+| checkpoint input or persisted checkpoint is malformed/corrupt | `-32013` |
+
+Startup policy context:
+
+- selected checkpoint staleness is only when `age > maxCheckpointAgeSeconds` (`age == maxCheckpointAgeSeconds` is valid)
+- `age` is how old the selected startup checkpoint is when ZEVM starts
+- `age` is evaluated once during startup, after checkpoint selection and before stale-policy decision
+- `age` is measured in whole seconds: `age = max(0, startupTimeSeconds - checkpointTimeSeconds)`
+- `startupTimeSeconds` is sampled at age-check time
+- `checkpointTimeSeconds` is derived deterministically from the selected startup checkpoint hash on the selected network
+- derivation steps: call `GET <consensusRpcUrl>/eth/v1/beacon/genesis` and parse `data.genesis_time`; call `GET <consensusRpcUrl>/eth/v1/beacon/headers/{selectedCheckpointHash}` and parse `data.root` and `data.header.message.slot` (with `data.root` required to equal `selectedCheckpointHash`)
+- compute summary: `checkpointTimeSeconds = genesisTimeSeconds + (checkpointSlot * 12)` (integer Unix seconds, with phase-1 `SECONDS_PER_SLOT = 12`)
+- `checkpointTimeSeconds` is anchored to the selected startup checkpoint input and must not be derived from filesystem metadata (for example, `checkpointDir/checkpoint` mtime)
+- stale checkpoint with `strictCheckpointAge = false`: startup emits one operator-facing warning before listening, then continues
+- stale checkpoint with `strictCheckpointAge = true`: startup fails before the HTTP listener starts
+- inability to resolve `checkpointTimeSeconds` for the selected startup checkpoint is startup failure before the HTTP listener starts
+- missing persisted `checkpointDir/checkpoint` is treated as absent startup input and checkpoint selection falls through by precedence
+- unreadable persisted `checkpointDir/checkpoint` is a startup failure before the HTTP listener starts
+- malformed startup checkpoint input or malformed persisted checkpoint file fails startup before the HTTP listener starts
+- baked default checkpoint values are release/build-specific startup data; this page defines runtime/startup error semantics, while startup knobs and precedence are specified in [Light-Mode Configuration](../configuration/light-mode) and [Configuration Overview](../configuration/overview)
+
+### Shared error rules
+
+- malformed addresses, quantities, hex bytes, selectors, indexes, filters, tuple lengths, and invalid object field combinations return `-32602`
+- well-formed requests for supported methods unavailable in active mode return `-32010`
+- `-32012` and `-32013` remain startup-reserved and are not emitted after the HTTP listener is active
+- trusted block/tx/receipt lookup miss returns `null`
+- `eth_getLogs` with no matches returns `[]`
+
+## Block Selector Semantics
+
+### Trusted selectors
+
+| Selector | Meaning |
+| --- | --- |
+| `latest` | current canonical local head |
+| `pending` | alias of `latest` |
+| `safe` | alias of `latest` |
+| `finalized` | alias of `latest` |
+| `earliest` | block `0` |
+| numeric quantity | exact local block number |
+
+### Light selectors
+
+| Selector | Meaning |
+| --- | --- |
+| `latest` | latest verified optimistic execution head |
+| `safe` | consensus-backed safe execution head |
+| `finalized` | consensus-finalized execution head |
+| `earliest` | block `0` |
+| numeric quantity | block `0` or a retained numeric block in the verified-history window |
+| `pending` | unsupported (`-32010`) |
+
+## Method Surface By Mode
+
+### Trusted mode
+
+- Core reads: `eth_chainId`, `eth_blockNumber`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getTransactionCount`, `eth_accounts`, `eth_coinbase`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_blobBaseFee`, `eth_feeHistory`
+- Simulation: `eth_call`, `eth_estimateGas`
+- Submission: `eth_sendTransaction`, `eth_sendRawTransaction`
+- Mining/txpool controls: trusted `zevm_*` mining and txpool controls (plus accepted aliases)
+- Block-environment/time/reset/fork-source controls: trusted `zevm_*` block-environment/time/reset/fork-source controls (plus accepted aliases)
+- Queries: `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getBlockTransactionCountByNumber`, `eth_getBlockTransactionCountByHash`, `eth_getTransactionByHash`, `eth_getTransactionByBlockNumberAndIndex`, `eth_getTransactionByBlockHashAndIndex`, `eth_getTransactionReceipt`, `eth_getBlockReceipts`, `eth_getLogs`
+- Account/state/chain-id/snapshot/impersonation/funding/metadata controls: trusted `zevm_*` account/state/chain-id/snapshot/impersonation/funding/metadata controls (plus accepted aliases)
+
+Snapshot/revert boundary in trusted mode: `zevm_snapshot`/`zevm_revert` affect trusted local runtime state only, do not capture light-mode sync/checkpoint state, and do not mutate remote fork-source state.
+
+### Light mode
+
+- Always callable: `zevm_lightSyncStatus`, `eth_chainId`
+- Readiness-gated: `eth_blockNumber`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getTransactionCount`
+- simulation methods are trusted-only in phase 1; light-mode `eth_call` and `eth_estimateGas` return `-32010`, and `eth_call` remains a deferred light-mode proof-backed target
+
+> Readiness gate: while light mode is not ready, readiness-gated calls return `-32011`. See [Verified Light-Mode Reads Methods](./verified-light-mode-reads#methods) and [Readiness And Proof Rules](./verified-light-mode-reads#readiness-and-proof-rules).
+
+## Example: Notification Request
+
+Request (no `id`):
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "eth_chainId",
+  "params": []
+}
+```
+
+Response: no JSON-RPC body, HTTP `204`.
+
+## Reference Pages
+
+- [Configuration Overview](../configuration/overview)
+- [Trusted-Mode Configuration](../configuration/trusted-mode)
+- [Light-Mode Configuration](../configuration/light-mode)
+- [Canonical Specs And Docs-First Process](../specs-and-process)
+- [Core Reads](./core-reads)
+- [Simulation](./simulation)
+- [Transactions And Mining](./transactions-and-mining)
+- [Blocks, Receipts, And Logs](./blocks-receipts-and-logs)
+- [ZEVM Controls](./dev-controls)
+- [Verified Light-Mode Reads](./verified-light-mode-reads)
+- [Unsupported And Deferred](./unsupported-and-deferred)

@@ -1,12 +1,15 @@
 # Plan: add-mempool-to-voltaire
 
+> Historical archive note: this document captures an upstream Voltaire txpool plan and is non-normative for current ZEVM phase-1 behavior. For current ZEVM API/runtime contract, see `docs/specs/prd.md` and `docs/specs/json-rpc-contract.md`.
+
 ## Overview
 
-Add a transaction pool (mempool) module to voltaire at `../voltaire/packages/voltaire-zig/src/txpool/`. This implements the core data structure for holding pending/ready transactions, ordered by nonce and fee priority, with support for all Ethereum transaction types (Legacy, EIP-1559, EIP-2930, EIP-4844, EIP-7702).
+Add a transaction pool (mempool) module to voltaire at `../voltaire/packages/voltaire-zig/src/txpool/`. This implements the core data structure for holding pending/ready transactions, ordered by nonce and fee priority, with upstream envelope coverage across transaction types (Legacy, EIP-1559, EIP-2930, EIP-4844, EIP-7702).
 
 **Design model**: Adapted from Foundry's `requires`/`provides` marker pattern where each transaction provides marker `(nonce, sender)` and requires marker `(nonce-1, sender)` (unless nonce equals on-chain nonce). This cleanly separates ready vs pending transactions and handles promotion when predecessors are mined.
 
 **Scope**: This is a voltaire-only change. ZEVM integration is a follow-up ticket.
+**Phase-1 contract guardrail**: Typed transaction support in this document is upstream/future capability work and does not override ZEVM phase-1 submission rules. In phase 1, submission remains legacy-only (`type 0x0`), and typed EIP-2718 envelopes are rejected per `docs/specs/json-rpc-contract.md`.
 
 ## Prerequisites / Missing Pieces in Voltaire
 
@@ -205,6 +208,8 @@ Note: In the MVP, the caller passes in `sender` (already recovered) and `next_no
 - `"add_transaction inserts eip4844 tx"`
 - `"add_transaction inserts eip7702 tx"`
 
+Note: This step is about upstream txpool envelope handling only. ZEVM phase-1 RPC submission remains legacy-only and continues to reject typed raw submissions (`-32602`) at the handler boundary.
+
 #### Step 10: Test — add_transaction nonce ordering (ready vs pending)
 **File**: `src/txpool/TxPool.zig`
 
@@ -372,7 +377,7 @@ test {
 
 | Criterion | How Verified |
 |---|---|
-| Support Legacy, EIP-1559, EIP-2930, EIP-4844, EIP-7702 | Steps 1-2 (TransactionEnvelope), Steps 8-9 (add all types) |
+| Voltaire txpool envelope coverage for Legacy, EIP-1559, EIP-2930, EIP-4844, EIP-7702 | Steps 1-2 (TransactionEnvelope), Steps 8-9 (add all types). This is not a ZEVM phase-1 submission contract change. |
 | `add_transaction()` | Steps 8-12 |
 | `remove_transaction()` | Step 16 |
 | `get_pending()` | Step 13 |

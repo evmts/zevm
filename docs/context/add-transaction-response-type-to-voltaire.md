@@ -1,5 +1,8 @@
 # Context: `add-transaction-response-type-to-voltaire`
 
+> Historical archive note: this ticket context predates the current ZEVM contract. References in this file to `blockTimestamp` in transaction payloads reflect prior analysis of external vectors; the active ZEVM contract intentionally excludes nonstandard `blockTimestamp` extension fields.
+> Contract resolution note: phase-1 transaction objects in the ZEVM JSON-RPC contract are legacy-shaped (`type = 0x0`) and by-block transaction lookups return `null` on miss/out-of-range index.
+
 ## Ticket
 - **ID**: `add-transaction-response-type-to-voltaire`
 - **Category**: `cat-5-block-queries`
@@ -86,7 +89,7 @@ Observed behavior from vectors:
   - plus tx fields/signature fields (`v/r/s`, and where applicable `yParity`, fee fields, access list, blob fields, authorization list).
 
 ### EIP-1474 method semantics
-- `EIPs/EIPS/eip-1474.md`
+- `https://eips.ethereum.org/EIPS/eip-1474`
 
 For all 3 methods:
 - return type is `null|object`.
@@ -130,7 +133,7 @@ Observed behavior:
 Observed behavior:
 - response shape includes `blockHash`, `blockNumber`, `from`, `transactionIndex` + tx fields.
 - `eth_getTransactionByHash` returns `null` when not found.
-- by-block methods currently return `-32602` on missing tx (diverges from execution-apis vectors that use `null`).
+- by-block methods currently return `-32602` on missing tx (diverges from execution-apis vectors that use `null`; ZEVM contract resolves this to `null`).
 
 ### Hive simulator artifacts
 - `hive/simulators/ethereum/graphql/testcases/27_eth_getTransaction_byBlockHashAndIndex.json`
@@ -202,8 +205,8 @@ Observed expectation:
 2. Metadata fields required by ticket (`blockHash`, `blockNumber`, `transactionIndex`, `from`) match canonical object shape.
 3. Pending semantics matter:
 - for pending txs, block metadata fields should be nullable.
-4. Typed tx variants (legacy/2930/1559/4844/7702) must remain representable in the response shape.
-5. `execution-apis` currently includes `blockTimestamp` in `TransactionInfo`; ticket text does not request it explicitly. This is a likely scope decision to confirm before implementation.
+4. Historical external vectors include typed tx variants (legacy/2930/1559/4844/7702), but phase-1 ZEVM contract fixes transaction object `type` to `0x0`.
+5. `execution-apis` currently includes `blockTimestamp` in `TransactionInfo`; ZEVM phase-1 contract intentionally excludes nonstandard transaction `blockTimestamp`.
 
 ## Black-box tests to port/replicate for ZEVM integration
 - `execution-apis/tests/eth_getTransactionByHash/get-notfound-tx.io`

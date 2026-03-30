@@ -1,0 +1,63 @@
+{
+  "name": "ZEVM",
+  "theme": "mint",
+  "colors": {
+    "primary": "#0f766e",
+    "light": "#99f6e4",
+    "dark": "#134e4a"
+  },
+  "navigation": [
+    {
+      "group": "Overview",
+      "pages": [
+        "index",
+        "reference/canonical-specs",
+        "reference/specs-and-process",
+        "reference/release-metadata-runbook"
+      ]
+    },
+    {
+      "group": "Quickstart",
+      "pages": [
+        "quickstart/installation",
+        "quickstart/run-trusted-mode",
+        "quickstart/forked-dev-node",
+        "quickstart/run-light-mode",
+        "quickstart/troubleshooting"
+      ]
+    },
+    {
+      "group": "Concepts",
+      "pages": [
+        "concepts/runtime-modes",
+        "concepts/trusted-mode",
+        "concepts/light-mode",
+        "concepts/state-fork-and-snapshots",
+        "concepts/method-support-by-mode",
+        "concepts/architecture-and-upstream-ownership"
+      ]
+    },
+    {
+      "group": "Configuration Reference",
+      "pages": [
+        "reference/configuration/overview",
+        "reference/configuration/trusted-mode",
+        "reference/configuration/light-mode"
+      ]
+    },
+    {
+      "group": "JSON-RPC Reference",
+      "pages": [
+        "reference/json-rpc/overview",
+        "reference/json-rpc/core-reads",
+        "reference/json-rpc/managed-dev-wallet",
+        "reference/json-rpc/simulation",
+        "reference/json-rpc/transactions-and-mining",
+        "reference/json-rpc/blocks-receipts-and-logs",
+        "reference/json-rpc/dev-controls",
+        "reference/json-rpc/verified-light-mode-reads",
+        "reference/json-rpc/unsupported-and-deferred"
+      ]
+    }
+  ]
+}

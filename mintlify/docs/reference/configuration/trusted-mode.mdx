@@ -1,0 +1,128 @@
+---
+title: Trusted-Mode Configuration
+description: Trusted-mode defaults, CLI/config fields, mining and fork options, and validation.
+---
+
+# Trusted-Mode Configuration
+
+Trusted mode is the default runtime. It provides local execution and local mutation with optional fork backing.
+
+> Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).
+>
+> This page is an operational summary. For product-contract disputes, follow those normative sources.
+
+## Runtime Defaults
+
+| Field | Default |
+| --- | --- |
+| `chainId` | `31337` (`0x7a69`) |
+| managed accounts | 10 deterministic dev accounts |
+| `coinbaseIndex` | `0` |
+| `initialBalance` | `10000000000000000000000` wei |
+| `gasPrice` | `2000000000` |
+| `baseFee` | `1000000000` |
+| `blobBaseFee` | `1` |
+| `maxPriorityFeePerGas` | `1000000000` |
+| `blockGasLimit` | `30000000` |
+| mining mode | `auto` |
+
+## CLI And Config Field Map
+
+| CLI flag | Config field | Type | Default |
+| --- | --- | --- | --- |
+| `--chain-id` | `mode.trusted.chainId` | `u64` | `31337` |
+| `--coinbase-index` | `mode.trusted.coinbaseIndex` | integer `0..9` | `0` |
+| `--initial-balance` | `mode.trusted.initialBalance` | decimal wei string | `10000000000000000000000` |
+| `--gas-price` | `mode.trusted.gasPrice` | decimal wei string | `2000000000` |
+| `--base-fee` | `mode.trusted.baseFee` | decimal wei string | `1000000000` |
+| `--blob-base-fee` | `mode.trusted.blobBaseFee` | decimal wei string | `1` |
+| `--max-priority-fee-per-gas` | `mode.trusted.maxPriorityFeePerGas` | decimal wei string | `1000000000` |
+| `--block-gas-limit` | `mode.trusted.blockGasLimit` | `u64` | `30000000` |
+| `--mining` | `mode.trusted.mining.type` | `auto`, `manual`, `interval` | `auto` |
+| `--block-time` | `mode.trusted.mining.blockTime` | seconds (`u64`) | none |
+| `--fork-url` | `mode.trusted.fork.url` | execution RPC URL | none |
+| `--fork-block-number` | `mode.trusted.fork.blockNumber` | `u64` | none (when omitted with `--fork-url`, follow upstream head) |
+
+Fork block-number representation bridge: startup CLI/config values are decimal `u64`, while JSON-RPC `zevm_reset` uses `QuantityHex` for `forkConfig.blockNumber` (example: `22000000` -> `"0x14fb180"`).
+
+## Mining Shapes
+
+`mode.trusted.mining` accepts:
+
+```json
+{ "type": "auto" }
+```
+
+```json
+{ "type": "manual" }
+```
+
+```json
+{ "type": "interval", "blockTime": 12 }
+```
+
+## Fork Shapes
+
+`mode.trusted.fork` accepts:
+
+```json
+null
+```
+
+```json
+{ "url": "https://rpc.example" }
+```
+
+```json
+{ "url": "https://rpc.example", "blockNumber": 22000000 }
+```
+
+When `fork.url` is set and `fork.blockNumber` is omitted, ZEVM follows the upstream head by default.
+
+## Validation Rules
+
+- `--block-time` is required when `--mining interval`
+- `--block-time` is invalid for `auto` and `manual`
+- `--fork-block-number` is invalid without `--fork-url`
+- `--fork-url` without `--fork-block-number` is valid and follows upstream head
+- trusted-only flags are invalid in light mode
+- `coinbaseIndex` must be within `0..9`
+
+## Example: Trusted Mode With Interval Mining And Fork
+
+```json
+{
+  "rpc": { "host": "127.0.0.1", "port": 8545 },
+  "mode": {
+    "trusted": {
+      "chainId": 31337,
+      "coinbaseIndex": 0,
+      "initialBalance": "10000000000000000000000",
+      "gasPrice": "2000000000",
+      "baseFee": "1000000000",
+      "blobBaseFee": "1",
+      "maxPriorityFeePerGas": "1000000000",
+      "blockGasLimit": 30000000,
+      "mining": { "type": "interval", "blockTime": 12 },
+      "fork": { "url": "https://rpc.example", "blockNumber": 22000000 }
+    }
+  }
+}
+```
+
+## Example: CLI Startup
+
+```bash
+zevm \
+  --mode trusted \
+  --chain-id 31337 \
+  --mining interval \
+  --block-time 12 \
+  --fork-url https://rpc.example \
+  --fork-block-number 22000000
+```
+
+## Related Pages
+
+- [Configuration Overview](./overview)
+- [Light-Mode Configuration](./light-mode)

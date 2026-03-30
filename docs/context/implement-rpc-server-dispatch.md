@@ -19,7 +19,7 @@
 
 Primary sources for request validity and error mapping:
 
-- `EIPs/EIPS/eip-1474.md`
+- `https://eips.ethereum.org/EIPS/eip-1474`
 - `execution-apis/src/engine/common.md`
 
 Required behavior for this ticket:
@@ -166,7 +166,7 @@ Required behavior for this ticket:
 
 ### 16) `EIPs/EIPS/`
 
-- **Read:** `eip-1474.md`, `eip-1898.md`
+- **Read:** `https://eips.ethereum.org/EIPS/eip-1474`, `https://eips.ethereum.org/EIPS/eip-1898`
 - **Relevant findings:**
   - `eip-1474` provides standard JSON-RPC error codes/messages and request/response framing expectations.
   - `eip-1898` is relevant for later param parsing (`BlockSpec` object form), not dispatch envelope parsing.

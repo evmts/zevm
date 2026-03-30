@@ -1,5 +1,10 @@
 # Context: implement-http-jsonrpc-server
 
+> Historical archive note: this ticket context captures an early bootstrap inventory and may include method-family references outside the active ZEVM contract.
+> Normative ZEVM behavior is defined in `docs/specs/prd.md` and `docs/specs/json-rpc-contract.md`.
+> The method catalogs below (especially `EthMethod`) are upstream inventory for dispatch/bootstrap context, not a ZEVM phase-1 support list.
+> Error-code snippets below that include non-standard ranges are historical upstream references; ZEVM authoritative error semantics are in `docs/specs/json-rpc-contract.md` section 5.
+
 ## Ticket Summary
 
 Implement the HTTP JSON-RPC 2.0 server for zevm per `docs/plans/http-jsonrpc-server-and-dispatch.md`. This is the foundational RPC layer: HTTP listener, JSON-RPC envelope parsing/serialization, method dispatch (all stubs returning -32601), batch support, CLI args, and standard error codes.
@@ -77,16 +82,18 @@ const jsonrpc_mod = b.addModule("jsonrpc", .{
 });
 ```
 
-**However**, zevm's `build.zig` does NOT yet import this module. It imports: primitives, state-manager, blockchain, crypto, precompiles, guillotine_mini. The `jsonrpc` module must be added.
+**However**, zevm's `build.zig` does NOT yet import this module. It imports: primitives, state-manager, blockchain, crypto, precompiles, guillotine_mini. This snapshot proposed adding the `jsonrpc` module import.
 
 #### root.zig (`../voltaire/packages/voltaire-zig/src/jsonrpc/root.zig`)
 - Exports: `JsonRpc`, `eth`, `debug`, `engine`, `types`, `JsonRpcMethod`
-- Need to add: `pub const envelope = @import("envelope.zig");`
+- Snapshot proposal: add `pub const envelope = @import("envelope.zig");`
 
 #### eth/methods.zig — `EthMethod` union(enum) with 37 variants
 - `fromMethodName(method_name: []const u8) !std.meta.Tag(EthMethod)` — uses `std.StaticStringMap`
 - Returns `error.UnknownMethod` for unrecognized methods
 - Methods: eth_accounts, eth_blobBaseFee, eth_blockNumber, eth_call, eth_chainId, eth_coinbase, eth_createAccessList, eth_estimateGas, eth_feeHistory, eth_gasPrice, eth_getBalance, eth_getBlockByHash, eth_getBlockByNumber, eth_getBlockReceipts, eth_getBlockTransactionCountByHash, eth_getBlockTransactionCountByNumber, eth_getCode, eth_getFilterChanges, eth_getFilterLogs, eth_getLogs, eth_getProof, eth_getStorageAt, eth_getTransactionByBlockHashAndIndex, eth_getTransactionByBlockNumberAndIndex, eth_getTransactionByHash, eth_getTransactionCount, eth_getTransactionReceipt, eth_getUncleCountByBlockHash, eth_getUncleCountByBlockNumber, eth_maxPriorityFeePerGas, eth_newBlockFilter, eth_newFilter, eth_newPendingTransactionFilter, eth_sendRawTransaction, eth_sendTransaction, eth_sign, eth_signTransaction, eth_simulateV1, eth_syncing, eth_uninstallFilter
+- Contract alignment note: this list is an upstream method-name inventory, not a statement of ZEVM phase-1 support.
+- Contract alignment note: filter lifecycle methods beyond `eth_getLogs` (`eth_newFilter`, `eth_newBlockFilter`, `eth_newPendingTransactionFilter`, `eth_getFilterChanges`, `eth_getFilterLogs`, `eth_uninstallFilter`) are deferred/out-of-contract for ZEVM phase 1.
 
 #### debug/methods.zig — `DebugMethod` union(enum) with 5 variants
 - `fromMethodName()` — same pattern as EthMethod
@@ -113,7 +120,7 @@ Each method file exports:
 
 **Path:** `../voltaire/packages/voltaire-zig/src/jsonrpc/envelope.zig`
 
-This file does NOT exist yet. It must be created with:
+This file did NOT exist at the time of this snapshot. The proposal was to create it with:
 
 ```
 Id           — union(enum) { integer: i64, string: []const u8, null_value: void }
@@ -146,7 +153,7 @@ Helper functions:
 - Creates zevm module with all imports
 - Creates exe from `src/main.zig` importing zevm module
 - Tests use root module (src/root.zig)
-- **Must add:** `const jsonrpc_mod = voltaire.module("jsonrpc");` and add it to zevm, exe, and test module imports
+- **Snapshot proposal:** add `const jsonrpc_mod = voltaire.module("jsonrpc");` and wire it into zevm, exe, and test module imports
 
 ### build.zig.zon
 - Dependencies: `voltaire` (path: `../voltaire`), `guillotine-mini` (path: `../guillotine-mini`)
@@ -162,9 +169,9 @@ pub fn main() !void {
 ### src/root.zig (CURRENT)
 - Exports: database, blockchain, host_adapter, tx_processor, block_builder, consensus_verifier, beacon_api, consensus_sync, checkpoint
 - Test block imports all test files
-- **Must add:** `pub const rpc_server = @import("rpc_server.zig");` and `_ = @import("rpc_server_test.zig");` in test block
+- **Snapshot proposal:** add `pub const rpc_server = @import("rpc_server.zig");` and `_ = @import("rpc_server_test.zig");` in test block
 
-### Existing modules (DO NOT BREAK):
+### Existing modules (snapshot compatibility context):
 - `host_adapter.zig` — Bridges voltaire StateManager to guillotine-mini HostInterface
 - `tx_processor.zig` — Transaction processing with gas accounting
 - `block_builder.zig` — Block building with gas limit enforcement
@@ -227,7 +234,7 @@ while (true) {
 - Additional methods not in voltaire: `net_version`, `web3_clientVersion`, `web3_sha3`, `personal_sign`, `eth_signTypedData_v4`, `eth_subscribe`, `eth_unsubscribe`, `eth_pendingTransactions`, plus all evm_* and hardhat_* methods
 
 **Error handling (`serde.rs`):**
-- `InvalidRequestReason` enum: UnsupportedMethod (-32004), InvalidStorageKey (-32000), InvalidStorageValue (-32000), InvalidJson (-32602)
+- `InvalidRequestReason` enum: UnsupportedMethod (-32004), InvalidStorageKey (-32000), InvalidStorageValue (-32000), InvalidJson (-32602) (EDR-specific reference, not ZEVM contract)
 - Custom address/quantity/data deserialization with helpful error messages
 
 **Request resolution (`resolve.rs`):**
@@ -267,7 +274,6 @@ while (true) {
 | -32601 | METHOD_NOT_FOUND | Method does not exist |
 | -32602 | INVALID_PARAMS | Invalid method parameters |
 | -32603 | INTERNAL_ERROR | Internal JSON-RPC error |
-| -32000 | SERVER_ERROR | Generic server error |
 
 ### Ethereum-Specific Error Codes (Engine API, for future use)
 
@@ -288,7 +294,7 @@ Per spec:
 2. Server responds with array of Response objects
 3. Empty batch `[]` -> Invalid Request error
 4. Each element processed independently; partial failures OK
-5. Notifications (no id) should not produce Response objects, but for simplicity the plan treats them like regular requests
+5. Per spec, notifications (no id) do not produce Response objects, but this snapshot's plan treated them like regular requests for simplicity
 6. Response order need not match request order
 
 ---
@@ -334,7 +340,7 @@ Guillotine-mini is purely an EVM interpreter (`src/host.zig`, `src/bytecode.zig`
 14. `parseArgs -- defaults` (port 8545, host 127.0.0.1, chain_id 31337)
 15. `parseArgs -- custom port and host`
 
-### Existing Tests (MUST CONTINUE PASSING)
+### Existing Tests (Snapshot Goal: Continue Passing)
 - tx_processor_test.zig
 - host_adapter_test.zig
 - block_builder_test.zig
@@ -365,4 +371,4 @@ Guillotine-mini is purely an EVM interpreter (`src/host.zig`, `src/bytecode.zig`
 2. **jsonrpc module import chain** — The jsonrpc module has no external deps (only std), so no linking issues expected.
 3. **Single-threaded** — Sequential request handling is fine for dev node. Hive sends requests sequentially per test.
 4. **Request body size** — Use dynamic allocation with reasonable max (10MB) to prevent OOM.
-5. **Missing net_/web3_ methods in voltaire** — `net_version`, `web3_clientVersion`, `web3_sha3` are tested by Hive but not in voltaire's method enums. They should return -32601 like all other unrecognized methods for now.
+5. **Missing net_/web3_ methods in voltaire** — `net_version`, `web3_clientVersion`, `web3_sha3` are tested by Hive but not in voltaire's method enums. In this snapshot, the fallback expectation was `-32601` like other unrecognized methods.

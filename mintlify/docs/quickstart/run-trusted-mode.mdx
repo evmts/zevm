@@ -1,0 +1,141 @@
+---
+title: Run Trusted Mode
+description: Start ZEVM as a local trusted dev node and validate core RPC flows.
+---
+
+# Run Trusted Mode
+
+Trusted mode is ZEVM's writable local dev-node runtime.
+
+> Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).
+>
+> Prerequisite: complete [Installation](./installation) first, including Zig, sibling `voltaire`/`guillotine-mini` checkouts, and a successful source build that produces `./zig-out/bin/zevm`.
+
+## 1. Start The Node
+
+Before running startup commands, re-check [Installation](./installation) prerequisites: Zig, sibling `../voltaire` and `../guillotine-mini` repos, and the pinned build tuple in release `release-tuple.json` from [ZEVM release metadata](https://github.com/evmts/zevm/releases). For contract source ownership and docs-first change flow, see [Canonical Specs And Docs-First Process](../reference/specs-and-process).
+
+Default startup (trusted mode):
+
+```bash
+./zig-out/bin/zevm
+```
+
+Equivalent explicit startup:
+
+```bash
+./zig-out/bin/zevm --mode trusted --host 127.0.0.1 --port 8545
+```
+
+Config-file startup equivalent (`mode.trusted`):
+
+```bash
+./zig-out/bin/zevm --config ./zevm.config.json
+```
+
+```json
+{
+  "mode": {
+    "trusted": {
+      "mining": { "type": "auto" }
+    }
+  }
+}
+```
+
+See [Configuration Overview](../reference/configuration/overview) for full config shape and CLI/config precedence.
+
+## 2. Verify Baseline RPC
+
+```bash
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}'
+```
+
+```bash
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":2,"method":"eth_blockNumber","params":[]}'
+```
+
+```bash
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":3,"method":"eth_accounts","params":[]}'
+```
+
+Default trusted-mode values:
+
+- `eth_chainId` returns `0x7a69` (`31337`)
+- `eth_accounts` returns 10 managed dev accounts in index order
+- `eth_coinbase` is the managed account at `coinbaseIndex` (default `0`)
+- exact wallet contract (mnemonic, derivation path, addresses, private keys, and signing constraints): [Managed Dev Wallet (Trusted Mode)](../reference/json-rpc/managed-dev-wallet)
+
+> Warning: managed dev-account keys are deterministic/public test keys. Use them only for local development; never use them in production or with real funds.
+
+## 3. Send A Local Transaction
+
+This sends `1 ETH` from managed account `0` to managed account `1`:
+
+```bash
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{
+    "jsonrpc":"2.0",
+    "id":4,
+    "method":"eth_sendTransaction",
+    "params":[{
+      "from":"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "to":"0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+      "value":"0xde0b6b3a7640000"
+    }]
+  }'
+```
+
+Set `TX_HASH` to the `result` returned by `eth_sendTransaction`, then fetch the receipt:
+
+```bash
+TX_HASH=0x... # use the tx hash returned by the previous call
+
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":5,"method":"eth_getTransactionReceipt","params":["'"$TX_HASH"'"]}'
+```
+
+## 4. Manual Mining Flow (Optional)
+
+Start with manual mining:
+
+```bash
+./zig-out/bin/zevm --mode trusted --mining manual
+```
+
+Mine one block on demand:
+
+```bash
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":6,"method":"zevm_mine","params":[]}'
+```
+
+Mine multiple blocks:
+
+```bash
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":7,"method":"zevm_mine","params":["0x3"]}'
+```
+
+## Validation Rules You Will Hit Most Often
+
+- `--block-time` is valid only with `--mining interval`.
+- `--mining interval` requires `--block-time <seconds>`.
+- `coinbaseIndex` must be in `0..9`.
+
+## Next Steps
+
+- [Forked Dev Node](./forked-dev-node)
+- [Managed Dev Wallet (Trusted Mode)](../reference/json-rpc/managed-dev-wallet)
+- [ZEVM Controls](../reference/json-rpc/dev-controls)
+- [Transactions And Mining](../reference/json-rpc/transactions-and-mining)

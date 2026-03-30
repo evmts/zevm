@@ -1,5 +1,8 @@
 # Research Context: HTTP JSON-RPC Server with Method Dispatch
 
+> Archival snapshot note: this document is non-normative and may include historical Voltaire/EDR error-code tables.
+> ZEVM authoritative error semantics are in `docs/specs/json-rpc-contract.md` section 5 (supplemented by `docs/specs/internal/transport-and-error-semantics.md`).
+
 ## Ticket Summary
 
 Implement the HTTP JSON-RPC 2.0 server that is the foundation of the entire dev node. This is the single highest-impact feature -- without it, nothing else works. The server needs an HTTP listener, JSON-RPC 2.0 envelope parsing/serialization, batch request support, standard error codes, method dispatch using voltaire's `JsonRpcMethod` union, and CLI arg parsing.
@@ -56,6 +59,7 @@ pub const Result = struct { ... };     // with jsonParseFromValue + jsonStringif
 The TypeScript implementation provides the exact pattern we need:
 
 **`types.ts` — JSON-RPC 2.0 envelope types:**
+Historical upstream reference:
 ```typescript
 interface JsonRpcRequest { jsonrpc: "2.0"; method: string; params?: unknown[]; id: number | string | null; }
 interface JsonRpcResponse { jsonrpc: "2.0"; result?: unknown; error?: JsonRpcError; id: number | string | null; }
@@ -276,7 +280,7 @@ pub const Id = union(enum) {
     null_value: void,
 };
 
-/// Standard JSON-RPC 2.0 error codes
+/// Historical example only; ZEVM authoritative codes are in docs/specs/json-rpc-contract.md section 5.
 pub const ErrorCode = struct {
     pub const PARSE_ERROR: i32 = -32700;
     pub const INVALID_REQUEST: i32 = -32600;

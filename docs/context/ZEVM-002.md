@@ -1,5 +1,8 @@
 # ZEVM-002: Research for evm_mine RPC Handler
 
+> Archival snapshot note: this file is a point-in-time research artifact, not the active ZEVM contract. Referenced paths, API shapes, and implementation status statements below reflect capture-time workspace/upstream state and may be stale.
+> Current normative mining-method contract (including aliases and return type) is `docs/specs/json-rpc-contract.md` sections 9.3 and 10.
+
 **Ticket**: ZEVM-002  
 **Title**: Implement evm_mine RPC handler  
 **Category**: cat-6-mining  
@@ -7,7 +10,7 @@
 
 ## Overview
 
-Implement `evm_mine(blocks?: number, interval?: number) -> null` RPC method. Mines N blocks (default 1) with optional interval seconds between block timestamps.
+Implement `evm_mine(blocks?: number, interval?: number) -> true` RPC method (alias of canonical `zevm_mine`). Mines N blocks (default 1) with optional interval seconds between block timestamps.
 
 ---
 
@@ -186,7 +189,7 @@ pub fn buildBlock(
 
 **Method**: `evm_mine`  
 **Params**: `[blocks?, interval?]` (both optional)  
-**Returns**: `null`
+**Returns**: `true`
 
 **Examples**:
 ```json
@@ -209,7 +212,7 @@ pub fn buildBlock(
    - Subsequent blocks: `previous_timestamp + interval`
 4. **Transactions**: Include all ready transactions from mempool
 5. **State**: Commit state after each block
-6. **Return**: Always returns `null`
+6. **Return**: Always returns `true`
 
 ### Integration Points
 
@@ -266,7 +269,7 @@ Key test cases:
 ## Related Methods
 
 Future mining-related methods to implement:
-- `hardhat_mine` / `anvil_mine` - Same as evm_mine but with different return
+- `hardhat_mine` / `anvil_mine` - Accepted aliases of `zevm_mine`; same return (`true`)
 - `evm_setAutomine` - Enable/disable automining
 - `evm_setIntervalMining` - Mine at fixed intervals
 - `evm_increaseTime` - Fast-forward time
@@ -288,12 +291,14 @@ Future mining-related methods to implement:
 
 ---
 
-## Open Questions
+## Historical Resolution Notes
 
-1. **Mempool location**: Should mempool be in zevm or added to voltaire?
-2. **Timestamp source**: Use system time or allow manual time manipulation?
-3. **Transaction ordering**: Price+nonce (standard) or FIFO?
-4. **Error handling**: What errors should evm_mine return?
+This research snapshot originally listed open implementation questions. Those decisions are now contract-defined and should be treated as resolved.
+
+1. **Timestamp semantics (resolved)**: use the active timestamp progression/precedence contract in [json-rpc-contract.md](../specs/json-rpc-contract.md) section 10.4, with [prd.md](../specs/prd.md) as product-level authority.
+2. **Transaction ordering (resolved)**: use nonce-aware pending ordering and inclusion semantics in [json-rpc-contract.md](../specs/json-rpc-contract.md) section 10.1.
+3. **Error semantics (resolved)**: use shared JSON-RPC error mapping in [json-rpc-contract.md](../specs/json-rpc-contract.md) sections 5.1-5.3.
+4. **Mempool ownership/location (resolved for this artifact)**: this archival note is non-normative; ownership/runtime composition is governed by [prd.md](../specs/prd.md) and active implementation docs, not by this ticket context file.
 
 ---
 

@@ -1,0 +1,47 @@
+---
+title: Method Support By Mode
+description: Practical capability matrix for trusted and light mode without duplicating method reference pages.
+---
+
+# Method Support By Mode
+
+Use this matrix to choose the right mode. This page is a summary of the normative contract sources in `docs/specs/prd.md` and `docs/specs/json-rpc-contract.md`.
+Use JSON-RPC reference pages for exact method signatures, params, payloads, and errors.
+
+## Capability Matrix
+
+| Capability family | Trusted mode | Light mode | Method details |
+| --- | --- | --- | --- |
+| Core reads (`eth_chainId`, `eth_blockNumber`, account/code/storage/nonce reads) | yes | yes (`eth_chainId` always; proof-backed account/code/storage/nonce reads and `eth_blockNumber` require `ready = true`; proof-backed numeric selectors are limited to block `0` plus the retained verified-history window) | [Core Reads](../reference/json-rpc/core-reads), [Verified Light-Mode Reads](../reference/json-rpc/verified-light-mode-reads) |
+| Simulation (`eth_call`, `eth_estimateGas`) | yes | no (`-32010`; both are trusted-only in phase 1, and `eth_call` remains a deferred light-mode proof-backed target) | [Simulation](../reference/json-rpc/simulation), [Unsupported And Deferred](../reference/json-rpc/unsupported-and-deferred) |
+| Transaction submission and mining | yes | no | [Transactions And Mining](../reference/json-rpc/transactions-and-mining) |
+| Canonical block/transaction/receipt/log queries, including block tx counts, tx-by-block-index lookups, and `eth_getLogs` | yes | no | [Blocks, Receipts, And Logs](../reference/json-rpc/blocks-receipts-and-logs) |
+| ZEVM trusted namespace (`zevm_*` except `zevm_lightSyncStatus`) | yes | no | [ZEVM Controls](../reference/json-rpc/dev-controls) |
+| ZEVM light namespace (`zevm_lightSyncStatus`) | no | yes | [Verified Light-Mode Reads](../reference/json-rpc/verified-light-mode-reads) |
+| Trusted compatibility aliases (`anvil_*`, selected `hardhat_*`, selected `evm_*`) | yes | no | [ZEVM Controls](../reference/json-rpc/dev-controls), [Transactions And Mining](../reference/json-rpc/transactions-and-mining) |
+| Filter lifecycle beyond `eth_getLogs` | not part of current contract (deferred) | not part of current contract (deferred) | [Unsupported And Deferred](../reference/json-rpc/unsupported-and-deferred) |
+| Subscriptions (`eth_subscribe`, `eth_unsubscribe`) | not part of current contract (deferred method surface) | not part of current contract (deferred method surface) | [Unsupported And Deferred](../reference/json-rpc/unsupported-and-deferred) |
+| WebSocket transport | transport-level unsupported (HTTP JSON-RPC only; outside JSON-RPC method dispatch, not a method-level deferred mapping) | transport-level unsupported (HTTP JSON-RPC only; outside JSON-RPC method dispatch, not a method-level deferred mapping) | [Unsupported And Deferred](../reference/json-rpc/unsupported-and-deferred) |
+
+## Selector And Readiness Rules
+
+- mode-incompatible methods fail with `-32010`
+- compatibility alias acceptance is closed-world: only aliases explicitly enumerated on JSON-RPC reference pages are accepted
+- deferred-surface promotion and phase-1 boundary/graduation criteria are canonicalized in [Specs And Process](../reference/specs-and-process#deferred-surface-promotion-and-phase-1-boundary-and-graduation-criteria)
+- in light mode, `eth_chainId` is always callable
+- in light mode, while `ready = false`, proof-backed reads and `eth_blockNumber` fail with `-32011`
+- in light mode, numeric selectors are limited to block `0` plus the retained verified-history window
+- in light mode, numeric selectors outside that retained window fail with `-32602`
+- in light mode, canonical query methods on the blocks/receipts/logs page (`eth_getBlockBy*`, `eth_getBlockTransactionCountBy*`, `eth_getTransactionBy*`, `eth_getTransactionReceipt`, `eth_getBlockReceipts`, `eth_getLogs`) fail with `-32010`
+- trusted-mode `pending`, `safe`, and `finalized` are aliases of `latest`
+- light-mode `safe` and `finalized` are consensus-anchored heads
+
+## Where To Go Next
+
+- Concept: [Runtime Modes](./runtime-modes)
+- Concept: [Trusted Mode](./trusted-mode)
+- Concept: [Light Mode](./light-mode)
+- Quickstart: [Run Trusted Mode](../quickstart/run-trusted-mode)
+- Quickstart: [Forked Dev Node](../quickstart/forked-dev-node)
+- Reference: [Canonical Specs And Docs-First Process](../reference/specs-and-process)
+- Reference: [Configuration Overview](../reference/configuration/overview)

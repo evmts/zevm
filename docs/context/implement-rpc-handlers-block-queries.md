@@ -1,5 +1,7 @@
 # Context: Implement RPC Handlers for Block Query Methods
 
+> Historical archive note: this ticket context reflects a point-in-time implementation plan and can differ from the active ZEVM contract. For current normative payload and method-surface rules (including extension-field policy), use `docs/specs/prd.md` and `docs/specs/json-rpc-contract.md`.
+
 ## Ticket Info
 - **Ticket ID**: implement-rpc-handlers-block-queries
 - **Category**: cat-5-block-queries
@@ -10,9 +12,9 @@
 ## Prerequisites / Dependencies
 
 This ticket builds on:
-1. **implement-block-storage-database** — `Database` must have `blockchain` field (adds `blockchain.Blockchain` to store blocks)
-2. **tx-sending-and-mempool** or equivalent — receipts must be stored at block-commit time
-3. **http-jsonrpc-server-and-dispatch** — RPC dispatch infrastructure must exist
+1. **implement-block-storage-database** — expected dependency state: `Database` includes a `blockchain` field (adds `blockchain.Blockchain` to store blocks)
+2. **tx-sending-and-mempool** or equivalent — expected dependency state: receipts are stored at block-commit time
+3. **http-jsonrpc-server-and-dispatch** — expected dependency state: RPC dispatch infrastructure exists
 
 ---
 
@@ -30,10 +32,10 @@ eth/getBlockByHash/eth_getBlockByHash.zig        → Params: block_hash (Hash), 
 eth/getTransactionByHash/eth_getTransactionByHash.zig → Params: transaction_hash (Hash)
 eth/getTransactionReceipt/eth_getTransactionReceipt.zig → Params: transaction_hash (Hash)
 eth/getBlockReceipts/eth_getBlockReceipts.zig    → Params: block (BlockSpec)
-eth/getLogs/eth_getLogs.zig                       → Params: filter (Quantity — STUB, needs proper FilterObject)
+eth/getLogs/eth_getLogs.zig                       → Params: filter (Quantity — STUB placeholder; snapshot proposal uses a proper FilterObject)
 ```
 
-**Current limitation:** ALL Result types are stubs using `types.Quantity`. They must be replaced with real response types.
+**Current limitation:** ALL Result types are stubs using `types.Quantity`. The snapshot proposal was to replace them with real response types.
 
 **Key shared types in `../voltaire/packages/voltaire-zig/src/jsonrpc/types/`:**
 - `Hash` — 32-byte hex string with jsonStringify/jsonParseFromValue
@@ -43,7 +45,7 @@ eth/getLogs/eth_getLogs.zig                       → Params: filter (Quantity �
 
 ### 2. voltaire primitives (fully implemented)
 
-All internal data structures needed:
+All internal data structures used by this snapshot:
 
 **`primitives.Block.Block`** — `../voltaire/.../primitives/Block/Block.zig`
 ```zig
@@ -198,7 +200,7 @@ pub const BlockResult = struct {
 Each `Receipt` from `processTransaction` has:
 - `transaction_hash` (computed from tx)
 - `transaction_index` (0-indexed within block)
-- `block_hash = primitives.Hash.ZERO` (placeholder — must be updated after block hash is known)
+- `block_hash = primitives.Hash.ZERO` (placeholder — planned to be updated after block hash is known)
 - `block_number` (from block_ctx)
 - `sender`, `to`, `gas_used`, `cumulative_gas_used`, etc.
 
@@ -214,11 +216,11 @@ pub const block_builder = @import("block_builder.zig");
 
 ---
 
-## What Needs to Be Built
+## Snapshot Build Scope
 
 ### Phase 1: Storage Additions (zevm)
 
-The `Database` struct needs receipt and transaction-index storage:
+The snapshot proposal added receipt and transaction-index storage to `Database`:
 
 ```zig
 // src/database/database.zig additions
@@ -241,7 +243,7 @@ pub const Database = struct {
 };
 ```
 
-These must be populated at block-commit time:
+In the snapshot plan, these were populated at block-commit time:
 ```zig
 // After block is built and stored:
 for (block_result.receipts, 0..) |receipt, i| {
@@ -262,7 +264,7 @@ try db.receipts_by_block_hash.put(allocator, block.hash, receipts_list);
 
 ### Phase 2: JSON-RPC Response Types (voltaire)
 
-These types must be added to voltaire (we own it) and then used as Result types in the method files.
+The snapshot proposal was to add these types to voltaire (we own it) and then use them as Result types in the method files.
 
 **Add to voltaire:** `../voltaire/packages/voltaire-zig/src/jsonrpc/types/`
 
@@ -307,7 +309,7 @@ Key observations from test vectors:
 - `mixHash` is `"0x0000...0000"` post-merge
 - Missing optional fields (e.g. `baseFeePerGas` before London) are **omitted** entirely, not null
 - `transactions` is either array of hash strings OR array of tx objects (based on `hydrated` param)
-- `blockTimestamp` appears in transaction objects in the test vectors (non-standard extension)
+- Historical vector note: `blockTimestamp` appears in some transaction objects as a non-standard extension; this is not part of the current ZEVM contract
 
 #### `RpcTransaction.zig` — JSON-RPC transaction response
 From test vectors (`get-legacy-tx.io`):
@@ -443,7 +445,7 @@ pub const FilterObject = struct {
     address: ?std.json.Value = null,     // address or array of addresses
     topics: ?[]const ?[]const ?[32]u8 = null,  // topic filter array
     block_hash: ?[32]u8 = null,          // alternative to from/to range
-    // jsonParseFromValue implementation needed
+    // snapshot note: jsonParseFromValue implementation omitted here
 };
 pub const Result = struct {
     logs: []const RpcLog,
@@ -518,14 +520,14 @@ pub fn handle(
 }
 ```
 
-**Note on transaction decoding:** BlockBody stores raw bytes. Need a decoder that handles:
+**Note on transaction decoding:** BlockBody stores raw bytes. The snapshot proposal used a decoder that handles:
 - Type 0 (legacy): plain RLP list
 - Type 1: `0x01` prefix + RLP
 - Type 2: `0x02` prefix + RLP
 - Type 3: `0x03` prefix + RLP
 - Type 4: `0x04` prefix + RLP
 
-The `from` address for a transaction requires recovering the signer from the signature — this needs `crypto.secp256k1.recover` or equivalent from voltaire's crypto module.
+The `from` address for a transaction requires recovering the signer from the signature — this path uses `crypto.secp256k1.recover` or equivalent from voltaire's crypto module.
 
 **Alternative approach:** Store decoded transactions alongside receipts at block-commit time rather than decoding from raw bytes on every query. This avoids re-parsing RLP on every call.
 
@@ -564,11 +566,11 @@ pub fn handle(...) !... {
 ```
 
 **Log filtering algorithm:**
-- Address filter: if set, `log.address` must match (case-insensitive)
+- Address filter: if set, `log.address` is expected to match (case-insensitive)
 - Topic filter: array of up to 4 positions, each can be null (wildcard), a hash, or array of hashes (OR match)
   - `topics[i] == null` → match any topic at position i
   - `topics[i] == hash` → exact match at position i
-  - `topics[i] == [hash1, hash2]` → position i must be hash1 OR hash2
+  - `topics[i] == [hash1, hash2]` → position i is expected to match hash1 OR hash2
 - Block range validation: `fromBlock <= toBlock`, max range limit (e.g. 10,000 blocks for dev node)
 
 ---
@@ -589,7 +591,9 @@ Located in `execution-apis/tests/` — these are the canonical conformance tests
 - `get-block-cancun-fork.io` — has blobGasUsed, excessBlobGas, parentBeaconBlockRoot
 - `get-block-prague-fork.io` — has requestsHash
 
-Key from `get-latest.io`: full tx objects include `blockTimestamp` and `chainId` fields.
+Historical note from `get-latest.io`: some full tx objects include `blockTimestamp` and
+`chainId` extension fields. Treat these as vector-specific and non-contract; follow
+`docs/specs/prd.md` and `docs/specs/json-rpc-contract.md` for current ZEVM behavior.
 
 ### `eth_getTransactionByHash/`
 - `get-legacy-tx.io` — type=0x0, v/r/s
@@ -676,7 +680,7 @@ Key from `get-latest.io`: full tx objects include `blockTimestamp` and `chainId`
    - Recover from ECDSA signature (complex, needs secp256k1)
    - For dev node: store sender alongside tx when building block (preferred)
 
-4. **Receipt `block_hash` placeholder**: `processTransaction` in `tx_processor.zig` sets `block_hash = primitives.Hash.ZERO`. This must be fixed at block-commit time before storing.
+4. **Receipt `block_hash` placeholder**: `processTransaction` in `tx_processor.zig` sets `block_hash = primitives.Hash.ZERO`. The snapshot plan was to fix this at block-commit time before storing.
 
 5. **Missing data returns `null`**: Per spec, `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getTransactionByHash`, `eth_getTransactionReceipt` all return JSON `null` result when not found (not an error).
 
@@ -801,16 +805,20 @@ Key pattern: async lookup, null if not found, conversion to RPC format via helpe
 
 ## Important Notes
 
-1. **`receipt.sender` vs `receipt.from`**: The `primitives.Receipt` struct uses `sender` as the field name, but JSON output must use `from`.
+1. **`receipt.sender` vs `receipt.from`**: The `primitives.Receipt` struct uses `sender` as the field name, while JSON output is expected to use `from`.
 
 2. **`logsBloom` hex encoding**: 256 bytes = 512 hex chars = 514 chars with `"0x"` prefix.
 
-3. **`nonce` as 8-byte hex**: The block nonce is `[8]u8`, should serialize as `"0x" + 16 hex chars` (e.g. `"0x0000000000000000"`).
+3. **`nonce` as 8-byte hex**: The block nonce is `[8]u8`; the snapshot examples serialize it as `"0x" + 16 hex chars` (e.g. `"0x0000000000000000"`).
 
 4. **Block `transactions` field for non-hydrated**: array of 32-byte tx hash strings.
 
-5. **`blockTimestamp` in tx objects**: Not in the base spec (execution-apis) but present in all test vectors. Include it for compatibility.
+5. **`blockTimestamp` in tx objects**: Historical vectors may show this extension, but it is
+   non-contract for ZEVM in this archive context. Treat `docs/specs/prd.md` and
+   `docs/specs/json-rpc-contract.md` as the normative source.
 
-6. **`chainId` in tx objects**: Also appears in test vectors for EIP-155 txs. Include it.
+6. **`chainId` in tx objects**: Historical vectors may include this extension in tx payloads.
+   It is non-contract in this archive context; use `docs/specs/prd.md` and
+   `docs/specs/json-rpc-contract.md` as normative.
 
 7. **`eth_getBlockReceipts` returns `null` for missing blocks**: Unlike getLogs which returns an empty array for empty blocks, getBlockReceipts returns `null` if the block doesn't exist.

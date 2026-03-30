@@ -1,0 +1,314 @@
+---
+title: Light-Mode Configuration
+description: Light-mode fields, chain/network mapping, checkpoint selection, and validation.
+---
+
+# Light-Mode Configuration
+
+Light mode is read-only, proof-backed, and consensus-anchored.
+
+> Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).
+>
+> This page is an operational summary. For product-contract disputes, follow those normative sources.
+
+Phase-1 operator-facing startup inputs are `network` and `consensusRpcUrl`, plus optional checkpoint controls (`checkpoint`, `checkpointDir`, `maxCheckpointAgeSeconds`, `strictCheckpointAge`).
+Proof-source internals are not user-configurable in the public contract.
+
+## Networks And Chain IDs
+
+Supported light networks are a closed phase-1 set: `mainnet`, `sepolia`, and `holesky`.
+Adding or removing a supported light network is a normative public-contract change and requires coordinated updates to both [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).
+Canonical constants for `eth_chainId` and startup genesis-root validation are defined in [Canonical Chain ID And Genesis Root Mapping](#canonical-chain-id-and-genesis-root-mapping).
+
+## Canonical Chain ID And Genesis Root Mapping
+
+Use this mapping for both light-mode `eth_chainId` and startup handshake root validation.
+
+| Network | `eth_chainId` | `genesis_validators_root` |
+| --- | --- | --- |
+| `mainnet` | `0x1` | `0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95` |
+| `sepolia` | `0xaa36a7` | `0xd8ea171f3c94aea21ebc42a1ed61052acf3f9209c00e4efbaaddac09ed9b8078` |
+| `holesky` | `0x4268` | `0x9143aa7c615a7f7115e2b6aac319c03529df8242ae705fba9df39b79c59fa8b1` |
+
+## CLI And Config Field Map
+
+| CLI flag | Config field | Type | Default |
+| --- | --- | --- | --- |
+| `--network` | `mode.light.network` | `mainnet`, `sepolia`, `holesky` | `mainnet` |
+| `--consensus-rpc-url` | `mode.light.consensusRpcUrl` | Beacon API URL | required |
+| `--checkpoint` | `mode.light.checkpoint` | `0x`-prefixed 32-byte hash | none |
+| `--checkpoint-dir` | `mode.light.checkpointDir` | directory path | `.zevm/checkpoints/<network>` |
+| `--max-checkpoint-age-seconds` | `mode.light.maxCheckpointAgeSeconds` | `u64` | `1209600` |
+| `--strict-checkpoint-age` | `mode.light.strictCheckpointAge` | presence flag | `false` |
+
+Only explicitly supplied CLI flags override config values. CLI defaults are applied after CLI/config merge.
+`checkpointDir` resolution contract for persisted startup input:
+
+1. resolve final `checkpointDir` after CLI/config merge (or default to `.zevm/checkpoints/<network>` when not explicitly provided)
+2. expand `<network>` using the resolved light network
+3. if `checkpointDir` is relative, resolve it against process current working directory to produce `resolvedCheckpointDir`
+4. read persisted startup checkpoint input from `${resolvedCheckpointDir}/checkpoint`
+
+`checkpointDir`, `maxCheckpointAgeSeconds`, and `strictCheckpointAge` follow normal startup precedence (explicit CLI flag > config value > default).
+Those three controls are not additional checkpoint-source steps; they parameterize persisted-input lookup and stale-policy evaluation.
+
+## RPC Exposure And Hardening
+
+ZEVM phase 1 serves JSON-RPC over plain HTTP only. ZEVM does not provide built-in TLS or JSON-RPC authentication.
+`--host 127.0.0.1` keeps RPC local.
+Binding `--host` to a non-loopback interface (for example, `0.0.0.0`) exposes RPC to reachable networks.
+
+Light-mode operator baseline for phase 1:
+
+1. keep ZEVM bound to loopback (`--host 127.0.0.1`) and expose only the proxy listener
+2. terminate TLS and enforce authentication in the reverse proxy/gateway layer
+3. allow only trusted source CIDRs at ingress, then enforce the same policy at host firewall
+4. block direct access to ZEVM RPC (`8545`) from non-proxy sources
+
+Example ingress allowlist policy (proxy host with UFW):
+
+```bash
+# Default deny for inbound traffic
+ufw default deny incoming
+
+# Allow HTTPS only from trusted operator CIDRs
+ufw allow from 203.0.113.10 to any port 443 proto tcp
+ufw allow from 198.51.100.0/24 to any port 443 proto tcp
+
+# If ZEVM must bind non-loopback, only allow proxy/private source IPs to 8545
+ufw allow from 10.0.10.5 to any port 8545 proto tcp
+
+# Deny all other direct ZEVM RPC access
+ufw deny 8545/tcp
+```
+
+Use source CIDRs that match your real operator network boundaries (VPN, bastion, private subnets). Keep ZEVM plain HTTP behind the proxy in phase 1.
+For a concrete reverse-proxy config example, see [Configuration Overview -> RPC Exposure And Hardening](./overview#rpc-exposure-and-hardening).
+
+## Checkpoint Selection Precedence
+
+1. user-supplied CLI checkpoint (`--checkpoint`), when provided
+2. config checkpoint (`mode.light.checkpoint`), when set to a non-null value
+3. persisted startup checkpoint input (`checkpointDir/checkpoint`)
+4. baked network default checkpoint
+
+When either explicit checkpoint input is present (`--checkpoint` or non-null `mode.light.checkpoint`), persisted `checkpointDir/checkpoint` is not used for startup selection. A config value of `mode.light.checkpoint: null` is treated as absent. To use persisted startup source (`checkpointSource = "persisted"`), remove explicit checkpoint inputs.
+
+Checkpoint input format by source:
+
+| Source | Accepted startup input format |
+| --- | --- |
+| `--checkpoint` | `0x`-prefixed `Hash32` (32-byte hash) |
+| `mode.light.checkpoint` | `0x`-prefixed `Hash32` (32-byte hash) |
+| `checkpointDir/checkpoint` | 64 hex characters, no `0x` prefix |
+
+When step 1 or step 2 wins, `zevm_lightSyncStatus.checkpointSource` is `explicit` for both CLI-supplied and config-supplied checkpoints.
+`checkpointSource` is startup-source metadata and does not change when `lastCheckpoint` advances.
+`checkpointSource` interpretation:
+
+- `explicit`: selected from user-provided checkpoint input (`--checkpoint` or `mode.light.checkpoint`; CLI wins when both are set)
+- `persisted`: selected from operator-managed `checkpointDir/checkpoint`
+- `default`: selected baked network default after no explicit or persisted startup checkpoint input is present
+
+Operator runbook cross-link: [Run Light Mode -> Choose Startup Checkpoint Input](../../quickstart/run-light-mode#2-choose-startup-checkpoint-input) and [Run Light Mode -> Check Readiness With `zevm_lightSyncStatus`](../../quickstart/run-light-mode#3-check-readiness-with-zevm_lightsyncstatus).
+This precedence is strict: CLI checkpoint > config checkpoint > persisted checkpoint file > baked default.
+Selected-source validation is terminal: once precedence selects a checkpoint source, any validation/read/network failure for that selected source is a startup failure before listener bind (no fallback to lower-precedence sources).
+If `resolvedCheckpointDir` is missing at startup (including after `<network>` expansion), step 3 is treated as absent input and selection falls through by precedence.
+If `${resolvedCheckpointDir}/checkpoint` is missing, step 3 is treated as absent input and selection falls through by precedence.
+When CLI checkpoint, config checkpoint, and persisted `checkpointDir/checkpoint` are all absent, ZEVM selects the baked network default and `zevm_lightSyncStatus.checkpointSource` reports `default`.
+The baked default checkpoint is a startup precedence input, not a frozen public compatibility constant.
+Baked default values are bundled per ZEVM release/build and may rotate across releases.
+For published release identifiers, release-specific baked defaults are published in `light-default-checkpoints.json`; see [Canonical Specs And Docs-First Process](../specs-and-process#release-metadata-records), [Release Metadata Runbook](../release-metadata-runbook), and [ZEVM release metadata](https://github.com/evmts/zevm/releases).
+If a build has no published `light-default-checkpoints.json`, treat it as an unpublished source-build boundary and provide an explicit checkpoint when deterministic startup selection is required.
+Phase-1 persisted checkpoint contract: `checkpointDir/checkpoint` is startup input only. ZEVM does not create, update, or delete it during runtime, and runtime `lastCheckpoint` progression is not persisted there.
+Operators who want persisted-source startup behavior (`checkpointSource = "persisted"`) must provision and manage `checkpointDir/checkpoint` themselves; ZEVM does not auto-populate it.
+ZEVM does not auto-create `checkpointDir` during startup.
+
+Operator audit procedure for baked defaults on a running binary:
+
+1. start light mode with no explicit checkpoint (`--checkpoint` omitted and `mode.light.checkpoint` unset)
+2. ensure `checkpointDir/checkpoint` is absent for the selected network
+3. call `zevm_lightSyncStatus`
+4. confirm `checkpointSource = "default"` and compare `lastCheckpoint` to the selected release/build's `light-default-checkpoints.json` value for that network
+
+Quick audit snippet (requires `jq` and local release metadata files prepared per [Release Metadata Runbook](../release-metadata-runbook)):
+
+```bash
+NETWORK=sepolia
+RELEASE_IDENTIFIER='<published-release-identifier>'
+ARTIFACT_DIR=.ops/release-metadata/"$RELEASE_IDENTIFIER"
+
+STATUS_JSON="$(curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"zevm_lightSyncStatus","params":[]}')"
+
+SOURCE="$(printf '%s' "$STATUS_JSON" | jq -r '.result.checkpointSource')"
+ACTUAL="$(printf '%s' "$STATUS_JSON" | jq -r '.result.lastCheckpoint')"
+EXPECTED="$(jq -r --arg network "$NETWORK" '.defaults[$network] // empty' "$ARTIFACT_DIR/light-default-checkpoints.json")"
+
+test -n "$EXPECTED"
+test "$SOURCE" = "default"
+test "$ACTUAL" = "$EXPECTED"
+```
+
+Checkpoint age policy for the selected startup checkpoint:
+
+- `age` is how old the selected startup checkpoint is when ZEVM starts
+- `age` is evaluated once during startup, after checkpoint selection and before stale-policy decision
+- `age` is measured in whole seconds: `age = max(0, startupTimeSeconds - checkpointTimeSeconds)`
+- `startupTimeSeconds` is sampled at age-check time
+- `checkpointTimeSeconds` is derived deterministically from the selected startup checkpoint hash on the selected network
+- derivation steps: call `GET <consensusRpcUrl>/eth/v1/beacon/genesis` and parse `data.genesis_time`; call `GET <consensusRpcUrl>/eth/v1/beacon/headers/{selectedCheckpointHash}` and parse `data.root` and `data.header.message.slot` (with `data.root` required to equal `selectedCheckpointHash`)
+- compute summary: `checkpointTimeSeconds = genesisTimeSeconds + (checkpointSlot * 12)` (integer Unix seconds, with phase-1 `SECONDS_PER_SLOT = 12`)
+- this derivation is anchored to the selected startup checkpoint input; filesystem metadata like `checkpointDir/checkpoint` mtime is not used
+- `age == maxCheckpointAgeSeconds` is valid
+- only `age > maxCheckpointAgeSeconds` is stale
+- stale + `strictCheckpointAge = false`: emit one startup/operator warning and continue startup (listener still opens)
+- non-strict stale warning channel is operator startup logging surfaces (captured process `stderr` via shell redirection or service manager); it is not a JSON-RPC response
+- phase 1 provides no dedicated ZEVM startup log-level or log-path knobs in CLI/config
+- non-strict stale warning payload must include: selected checkpoint hash, `checkpointSource`, `checkpointTimeSeconds`, `startupTimeSeconds`, computed `age`, `maxCheckpointAgeSeconds`, and `strictCheckpointAge = false`
+- stale + `strictCheckpointAge = true`: startup failure before opening the HTTP listener
+- stale + `strictCheckpointAge = true` maps to startup-reserved code `-32012` (startup/pre-listener surface, not a runtime method error)
+- inability to resolve `checkpointTimeSeconds` for the selected startup checkpoint: startup failure before opening the HTTP listener
+- stale-checkpoint warnings are one-time startup/operator surfaces (not runtime JSON-RPC method errors)
+
+Precedence interaction summary:
+
+- checkpoint selection precedence decides only the selected startup checkpoint hash
+- resolved `checkpointDir` (after merge, `<network>` expansion, and CWD-relative resolution) sets the step-3 persisted input path (`${resolvedCheckpointDir}/checkpoint`)
+- resolved `maxCheckpointAgeSeconds` and `strictCheckpointAge` are applied after selection when evaluating startup checkpoint staleness
+
+## Validation Rules
+
+- `--consensus-rpc-url` is required in light mode
+- `consensusRpcUrl` must serve the same network selected by `network`
+- selected startup checkpoint must match `network`; mismatch is startup failure before opening the HTTP listener
+- light-only flags are invalid in trusted mode
+- `network` must be one of `mainnet`, `sepolia`, or `holesky`
+- `--strict-checkpoint-age` is a presence flag: present means `true`, omitted means `false`, and assignment forms like `--strict-checkpoint-age=false` are invalid
+- `mode.light.checkpoint` may be omitted or set to `null`; in either case it is treated as absent for checkpoint precedence
+- `checkpoint`, when present as a non-null startup input, must be a `0x`-prefixed 32-byte hash
+- if the selected startup checkpoint input fails validation, startup fails before listener bind and ZEVM does not fall through to lower-precedence sources
+
+Startup network-validation handshake behavior:
+
+1. call `GET <consensusRpcUrl>/eth/v1/beacon/genesis`
+2. require HTTP `200` and parse `data.genesis_validators_root` as `Hash32`
+3. require root match for selected `network` using the [canonical chain-id/root mapping](#canonical-chain-id-and-genesis-root-mapping)
+4. if handshake fails (request failure, non-`200`, malformed payload, missing/invalid `data.genesis_validators_root`, or root mismatch), startup exits before opening the listener
+
+Troubleshooting playbook for these failures is in [Quickstart Troubleshooting -> Light-Mode Startup Handshake Checks](../../quickstart/troubleshooting#light-mode-startup-handshake-checks).
+
+Checkpoint format bridge:
+
+- CLI/config fields and RPC payloads use `0x`-prefixed checkpoint hashes
+- persisted `checkpointDir/checkpoint` stores 64 hex characters without `0x`
+
+### Persisted Checkpoint Startup-Input Contract
+
+- resolved path: `${resolvedCheckpointDir}/checkpoint`
+- `resolvedCheckpointDir` is computed after CLI/config merge and `<network>` expansion; relative `checkpointDir` values resolve against process current working directory
+- contents: 64 hex characters (no `0x` prefix)
+- surrounding whitespace is ignored
+- missing `resolvedCheckpointDir` is treated as absent startup input and checkpoint selection falls through by precedence
+- missing file is treated as absent startup input and checkpoint selection falls through by precedence
+- unreadable file is a startup failure before opening the HTTP listener
+- malformed content is a startup failure before opening the HTTP listener
+- malformed/corrupt explicit checkpoint input or persisted checkpoint content maps to startup-reserved code `-32013` (startup/pre-listener surface, not a runtime method error)
+- file lifecycle is operator-managed; ZEVM does not auto-create or rotate this file
+
+Operator procedure to seed and rotate `checkpointDir/checkpoint`:
+
+1. seed the file with a 64-hex checkpoint hash (no `0x`)
+
+```bash
+CHECKPOINT_DIR=.zevm/checkpoints/sepolia
+CHECKPOINT_HEX=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+mkdir -p "$CHECKPOINT_DIR"
+printf '%s\n' "$CHECKPOINT_HEX" > "$CHECKPOINT_DIR/checkpoint"
+```
+
+2. verify on-disk format before restart
+
+```bash
+trimmed="$(tr -d '[:space:]' < "$CHECKPOINT_DIR/checkpoint")"
+printf '%s\n' "$trimmed" | grep -Eq '^[0-9a-fA-F]{64}$'
+```
+
+3. restart ZEVM, then verify persisted-source startup in `zevm_lightSyncStatus`
+
+```bash
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"zevm_lightSyncStatus","params":[]}'
+```
+
+Expect `checkpointSource` to be `persisted` and `lastCheckpoint` to equal `0x` plus your file value (case-insensitive hex).
+
+4. rotate by writing a new value and replacing the file, then restart and re-check `zevm_lightSyncStatus`
+
+```bash
+NEW_CHECKPOINT_HEX=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
+printf '%s\n' "$NEW_CHECKPOINT_HEX" > "$CHECKPOINT_DIR/checkpoint.next"
+mv "$CHECKPOINT_DIR/checkpoint.next" "$CHECKPOINT_DIR/checkpoint"
+```
+
+## Readiness Contract
+
+- `eth_chainId` is always callable in light mode
+- readiness is non-monotonic: `ready` may transition from `true` back to `false`
+- `ready = true` can be reached only after `status` transitions to `synced` and ZEVM has accepted verified optimistic (`latest`), safe (`safe`), and finalized (`finalized`) heads
+- while `ready = true`, verified-head ordering must hold: `finalized <= safe <= latest`
+- if `status` leaves `synced` or slot coherence no longer holds (`finalizedSlot <= safeSlot <= optimisticSlot`), ZEVM sets `ready = false` in the same transition before serving the next readiness-gated RPC call
+- when `ready = false`, `eth_blockNumber` fails with `-32011`
+- when `ready = false`, proof-backed reads fail with `-32011`
+- when `ready = true`, light reads apply the exact selector and proof rules from the JSON-RPC contract
+- slot observability follows the same invariant while ready: `finalizedSlot <= safeSlot <= optimisticSlot`
+
+`zevm_lightSyncStatus` state guidance:
+
+- `syncing`: startup validation passed and listener is live, but readiness gate is closed
+- `synced`: readiness gate is open and readiness-gated reads are serviceable while verified-head ordering holds (`finalized <= safe <= latest`) and slot ordering holds (`finalizedSlot <= safeSlot <= optimisticSlot`)
+- `error`: readiness gate is closed; while this state holds, `eth_blockNumber` and proof-backed reads fail with `-32011`
+- do not assume operator-free recovery from a persistent `error`; if it persists, verify `network`, `consensusRpcUrl`, and checkpoint inputs, then restart ZEVM
+
+Readiness semantics and selector contracts are defined in [Verified Light-Mode Reads](../json-rpc/verified-light-mode-reads#readiness-and-proof-rules).
+
+## Example: Light-Mode Config
+
+```json
+{
+  "rpc": { "host": "127.0.0.1", "port": 8545 },
+  "mode": {
+    "light": {
+      "network": "sepolia",
+      "consensusRpcUrl": "https://beacon.example",
+      "checkpoint": null,
+      "checkpointDir": ".zevm/checkpoints/sepolia",
+      "maxCheckpointAgeSeconds": 1209600,
+      "strictCheckpointAge": false
+    }
+  }
+}
+```
+
+## Example: CLI Startup
+
+```bash
+zevm \
+  --mode light \
+  --network sepolia \
+  --consensus-rpc-url https://beacon.example \
+  --checkpoint-dir .zevm/checkpoints/sepolia
+```
+
+## Related Pages
+
+- [Configuration Overview](./overview)
+- [Canonical Specs And Docs-First Process](../specs-and-process)
+- [Release Metadata Runbook](../release-metadata-runbook)
+- [Run Light Mode](../../quickstart/run-light-mode)
+- [Troubleshooting](../../quickstart/troubleshooting)
+- [Light Mode](../../concepts/light-mode)
+- [Verified Light-Mode Reads](../json-rpc/verified-light-mode-reads)

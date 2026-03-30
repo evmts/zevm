@@ -1,5 +1,8 @@
 # Research: add-anvil-hardhat-jsonrpc-namespaces
 
+> Archival snapshot note: this file captures upstream reference behavior and proposed type shapes at a point in time; it is non-normative for ZEVM.
+> Current authoritative alias/return contract for mining methods is `docs/specs/json-rpc-contract.md` sections 9.3 and 10.
+
 **Ticket:** Add anvil and hardhat namespaces to voltaire-zig jsonrpc module  
 **Ticket ID:** add-anvil-hardhat-jsonrpc-namespaces  
 **Category:** cat-6-mining  
@@ -167,27 +170,24 @@ pub const Params = struct {
 **Result:**
 ```zig
 pub const Result = struct {
-    /// Returns "0" (string) per EDR, or "0x0" (hex) per Foundry
-    value: []const u8,
+    /// ZEVM canonical contract: true for zevm_mine and accepted aliases.
+    value: bool,
 
     pub fn jsonStringify(self: Result, jws: *std.json.Stringify) !void {
         try jws.write(self.value);
     }
 
     pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !Result {
-        _ = allocator;
-        _ = options;
-        switch (source) {
-            .string => |s| return Result{ .value = s },
-            else => return error.UnexpectedToken,
-        }
+        return Result{
+            .value = try std.json.innerParseFromValue(bool, allocator, source, options),
+        };
     }
 };
 ```
 
 **Behavior Notes from References:**
-- EDR returns `"0"` (string) - see `edr/crates/edr_provider/src/requests/methods.rs:1481`
-- Foundry returns `"0x0"` (hex)
+- Historical upstream differences: EDR returns `"0"` (string), Foundry returns `"0x0"` (hex)
+- ZEVM contract return: `true` for `zevm_mine` and accepted aliases (`evm_mine`, `anvil_mine`, `hardhat_mine`)
 - Mines regardless of current mining mode
 - Optional timestamp parameter sets the next block's timestamp
 
@@ -557,7 +557,7 @@ This ticket adds 4 method definitions across 2 new namespaces (anvil, hardhat):
 
 | Method | Namespace | Params | Result |
 |--------|-----------|--------|--------|
-| evm_mine | anvil | `[timestamp?]` | `"0"` or `"0x0"` |
+| evm_mine | anvil | `[timestamp?]` | `true` (ZEVM contract; upstream historical refs include `"0"`/`"0x0"`) |
 | evm_setAutomine | anvil | `[enabled: bool]` | `true` |
 | evm_setIntervalMining | anvil | `[interval: Quantity]` | `true` |
 | hardhat_mine | hardhat | `[block_count?, interval?]` | `true` |

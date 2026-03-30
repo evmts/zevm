@@ -1,0 +1,77 @@
+---
+title: State Fork And Snapshots
+description: Trusted-mode fork overlay, snapshot boundary, and reset semantics.
+---
+
+# State Fork And Snapshots
+
+Forking is trusted-mode configuration. It is not a runtime mode.
+
+> Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).
+>
+> This page is an operational summary. For product-contract disputes, follow those normative sources.
+
+## Fork Overlay Model
+
+A forked trusted node uses upstream state as a read source and applies local writes in ZEVM's trusted-mode overlay.
+
+- upstream RPC: read source
+- trusted overlay: writable local state
+- `chainId`: trusted-mode setting (including runtime updates via `zevm_setChainId`), not inferred from upstream fork source
+
+Fork config union:
+
+- `null`
+- `{ "url": "https://..." }`
+- `{ "url": "https://...", "blockNumber": <u64> }`
+
+## Snapshot Boundary
+
+`zevm_snapshot` and `zevm_revert` operate on trusted-mode local state and ZEVM-owned runtime metadata.
+
+Included boundary:
+
+- local overlay/journal state
+- canonical local head
+- local receipt/log indexes
+- pending txpool
+- mining configuration
+- block-environment overrides
+- impersonation state
+- time controls
+
+Excluded boundary:
+
+- upstream fork provider state
+- light-mode checkpoint/consensus state
+
+## Related Control Families
+
+These families are separate and should not be conflated:
+
+- snapshot/revert: [`zevm_snapshot`, `zevm_revert`](../reference/json-rpc/dev-controls#methods) (`zevm_revert` result rules: [Method Rules](../reference/json-rpc/dev-controls#method-rules))
+- local state import/export: [`zevm_dumpState`, `zevm_loadState`](../reference/json-rpc/dev-controls#methods)
+- fork-source/runtime reset: [`zevm_reset`, `zevm_setRpcUrl`](../reference/json-rpc/transactions-and-mining#fork-source-methods) (semantics: [Fork-source control semantics](../reference/json-rpc/transactions-and-mining#fork-source-control-semantics))
+
+`zevm_reset` is a runtime/fork-source reset control, not a snapshot restore primitive.
+
+`zevm_setRpcUrl` precondition and behavior:
+
+- precondition: fork backing is already enabled; otherwise `zevm_setRpcUrl` fails with `-32603`
+- `zevm_setRpcUrl` updates the active fork upstream URL in place
+- `zevm_setRpcUrl` does not reset local canonical chain state, clear pending txpool, or invalidate snapshots
+- `zevm_setRpcUrl` does not redefine snapshot/revert boundaries
+- by contrast, successful `zevm_reset` resets local canonical chain to trusted genesis (`0x0`), clears pending txpool, invalidates snapshot IDs, and can optionally replace or clear fork source
+
+## Where To Go Next
+
+- Quickstart: [Forked Dev Node](../quickstart/forked-dev-node)
+- Quickstart: [Run Trusted Mode](../quickstart/run-trusted-mode)
+- Reference: [ZEVM Controls](../reference/json-rpc/dev-controls)
+- Reference: [Transactions And Mining](../reference/json-rpc/transactions-and-mining)
+
+## Related Pages
+
+- [Trusted Mode](./trusted-mode)
+- [Runtime Modes](./runtime-modes)
+- [Method Support By Mode](./method-support-by-mode)

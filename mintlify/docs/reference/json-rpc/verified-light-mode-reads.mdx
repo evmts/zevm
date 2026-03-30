@@ -1,0 +1,211 @@
+---
+title: Verified Light-Mode Reads
+description: Light-mode sync status, readiness gating, selector rules, and proof-backed read methods.
+---
+
+# Verified Light-Mode Reads
+
+This page defines the exact light-mode JSON-RPC contract.
+
+> Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).
+>
+> This page is an operational summary. For API-contract disputes, follow those normative sources.
+
+## Methods
+
+| Method | Exact params | Exact result | Errors |
+| --- | --- | --- | --- |
+| `zevm_lightSyncStatus` | `[]` or omitted | light sync status object | `-32010` in trusted mode; `-32602` for non-empty params |
+| `eth_chainId` | `[]` or omitted | `QuantityHex` from network mapping | `-32602` for non-empty params |
+| `eth_blockNumber` | `[]` or omitted | `QuantityHex` | `-32602` for non-empty params; `-32011` while not ready |
+| `eth_getBalance` | `[address, block]` where `block` is `LightBlockSelector` | `QuantityHex` | `-32602`, `-32010`, `-32011`, `-32015`, `-32014` |
+| `eth_getCode` | `[address, block]` where `block` is `LightBlockSelector` | `HexData` | `-32602`, `-32010`, `-32011`, `-32015`, `-32014` |
+| `eth_getStorageAt` | `[address, slot, block]` where `block` is `LightBlockSelector` | `Bytes32` | `-32602`, `-32010`, `-32011`, `-32015`, `-32014` |
+| `eth_getTransactionCount` | `[address, block]` where `block` is `LightBlockSelector` | `QuantityHex` | `-32602`, `-32010`, `-32011`, `-32015`, `-32014` |
+
+## Chain ID Mapping
+
+| Network | `eth_chainId` result |
+| --- | --- |
+| `mainnet` | `0x1` |
+| `sepolia` | `0xaa36a7` |
+| `holesky` | `0x4268` |
+
+## `LightBlockSelector`
+
+| Selector | Meaning |
+| --- | --- |
+| `latest` | latest verified optimistic execution head |
+| `safe` | consensus-backed safe execution head |
+| `finalized` | consensus-finalized execution head |
+| `earliest` | block `0` |
+| numeric quantity | block `0` or retained numeric block in verified history |
+| `pending` | unsupported selector token (`-32010`); it never aliases `latest` |
+
+### Retained-history numeric selector contract
+
+- retained window size is `8191` verified execution blocks
+- let `H` be current `latest` block number when `ready = true`
+- retained non-genesis numeric range is `[max(1, H - 8190), H]`
+- accepted numeric selector set while ready is `{0}` union `[max(1, H - 8190), H]`
+- numeric selector outside that set returns `-32602`
+- this accepted-set check is strict
+
+## Canonical Light-Mode Read Errors
+
+- `-32011`: light mode is not ready for readiness-gated reads (`eth_blockNumber` and proof-backed reads).
+- `-32014`: proof verification failed at a supported selector while ready.
+- `-32015`: malformed data from upstream proof source during a proof-backed read.
+- `-32010`: selector `pending` is unsupported for light proof-backed reads.
+
+## Readiness And Proof Rules
+
+- `ready = true` can be reached only after `status` transitions to `synced` and ZEVM has accepted verified optimistic (`latest`), safe (`safe`), and finalized (`finalized`) heads
+- while `ready = true`, verified-head ordering must hold: `finalized <= safe <= latest`
+- while `ready = true`, slot ordering must hold: `finalizedSlot <= safeSlot <= optimisticSlot`
+- if `status` leaves `synced` or slot coherence no longer holds (`finalizedSlot <= safeSlot <= optimisticSlot`), ZEVM sets `ready = false` in the same transition before serving the next readiness-gated RPC call
+- proof-backed reads are allowed only when `ready = true`
+- while `ready = false`, readiness-gated reads (`eth_blockNumber` and all proof-backed reads) return `-32011`
+- when ready, `eth_blockNumber` returns the light-mode `latest` head number
+- while ready, proof-backed read failures use canonical mapping: `-32014` for verification failure and `-32015` for malformed upstream proof data
+- proof-backed read evaluation order is exact:
+  1. malformed tuple/field/encoding input (including malformed selector token) -> `-32602`
+  2. selector `pending` -> `-32010`
+  3. `ready = false` -> `-32011` for all remaining selectors, including numeric selectors that would be outside retained history
+  4. when `ready = true`, numeric selector outside retained set `{0}` union `[max(1, H - 8190), H]` -> `-32602`
+  5. when `ready = true`, malformed upstream proof payload -> `-32015`
+  6. when `ready = true`, well-formed proof payload that fails verification against resolved state root -> `-32014`
+- `status = "error"` is an operator-recovery state: remediate the underlying startup/sync input issue, then restart the ZEVM process before expecting readiness-gated reads to recover
+- phase-1 operator-facing startup inputs are `network` and `consensusRpcUrl`, with optional checkpoint controls (`checkpoint`, `checkpointDir`, `maxCheckpointAgeSeconds`, `strictCheckpointAge`); proof-source internals are not user-configurable in the public contract; for startup consensus-network handshake details, see [Light-Mode Configuration](../configuration/light-mode#validation-rules) and [Run Light Mode](../../quickstart/run-light-mode#1-start-light-mode)
+
+## `zevm_lightSyncStatus` Result
+
+```json
+{
+  "ready": true,
+  "status": "synced",
+  "network": "mainnet",
+  "checkpointSource": "explicit",
+  "lastCheckpoint": "0x...",
+  "optimisticSlot": "0x1234",
+  "safeSlot": "0x1232",
+  "finalizedSlot": "0x1230"
+}
+```
+
+`checkpointSource: "explicit"` can come from either user-provided checkpoint path: CLI `--checkpoint` or config `mode.light.checkpoint` (CLI value wins if both are supplied).
+
+Field rules:
+
+- `ready`: boolean read-availability gate
+- `status`: `syncing`, `synced`, or `error`
+- `ready = true` can be reached only after `status` transitions to `synced` and ZEVM has accepted verified optimistic (`latest`), safe (`safe`), and finalized (`finalized`) heads
+- `status = "syncing"` and `status = "error"` imply `ready = false`
+- `status = "error"` requires operator remediation and process restart before expecting `ready = true` again
+- while `ready = true`, verified-head ordering must hold: `finalized <= safe <= latest`
+- while `ready = true`, slot ordering must hold: `finalizedSlot <= safeSlot <= optimisticSlot`
+- if `status` leaves `synced` or slot coherence no longer holds (`finalizedSlot <= safeSlot <= optimisticSlot`), ZEVM sets `ready = false` in the same transition before serving the next readiness-gated RPC call
+- `network`: `mainnet`, `sepolia`, or `holesky`
+- `checkpointSource`: startup checkpoint-source winner
+- `checkpointSource = "explicit"`: startup used user-provided checkpoint input (`--checkpoint` or `mode.light.checkpoint`; CLI wins if both are supplied)
+- `checkpointSource = "persisted"`: startup used operator-managed `checkpointDir/checkpoint`
+- `checkpointSource = "default"`: startup used baked network default after no explicit or persisted startup checkpoint input was present
+- operators get `checkpointSource = "persisted"` only when they provide/manage `checkpointDir/checkpoint` themselves; ZEVM does not auto-populate that file
+- `checkpointSource` is startup-source metadata only: it remains stable for the process lifetime and does not change when `lastCheckpoint` advances during sync
+- `lastCheckpoint`: `Hash32` (non-null in runtime responses after startup)
+- `optimisticSlot`: `QuantityHex`
+- `safeSlot`: `QuantityHex`
+- `finalizedSlot`: `QuantityHex`
+- `finalizedSlot <= safeSlot <= optimisticSlot`
+
+Operator runbook cross-link: [Run Light Mode -> Choose Startup Checkpoint Input](../../quickstart/run-light-mode#2-choose-startup-checkpoint-input), [Run Light Mode -> Check Readiness With `zevm_lightSyncStatus`](../../quickstart/run-light-mode#3-check-readiness-with-zevm_lightsyncstatus), and [Checkpoint Selection Precedence](../configuration/light-mode#checkpoint-selection-precedence).
+
+`lastCheckpoint` lifecycle:
+
+- `lastCheckpoint` is the most recently accepted checkpoint root in local light-sync state
+- after successful startup checkpoint selection and validation, it equals the selected startup checkpoint and is non-null
+- it updates whenever ZEVM accepts a newer checkpoint during sync progression
+- it is not pinned to the configured checkpoint once sync has advanced
+- format bridge: RPC checkpoint hashes are `0x`-prefixed `Hash32`, while persisted `checkpointDir/checkpoint` uses 64 hex characters without `0x`
+
+## Light-Mode Unsupported Surface
+
+In light mode, these supported trusted-mode method families are mode-gated and return `-32010`:
+
+- `eth_call`, `eth_estimateGas`
+- `eth_feeHistory` (mode-gated in light mode; returns `-32010`)
+- transaction submission (`eth_sendTransaction`, `eth_sendRawTransaction`)
+- mining, snapshots, mutation controls, impersonation controls
+- canonical block/receipt/log queries
+
+Out-of-contract note:
+
+- filter lifecycle APIs, subscriptions, and debug tracing methods are deferred/out of contract in ZEVM docs and are not transport-side `-32010` mappings
+
+Transport note:
+
+- ZEVM JSON-RPC is HTTP-only. WebSocket transport is unavailable and is not a `-32010` method error.
+
+## Example: `zevm_lightSyncStatus`
+
+Request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "zevm_lightSyncStatus",
+  "params": []
+}
+```
+
+Response shape:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "ready": true,
+    "status": "synced",
+    "network": "sepolia",
+    "checkpointSource": "persisted",
+    "lastCheckpoint": "0x...",
+    "optimisticSlot": "0x1234",
+    "safeSlot": "0x1232",
+    "finalizedSlot": "0x1230"
+  }
+}
+```
+
+## Example: Not-ready Proof-backed Read
+
+Request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "eth_getBalance",
+  "params": ["0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266", "latest"]
+}
+```
+
+Error response:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "error": {
+    "code": -32011,
+    "message": "..."
+  }
+}
+```
+
+## Related Pages
+
+- [Core Reads](./core-reads)
+- [JSON-RPC Overview](./overview)
+- [Unsupported And Deferred](./unsupported-and-deferred)

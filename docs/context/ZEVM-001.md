@@ -1,5 +1,8 @@
 # Context: ZEVM-001 - Create MiningConfig type and state management
 
+> Archival snapshot note: this file is a point-in-time research artifact, not the active ZEVM contract. Workspace path checks, checkout gaps, and module/status statements below reflect capture-time conditions and may be stale.
+> For current mining RPC return semantics and aliases, use `docs/specs/json-rpc-contract.md` sections 9.3 and 10. For current error semantics, use section 5.
+
 ## Ticket
 - ID: `ZEVM-001`
 - Category: `cat-6-mining`
@@ -161,8 +164,8 @@
 ### `EIPs/EIPS/`
 - No EIP defines Hardhat/Anvil dev mining RPC semantics.
 - Relevant post-merge context:
-  - `eip-3675.md` (PoS transition constants/validity updates)
-  - `eip-4399.md` (`mixHash`/`prevRandao` semantics)
+  - `https://eips.ethereum.org/EIPS/eip-3675` (PoS transition constants/validity updates)
+  - `https://eips.ethereum.org/EIPS/eip-4399` (`mixHash`/`prevRandao` semantics)
 
 ### `ethereum-tests/`
 - No direct dev-node RPC mining suite found.
@@ -182,7 +185,8 @@
 ## Behavioral deltas to keep in mind
 - TEVM and Foundry interval inputs are generally seconds-oriented.
 - EDR `evm_setIntervalMining` accepts millisecond interval values (and ranges).
-- EDR `evm_mine` returns `"0"`; Foundry `evm_mine` returns `"0x0"`.
+- Historical upstream reference: EDR `evm_mine` returns `"0"`; Foundry `evm_mine` returns `"0x0"`.
+- Current ZEVM contract: `zevm_mine` and accepted aliases (`evm_mine`, `anvil_mine`, `hardhat_mine`) return `true` per `docs/specs/json-rpc-contract.md` section 9.3.
 - TEVM `anvil_setAutomine` and `anvil_setIntervalMining` return `null` in those procedures.
 
 ## Recommended ZEVM-001 implementation shape (state only)

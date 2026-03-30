@@ -2,9 +2,9 @@
 
 ## Overview of the approach
 Implement this ticket in three layers, in strict upstream-first order:
-1. Add missing JSON-RPC method types in `voltaire` for `evm_*`, `hardhat_*`, and `anvil_*`.
-2. Add deterministic snapshot/revert primitives for block rollback in `voltaire` blockchain storage, so zevm can clear mined blocks after a revert.
-3. Add zevm integration handlers that wire RPC -> node runtime state -> `StateManager`/blockchain/mempool/config, with alias routing (`anvil_*` -> same behavior as `hardhat_*`).
+1. Add missing JSON-RPC method types in `voltaire` for compatibility namespaces (`evm_*`, `hardhat_*`, and `anvil_*`) that map to canonical `zevm_*` behavior.
+2. Add deterministic snapshot/revert primitives for block rollback in `voltaire` blockchain storage, so ZEVM can clear mined blocks after a revert.
+3. Add ZEVM integration handlers that wire RPC -> node runtime state -> `StateManager`/blockchain/mempool/config, with alias routing (`evm_*`/`anvil_*` -> canonical `zevm_*` behavior, and `anvil_*` setter aliases matching `hardhat_*` behavior).
 
 All steps are TDD-first: write a failing test, then implement exactly the function/route needed to pass that test before moving on.
 
@@ -12,7 +12,7 @@ All steps are TDD-first: write a failing test, then implement exactly the functi
 
 ## TDD Step Order (tests before implementation)
 
-### Phase A - Voltaire JSON-RPC method types
+### Phase A - Voltaire JSON-RPC compatibility method types
 
 1. **Test**: add `evm_snapshot` serde tests  
 File: `../voltaire/packages/voltaire-zig/src/jsonrpc/evm/snapshot/evm_snapshot.zig`  
@@ -127,9 +127,9 @@ Signature:
 pub fn revertToBlock(self: *Blockchain, block_number: u64) !void
 ```
 
-### Phase C - Zevm snapshot runtime + handlers
+### Phase C - ZEVM snapshot runtime + handlers
 
-17. **Test**: zevm runtime snapshot metadata (state id + block number + mempool + config)  
+17. **Test**: ZEVM runtime snapshot metadata (state id + block number + mempool + config)  
 File: `src/rpc/dev_runtime_test.zig` (new)  
 Test names:
 - `test "takeSnapshot stores state snapshot id and block number"`
@@ -189,7 +189,7 @@ pub fn revertSnapshot(
 ) !bool
 ```
 
-21. **Test**: handler for `evm_snapshot` returns hex ID  
+21. **Test**: handler for canonical `zevm_snapshot` (`evm_snapshot` compatibility alias) returns hex ID  
 File: `src/rpc/dev_handlers_test.zig` (new)  
 Test name:
 - `test "handleEvmSnapshot returns quantity-encoded snapshot id"`
@@ -207,7 +207,7 @@ pub fn handleEvmSnapshot(
 ) !@import("jsonrpc").evm.snapshot.EvmSnapshot.Result
 ```
 
-23. **Test**: handler for `evm_revert` block rollback + boolean result  
+23. **Test**: handler for canonical `zevm_revert` (`evm_revert` compatibility alias) block rollback + boolean result  
 File: `src/rpc/dev_handlers_test.zig`  
 Test names:
 - `test "handleEvmRevert returns true and rolls state back on valid id"`
@@ -279,9 +279,12 @@ pub fn handleEvmSetBlockGasLimit(
 ) !@import("jsonrpc").evm.setBlockGasLimit.EvmSetBlockGasLimit.Result
 ```
 
-27. **Test**: alias routing (`anvil_*`) maps to same behavior/results  
+27. **Test**: alias routing (`evm_*` and `anvil_*`) maps to same behavior/results  
 File: `src/rpc/routing_test.zig` (new or existing dispatch test file)  
 Test names:
+- `test "evm_snapshot aliases zevm_snapshot"`
+- `test "evm_revert aliases zevm_revert"`
+- `test "evm_setBlockGasLimit aliases zevm_setBlockGasLimit"`
 - `test "anvil_setBalance aliases hardhat_setBalance"`
 - `test "anvil_setCode aliases hardhat_setCode"`
 - `test "anvil_setNonce aliases hardhat_setNonce"`
@@ -293,12 +296,12 @@ Test names:
 Files:
 - `src/rpc_server.zig` (or current dispatch module)
 - `build.zig` (if `jsonrpc` import not yet wired)  
-Implementation rule: each `anvil_*` route calls the corresponding hardhat handler.
+Implementation rule: `evm_*` and `anvil_*` routes must resolve to canonical `zevm_*` behavior; each `anvil_*` setter route calls the corresponding hardhat handler.
 
 29. **Test**: JSON-RPC integration (request envelope -> response envelope)  
 File: `src/rpc/dev_methods_integration_test.zig` (new)  
 Cases:
-- `evm_snapshot` then mutate state then `evm_revert`
+- `zevm_snapshot` (via `evm_snapshot` alias) then mutate state then `zevm_revert` (via `evm_revert` alias)
 - revert clears mined blocks above snapshot block
 - anvil aliases return same boolean success shape as hardhat methods
 
@@ -350,7 +353,7 @@ pub fn revertToBlock(self: *BlockStore, block_number: u64) !void
 pub fn revertToBlock(self: *Blockchain, block_number: u64) !void
 ```
 
-### Zevm
+### ZEVM
 
 Create:
 - `src/rpc/dev_runtime.zig`
@@ -395,9 +398,9 @@ pub fn revertSnapshot(
 - Voltaire method-type serde tests for each new `evm_*`, `hardhat_*`, and `anvil_*` module.
 - Voltaire namespace method-map tests for `fromMethodName` and `methodName`.
 - Voltaire rollback tests for `BlockStore.revertToBlock` and `Blockchain.revertToBlock`.
-- Zevm runtime tests for snapshot capture, invalid snapshot revert, nested snapshot semantics.
-- Zevm handler tests for each state mutation method and `evm_snapshot`/`evm_revert` return shapes.
-- Zevm alias tests ensuring `anvil_*` routes are behaviorally identical to hardhat routes.
+- ZEVM runtime tests for snapshot capture, invalid snapshot revert, nested snapshot semantics.
+- ZEVM handler tests for each state mutation method and canonical `zevm_snapshot`/`zevm_revert` behavior (`evm_*` compatibility aliases included).
+- ZEVM alias tests ensuring `evm_*` and `anvil_*` routes are behaviorally identical to canonical behavior.
 
 ### Integration tests
 
@@ -419,31 +422,33 @@ Mitigation: require `TxPool.clonePending` + `TxPool.replacePending` (or equivale
 Mitigation: define explicit rollback semantics in `BlockStore.revertToBlock`; test both canonical and hash lookups post-revert.
 
 3. **Risk: hex parsing ambiguity (`Quantity` vs fixed-width DATA) for storage slot/value.**  
-Mitigation: parse and validate slot/value in zevm handlers with strict checks; add negative tests for malformed hex and wrong width.
+Mitigation: parse and validate slot/value in ZEVM handlers with strict checks; add negative tests for malformed hex and wrong width.
 
 4. **Risk: alias drift (`anvil_*` path diverges from hardhat behavior).**  
 Mitigation: implement alias routes as direct calls to hardhat handler functions and assert response equality in routing tests.
 
 5. **Risk: upstream/downstream ordering causes temporary breakage.**  
-Mitigation: land in this order: Voltaire types -> Voltaire rollback API -> zevm handler wiring.
+Mitigation: land in this order: Voltaire types -> Voltaire rollback API -> ZEVM handler wiring.
 
 ---
 
 ## Verification against acceptance criteria
 
-1. `evm_snapshot` returns hex snapshot ID  
+Canonical method names are `zevm_*`; `evm_*` and `anvil_*` references below are compatibility aliases.
+
+1. `zevm_snapshot` (`evm_snapshot` alias) returns hex snapshot ID  
 Validated by `handleEvmSnapshot returns quantity-encoded snapshot id`.
 
-2. `evm_snapshot` captures StateManager state and block number  
+2. `zevm_snapshot` (`evm_snapshot` alias) captures StateManager state and block number  
 Validated by `takeSnapshot stores state snapshot id and block number`.
 
-3. `evm_revert` restores state to snapshot point  
+3. `zevm_revert` (`evm_revert` alias) restores state to snapshot point  
 Validated by `handleEvmRevert returns true and rolls state back on valid id`.
 
-4. `evm_revert` reverts block number and clears later blocks  
+4. `zevm_revert` (`evm_revert` alias) reverts block number and clears later blocks  
 Validated by integration test + `Blockchain.revertToBlock truncates head to target`.
 
-5. `evm_revert` returns true on success, false on invalid ID  
+5. `zevm_revert` (`evm_revert` alias) returns true on success, false on invalid ID  
 Validated by two explicit revert tests.
 
 6. Nested snapshots work correctly  
@@ -467,7 +472,7 @@ Validated by `hardhat_setCoinbase updates runtime coinbase`.
 12. `hardhat_setNextBlockBaseFeePerGas` affects next block  
 Validated by base-fee runtime test + block-build integration assertion.
 
-13. `evm_setBlockGasLimit` updates next block gas limit  
+13. `zevm_setBlockGasLimit` (`evm_setBlockGasLimit` alias) updates next block gas limit  
 Validated by `evm_setBlockGasLimit updates next block gas limit`.
 
 14. `anvil_*` aliases work for hardhat methods  
@@ -477,4 +482,4 @@ Validated by alias routing tests.
 Validated by namespace map tests and `JsonRpcMethod includes evm hardhat anvil namespaces`.
 
 16. `zig build test` passes  
-Validated in final verification step after upstream + zevm changes.
+Validated in final verification step after upstream + ZEVM changes.

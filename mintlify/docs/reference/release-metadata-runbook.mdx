@@ -1,0 +1,383 @@
+---
+title: Release Metadata Runbook
+description: Reproducible operator workflow for release metadata selection, validation, provenance, and baked-default audits.
+---
+
+# Release Metadata Runbook
+
+Use this runbook to reproduce a ZEVM release/build boundary and audit light-mode baked defaults against published release metadata artifacts.
+
+Canonical release metadata location: [ZEVM release metadata](https://github.com/evmts/zevm/releases).
+Canonical reproducibility boundary for this runbook: both release artifacts must be published for the selected `RELEASE_IDENTIFIER` (`release-tuple.json` and `light-default-checkpoints.json`).
+
+Publication-time validation gate for canonical claims:
+
+- before any canonical reproducibility claim, publication validation must pass for the selected `RELEASE_IDENTIFIER`
+- publication validation requires exactly one published asset named `release-tuple.json` and exactly one published asset named `light-default-checkpoints.json` for that identifier
+- zero matches or more than one match for either required filename fails the gate and marks the identifier metadata-invalid for canonical claims
+
+## Prerequisites
+
+- one artifact fetch tool: `gh` (recommended) or `curl`
+- `jq` for schema checks and field extraction
+- `shasum` for `sha256` provenance hashing
+- `date` for UTC manifest timestamps
+
+## 1. Select A Release Identifier
+
+Select one GitHub release identifier and use it consistently for all metadata and checkouts.
+
+```bash
+# List recent identifiers first.
+gh release list --repo evmts/zevm --limit 20
+
+# Set this to one real published identifier from the list.
+RELEASE_IDENTIFIER='<published-release-identifier>'
+```
+
+Before fetch/validation, preflight required assets for that identifier:
+
+```bash
+ASSET_NAMES_JSON="$(gh api "repos/evmts/zevm/releases/tags/$RELEASE_IDENTIFIER" --jq '[.assets[].name]')"
+
+RELEASE_TUPLE_COUNT="$(printf '%s' "$ASSET_NAMES_JSON" | jq '[.[] | select(. == "release-tuple.json")] | length')"
+LIGHT_DEFAULTS_COUNT="$(printf '%s' "$ASSET_NAMES_JSON" | jq '[.[] | select(. == "light-default-checkpoints.json")] | length')"
+
+test "$RELEASE_TUPLE_COUNT" -eq 1
+test "$LIGHT_DEFAULTS_COUNT" -eq 1
+```
+
+If either `test` fails, do not use that identifier for canonical claims.
+If you are using the `curl`-only path, choose `RELEASE_IDENTIFIER` from the GitHub releases page and run the `curl` duplicate-asset gate in step 2.
+
+Release identifier contract:
+
+- tag-based identifiers must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`
+- commit-based identifiers must match `^commit-[0-9a-f]{40}$`
+- for commit-based identifiers, the `40`-hex suffix must equal `zevmGitRevision` in the same release's `release-tuple.json`
+
+`RELEASE_IDENTIFIER` must exactly match the GitHub release entry that publishes both files.
+Inside those files, `.releaseIdentifier` must exactly equal `RELEASE_IDENTIFIER`.
+Do not mix tuple/checkpoint files from different release identifiers.
+Run the checkout steps below from the parent workspace that contains sibling `zevm/`, `voltaire/`, and `guillotine-mini/` directories.
+
+### Deterministic Publication And Supersession Policy
+
+Treat published release metadata as append-only by `releaseIdentifier`:
+
+- for one published `releaseIdentifier`, there is exactly one canonical artifact pair (`release-tuple.json` and `light-default-checkpoints.json`) for operator audit
+- if a correction is required, publish a new `releaseIdentifier` with a complete replacement artifact pair (`release-tuple.json` and `light-default-checkpoints.json`)
+- do not mutate or replace artifact files in place for an existing `releaseIdentifier`
+- the correcting release entry must include one supersession note in the release notes body under `## ZEVM Supersession Note` using exactly:
+
+```text
+schemaVersion: zevm-supersession-note.v1
+supersedesReleaseIdentifier: v0.6.1
+correctedArtifacts: both
+reason: Corrected release-tuple and light-default-checkpoints metadata defects.
+```
+
+Supersession-note field constraints:
+
+- `schemaVersion` must be the literal `zevm-supersession-note.v1`
+- `supersedesReleaseIdentifier` must name one valid previously published `releaseIdentifier`
+- `correctedArtifacts` must be exactly one of `release-tuple.json`, `light-default-checkpoints.json`, or `both`
+- `reason` must be non-empty single-line UTF-8 text describing the corrected defect
+
+## 2. Fetch `release-tuple.json` And `light-default-checkpoints.json`
+
+Use one operator workspace for fetched artifacts:
+
+```bash
+ARTIFACT_DIR=.ops/release-metadata/"$RELEASE_IDENTIFIER"
+mkdir -p "$ARTIFACT_DIR"
+```
+
+Fetch both required files from the selected release:
+
+```bash
+gh release download "$RELEASE_IDENTIFIER" \
+  --repo evmts/zevm \
+  --pattern 'release-tuple.json' \
+  --pattern 'light-default-checkpoints.json' \
+  --dir "$ARTIFACT_DIR"
+```
+
+Before asserting canonical publication validity, validate required release-asset uniqueness (duplicate-asset gate):
+
+```bash
+ASSET_NAMES_JSON="$(gh api "repos/evmts/zevm/releases/tags/$RELEASE_IDENTIFIER" --jq '[.assets[].name]')"
+
+RELEASE_TUPLE_COUNT="$(printf '%s' "$ASSET_NAMES_JSON" | jq '[.[] | select(. == "release-tuple.json")] | length')"
+LIGHT_DEFAULTS_COUNT="$(printf '%s' "$ASSET_NAMES_JSON" | jq '[.[] | select(. == "light-default-checkpoints.json")] | length')"
+
+test "$RELEASE_TUPLE_COUNT" -eq 1
+test "$LIGHT_DEFAULTS_COUNT" -eq 1
+```
+
+`test` failure means publication validation did not pass for canonical claims (`0` assets = missing; `>1` assets = duplicate filename publication).
+
+If `gh` is unavailable, use direct release-asset URLs:
+
+```bash
+curl -fsSL -o "$ARTIFACT_DIR/release-tuple.json" \
+  "https://github.com/evmts/zevm/releases/download/$RELEASE_IDENTIFIER/release-tuple.json"
+
+curl -fsSL -o "$ARTIFACT_DIR/light-default-checkpoints.json" \
+  "https://github.com/evmts/zevm/releases/download/$RELEASE_IDENTIFIER/light-default-checkpoints.json"
+```
+
+`curl`-only publication-validation equivalent for duplicate-asset detection:
+
+```bash
+ASSET_NAMES_JSON="$(curl -fsSL "https://api.github.com/repos/evmts/zevm/releases/tags/$RELEASE_IDENTIFIER" | jq '[.assets[].name]')"
+
+RELEASE_TUPLE_COUNT="$(printf '%s' "$ASSET_NAMES_JSON" | jq '[.[] | select(. == "release-tuple.json")] | length')"
+LIGHT_DEFAULTS_COUNT="$(printf '%s' "$ASSET_NAMES_JSON" | jq '[.[] | select(. == "light-default-checkpoints.json")] | length')"
+
+test "$RELEASE_TUPLE_COUNT" -eq 1
+test "$LIGHT_DEFAULTS_COUNT" -eq 1
+```
+
+If either required artifact is unavailable for the selected identifier, stop this canonical runbook flow:
+
+1. either select a different `RELEASE_IDENTIFIER` that publishes both artifacts
+2. or continue as an unpublished source build with internal provenance only (no canonical release-metadata reproducibility claim for that build boundary)
+
+## Publication-Validation Checklist For Canonical Claims
+
+Before asserting canonical release-metadata reproducibility for a selected `RELEASE_IDENTIFIER`, confirm:
+
+- publication-time validation gate passed: release asset listing shows exactly one `release-tuple.json` and one `light-default-checkpoints.json` for that identifier (no missing or duplicate required filenames)
+- both required artifacts are published and fetched from that exact identifier: `release-tuple.json` and `light-default-checkpoints.json`
+- both artifacts pass schema/version checks and `.releaseIdentifier` equality checks for that same identifier
+- local checkouts/toolchain match tuple pins exactly (`zevmGitRevision`, `voltaireGitRevision`, `guillotineMiniGitRevision`, `zigVersion`)
+- operator manifest records artifact paths and `sha256` hashes for both files
+- runtime baked-default audit (when used) confirms `checkpointSource = "default"` and `lastCheckpoint == .defaults[NETWORK]` from the selected identifier's `light-default-checkpoints.json`
+
+If any item fails, do not make a canonical reproducibility claim for that build boundary.
+
+Metadata-invalid handling for canonical claims:
+
+- if required artifacts for a `RELEASE_IDENTIFIER` are missing, duplicate, unreadable, malformed, schema-mismatched, or value-mismatched, treat that identifier as metadata-invalid
+- a metadata-invalid identifier cannot be used as canonical reproducibility evidence
+- correction must be published as a new `releaseIdentifier` with a complete replacement artifact pair; do not repair artifacts in place for the invalid identifier
+
+## 3. Validate Metadata Files
+
+Validate `release-tuple.json` contract fields and values:
+
+```bash
+jq -e --arg rid "$RELEASE_IDENTIFIER" '
+  (type == "object")
+  and ((keys | sort) == [
+    "guillotineMiniGitRevision",
+    "releaseIdentifier",
+    "schemaVersion",
+    "voltaireGitRevision",
+    "zevmGitRevision",
+    "zigVersion"
+  ])
+  and (.schemaVersion == "zevm-release-tuple.v1")
+  and (.releaseIdentifier == $rid)
+  and (.zevmGitRevision | test("^[0-9a-fA-F]{40}$"))
+  and (.voltaireGitRevision | test("^[0-9a-fA-F]{40}$"))
+  and (.guillotineMiniGitRevision | test("^[0-9a-fA-F]{40}$"))
+  and (.zigVersion | type == "string" and length > 0)
+' "$ARTIFACT_DIR/release-tuple.json" > /dev/null
+```
+
+Validate `light-default-checkpoints.json` contract fields and values:
+
+```bash
+jq -e --arg rid "$RELEASE_IDENTIFIER" '
+  (type == "object")
+  and ((keys | sort) == ["defaults", "releaseIdentifier", "schemaVersion"])
+  and (.schemaVersion == "zevm-light-default-checkpoints.v1")
+  and (.releaseIdentifier == $rid)
+  and (.defaults | type == "object")
+  and ((.defaults | keys | sort) == ["holesky", "mainnet", "sepolia"])
+  and (.defaults.mainnet | test("^0x[0-9a-fA-F]{64}$"))
+  and (.defaults.sepolia | test("^0x[0-9a-fA-F]{64}$"))
+  and (.defaults.holesky | test("^0x[0-9a-fA-F]{64}$"))
+' "$ARTIFACT_DIR/light-default-checkpoints.json" > /dev/null
+```
+
+Quick schema reference for `light-default-checkpoints.json`:
+
+- `schemaVersion` (`string`): must be `zevm-light-default-checkpoints.v1`
+- `releaseIdentifier` (`string`): must equal the selected `RELEASE_IDENTIFIER`
+- `defaults` (`object`): required network map with exactly `mainnet`, `sepolia`, `holesky`; each value is a `0x`-prefixed 32-byte hex checkpoint (`^0x[0-9a-fA-F]{64}$`)
+
+Sample payload:
+
+```json
+{
+  "schemaVersion": "zevm-light-default-checkpoints.v1",
+  "releaseIdentifier": "vX.Y.Z",
+  "defaults": {
+    "mainnet": "0x1111111111111111111111111111111111111111111111111111111111111111",
+    "sepolia": "0x2222222222222222222222222222222222222222222222222222222222222222",
+    "holesky": "0x3333333333333333333333333333333333333333333333333333333333333333"
+  }
+}
+```
+
+Placeholder note: `vX.Y.Z` and the repeated checkpoint hashes above are example-only values; use fetched artifacts for your selected `RELEASE_IDENTIFIER`.
+
+Operator interpretation of `defaults` entries:
+
+- `defaults.mainnet`: release-specific baked default checkpoint for `mainnet`, used when checkpoint precedence falls to `default`
+- `defaults.sepolia`: release-specific baked default checkpoint for `sepolia`, used when checkpoint precedence falls to `default`
+- `defaults.holesky`: release-specific baked default checkpoint for `holesky`, used when checkpoint precedence falls to `default`
+
+## 4. Check Out Pinned Revisions And Zig Version
+
+Extract the pinned tuple:
+
+```bash
+ZEVM_REVISION="$(jq -r '.zevmGitRevision' "$ARTIFACT_DIR/release-tuple.json")"
+VOLTAIRE_REVISION="$(jq -r '.voltaireGitRevision' "$ARTIFACT_DIR/release-tuple.json")"
+GUILLOTINE_MINI_REVISION="$(jq -r '.guillotineMiniGitRevision' "$ARTIFACT_DIR/release-tuple.json")"
+PINNED_ZIG_VERSION="$(jq -r '.zigVersion' "$ARTIFACT_DIR/release-tuple.json")"
+```
+
+Materialize sibling checkouts:
+
+```bash
+git -C zevm checkout "$ZEVM_REVISION"
+git -C voltaire checkout "$VOLTAIRE_REVISION"
+git -C guillotine-mini checkout "$GUILLOTINE_MINI_REVISION"
+```
+
+Verify local state matches tuple pins:
+
+```bash
+test "$(git -C zevm rev-parse HEAD)" = "$ZEVM_REVISION"
+test "$(git -C voltaire rev-parse HEAD)" = "$VOLTAIRE_REVISION"
+test "$(git -C guillotine-mini rev-parse HEAD)" = "$GUILLOTINE_MINI_REVISION"
+test "$(zig version)" = "$PINNED_ZIG_VERSION"
+```
+
+## 5. Record Provenance In An Operator Manifest
+
+Phase-1 reproducibility depends on preserved build provenance.
+Record selected identifier, tuple pins, and metadata file hashes in an operator manifest:
+
+```bash
+MANIFEST_PATH=.ops/manifests/zevm-release-manifest.json
+mkdir -p "$(dirname "$MANIFEST_PATH")"
+
+RELEASE_TUPLE_SHA256="$(shasum -a 256 "$ARTIFACT_DIR/release-tuple.json" | awk '{print $1}')"
+LIGHT_DEFAULTS_SHA256="$(shasum -a 256 "$ARTIFACT_DIR/light-default-checkpoints.json" | awk '{print $1}')"
+
+jq -n \
+  --arg generatedAtUtc "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+  --arg releaseIdentifier "$RELEASE_IDENTIFIER" \
+  --arg zevmGitRevision "$ZEVM_REVISION" \
+  --arg voltaireGitRevision "$VOLTAIRE_REVISION" \
+  --arg guillotineMiniGitRevision "$GUILLOTINE_MINI_REVISION" \
+  --arg zigVersion "$PINNED_ZIG_VERSION" \
+  --arg releaseTuplePath "$ARTIFACT_DIR/release-tuple.json" \
+  --arg releaseTupleSha256 "$RELEASE_TUPLE_SHA256" \
+  --arg lightDefaultsPath "$ARTIFACT_DIR/light-default-checkpoints.json" \
+  --arg lightDefaultsSha256 "$LIGHT_DEFAULTS_SHA256" \
+  '{
+    schemaVersion: "zevm-operator-manifest.v1",
+    generatedAtUtc: $generatedAtUtc,
+    releaseIdentifier: $releaseIdentifier,
+    buildTuple: {
+      zevmGitRevision: $zevmGitRevision,
+      voltaireGitRevision: $voltaireGitRevision,
+      guillotineMiniGitRevision: $guillotineMiniGitRevision,
+      zigVersion: $zigVersion
+    },
+    metadataArtifacts: {
+      releaseTuple: { path: $releaseTuplePath, sha256: $releaseTupleSha256 },
+      lightDefaultCheckpoints: { path: $lightDefaultsPath, sha256: $lightDefaultsSha256 }
+    }
+  }' > "$MANIFEST_PATH"
+```
+
+## 6. Audit Baked Defaults Via `zevm_lightSyncStatus`
+
+Use runtime probing only as a verification step.
+For selected network `NETWORK`, start light mode with no explicit or persisted checkpoint input:
+
+1. omit `--checkpoint`
+2. keep `mode.light.checkpoint` unset
+3. ensure `checkpointDir/checkpoint` is absent
+
+Then verify `checkpointSource = "default"` and compare `lastCheckpoint` with release metadata:
+
+```bash
+NETWORK="${NETWORK:-mainnet}"
+case "$NETWORK" in
+  mainnet|sepolia|holesky) ;;
+  *)
+    echo "NETWORK must be one of: mainnet|sepolia|holesky" >&2
+    exit 1
+    ;;
+esac
+
+STATUS_JSON="$(curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"zevm_lightSyncStatus","params":[]}')"
+
+CHECKPOINT_SOURCE="$(printf '%s' "$STATUS_JSON" | jq -r '.result.checkpointSource')"
+ACTUAL_CHECKPOINT="$(printf '%s' "$STATUS_JSON" | jq -r '.result.lastCheckpoint')"
+EXPECTED_CHECKPOINT="$(jq -r --arg network "$NETWORK" '.defaults[$network] // empty' "$ARTIFACT_DIR/light-default-checkpoints.json")"
+
+test -n "$EXPECTED_CHECKPOINT"
+test "$CHECKPOINT_SOURCE" = "default"
+test "$ACTUAL_CHECKPOINT" = "$EXPECTED_CHECKPOINT"
+```
+
+## 7. Audit Restart/Resume Path With `checkpointSource = "persisted"`
+
+This audit verifies restart/resume semantics when startup source is operator-managed persisted input.
+
+Requirements:
+
+- do not pass `--checkpoint`
+- keep `mode.light.checkpoint` unset or `null`
+- provide `checkpointDir/checkpoint` with 64 hex chars (no `0x`)
+
+Prepare persisted checkpoint input from release defaults:
+
+```bash
+NETWORK="${NETWORK:-sepolia}"
+CHECKPOINT_DIR=".zevm/checkpoints/$NETWORK"
+PERSISTED_CHECKPOINT_HEX="$(jq -r --arg network "$NETWORK" '.defaults[$network]' "$ARTIFACT_DIR/light-default-checkpoints.json" | sed 's/^0x//')"
+
+mkdir -p "$CHECKPOINT_DIR"
+printf '%s\n' "$PERSISTED_CHECKPOINT_HEX" > "$CHECKPOINT_DIR/checkpoint"
+printf '%s\n' "$PERSISTED_CHECKPOINT_HEX" | grep -Eq '^[0-9a-fA-F]{64}$'
+```
+
+Start ZEVM in light mode with that `checkpointDir`, then verify:
+
+```bash
+STATUS_JSON="$(curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"zevm_lightSyncStatus","params":[]}')"
+
+test "$(printf '%s' "$STATUS_JSON" | jq -r '.result.checkpointSource')" = "persisted"
+printf '%s' "$(printf '%s' "$STATUS_JSON" | jq -r '.result.lastCheckpoint')" | grep -Eq '^0x[0-9a-fA-F]{64}$'
+```
+
+Restart ZEVM with the same configuration and run the same status check again.
+For the restart/resume audit to pass, each process start must report `checkpointSource = "persisted"` and a valid `Hash32` `lastCheckpoint`.
+
+## 8. Phase-1 Limitation: Release Identifier Is Not Runtime-Queryable
+
+Phase 1 has no runtime JSON-RPC or CLI contract to directly report the ZEVM `releaseIdentifier` from a running process.
+Operators must rely on build provenance records (operator manifest, pinned revisions, and archived release metadata artifacts) to identify the release/build boundary.
+If canonical release metadata artifacts were not published for the build, rely on internal provenance records only and treat that build boundary as non-canonical in this release-metadata workflow.
+
+## Related Pages
+
+- [Canonical Specs And Docs-First Process](./specs-and-process)
+- [Installation](../quickstart/installation)
+- [Run Light Mode](../quickstart/run-light-mode)
+- [Troubleshooting](../quickstart/troubleshooting)

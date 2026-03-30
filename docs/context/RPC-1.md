@@ -1,5 +1,7 @@
 # RPC-1: Import jsonrpc module from voltaire in build.zig
 
+> Archival snapshot note: this file is a point-in-time research artifact, not the active ZEVM contract. Module export status, file paths, and line-count observations below reflect the capture-time workspace and may be stale.
+
 ## Ticket Summary
 
 **Title:** Import jsonrpc module from voltaire in build.zig
