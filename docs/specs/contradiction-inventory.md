@@ -39,7 +39,7 @@ Allowed fields only:
 
 - `pendingId`: stable short ID (for example `C-2026-03-30-01`)
 - `openedOn`: ISO date (`YYYY-MM-DD`)
-- `ownerRole`: role, not person name (for example `runtime-maintainer`, `rpc-maintainer`, `spec-maintainer`)
+- `ownerRole`: role, not person name (for example `Docs IA Owner`, `Runtime/Mode Spec Owner`, `Configuration Spec Owner`, `JSON-RPC Spec Owner`)
 - `normativeTarget`: explicit section anchors in `prd.md` and/or `json-rpc-contract.md`
 - `closureRule`: explicit condition that closes the row
 

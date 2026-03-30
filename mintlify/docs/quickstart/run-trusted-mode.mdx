@@ -13,7 +13,7 @@ Trusted mode is ZEVM's writable local dev-node runtime.
 
 ## 1. Start The Node
 
-Before running startup commands, re-check [Installation](./installation) prerequisites: Zig, sibling `../voltaire` and `../guillotine-mini` repos, and the pinned build tuple in release `release-tuple.json` from [ZEVM release metadata](https://github.com/evmts/zevm/releases). For contract source ownership and docs-first change flow, see [Canonical Specs And Docs-First Process](../reference/specs-and-process).
+Before running startup commands, re-check [Installation](./installation) prerequisites: Zig, sibling `../voltaire` and `../guillotine-mini` repos, and a successful local build. For canonical reproducibility and release/build metadata audits, optionally follow [Release Metadata Runbook](../reference/release-metadata-runbook). For contract source ownership and docs-first change flow, see [Canonical Specs And Docs-First Process](../reference/specs-and-process).
 
 Default startup (trusted mode):
 
@@ -104,6 +104,8 @@ curl -s -X POST http://127.0.0.1:8545 \
 ```
 
 ## 4. Manual Mining Flow (Optional)
+
+Precondition: stop the node started in step 1, or run this manual-mining instance on a different `--port`, before starting the command below.
 
 Start with manual mining:
 

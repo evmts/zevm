@@ -44,6 +44,8 @@ When updating ZEVM docs:
 3. update public Mintlify docs to match
 4. remove or archive stale process artifacts that could conflict with current contract docs
 5. when mapped normative or public pages change, refresh any referenced internal support docs in the same PR and keep their `Last updated` metadata aligned with that docs cycle
+6. when public-doc pages, page IDs, or normative anchors change, reconcile `docs/specs/page-ownership.md` and `docs/specs/mintlify-docs-plan.md` in the same PR
+7. for all affected `docs/specs/page-ownership.md` rows in that same PR, update `Normative anchors (required)` and refresh both verification date fields (`Last content verified on`, `Last nav reconciled on`) to the reconciliation date, or mark `blocked` with an active `pendingId`
 
 ## Review Gate
 

@@ -1,9 +1,11 @@
 # Mining Modes
 
-> **Archived / non-normative:** This issue is historical context only. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md).
+> **Archived / non-normative:** This issue is historical context only. Claims below are filing-time observations and may contradict current contract docs. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md); if anything differs, those normative docs win.
+>
+> **Resolved / superseded status:** This issue is closed as an active gap tracker and retained for archive history only. For current requirements and behavior, use [docs/specs/prd.md](../specs/prd.md), [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md), and [docs/specs/page-ownership.md](../specs/page-ownership.md).
 
 
-## Verified Gap
+## Historical Gap Snapshot At Filing Time
 
 - `MiningCoordinator` is standalone helper code; nothing in startup or `NodeRuntime` owns it.
 - There is no exposed `evm_mine`, `hardhat_mine`, `evm_setAutomine`, or interval-mining control surface.
@@ -20,7 +22,7 @@
 - `src/receipt_index.zig`
 - `src/log_index.zig`
 
-## Resolution Verification
+## Historical Resolution Criteria
 
 - Automine, manual mining, and interval mining are exposed over RPC and owned by the main runtime.
 - Mined blocks are inserted into `Blockchain` and become queryable immediately.

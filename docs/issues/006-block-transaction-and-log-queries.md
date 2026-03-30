@@ -1,9 +1,11 @@
 # Block, Transaction, And Log Queries
 
-> **Archived / non-normative:** This issue is historical context only. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md).
+> **Archived / non-normative:** This issue is historical context only. Claims below are filing-time observations and may contradict current contract docs. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md); if anything differs, those normative docs win.
+>
+> **Resolved / superseded status:** This issue is closed as an active gap tracker and retained for archive history only. For current requirements and behavior, use [docs/specs/prd.md](../specs/prd.md), [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md), and [docs/specs/page-ownership.md](../specs/page-ownership.md).
 
 
-## Verified Gap
+## Historical Gap Snapshot At Filing Time
 
 - These handlers are not on the runnable node path.
 - `eth_getTransactionByHash` is still a stub returning `null`.
@@ -20,7 +22,7 @@
 - `src/receipt_index.zig`
 - `src/log_index.zig`
 
-## Resolution Verification
+## Historical Resolution Criteria
 
 - `eth_getBlockByNumber` / `eth_getBlockByHash` return canonical blocks with exact tx hydration.
 - `eth_getTransactionByHash` returns mined txs with exact submitted fields.

@@ -7,6 +7,10 @@ description: Trusted-mode eth_call and eth_estimateGas contract, including Trans
 
 `eth_call` and `eth_estimateGas` are trusted-mode simulation methods.
 
+> Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).
+>
+> This page is an operational summary. For API-contract disputes, follow those normative sources.
+
 - trusted mode: supported
 - light mode: unsupported (`-32010`)
 
@@ -52,7 +56,7 @@ Rules:
 - `data` and `input` may both be omitted
 - if both are present, they must be byte-identical
 - any field not listed above returns `-32602`
-- unsupported request fields and return `-32602`: `maxFeePerGas`, `maxPriorityFeePerGas`, `maxFeePerBlobGas`, `blobVersionedHashes`, `accessList`, `authorizationList`, `type`, `chainId`
+- unsupported request fields return `-32602`: `maxFeePerGas`, `maxPriorityFeePerGas`, `maxFeePerBlobGas`, `blobVersionedHashes`, `accessList`, `authorizationList`, `type`, `chainId`
 
 ## `StateOverrideSet`
 

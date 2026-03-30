@@ -29,7 +29,7 @@
 - `../voltaire/packages/voltaire-zig/src/jsonrpc/root.zig`
 - `../guillotine-mini/src/evm.zig`
 
-## Resolution Verification (Completed)
+## Historical Resolution Criteria (Completed)
 
 - ZEVM compiles cleanly against the actual sibling exports with no assumptions about nonexistent namespaces or signatures.
 - JSON-RPC envelope/method/response ownership is explicit: either upstream owns it or ZEVM owns it, but not both in parallel.

@@ -5,11 +5,13 @@ description: Light-mode sync status, readiness gating, selector rules, and proof
 
 # Verified Light-Mode Reads
 
-This page defines the exact light-mode JSON-RPC contract.
+This page summarizes the light-mode JSON-RPC surface and behavior.
 
 > Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).
 >
 > This page is an operational summary. For API-contract disputes, follow those normative sources.
+
+Light-mode surface summary: always callable `eth_chainId` and `zevm_lightSyncStatus`; readiness-gated `eth_blockNumber` plus proof-backed reads.
 
 ## Methods
 
@@ -39,7 +41,7 @@ This page defines the exact light-mode JSON-RPC contract.
 | `safe` | consensus-backed safe execution head |
 | `finalized` | consensus-finalized execution head |
 | `earliest` | block `0` |
-| numeric quantity | block `0` or retained numeric block in verified history |
+| numeric quantity | block `0` or retained numeric block in verified history (validated only when `ready = true`) |
 | `pending` | unsupported selector token (`-32010`); it never aliases `latest` |
 
 ### Retained-history numeric selector contract
@@ -78,6 +80,7 @@ This page defines the exact light-mode JSON-RPC contract.
 - `status = "error"` is an operator-recovery state: remediate the underlying startup/sync input issue, then restart the ZEVM process before expecting readiness-gated reads to recover
 - phase-1 operator-facing startup inputs are `network` and `consensusRpcUrl`, with optional checkpoint controls (`checkpoint`, `checkpointDir`, `maxCheckpointAgeSeconds`, `strictCheckpointAge`); proof-source internals are not user-configurable in the public contract; for startup consensus-network handshake details, see [Light-Mode Configuration](../configuration/light-mode#validation-rules) and [Run Light Mode](../../quickstart/run-light-mode#1-start-light-mode)
 
+<a id="zevm-light-sync-status-result"></a>
 ## `zevm_lightSyncStatus` Result
 
 ```json
@@ -100,6 +103,7 @@ Field rules:
 - `ready`: boolean read-availability gate
 - `status`: `syncing`, `synced`, or `error`
 - `ready = true` can be reached only after `status` transitions to `synced` and ZEVM has accepted verified optimistic (`latest`), safe (`safe`), and finalized (`finalized`) heads
+- `status = "synced"` implies `ready = true`
 - `status = "syncing"` and `status = "error"` imply `ready = false`
 - `status = "error"` requires operator remediation and process restart before expecting `ready = true` again
 - while `ready = true`, verified-head ordering must hold: `finalized <= safe <= latest`
@@ -117,8 +121,12 @@ Field rules:
 - `safeSlot`: `QuantityHex`
 - `finalizedSlot`: `QuantityHex`
 - `finalizedSlot <= safeSlot <= optimisticSlot`
+- slot fields remain required in every lifecycle state
+- while `status = "syncing"`, slot fields may still be `0x0` until headers are available
+- while `status = "error"`, slot fields keep the last known values and are not nullified
+- `checkpointSource = "default"` reports startup-source selection only; it does not expose `releaseIdentifier` and does not by itself prove metadata-backed provenance
 
-Operator runbook cross-link: [Run Light Mode -> Choose Startup Checkpoint Input](../../quickstart/run-light-mode#2-choose-startup-checkpoint-input), [Run Light Mode -> Check Readiness With `zevm_lightSyncStatus`](../../quickstart/run-light-mode#3-check-readiness-with-zevm_lightsyncstatus), and [Checkpoint Selection Precedence](../configuration/light-mode#checkpoint-selection-precedence).
+Operator runbook cross-link: [Run Light Mode -> Choose Startup Checkpoint Input](../../quickstart/run-light-mode#2-choose-startup-checkpoint-input), [Run Light Mode -> Check Readiness With `zevm_lightSyncStatus`](../../quickstart/run-light-mode#check-readiness-with-zevm-light-sync-status), and [Checkpoint Selection Precedence](../configuration/light-mode#checkpoint-selection-precedence).
 
 `lastCheckpoint` lifecycle:
 
@@ -137,6 +145,8 @@ In light mode, these supported trusted-mode method families are mode-gated and r
 - transaction submission (`eth_sendTransaction`, `eth_sendRawTransaction`)
 - mining, snapshots, mutation controls, impersonation controls
 - canonical block/receipt/log queries
+
+Canonical family inventories are maintained on [JSON-RPC Overview](./overview#method-surface-by-mode), [Core Reads](./core-reads), [Simulation](./simulation), [Transactions And Mining](./transactions-and-mining), [Blocks, Receipts, And Logs](./blocks-receipts-and-logs), and [ZEVM Controls](./dev-controls).
 
 Out-of-contract note:
 

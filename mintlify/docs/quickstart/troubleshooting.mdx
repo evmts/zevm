@@ -32,7 +32,7 @@ When startup fails before listener bind (or warns about non-strict stale checkpo
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| `zig build` fails to resolve dependencies | Missing sibling repos | Ensure `../voltaire` and `../guillotine-mini` exist next to `zevm`, or update `build.zig.zon` paths |
+| `zig build` fails to resolve dependencies | Missing sibling repos | Ensure `zevm`, `voltaire`, and `guillotine-mini` are sibling checkouts under the same parent directory (phase-1 canonical layout) |
 | Startup fails with unknown flag | Unsupported CLI argument | Use only documented startup flags from configuration reference pages |
 | Startup fails loading `--config` | Missing file, unreadable file, or malformed JSON | Use the reported path/failure class to fix the config file; ZEVM exits non-zero and does not fall back to defaults |
 | Startup fails with `--mode` + `--config` mode mismatch | User-supplied `--mode` disagrees with the single selected config mode branch | Ensure exactly one mode branch is set in config and it matches `--mode` (`mode.trusted` with `--mode trusted`, `mode.light` with `--mode light`); see [Configuration Overview -> Mode-branch Rules](../reference/configuration/overview#mode-branch-rules) |
@@ -82,12 +82,14 @@ If startup fails at this handshake:
 
 When troubleshooting stale-checkpoint warnings/failures, use this order:
 
-1. Confirm which source won startup selection (`explicit`, `persisted`, or `default`) via `zevm_lightSyncStatus.checkpointSource`.
-2. Apply selected-source semantics: once a source is selected, ZEVM does not fall back to lower-precedence sources on selected-source validation/derivation failures.
-3. Recompute age from the documented chain:
+1. Determine whether the HTTP listener opened.
+2. If listener opened, query `zevm_lightSyncStatus` and read `checkpointSource` (`explicit`, `persisted`, or `default`).
+3. If startup failed before listener bind, no RPC surface is available; infer selected source from precedence (`--checkpoint` > `mode.light.checkpoint` > `checkpointDir/checkpoint` > baked default) and captured `stderr`.
+4. Apply selected-source semantics: once a source is selected, ZEVM does not fall back to lower-precedence sources on selected-source validation/derivation failures.
+5. Recompute age from the documented chain:
    `checkpointTimeSeconds = genesisTimeSeconds + (checkpointSlot * 12)`,
    `age = max(0, startupTimeSeconds - checkpointTimeSeconds)`.
-4. Compare `age` to `maxCheckpointAgeSeconds`, then apply stale policy (`strictCheckpointAge = false` warns/continues, `true` fails startup with `-32012`).
+6. Compare `age` to `maxCheckpointAgeSeconds`, then apply stale policy (`strictCheckpointAge = false` warns/continues, `true` fails startup with `-32012`).
 
 Reference contract links:
 

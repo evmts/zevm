@@ -1,9 +1,11 @@
 # Transaction Submission And Mempool
 
-> **Archived / non-normative:** This issue is historical context only. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md).
+> **Archived / non-normative:** This issue is historical context only. Claims below are filing-time observations and may contradict current contract docs. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md); if anything differs, those normative docs win.
+>
+> **Resolved / superseded status:** This issue is closed as an active gap tracker and retained for archive history only. For current requirements and behavior, use [docs/specs/prd.md](../specs/prd.md), [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md), and [docs/specs/page-ownership.md](../specs/page-ownership.md).
 
 
-## Verified Gap
+## Historical Gap Snapshot At Filing Time
 
 - `eth_sendTransaction` / `eth_sendRawTransaction` are not on the runnable product path.
 - `src/rpc/handlers/tx_submission.zig` is stale against `NodeRuntime`: it expects `rt.pool`, `rt.mining_mode`, and `NodeRuntime.lookupManagedAccount`, none of which exist.
@@ -22,7 +24,7 @@
 - `src/tx_processor.zig`
 - `src/mining_coordinator.zig`
 
-## Resolution Verification
+## Historical Resolution Criteria
 
 - `eth_sendRawTransaction` accepts valid envelopes and rejects malformed hex/RLP, chain-ID mismatches, bad signatures, nonce errors, and balance/intrinsic-gas failures deterministically.
 - `eth_sendTransaction` signs for managed dev accounts and preserves submitted semantics.

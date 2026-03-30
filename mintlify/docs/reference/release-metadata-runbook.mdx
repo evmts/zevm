@@ -16,6 +16,16 @@ Publication-time validation gate for canonical claims:
 - publication validation requires exactly one published asset named `release-tuple.json` and exactly one published asset named `light-default-checkpoints.json` for that identifier
 - zero matches or more than one match for either required filename fails the gate and marks the identifier metadata-invalid for canonical claims
 
+## PRD 3.5 Qualification Mapping (Metadata-Backed Candidates)
+
+For page-ownership and qualification traceability, treat this runbook as the public-doc anchor for PRD section [3.5 release qualification and verification acceptance criteria](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md#35-release-qualification-and-verification-acceptance-criteria) expectations that apply to metadata-backed candidates:
+
+- include explicit `release-asset` mapping rows for both required artifacts (`release-tuple.json`, `light-default-checkpoints.json`), with URL/identifier binding plus schema/value/cross-field checks required by PRD section `3.4`
+- include explicit `release-provenance` and `supersession-note` mapping rows when PRD section `3.4` operator-flow/correction-note invariants apply
+- use steps 2 through 7 on this page as the operator-facing evidence workflow for those mappings
+
+Cross-reference: [Phase-1 Release Qualification Checklist](./specs-and-process#phase-1-release-qualification-checklist).
+
 ## Prerequisites
 
 - one artifact fetch tool: `gh` (recommended) or `curl`
@@ -142,7 +152,7 @@ test "$LIGHT_DEFAULTS_COUNT" -eq 1
 If either required artifact is unavailable for the selected identifier, stop this canonical runbook flow:
 
 1. either select a different `RELEASE_IDENTIFIER` that publishes both artifacts
-2. or continue as an unpublished source build with internal provenance only (no canonical release-metadata reproducibility claim for that build boundary)
+2. or continue only under `operator-recorded` provenance for that source state (no canonical release-metadata reproducibility claim for that build boundary)
 
 ## Publication-Validation Checklist For Canonical Claims
 
@@ -153,7 +163,7 @@ Before asserting canonical release-metadata reproducibility for a selected `RELE
 - both artifacts pass schema/version checks and `.releaseIdentifier` equality checks for that same identifier
 - local checkouts/toolchain match tuple pins exactly (`zevmGitRevision`, `voltaireGitRevision`, `guillotineMiniGitRevision`, `zigVersion`)
 - operator manifest records artifact paths and `sha256` hashes for both files
-- runtime baked-default audit (when used) confirms `checkpointSource = "default"` and `lastCheckpoint == .defaults[NETWORK]` from the selected identifier's `light-default-checkpoints.json`
+- runtime baked-default audit (when used) confirms `checkpointSource = "default"`; `lastCheckpoint` comparison to `.defaults[NETWORK]` is startup-time/early-state validation only because it may advance during sync
 
 If any item fails, do not make a canonical reproducibility claim for that build boundary.
 
@@ -161,6 +171,7 @@ Metadata-invalid handling for canonical claims:
 
 - if required artifacts for a `RELEASE_IDENTIFIER` are missing, duplicate, unreadable, malformed, schema-mismatched, or value-mismatched, treat that identifier as metadata-invalid
 - a metadata-invalid identifier cannot be used as canonical reproducibility evidence
+- if operators continue from that source state, provenance falls back to `operator-recorded` rather than metadata-backed
 - correction must be published as a new `releaseIdentifier` with a complete replacement artifact pair; do not repair artifacts in place for the invalid identifier
 
 ## 3. Validate Metadata Files
@@ -259,10 +270,26 @@ test "$(git -C guillotine-mini rev-parse HEAD)" = "$GUILLOTINE_MINI_REVISION"
 test "$(zig version)" = "$PINNED_ZIG_VERSION"
 ```
 
-## 5. Record Provenance In An Operator Manifest
+## 5. Run Clean-Checkout Qualification Build/Test
+
+PRD 3.5 qualification claims are incomplete until the pinned source state passes the clean-checkout build/test gate:
+
+```bash
+git -C zevm status --short
+git -C voltaire status --short
+git -C guillotine-mini status --short
+
+cd zevm
+zig build
+zig build test
+```
+
+For a metadata-backed qualification claim, do not stop at tuple pinning alone. `zig build` and `zig build test` must both pass for the pinned ZEVM/Voltaire/`guillotine-mini` checkout tuple.
+
+## 6. Record Provenance In An Operator Manifest
 
 Phase-1 reproducibility depends on preserved build provenance.
-Record selected identifier, tuple pins, and metadata file hashes in an operator manifest:
+Record selected identifier, provenance state, tuple pins, and metadata file hashes in an operator manifest:
 
 ```bash
 MANIFEST_PATH=.ops/manifests/zevm-release-manifest.json
@@ -273,6 +300,7 @@ LIGHT_DEFAULTS_SHA256="$(shasum -a 256 "$ARTIFACT_DIR/light-default-checkpoints.
 
 jq -n \
   --arg generatedAtUtc "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+  --arg provenanceState "metadata-backed" \
   --arg releaseIdentifier "$RELEASE_IDENTIFIER" \
   --arg zevmGitRevision "$ZEVM_REVISION" \
   --arg voltaireGitRevision "$VOLTAIRE_REVISION" \
@@ -285,6 +313,7 @@ jq -n \
   '{
     schemaVersion: "zevm-operator-manifest.v1",
     generatedAtUtc: $generatedAtUtc,
+    provenanceState: $provenanceState,
     releaseIdentifier: $releaseIdentifier,
     buildTuple: {
       zevmGitRevision: $zevmGitRevision,
@@ -299,7 +328,25 @@ jq -n \
   }' > "$MANIFEST_PATH"
 ```
 
-## 6. Audit Baked Defaults Via `zevm_lightSyncStatus`
+If you continue without valid canonical release metadata, keep the same manifest schema but switch to operator-recorded provenance:
+
+```json
+{
+  "schemaVersion": "zevm-operator-manifest.v1",
+  "generatedAtUtc": "2026-03-30T12:00:00Z",
+  "provenanceState": "operator-recorded",
+  "buildTuple": {
+    "zevmGitRevision": "<local-zevm-commit>",
+    "voltaireGitRevision": "<local-voltaire-commit>",
+    "guillotineMiniGitRevision": "<local-guillotine-mini-commit>",
+    "zigVersion": "<local-zig-version>"
+  }
+}
+```
+
+Operator-recorded manifests must not synthesize a metadata-backed `releaseIdentifier`. If the source state corresponds to a metadata-invalid published identifier, keep that identifier only as non-authoritative audit context outside the canonical metadata fields above.
+
+## 7. Audit Baked Defaults Via `zevm_lightSyncStatus`
 
 Use runtime probing only as a verification step.
 For selected network `NETWORK`, start light mode with no explicit or persisted checkpoint input:
@@ -308,7 +355,7 @@ For selected network `NETWORK`, start light mode with no explicit or persisted c
 2. keep `mode.light.checkpoint` unset
 3. ensure `checkpointDir/checkpoint` is absent
 
-Then verify `checkpointSource = "default"` and compare `lastCheckpoint` with release metadata:
+Then verify `checkpointSource = "default"`. If sampled immediately after startup, you can compare `lastCheckpoint` with release metadata as early-state validation only (it may advance during sync):
 
 ```bash
 NETWORK="${NETWORK:-mainnet}"
@@ -330,10 +377,14 @@ EXPECTED_CHECKPOINT="$(jq -r --arg network "$NETWORK" '.defaults[$network] // em
 
 test -n "$EXPECTED_CHECKPOINT"
 test "$CHECKPOINT_SOURCE" = "default"
-test "$ACTUAL_CHECKPOINT" = "$EXPECTED_CHECKPOINT"
+if [ "$ACTUAL_CHECKPOINT" = "$EXPECTED_CHECKPOINT" ]; then
+  echo "startup-time match observed for lastCheckpoint"
+else
+  echo "note: lastCheckpoint may have advanced during sync; checkpointSource is the durable startup-source signal" >&2
+fi
 ```
 
-## 7. Audit Restart/Resume Path With `checkpointSource = "persisted"`
+## 8. Audit Restart/Resume Path With `checkpointSource = "persisted"`
 
 This audit verifies restart/resume semantics when startup source is operator-managed persisted input.
 
@@ -369,7 +420,7 @@ printf '%s' "$(printf '%s' "$STATUS_JSON" | jq -r '.result.lastCheckpoint')" | g
 Restart ZEVM with the same configuration and run the same status check again.
 For the restart/resume audit to pass, each process start must report `checkpointSource = "persisted"` and a valid `Hash32` `lastCheckpoint`.
 
-## 8. Phase-1 Limitation: Release Identifier Is Not Runtime-Queryable
+## 9. Phase-1 Limitation: Release Identifier Is Not Runtime-Queryable
 
 Phase 1 has no runtime JSON-RPC or CLI contract to directly report the ZEVM `releaseIdentifier` from a running process.
 Operators must rely on build provenance records (operator manifest, pinned revisions, and archived release metadata artifacts) to identify the release/build boundary.

@@ -28,7 +28,7 @@ In this PRD, phase-1 scope is declared in sections 3.1, 3.3, 3.4, and 3.5, with 
 
 - startup and configuration for trusted and light mode
 - HTTP JSON-RPC 2.0 transport
-- phase-1 trusted-mode JSON-RPC inventory includes standard reads (`eth_chainId`, `eth_blockNumber`, account/code/storage reads, pricing/fee reads including `eth_feeHistory`), simulation (`eth_call`, `eth_estimateGas`), submission (`eth_sendTransaction`, `eth_sendRawTransaction`), canonical block/receipt/log queries, and trusted controls under canonical `zevm_*` methods (mining, snapshot/revert, state mutation, impersonation, and time controls); canonical tuples/errors are under `Trusted-Mode Standard Methods` and `Trusted-Mode zevm_* Methods` in `docs/specs/json-rpc-contract.md`
+- phase-1 trusted-mode JSON-RPC inventory includes standard reads (`eth_chainId`, `eth_blockNumber`, account/code/storage reads, pricing/fee reads including `eth_feeHistory`), simulation (`eth_call`, `eth_estimateGas`), submission (`eth_sendTransaction`, `eth_sendRawTransaction`), canonical block/receipt/log queries, and canonical `zevm_*` controls/helpers covering mining and transaction-pool controls, snapshot/revert and state mutation, impersonation and time controls, fork and block-environment controls, and metadata/introspection and funding helpers; canonical tuples/errors and exact family membership are under `Trusted-Mode Standard Methods` and `Trusted-Mode zevm_* Methods` in `docs/specs/json-rpc-contract.md`
 - phase-1 light-mode JSON-RPC inventory is exactly `zevm_lightSyncStatus`, `eth_chainId`, `eth_blockNumber`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, and `eth_getTransactionCount`; canonical tuples/errors are under `Light-Mode Methods` in `docs/specs/json-rpc-contract.md`
 - in this PRD, "proof-backed reads" means exactly `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, and `eth_getTransactionCount` in light mode; it does not include `eth_chainId`, `zevm_lightSyncStatus`, or `eth_blockNumber`
 - while light mode is not ready, proof-backed reads and `eth_blockNumber` are readiness-gated (`-32011`) as defined in sections 4.2 and 10
@@ -72,8 +72,9 @@ Release-metadata artifacts are part of phase-1 source-build reproducibility.
 
 - this contract's metadata-backed reproducibility boundary applies only to published `releaseIdentifier` values (GitHub release tags) that publish required release metadata artifacts in GitHub releases
 - unreleased commit builds (source checkouts with no matching published release metadata entry) remain valid source builds but are outside that metadata-backed reproducibility boundary
-- phase-1 source-build provenance has exactly two states: metadata-backed published-release provenance and operator-recorded unreleased-commit provenance; operators must classify each build into one of these states
-- operators must not claim metadata-backed reproducibility for an unreleased commit build or for a published `releaseIdentifier` that is metadata-invalid under this section
+- phase-1 source-build provenance has exactly two states: metadata-backed published-release provenance and operator-recorded source provenance; operators must classify each build into one of these states
+- operator-recorded source provenance applies to unreleased commit builds and to builds from published `releaseIdentifier` values that are metadata-invalid under this section
+- operators must not claim metadata-backed reproducibility for any build classified as operator-recorded source provenance
 
 Release identifier and publication location contract:
 
@@ -93,9 +94,9 @@ Release tuple artifact (`release-tuple.json`):
 - operators source sibling commit pins only from the selected release `release-tuple.json`, then materialize them by checking out each repository at its pinned commit
 - operators verify the tuple locally before build by confirming `git rev-parse HEAD` in `.` / `../voltaire` / `../guillotine-mini` equals the pinned commit ID for each repository and `zig version` equals the pinned `zigVersion`
 - operators must preserve the exact release tuple (all four values plus the ZEVM release identifier used) in any downstream deployment manifest or runbook so the same boundary can be reconstructed later
-- for unreleased commit builds, operators must self-record `(zevmGitRevision, voltaireGitRevision, guillotineMiniGitRevision, zigVersion)` from local checkout/toolchain state in downstream provenance records; release-metadata discovery is unavailable and no metadata-backed `releaseIdentifier` value exists for that record
+- for operator-recorded source provenance builds, operators must self-record `(zevmGitRevision, voltaireGitRevision, guillotineMiniGitRevision, zigVersion)` from local checkout/toolchain state in downstream provenance records; metadata-backed release discovery is unavailable for unreleased commits and unusable for metadata-invalid published identifiers
 - phase 1 deliberately does not define a runtime JSON-RPC or CLI surface to directly report `releaseIdentifier`; this is an explicit product boundary, not an unresolved gap
-- release/build identity for phase 1 is established from preserved operator provenance records, and phase 1 does not require ZEVM runtime/CLI to expose or synthesize missing release metadata for unreleased commit builds
+- release/build identity for phase 1 is established from preserved operator provenance records, and phase 1 does not require ZEVM runtime/CLI to expose or synthesize missing release metadata for operator-recorded source provenance builds
 
 Baked default checkpoint artifact (`light-default-checkpoints.json`):
 
@@ -111,6 +112,7 @@ Baked default checkpoint artifact (`light-default-checkpoints.json`):
 - for unreleased commit builds without published `light-default-checkpoints.json`, baked defaults remain implementation-defined and are not contract-discoverable from metadata
 - operators that require deterministic checkpoint selection for unreleased commit builds must provide an explicit checkpoint via CLI/config instead of relying on baked defaults
 - in light mode, `checkpointSource` records whether startup checkpoint selection was `explicit`, `persisted`, or `default` (section 10), providing runtime provenance for startup checkpoint selection behavior
+- `checkpointSource = "default"` reports only that startup selected the bundled default checkpoint; it does not report `releaseIdentifier` and does not by itself prove metadata-backed reproducibility
 
 Release metadata conformance and artifact-failure handling:
 
@@ -119,6 +121,7 @@ Release metadata conformance and artifact-failure handling:
 - publication-time gate failure on either required artifact (including missing, duplicate, unreadable, malformed, schema-mismatched, or value-mismatched payloads) blocks canonical publication claims for that `releaseIdentifier`
 - for a published `releaseIdentifier`, any missing asset, duplicate asset, unreadable asset, malformed UTF-8/JSON payload, schema-version mismatch, `releaseIdentifier` mismatch, or value-level mismatch against this section's constraints makes that `releaseIdentifier` metadata-invalid for reproducibility purposes
 - for a metadata-invalid published `releaseIdentifier`, operators must not treat that identifier as inside the metadata-backed reproducibility boundary and must not use it as authoritative deterministic metadata evidence
+- if operators continue building from a metadata-invalid published `releaseIdentifier`, that build must be classified under operator-recorded source provenance rather than metadata-backed published-release provenance
 - metadata-invalid published identifiers remain auditable historical records only; restoration of metadata-backed reproducibility requires publishing a correction release with a new `releaseIdentifier` and corrected artifacts
 - metadata-invalid release artifacts must not be repaired in place under the same `releaseIdentifier`; correction remains append-only through a new `releaseIdentifier`
 - phase 1 does not require runtime/CLI discovery, repair, or reporting of metadata-invalid release artifacts; this remains an operator provenance workflow outside runtime API surfaces
@@ -127,8 +130,8 @@ Operator release/provenance flow contract:
 
 - metadata-backed published-release flow is strict and ordered: select one published `releaseIdentifier` -> fetch both required assets from that identifier -> validate section 3.4 invariants -> materialize pinned repository commits/toolchain -> run source build
 - the `releaseIdentifier` used for asset fetch, tuple validation, and provenance recording must be the same identifier; mixing assets or tuples across identifiers is invalid
-- operators must persist one downstream provenance record per build containing: provenance state (`metadata-backed` or `unreleased-commit`), ZEVM `releaseIdentifier` when metadata-backed, and the full pin tuple `(zevmGitRevision, voltaireGitRevision, guillotineMiniGitRevision, zigVersion)`
-- unreleased-commit flow has no release-asset discovery step: operators derive tuple values from local checkouts/toolchain state, record provenance as `unreleased-commit`, and must not populate that record with a synthesized or guessed metadata-backed `releaseIdentifier`
+- operators must persist one downstream provenance record per build containing: provenance state (`metadata-backed` or `operator-recorded`), ZEVM `releaseIdentifier` when metadata-backed, and the full pin tuple `(zevmGitRevision, voltaireGitRevision, guillotineMiniGitRevision, zigVersion)`
+- operator-recorded source flow has no trusted release-asset discovery step: operators derive tuple values from local checkouts/toolchain state, record provenance as `operator-recorded`, and must not populate that record with a synthesized or guessed metadata-backed `releaseIdentifier`; a metadata-invalid published `releaseIdentifier` may be kept only as non-authoritative audit context
 
 Correction-release supersession note contract:
 
@@ -155,13 +158,14 @@ Phase-1 release qualification requires all criteria below to pass for the candid
 
 - clean-checkout source-build verification: from a clean checkout of the pinned ZEVM/Voltaire/`guillotine-mini` commits, `zig build` and `zig build test` must both succeed without manual sibling repair, ad-hoc path rewriting, or post-checkout dependency edits
 - shipped phase-1 surface definition: a shipped surface is any normative phase-1 behavior requirement in this PRD sections 3.1, 3.3, 3.4, and 4 through 12, excluding section 3.2 out-of-scope items
-- assertion mapping record definition: each record must identify exactly one shipped surface and include, at minimum, `surfaceId`, `surfaceSection`, `surfaceCategory` (`startup`, `configuration`, `runtime`, `transport`, `method`, or `release-asset`), `assertionType` (`default-graph-test` or `release-asset-validation`), `assertionIdentifier`, and expected contract outcome
+- assertion mapping record definition: each record must identify exactly one shipped surface and include, at minimum, `surfaceId`, `surfaceSection`, `surfaceCategory` (`startup`, `configuration`, `runtime`, `transport`, `method`, `release-asset`, `release-provenance`, or `supersession-note`), `assertionType` (`default-graph-test`, `release-asset-validation`, `release-provenance-validation`, or `supersession-note-validation`), `assertionIdentifier`, and expected contract outcome
 - default test-graph shipping coverage: the default `zig build test` graph means the tests executed by invoking `zig build test` from repository root with no additional target selection; that default graph must cover shipped executable startup/configuration/runtime/transport/method behaviors from sections 3.1 and 4 through 12
 - release-qualification coverage evidence: qualification records must include assertion mapping records for every shipped phase-1 surface in sections 3.1, 3.3, 3.4, and 4 through 12; unmapped surfaces fail qualification unless they are explicitly reclassified non-shipping in this PRD
-- actionable coverage category expectation: qualification records must show explicit mapping rows for startup/configuration semantics (section 5), runtime and lifecycle semantics (sections 4, 8, 9, 10, 11, 12), transport semantics (section 6), method tuple/error semantics for in-scope methods (section 7 plus `docs/specs/json-rpc-contract.md`), and release-asset semantics (sections 3.3 and 3.4)
+- actionable coverage category expectation: qualification records must show explicit mapping rows for startup/configuration semantics (section 5), runtime and lifecycle semantics (sections 4, 8, 9, 10, 11, 12), transport semantics (section 6), method tuple/error semantics for in-scope methods (section 7 plus `docs/specs/json-rpc-contract.md`), release-asset semantics (sections 3.3 and 3.4), and section-3.4 release-provenance/supersession-note semantics
 - method-semantics mapping expectation: for each shipped method family in section 3.1 and section 7 scope, mapping records must identify at least one assertion that verifies success/unsupported/readiness/error semantics that are normative for that family
-- release-metadata artifact qualification acceptance: for any candidate claiming a published `releaseIdentifier` under the section 3.4 metadata-backed reproducibility boundary, qualification must validate both required release assets (`release-tuple.json`, `light-default-checkpoints.json`) and all section 3.4 location/exactly-once/schema/value invariants from published release assets; any artifact conformance failure disqualifies that candidate from qualification under that boundary
-- release-asset mapping expectation: qualification records for metadata-backed candidates must include explicit `release-asset` mapping rows for both required assets, including URL/identifier binding, schema-field conformance, and cross-field equality checks required by section 3.4
+- release-metadata artifact qualification acceptance: for any candidate claiming a published `releaseIdentifier` under the section 3.4 metadata-backed reproducibility boundary, qualification must validate both required release assets (`release-tuple.json`, `light-default-checkpoints.json`), all section 3.4 location/exactly-once/schema/value invariants from published release assets, and the candidate build/runtime equalities those assets assert (pinned checkout/toolchain tuple plus bundled default-checkpoint equality for the claimed release/build); any conformance failure disqualifies that candidate from qualification under that boundary
+- release-asset mapping expectation: qualification records for metadata-backed candidates must include explicit `release-asset` mapping rows for both required assets, including URL/identifier binding, schema-field conformance, cross-field equality checks, local checkout/toolchain pin equality checks, and bundled-default runtime equality checks required by section 3.4
+- release-provenance and supersession-note mapping expectation: qualification records for metadata-backed candidates must include explicit `release-provenance` and `supersession-note` mapping rows for section 3.4 operator-flow and correction-release note invariants when those surfaces apply to the candidate
 - listener/socket smoke verification: release verification must include automated smoke coverage that binds the real HTTP listener socket and validates startup/request flow for trusted mode and for light-mode startup plus restart/resume from persisted checkpoint input path
 - transport/parsing shipping-path verification: release verification must assert notification-only request and notification-only batch behavior returns HTTP `204` with empty body, and the shipping path must use one canonical ZEVM-owned HTTP transport/parser stack for request parsing and envelope dispatch (section 12 ownership boundary), not divergent production parser stacks
 
@@ -424,6 +428,18 @@ Trusted config object sub-shapes (exact):
 - for `mode.trusted.fork`, `blockNumber` is invalid without `url`
 - for `mode.trusted.fork`, `{ "url": "<execution-rpc-url>" }` uses unpinned upstream-head (`latest`) semantics; adding `blockNumber` pins fork reads to that block
 
+Light config object sub-shape (exact):
+
+- `mode.light` must be a JSON object and may contain only: `network`, `consensusRpcUrl`, `checkpoint`, `checkpointDir`, `maxCheckpointAgeSeconds`, `strictCheckpointAge`
+- unknown keys inside `mode.light` are invalid
+- `mode.light.network`, when present, must be one of: `mainnet`, `sepolia`, `holesky`
+- `mode.light.consensusRpcUrl`, when present, must be a Beacon API URL string
+- `mode.light.checkpoint` may be either `null` or a `0x`-prefixed 32-byte hash (`Hash32`)
+- `mode.light.checkpointDir`, when present, must be a directory path string
+- `mode.light.maxCheckpointAgeSeconds`, when present, must be `u64`
+- `mode.light.strictCheckpointAge`, when present, must be boolean
+- defaults and precedence apply per section 5.5: omitted `network`/`checkpointDir`/`maxCheckpointAgeSeconds`/`strictCheckpointAge` resolve by field precedence and mode defaults; `checkpoint = null` (or omitted) is an absent checkpoint input for precedence; `consensusRpcUrl` has no mode default and must resolve from CLI/config in light mode or startup fails
+
 ### 5.5 Precedence
 
 Startup precedence:
@@ -622,11 +638,12 @@ Implementation support context (non-normative): `docs/specs/internal/light-mode-
 - `checkpointSource` in `zevm_lightSyncStatus` reflects the startup checkpoint winner and remains stable for the process lifetime:
   - `explicit`: selected from user-provided checkpoint input (CLI `--checkpoint` or config `mode.light.checkpoint`)
   - `persisted`: selected from `${resolvedCheckpointDir}/checkpoint`
-  - `default`: selected from ZEVM bundled release/build default checkpoint for the selected network (deterministic for that release/build artifact; may rotate across releases/builds and is published in that release's required `light-default-checkpoints.json`)
+  - `default`: selected from ZEVM bundled release/build default checkpoint for the selected network (deterministic for that release/build artifact; may rotate across releases/builds; for published release identifiers, the bundled value is published in that release's required `light-default-checkpoints.json`)
 - `lastCheckpoint` in `zevm_lightSyncStatus` is the most recently accepted checkpoint root, not the originally configured checkpoint unless no newer checkpoint has been accepted
 - `lastCheckpoint` is runtime-required and non-null once the HTTP listener is active
 - `optimisticSlot`, `safeSlot`, and `finalizedSlot` in `zevm_lightSyncStatus` are required non-null `QuantityHex` values and satisfy `finalizedSlot <= safeSlot <= optimisticSlot`
 - `safeSlot` reports the consensus-backed safe execution head slot and makes the `safe` selector state observable/testable via `zevm_lightSyncStatus`
+- `checkpointSource = "default"` is startup-source metadata only: it does not expose `releaseIdentifier`, does not identify which release metadata artifacts apply, and cannot by itself prove metadata-backed provenance
 - in phase 1, `eth_call` and `eth_estimateGas` are trusted-only and return `-32010` in light mode; `eth_call` remains a deferred light-mode proof-backed target, and light-mode unsupported reads also include `eth_feeHistory` plus canonical block/receipt/log query methods (all mode-unsupported as `-32010`)
 
 ## 11. Compatibility Namespace Policy

@@ -9,9 +9,11 @@ ZEVM is installed from source.
 
 ## Prerequisites
 
-- Zig `0.15.2` or newer (`minimum_zig_version` in `build.zig.zon`)
+- Zig `0.15.2` or newer for local source builds (`minimum_zig_version` in `build.zig.zon`)
+- exact Zig version pinned in `release-tuple.json` when making canonical release reproducibility claims (see [Release Metadata Runbook](../reference/release-metadata-runbook))
 - Git
 - Local sibling checkouts of `voltaire` and `guillotine-mini` (ZEVM uses path dependencies)
+- Optional tooling used by commands on other docs pages: `jq` and one artifact fetch tool (`gh` or `curl`)
 
 ## Workspace Layout
 
@@ -24,7 +26,7 @@ ZEVM expects this directory shape by default:
   guillotine-mini/
 ```
 
-If you use a different layout, update dependency paths in `build.zig.zon`.
+Phase-1 quickstart contract assumes this sibling layout. Alternate workspace layouts and `build.zig.zon` path rewrites are out of scope for this public flow.
 
 ## Clone And Set Up Sibling Repos
 
@@ -96,7 +98,7 @@ zig build test
 - Missing `../voltaire` or `../guillotine-mini` causes dependency resolution failures during build.
 - Align revisions across `zevm`, `voltaire`, and `guillotine-mini` before building.
 - For canonical release-metadata reproducibility, follow [Release Metadata Runbook](../reference/release-metadata-runbook) end-to-end.
-- If the selected `releaseIdentifier` does not publish valid `release-tuple.json` and `light-default-checkpoints.json`, treat it as an unpublished source-build boundary in this workflow.
+- If the selected `releaseIdentifier` does not publish valid `release-tuple.json` and `light-default-checkpoints.json`, do not treat that build boundary as metadata-backed; continue only with operator-recorded provenance for that source state.
 - Phase-1 limitation: ZEVM does not expose `releaseIdentifier` via runtime JSON-RPC or CLI; keep operator provenance records for release/build identity.
 - ZEVM phase 1 serves JSON-RPC over plain HTTP only and does not provide built-in TLS or JSON-RPC authentication.
 - Default RPC listener is `127.0.0.1:8545`; binding `--host` beyond localhost exposes RPC to reachable networks.

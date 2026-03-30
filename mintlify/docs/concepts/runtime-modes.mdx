@@ -33,7 +33,7 @@ GA posture here is source-build contract only (not packaged distribution channel
 Within that scope, delivery remains trusted-first:
 
 - trusted mode carries the primary local dev-node surface (writes, simulation, mining, snapshots, and fork overlay controls)
-- light mode currently exposes readiness-gated proof-backed reads plus `zevm_lightSyncStatus`
+- light mode currently exposes `zevm_lightSyncStatus`, always-callable `eth_chainId`, and readiness-gated `eth_blockNumber` plus proof-backed reads
 - deferred or unsupported light-mode methods are tracked in [Unsupported And Deferred](../reference/json-rpc/unsupported-and-deferred)
 - deferred-surface promotion and phase-1 boundary/graduation criteria are canonicalized in [Specs And Process](../reference/specs-and-process#deferred-surface-promotion-and-phase-1-boundary-and-graduation-criteria)
 
@@ -41,7 +41,7 @@ Within that scope, delivery remains trusted-first:
 
 | Surface | Trusted mode | Light mode |
 | --- | --- | --- |
-| Core reads (`eth_chainId`, `eth_blockNumber`, account/code/storage/nonce reads) | yes | yes (limited to `eth_chainId`, `eth_blockNumber`, and proof-backed account/code/storage/nonce reads) |
+| Core reads (`eth_chainId`, `eth_blockNumber`, account/code/storage/nonce reads) | yes | yes (always-callable `eth_chainId`; readiness-gated `eth_blockNumber` and proof-backed account/code/storage/nonce reads) |
 | Simulation (`eth_call`, `eth_estimateGas`) | yes | no (`-32010`; both are trusted-only in phase 1, and `eth_call` remains a deferred light-mode proof-backed target) |
 | Transaction submission and mining | yes | no |
 | Canonical block, receipt, and log queries (including `eth_getLogs`) | yes | no |

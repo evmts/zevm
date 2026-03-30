@@ -69,6 +69,18 @@ Light CLI flags:
 
 Light config branch: `mode.light`
 
+Light config object sub-shape (exact):
+
+- `mode.light` must be a JSON object and may contain only: `network`, `consensusRpcUrl`, `checkpoint`, `checkpointDir`, `maxCheckpointAgeSeconds`, `strictCheckpointAge`
+- unknown keys inside `mode.light` are invalid
+- `network`, when present, must be one of `mainnet`, `sepolia`, `holesky`
+- `consensusRpcUrl`, when present, must be a Beacon API URL string
+- `checkpoint` may be `null` or a `0x`-prefixed 32-byte hash (`Hash32`)
+- `checkpointDir`, when present, must be a directory path string
+- `maxCheckpointAgeSeconds`, when present, must be `u64`
+- `strictCheckpointAge`, when present, must be boolean
+- defaults/precedence relationship: omitted `network`/`checkpointDir`/`maxCheckpointAgeSeconds`/`strictCheckpointAge` resolve by section-6 field precedence plus mode defaults; `checkpoint = null` (or omitted) is absent for checkpoint precedence; `consensusRpcUrl` has no mode default and must resolve from CLI/config in light mode
+
 Checkpoint-age defaults for light mode:
 
 - `mode.light.maxCheckpointAgeSeconds` defaults to `1209600`
@@ -178,10 +190,10 @@ Canonical release metadata artifact for baked defaults:
 - for unreleased commit builds without published `light-default-checkpoints.json`, baked defaults remain implementation-defined and are not contract-discoverable from metadata
 - operators that require deterministic checkpoint selection for unreleased commit builds must provide an explicit checkpoint via CLI/config instead of relying on baked defaults
 - phase 1 does not define a runtime JSON-RPC or CLI surface to directly report `releaseIdentifier`; operators identify release/build boundaries from preserved provenance records
-- phase-1 source-build provenance has exactly two states: metadata-backed published-release provenance and operator-recorded unreleased-commit provenance
+- phase-1 source-build provenance has exactly two states: metadata-backed published-release provenance and operator-recorded source provenance
 - metadata-backed published-release flow is strict and ordered: select one `releaseIdentifier` -> fetch required assets for that identifier -> validate PRD section 3.4 invariants -> materialize pinned commits/toolchain -> build
-- unreleased-commit flow has no release-asset discovery step; operators derive and record `(zevmGitRevision, voltaireGitRevision, guillotineMiniGitRevision, zigVersion)` from local state
-- operators must not mix metadata assets across `releaseIdentifier` values and must not claim metadata-backed reproducibility for metadata-invalid identifiers or unreleased commit builds
+- operator-recorded source provenance covers unreleased commits and metadata-invalid published identifiers; that flow has no trusted release-asset discovery step, so operators derive and record `(zevmGitRevision, voltaireGitRevision, guillotineMiniGitRevision, zigVersion)` from local state
+- operators must not mix metadata assets across `releaseIdentifier` values and must not claim metadata-backed reproducibility for metadata-invalid identifiers or any build recorded under operator-recorded provenance
 
 Persisted checkpoint startup-input contract:
 

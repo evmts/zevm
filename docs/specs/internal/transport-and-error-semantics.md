@@ -42,8 +42,8 @@ Use the JSON-RPC contract for exact request/response tuples and method-level err
 
 ## 4. ZEVM Runtime Error Codes
 
-- method unsupported in active mode: `-32010`
-- light mode not ready for proof-backed reads: `-32011`
+- method or selector unsupported in active mode: `-32010`
+- light mode not ready for proof-backed reads or `eth_blockNumber`: `-32011`
 - reserved startup checkpoint-age condition code (not runtime-emitted): `-32012`
 - reserved startup checkpoint-malformed condition code (not runtime-emitted): `-32013`
 - proof verification failed: `-32014`
@@ -52,7 +52,7 @@ Use the JSON-RPC contract for exact request/response tuples and method-level err
 ## 5. Shared Error Rules
 
 - malformed addresses, selectors, quantities, hex values, tuple lengths, and invalid field combinations fail with `-32602`
-- well-formed request for a method defined by the contract but unavailable in active mode fails with `-32010`
+- well-formed request for a method or selector defined by the contract but unavailable in active mode fails with `-32010`
 - well-formed request using a deferred/out-of-contract JSON-RPC method name fails with `-32601`
 - trusted lookup misses for block/tx/receipt-returning methods return `null`
 - `eth_getLogs` with no matches returns `[]`

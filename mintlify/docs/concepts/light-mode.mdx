@@ -29,8 +29,8 @@ For exact startup/config contract wording, see:
 Light mode supports:
 
 - `zevm_lightSyncStatus`
-- `eth_chainId`
-- `eth_blockNumber` (readiness-gated)
+- always-callable `eth_chainId`
+- readiness-gated `eth_blockNumber`
 - proof-backed `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getTransactionCount`
 - consensus-anchored selector semantics for `latest`, `safe`, and `finalized`
 
@@ -62,7 +62,7 @@ Operational guidance:
 Canonical readiness/proof contract:
 
 - [Readiness And Proof Rules](../reference/json-rpc/verified-light-mode-reads#readiness-and-proof-rules)
-- [`zevm_lightSyncStatus` Result](../reference/json-rpc/verified-light-mode-reads#zevm_lightsyncstatus-result)
+- [`zevm_lightSyncStatus` Result](../reference/json-rpc/verified-light-mode-reads#zevm-light-sync-status-result)
 
 Canonical error map for readiness-gated reads:
 
@@ -91,7 +91,7 @@ For exact accepted-set and error behavior, see [Retained-history numeric selecto
 Startup checkpoint precedence:
 
 1. CLI checkpoint (`--checkpoint`), when provided
-2. Config checkpoint (`mode.light.checkpoint`), when set
+2. Config checkpoint (`mode.light.checkpoint`), when set to a non-null value
 3. Persisted startup checkpoint input (`checkpointDir/checkpoint`)
 4. Baked default checkpoint for the selected network
 
@@ -99,7 +99,10 @@ Operational notes:
 
 - persisted checkpoint file lifecycle is operator-managed
 - baked defaults are release/build-specific and can rotate
+- `mode.light.checkpoint: null` is treated as absent startup input
 - `checkpointSource` in `zevm_lightSyncStatus` reports which startup source won precedence
+- `checkpointSource = "explicit"` means startup used CLI `--checkpoint` or non-null config `mode.light.checkpoint` (CLI wins when both are supplied)
+- `checkpointSource` is startup-source metadata and remains stable for the process lifetime (it does not change as `lastCheckpoint` advances)
 
 Canonical startup/checkpoint contract:
 

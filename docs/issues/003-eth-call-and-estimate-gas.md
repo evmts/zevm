@@ -1,9 +1,11 @@
 # Eth Call And Estimate Gas
 
-> **Archived / non-normative:** This issue is historical context only. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md).
+> **Archived / non-normative:** This issue is historical context only. Claims below are filing-time observations and may contradict current contract docs. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md); if anything differs, those normative docs win.
+>
+> **Resolved / superseded status:** This issue is closed as an active gap tracker and retained for archive history only. For current requirements and behavior, use [docs/specs/prd.md](../specs/prd.md), [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md), and [docs/specs/page-ownership.md](../specs/page-ownership.md).
 
 
-## Verified Gap
+## Historical Gap Snapshot At Filing Time
 
 - There is no `eth_call` implementation under `src/rpc/`.
 - There is no `eth_estimateGas` implementation under `src/rpc/`.
@@ -17,7 +19,7 @@
 - `src/host_adapter.zig`
 - `../guillotine-mini/src/evm.zig`
 
-## Resolution Verification
+## Historical Resolution Criteria
 
 - `eth_call` executes calls and creations without persisting state.
 - `eth_call` returns revert data correctly and supports state overrides.

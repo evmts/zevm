@@ -26,6 +26,7 @@ For phase-1 scope, route to canonical sources instead of restated checklists:
 
 Phase 1 remains source-build only; packaged binaries/installers/distribution-channel guarantees are out of scope.
 GA posture in this docs set is scoped to that source-build public contract only.
+Phase-1 light mode exposes only `zevm_lightSyncStatus`, always-callable `eth_chainId`, and readiness-gated `eth_blockNumber` plus proof-backed `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, and `eth_getTransactionCount`; use [Verified Light-Mode Reads](./reference/json-rpc/verified-light-mode-reads) for exact readiness/selector rules, and [Unsupported And Deferred](./reference/json-rpc/unsupported-and-deferred) for mode-gated or deferred methods.
 For release/build metadata routing, see [Release Metadata And Behavior Deltas](#release-metadata-and-behavior-deltas).
 
 ## Choose Your Path

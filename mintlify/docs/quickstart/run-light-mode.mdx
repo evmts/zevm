@@ -50,19 +50,13 @@ Security baseline:
 Operational startup notes:
 
 - supported light networks are `mainnet`, `sepolia`, `holesky`
-- examples on this page use `sepolia`; keep `--network`, `--consensus-rpc-url`, and `checkpointDir` for the same network
+- examples on this page use `sepolia`; keep `--network`, `--consensus-rpc-url`, and any selected checkpoint input (`--checkpoint`, `mode.light.checkpoint`, or `checkpointDir/checkpoint`) aligned to the same network
 - `--consensus-rpc-url` must be a Beacon API for the same selected network
 - startup validation runs before listener bind (consensus/network handshake + checkpoint/network checks)
 - handshake root checks use the [canonical chain-id/genesis-root mapping](../reference/configuration/light-mode#canonical-chain-id-and-genesis-root-mapping)
 - startup always calls `GET <consensusRpcUrl>/eth/v1/beacon/genesis` and validates `data.genesis_validators_root` against `network`; any handshake failure or root mismatch exits before listener bind
 
-Canonical chain-id/genesis-root mapping for supported light networks:
-
-| Network | `eth_chainId` | `genesis_validators_root` |
-| --- | --- | --- |
-| `mainnet` | `0x1` | `0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95` |
-| `sepolia` | `0xaa36a7` | `0xd8ea171f3c94aea21ebc42a1ed61052acf3f9209c00e4efbaaddac09ed9b8078` |
-| `holesky` | `0x4268` | `0x9143aa7c615a7f7115e2b6aac319c03529df8242ae705fba9df39b79c59fa8b1` |
+For the canonical network-to-`eth_chainId`/`genesis_validators_root` values, use [Light-Mode Configuration](../reference/configuration/light-mode#canonical-chain-id-and-genesis-root-mapping).
 
 Canonical startup/config contract:
 
@@ -83,6 +77,7 @@ Startup checkpoint precedence:
 4. baked default checkpoint for selected network
 
 When `--checkpoint` or a non-null `mode.light.checkpoint` is provided, that explicit input overrides `checkpointDir/checkpoint` for startup selection. A config value of `mode.light.checkpoint: null` is treated as absent. To use persisted startup source (`checkpointSource = "persisted"`), remove explicit checkpoint inputs.
+For unpublished/unreleased source builds, baked defaults are implementation-defined for that build; when deterministic startup checkpoint selection is required, provide an explicit checkpoint (`--checkpoint` or non-null `mode.light.checkpoint`).
 
 `checkpointSource` in `zevm_lightSyncStatus` reports which source won at startup:
 
@@ -95,13 +90,20 @@ Reference callouts:
 
 - [Checkpoint Selection Precedence](../reference/configuration/light-mode#checkpoint-selection-precedence)
 - [Validation Rules](../reference/configuration/light-mode#validation-rules)
-- [`zevm_lightSyncStatus` Result](../reference/json-rpc/verified-light-mode-reads#zevm_lightsyncstatus-result)
+- [`zevm_lightSyncStatus` Result](../reference/json-rpc/verified-light-mode-reads#zevm-light-sync-status-result)
 
 Use the configuration reference above for these exact semantics:
 
 - checkpoint age derivation chain, including `checkpointTimeSeconds` and `age = max(0, startupTimeSeconds - checkpointTimeSeconds)`
 - selected-source terminal behavior (no fallback to lower-precedence sources after selection)
 - stale policy behavior (`strictCheckpointAge = false` warns and continues, `strictCheckpointAge = true` fails startup)
+
+Startup-failure preconditions to remember:
+
+- startup first selects one checkpoint source by precedence, then validates only that selected source
+- malformed selected checkpoint input/content is startup failure before listener bind (`-32013` is startup-reserved); unreadable selected persisted checkpoint is also startup failure before listener bind
+- ZEVM does not fall back to lower-precedence sources when selected-source validation fails
+- stale selected checkpoint (`age > maxCheckpointAgeSeconds`) warns and continues when `strictCheckpointAge = false`, but fails startup when `strictCheckpointAge = true` (`-32012` is startup-reserved)
 
 ### Source Format
 
@@ -159,7 +161,7 @@ trimmed="$(tr -d '[:space:]' < "$CHECKPOINT_DIR/checkpoint")"
 printf '%s\n' "$trimmed" | grep -Eq '^[0-9a-fA-F]{64}$'
 ```
 
-Then restart ZEVM and confirm `checkpointSource`/`lastCheckpoint` from `zevm_lightSyncStatus`.
+Then restart ZEVM and confirm `checkpointSource` from `zevm_lightSyncStatus`. Treat `lastCheckpoint` as live runtime state that may advance after startup; use equality checks only as immediate startup-time validation.
 
 Full checkpoint and stale-policy contract:
 
@@ -167,6 +169,7 @@ Full checkpoint and stale-policy contract:
 - [Persisted Checkpoint Startup-Input Contract](../reference/configuration/light-mode#persisted-checkpoint-startup-input-contract)
 - [Release Metadata Runbook](../reference/release-metadata-runbook)
 
+<a id="check-readiness-with-zevm-light-sync-status"></a>
 ## 3. Check Readiness With `zevm_lightSyncStatus`
 
 ```bash
@@ -178,11 +181,12 @@ curl -s -X POST http://127.0.0.1:8545 \
 Serving guidance:
 
 - wait for `ready = true` with `status = "synced"` before treating proof-backed reads as available
-- `eth_chainId` is callable before readiness
+- `eth_chainId` is always callable before readiness and while ready
+- `eth_blockNumber` and proof-backed reads are readiness-gated
 - readiness is non-monotonic: after reaching `ready = true`, ZEVM can return to `ready = false` if `status` leaves `synced` or slot coherence no longer holds (`finalizedSlot <= safeSlot <= optimisticSlot`)
-- `status = "error"` requires operator remediation and process restart before expecting readiness-gated reads to recover
+- if `status = "error"` persists, operator remediation and process restart are required before expecting readiness-gated reads to recover
 
-Error-state recovery path (`status = "error"`):
+Error-state recovery path (when `status = "error"` persists):
 
 1. Verify `network`, `consensusRpcUrl`, and checkpoint inputs (`--checkpoint`, `mode.light.checkpoint`, `checkpointDir/checkpoint`) for format/network mismatches.
 2. Correct the underlying input/configuration issue.
@@ -192,11 +196,11 @@ Error-state recovery path (`status = "error"`):
 Canonical readiness semantics:
 
 - [Readiness And Proof Rules](../reference/json-rpc/verified-light-mode-reads#readiness-and-proof-rules)
-- [`zevm_lightSyncStatus` Result](../reference/json-rpc/verified-light-mode-reads#zevm_lightsyncstatus-result)
+- [`zevm_lightSyncStatus` Result](../reference/json-rpc/verified-light-mode-reads#zevm-light-sync-status-result)
 
 ## 4. Verify Readiness-Gated Behavior
 
-Before ready, `eth_blockNumber` is unavailable:
+If you call before readiness (`ready = false`), `eth_blockNumber` is unavailable (for example right after startup or after a readiness regression):
 
 ```bash
 curl -s -X POST http://127.0.0.1:8545 \
@@ -204,7 +208,7 @@ curl -s -X POST http://127.0.0.1:8545 \
   --data '{"jsonrpc":"2.0","id":2,"method":"eth_blockNumber","params":[]}'
 ```
 
-Once ready, the same call returns the light-mode `latest` head block number.
+When `ready = true`, the same call returns the light-mode `latest` head block number.
 
 Proof-backed read example:
 
@@ -224,8 +228,9 @@ Method-level read contract:
 - [Verified Light-Mode Reads](../reference/json-rpc/verified-light-mode-reads)
 - [Retained-history numeric selector contract](../reference/json-rpc/verified-light-mode-reads#retained-history-numeric-selector-contract)
 
-Canonical error map in light mode:
+Canonical light-mode error map:
 
+- `-32010`: supported method family or selector unsupported in active light-mode path (for example selector `pending` or trusted-only method families)
 - `-32011`: not ready for readiness-gated reads
 - `-32014`: proof verification failed at an otherwise supported selector
 - `-32015`: malformed data from upstream proof source

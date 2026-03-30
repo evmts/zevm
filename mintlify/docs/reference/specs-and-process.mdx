@@ -64,6 +64,7 @@ For end-to-end procedure (fetch, validation, pinned checkouts, manifest provenan
 Treat a published identifier as metadata-invalid when publication validation fails (missing or duplicate required asset filenames) or when required release artifacts are unreadable, malformed, schema-mismatched, `releaseIdentifier`-mismatched, or value-mismatched against the contract.
 
 - metadata-invalid identifiers are outside canonical reproducibility claims
+- if operators continue from that source state, provenance falls back to `operator-recorded` rather than metadata-backed
 - metadata-invalid identifiers remain historical audit records only
 - phase 1 does not require runtime JSON-RPC/CLI discovery, repair, or reporting of metadata-invalid artifacts; this remains operator provenance workflow
 
@@ -100,7 +101,8 @@ Before shipping, confirm all PRD criteria:
 - clean-checkout source build verification passes: `zig build` and `zig build test` succeed on pinned siblings/toolchain without local patching
 - default `zig build test` graph covers all shipped executable startup/configuration/runtime/transport/method/semantic behaviors from PRD sections `3.1` and `4` through `12`
 - qualification evidence maps each shipped phase-1 surface in PRD sections `3.1`, `3.3`, `3.4`, and `4` through `12` to at least one qualification assertion
-- for candidates claiming a published `releaseIdentifier`, qualification validates both required release artifacts and all PRD section `3.4` field/schema/value invariants
+- for candidates claiming a published `releaseIdentifier`, qualification validates both required release artifacts, all PRD section `3.4` field/schema/value invariants, and candidate build/runtime equality against the asset-declared tuple/default values
+- qualification evidence for metadata-backed candidates includes release-provenance and supersession-note assertions when PRD section `3.4` operator-flow/correction-note invariants apply
 - qualification enforces the publication-time validation gate for canonical claims (exactly one required release asset filename per artifact; duplicates fail qualification)
 - automated listener/socket smoke coverage validates startup/request flow for trusted mode and light-mode startup plus restart/resume from persisted checkpoint input
 - transport/parsing verification asserts notification-only request and notification-only batch behavior returns HTTP `204` with empty body and uses one canonical ZEVM-owned transport/parser stack
