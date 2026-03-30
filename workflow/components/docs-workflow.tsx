@@ -6,9 +6,9 @@ import {
   Sequence,
 } from "../../docs/references/smithers/src/index";
 import { z } from "zod";
-import ImplementationPrompt from "../../docs/workflows/ImplementationPrompt.mdx";
-import ColdReviewPrompt from "../../docs/workflows/ColdReviewPrompt.mdx";
-import FixFindingsPrompt from "../../docs/workflows/FixFindingsPrompt.mdx";
+import ImplementationPrompt from "../prompts/ImplementationPrompt.mdx";
+import ColdReviewPrompt from "../prompts/ColdReviewPrompt.mdx";
+import FixFindingsPrompt from "../prompts/FixFindingsPrompt.mdx";
 
 const REPO_ROOT = new URL("../..", import.meta.url).pathname.replace(/\/$/, "");
 
