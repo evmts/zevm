@@ -328,7 +328,7 @@ Accounts(()),
 
 ### EIP-1474 (eth_accounts definition)
 
-From EIPs/EIPS/eip-1474.md:
+From https://eips.ethereum.org/EIPS/eip-1474:
 ```
 #### eth_accounts
 

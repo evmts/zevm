@@ -212,7 +212,7 @@ Key observations:
 
 ### EIP-658: Status Code in Receipts
 
-From `EIPs/EIPS/eip-658.md`:
+From `https://eips.ethereum.org/EIPS/eip-658`:
 
 > For blocks where block.number >= BYZANTIUM_FORK_BLKNUM, the intermediate state root is replaced by a status code, 0 indicating failure (due to any operation that can cause the transaction or top-level call to revert) and 1 indicating success.
 
@@ -528,8 +528,8 @@ pub const ReceiptResponse = struct {
 
 | EIP | Description | Impact on ReceiptResponse |
 |-----|-------------|---------------------------|
-| [EIP-658](EIPs/EIPS/eip-658.md) | Status code in receipts | `status` field (post-Byzantium), replaces `root` |
-| [EIP-4844](EIPs/EIPS/eip-4844.md) | Shard blob transactions | Adds `blobGasUsed`, `blobGasPrice` fields |
-| [EIP-7702](EIPs/EIPS/eip-7702.md) | Set EOA account code | Adds `authorizationList` field |
-| [EIP-1559](EIPs/EIPS/eip-1559.md) | Fee market change | Affects `effectiveGasPrice` calculation |
-| [EIP-2718](EIPs/EIPS/eip-2718.md) | Typed transaction envelope | Affects `type` field values |
+| [EIP-658](https://eips.ethereum.org/EIPS/eip-658) | Status code in receipts | `status` field (post-Byzantium), replaces `root` |
+| [EIP-4844](https://eips.ethereum.org/EIPS/eip-4844) | Shard blob transactions | Adds `blobGasUsed`, `blobGasPrice` fields |
+| [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) | Set EOA account code | Adds `authorizationList` field |
+| [EIP-1559](https://eips.ethereum.org/EIPS/eip-1559) | Fee market change | Affects `effectiveGasPrice` calculation |
+| [EIP-2718](https://eips.ethereum.org/EIPS/eip-2718) | Typed transaction envelope | Affects `type` field values |

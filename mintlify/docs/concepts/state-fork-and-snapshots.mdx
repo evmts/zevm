@@ -1,107 +1,74 @@
 ---
 title: State Fork And Snapshots
-description: Trusted-mode fork layering, snapshot boundaries, and revert semantics.
+description: Trusted-mode fork overlay, snapshot boundary, and reset semantics.
 ---
 
 # State Fork And Snapshots
 
-Forking is configuration inside trusted mode. It is not a third ZEVM runtime mode.
+Forking is trusted-mode configuration. It is not a runtime mode.
 
-## Intended Behavior
+> Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).
+>
+> This page is an operational summary. For product-contract disputes, follow those normative sources.
 
-Trusted mode owns the writable overlay. A forked trusted node reads upstream state from the configured fork source, then applies local writes on top.
+## Fork Overlay Model
 
-Public naming rules stay consistent here too:
+A forked trusted node uses upstream state as a read source and applies local writes in ZEVM's trusted-mode overlay.
 
-- canonical snapshot, revert, and state-control methods use `zevm_*`
-- a fixed compatibility-alias set under `anvil_*`, a limited `hardhat_*` subset, and selected legacy `evm_*` names is accepted in trusted mode only
-- `zevm_*` is the public canonical naming for ZEVM-owned trusted-mode controls, not a docs convention
+- upstream RPC: read source
+- trusted overlay: writable local state
+- `chainId`: trusted-mode setting (including runtime updates via `zevm_setChainId`), not inferred from upstream fork source
 
-Fork config is explicit:
-
-```json
-{
-  "mode": {
-    "trusted": {
-      "chainId": 31337,
-      "mining": { "type": "manual" },
-      "fork": {
-        "url": "https://rpc.example",
-        "blockNumber": 22000000
-      }
-    }
-  }
-}
-```
-
-The resolved fork union is:
+Fork config union:
 
 - `null`
 - `{ "url": "https://..." }`
 - `{ "url": "https://...", "blockNumber": <u64> }`
 
-`chainId` remains a trusted-mode startup setting and is not inferred from the fork source.
-
 ## Snapshot Boundary
 
-Snapshots and revert capture the trusted-mode overlay and ZEVM-owned runtime metadata, not the upstream source. The snapshot scope is the local trusted node state, not the remote fork provider or any light-mode checkpoint state. The documented boundary includes:
+`zevm_snapshot` and `zevm_revert` operate on trusted-mode local state and ZEVM-owned runtime metadata.
 
-- local journal or overlay state
+Included boundary:
+
+- local overlay/journal state
 - canonical local head
-- receipt and log indexes derived from local blocks
-- pending txpool state
+- local receipt/log indexes
+- pending txpool
 - mining configuration
 - block-environment overrides
 - impersonation state
 - time controls
 
-Snapshots do not capture:
+Excluded boundary:
 
-- the remote fork source itself
-- light-mode checkpoint or consensus state
+- upstream fork provider state
+- light-mode checkpoint/consensus state
 
-The canonical public controls for this boundary are `zevm_snapshot` and `zevm_revert`.
+## Related Control Families
 
-## Local State Import And Export
+These families are separate and should not be conflated:
 
-Local state import and export stay separate from both snapshot/revert and fork-source selection:
+- snapshot/revert: [`zevm_snapshot`, `zevm_revert`](../reference/json-rpc/dev-controls#methods) (`zevm_revert` result rules: [Method Rules](../reference/json-rpc/dev-controls#method-rules))
+- local state import/export: [`zevm_dumpState`, `zevm_loadState`](../reference/json-rpc/dev-controls#methods)
+- fork-source/runtime reset: [`zevm_reset`, `zevm_setRpcUrl`](../reference/json-rpc/transactions-and-mining#fork-source-methods) (semantics: [Fork-source control semantics](../reference/json-rpc/transactions-and-mining#fork-source-control-semantics))
 
-- `zevm_dumpState`
-- `zevm_loadState`
+`zevm_reset` is a runtime/fork-source reset control, not a snapshot restore primitive.
 
-These methods serialize or hydrate trusted-mode local state. They are not snapshot IDs, and they do not redefine which upstream fork source ZEVM reads from.
+`zevm_setRpcUrl` precondition and behavior:
 
-## Fork-Source Controls
+- precondition: fork backing is already enabled; otherwise `zevm_setRpcUrl` fails with `-32603`
+- `zevm_setRpcUrl` updates the active fork upstream URL in place
+- `zevm_setRpcUrl` does not reset local canonical chain state, clear pending txpool, or invalidate snapshots
+- `zevm_setRpcUrl` does not redefine snapshot/revert boundaries
+- by contrast, successful `zevm_reset` resets local canonical chain to trusted genesis (`0x0`), clears pending txpool, invalidates snapshot IDs, and can optionally replace or clear fork source
 
-Fork-source controls are separate again:
+## Where To Go Next
 
-- `zevm_reset`
-- `zevm_setRpcUrl`
-
-`zevm_reset` resets trusted-mode state back to a fresh in-memory node or to a supplied fork configuration. It is a fork-source and runtime-reset control, not a snapshot restore primitive and not a dump/load import hook.
-
-`zevm_setRpcUrl` changes the upstream RPC endpoint used for forked reads. It adjusts fork-source configuration, not the local overlay itself and not the snapshot boundary.
-
-## Current HEAD As Of 2026-03-29
-
-- `zig build` fails first in `src/rpc/server.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope`, and `zig build test` fails in `src/rpc/dispatcher_test.zig`, `src/rpc/server.zig`, and `src/tx_processor.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope` and current `guillotine-mini` requires a wider `evm.init` signature
-- `src/node/runtime.zig` still initializes `StateManager` with `null`, so fork-backed startup is not reachable from the executable path
-- the startup path exposes no fork flags
-- no executable runtime path wires `ForkBackend`
-- snapshot and revert behavior are documented as the intended contract, not the current runtime wiring
-- the prototype helper in `src/rpc/dev_runtime.zig` captures only a state snapshot id, block number, and the narrow config fields `coinbase`, `next_block_base_fee_per_gas`, and `block_gas_limit`
-- current `HEAD` does not yet capture txpool state, receipt-log indexes, impersonation, time controls, or the broader trusted runtime metadata that the intended snapshot boundary includes
-
-## Traceability
-
-- Source IDs: `HEAD-01`, `TRUST-09`, `TRUST-10`, `TRUST-11`
-- Contradiction IDs: `C-002`, `C-009`, `C-010`
-- Question IDs: -
-- Internal support docs: `state-fork-and-snapshot-semantics.md`, `trusted-mode-semantics.md`
-
-## Notes
-
-- Fork and snapshot behavior are trusted-mode-only contract rules; the accepted alias set is fixed and does not expand by same-suffix family matching.
+- Quickstart: [Forked Dev Node](../quickstart/forked-dev-node)
+- Quickstart: [Run Trusted Mode](../quickstart/run-trusted-mode)
+- Reference: [ZEVM Controls](../reference/json-rpc/dev-controls)
+- Reference: [Transactions And Mining](../reference/json-rpc/transactions-and-mining)
 
 ## Related Pages
 

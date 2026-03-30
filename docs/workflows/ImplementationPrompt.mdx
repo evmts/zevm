@@ -1,3 +1,13 @@
+Template note: this file is a workflow prompt template. `{props.*}` placeholders are intentionally unresolved in source and are resolved by the workflow runtime before execution.
+
+Runtime props contract (required at workflow execution):
+- `props.schema` (string): JSON Schema text that defines the required JSON output format for this workflow run.
+
+Execution guard:
+- Unresolved placeholders are valid in repository source templates.
+- After runtime render, any unresolved template placeholder (for example `{props.*}` or `{JSON.stringify(...)}`) is a hard error and the workflow must fail before executing this prompt.
+- The fallback instructions below are only for pasted/raw prompt usage outside the workflow runtime.
+
 You are the lead orchestration agent for a ZEVM docs-convergence program in this repository.
 
 Your job is to turn the documentation corpus into one fully defined, internally consistent product definition and one complete set of real public-facing product docs.
@@ -58,3 +68,21 @@ Stop only when one of these is true:
 Update the docs, then return JSON matching this schema:
 
 {props.schema}
+
+If `{props.schema}` is unresolved template text in a pasted/raw prompt, use this fallback output schema and still return valid JSON.
+This fallback is pasted/raw resilience only and must not override runtime render-failure behavior.
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "summary", "filesChanged", "productDecisionsNeeded"],
+  "properties": {
+    "status": { "type": "string", "enum": ["READY_FOR_COLD_REVIEW", "NEEDS_PRODUCT_DECISION"] },
+    "summary": { "type": "string" },
+    "filesChanged": { "type": "array", "items": { "type": "string" } },
+    "productDecisionsNeeded": { "type": "array", "items": { "type": "string" } }
+  }
+}
+```

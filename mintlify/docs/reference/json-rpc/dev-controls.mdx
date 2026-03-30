@@ -1,46 +1,43 @@
 ---
 title: ZEVM Controls
-description: Exact zevm namespace, compatibility aliases, and trusted-mode state controls.
+description: Trusted-mode zevm_* state controls, snapshots, impersonation, funding helpers, and metadata methods.
 ---
 
 # ZEVM Controls
 
-## Intended Contract
+This page covers trusted-mode `zevm_*` state and control methods.
 
-This page is the exact trusted-mode contract for state inspection and mutation, snapshots, impersonation, funding helpers, and node metadata.
+> Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).
+>
+> This page is an operational summary. For API-contract disputes, follow those normative sources.
 
-Transaction submission, mining, block-time controls, and fork-source resets live on the companion `Transactions And Mining` page.
+- trusted mode: supported
+- light mode: unsupported (`-32010`) for every method and alias on this page
 
-Rules:
+Malformed params return `-32602` unless noted otherwise.
 
-- every method on this page is trusted-mode only; the canonical `zevm_*` name and every accepted alias fail with `-32010` in light mode
-- accepted compatibility aliases are closed-world and share ZEVM params, return payloads, mode gating, and error behavior exactly
-- if a method or alias is not listed on this page, it is not part of this surface and fails with `-32601`
-- any tuple length other than a listed form on this page fails with `-32602`
-- malformed request objects, malformed quantities, malformed block selectors, malformed addresses, malformed hashes, malformed byte strings, and malformed storage slots fail with `-32602`
-- unexpected internal failures use `-32603`
+## Shared Types
 
-### Common Types
-
-| Type | Exact contract |
+| Type | Contract |
 | --- | --- |
-| `QuantityHex` | `0x`-prefixed unsigned integer with no leading zero padding except `0x0` |
-| `Address` | `0x`-prefixed 20-byte hex address |
-| `Hash32` | `0x`-prefixed 32-byte hex value |
-| `Bytes32` | `0x`-prefixed 32-byte hex value |
-| `HexData` | `0x`-prefixed hex byte string, including `0x` for empty bytes |
-| `TrustedBlockSelector` | `latest`, `earliest`, `pending`, `safe`, `finalized`, or a numeric `QuantityHex` |
+| `QuantityHex` | `0x`-prefixed unsigned integer, minimal hex encoding except `0x0` |
+| `Address` | `0x`-prefixed 20-byte hex |
+| `Hash32` | `0x`-prefixed 32-byte hex |
+| `Bytes32` | `0x`-prefixed 32-byte hex |
+| `HexData` | `0x`-prefixed byte-string hex; `0x` means empty |
+| `BlockTag` | `latest`, `earliest`, `pending`, `safe`, `finalized`, or numeric quantity |
+| `TrustedBlockSelector` | any `BlockTag` (`latest`, `earliest`, `pending`, `safe`, `finalized`, or numeric quantity) |
 
-Trusted-mode selector rules:
+Trusted selector meanings:
 
-- `latest` is the current canonical local head
-- `pending`, `safe`, and `finalized` are compatibility aliases of `latest`
-- `earliest` is block `0`
-- a numeric selector is the exact local block number
+- `latest`: current local head
+- `pending`, `safe`, `finalized`: aliases of `latest`
+- `earliest`: block `0`
+- numeric: exact local block number
+
+## Shared Objects
 
 ### `AccountState`
-
-`zevm_getAccount` returns this exact object shape, and `zevm_setAccount` accepts the same shape:
 
 ```json
 {
@@ -53,17 +50,16 @@ Trusted-mode selector rules:
 }
 ```
 
-Field rules:
+Field contract:
 
-- `balance`: `QuantityHex`
-- `nonce`: `QuantityHex`
-- `code`: `HexData`
-- `storage`: object whose keys are `Bytes32` storage slots and whose values are `Bytes32` storage values
-- any field not listed above is invalid and fails with `-32602`
+| Field | Required | Type | Nullability / rule |
+| --- | --- | --- | --- |
+| `balance` | yes | `QuantityHex` | non-null |
+| `nonce` | yes | `QuantityHex` | non-null |
+| `code` | yes | `HexData` | non-null |
+| `storage` | yes | object mapping `Bytes32` -> `Bytes32` | non-null (empty object allowed) |
 
 ### `NodeMetadata`
-
-`zevm_metadata` returns this exact top-level shape:
 
 ```json
 {
@@ -75,17 +71,17 @@ Field rules:
 }
 ```
 
-Field rules:
+Field contract:
 
-- `mode`: literal string `trusted`
-- `chainId`: `QuantityHex`
-- `forking`: boolean
-- `forkUrl`: string or `null`
-- `forkBlockNumber`: `QuantityHex` or `null`
+| Field | Required | Type | Nullability / rule |
+| --- | --- | --- | --- |
+| `mode` | yes | string literal | always `"trusted"` |
+| `chainId` | yes | `QuantityHex` | non-null |
+| `forking` | yes | boolean | non-null |
+| `forkUrl` | yes | string or `null` | must be `null` when `forking=false` |
+| `forkBlockNumber` | yes | `QuantityHex` or `null` | must be `null` when `forking=false` |
 
 ### `NodeInfo`
-
-`zevm_nodeInfo` returns this exact top-level shape:
 
 ```json
 {
@@ -107,86 +103,146 @@ Field rules:
 }
 ```
 
-Field rules:
+`managedAccounts` in the example above is truncated for brevity. Actual `zevm_nodeInfo` returns all 10 managed dev addresses in ascending index order, matching `eth_accounts`.
 
-- `chainId`: `QuantityHex`
-- `coinbase`: `Address`
-- `blockNumber`: `QuantityHex`
-- `managedAccounts`: array of the 10 managed trusted-mode addresses in ascending index order
-- `mining.type`: `auto`, `manual`, or `interval`
-- `mining.blockTime`: `QuantityHex` when `mining.type = interval`; otherwise `null`
-- `fork.enabled`: boolean
-- `fork.url`: string or `null`
-- `fork.blockNumber`: `QuantityHex` or `null`
+Field contract:
 
-### Snapshot Contract
+| Field | Required | Type | Nullability / rule |
+| --- | --- | --- | --- |
+| `chainId` | yes | `QuantityHex` | non-null |
+| `coinbase` | yes | `Address` | non-null |
+| `blockNumber` | yes | `QuantityHex` | non-null |
+| `managedAccounts` | yes | array of `Address` | non-null; exact 10 managed addresses in ascending index order |
+| `mining` | yes | object | non-null; see nested contract below |
+| `fork` | yes | object | non-null; see nested contract below |
 
-`zevm_snapshot` and `zevm_revert` operate only on the mutable trusted-mode execution shell.
+`NodeInfo.mining` nested contract:
 
-A trusted-mode snapshot captures:
+| Field | Required | Type | Nullability / rule |
+| --- | --- | --- | --- |
+| `type` | yes | string enum | `auto`, `manual`, or `interval` |
+| `blockTime` | yes | `QuantityHex` or `null` | non-null only when `type = "interval"` |
 
-- local state and local overlay
-- the canonical local chain head
-- receipt and log indexes derived from local canonical blocks
-- pending txpool state
-- mining configuration and block-environment overrides
-- impersonation state
-- time controls
+`NodeInfo.fork` nested contract:
 
-A trusted-mode snapshot does not capture:
+| Field | Required | Type | Nullability / rule |
+| --- | --- | --- | --- |
+| `enabled` | yes | boolean | non-null |
+| `url` | yes | string or `null` | non-null only when `enabled = true` |
+| `blockNumber` | yes | `QuantityHex` or `null` | `null` means fork head; may be non-null only when `enabled = true` |
 
-- consensus or checkpoint-sync state
-- the remote fork source itself
+## Methods
 
-## State Inspection And Mutation
+| Canonical method | Exact params | Exact result | Accepted aliases |
+| --- | --- | --- | --- |
+| `zevm_getAccount` | `[address]` or `[address, block]` | `AccountState` | none |
+| `zevm_setAccount` | `[address, accountState]` | `true` | none |
+| `zevm_dumpState` | `[]` or omitted | `HexData` state blob | `anvil_dumpState` |
+| `zevm_loadState` | `[stateBlob]` | `true` | `anvil_loadState` |
+| `zevm_setBalance` | `[address, balance]` | `true` | `anvil_setBalance`, `hardhat_setBalance` |
+| `zevm_addBalance` | `[address, delta]` | `true` | `anvil_addBalance` |
+| `zevm_setCode` | `[address, code]` | `true` | `anvil_setCode`, `hardhat_setCode` |
+| `zevm_setNonce` | `[address, nonce]` | `true` | `anvil_setNonce`, `hardhat_setNonce` |
+| `zevm_setStorageAt` | `[address, slot, value]` | `true` | `anvil_setStorageAt`, `hardhat_setStorageAt` |
+| `zevm_setChainId` | `[chainId]` | `true` | `anvil_setChainId` |
+| `zevm_snapshot` | `[]` or omitted | `QuantityHex` snapshot id | `anvil_snapshot`, `evm_snapshot` |
+| `zevm_revert` | `[snapshotId]` | boolean | `anvil_revert`, `evm_revert` |
+| `zevm_impersonateAccount` | `[address]` | `true` | `anvil_impersonateAccount`, `hardhat_impersonateAccount` |
+| `zevm_stopImpersonatingAccount` | `[address]` | `true` | `anvil_stopImpersonatingAccount`, `hardhat_stopImpersonatingAccount` |
+| `zevm_autoImpersonateAccount` | `[enabled]` | `true` | `anvil_autoImpersonateAccount` |
+| `zevm_deal` | `[address, value]` | `true` | `anvil_deal` |
+| `zevm_dealErc20` | `[token, address, value]` | `true` | `anvil_dealErc20` |
+| `zevm_setErc20Allowance` | `[token, owner, spender, value]` | `true` | `anvil_setErc20Allowance` |
+| `zevm_metadata` | `[]` or omitted | `NodeMetadata` | `anvil_metadata`, `hardhat_metadata` |
+| `zevm_nodeInfo` | `[]` or omitted | `NodeInfo` | `anvil_nodeInfo` |
 
-| Canonical method | Exact params | Exact result | Accepted aliases | Exact errors |
-| --- | --- | --- | --- | --- |
-| `zevm_getAccount` | `[address]` or `[address, block]`, where `address` is `Address` and `block` is `TrustedBlockSelector` | `AccountState` | none | `-32602` for malformed address or selector |
-| `zevm_setAccount` | `[address, accountState]`, where `accountState` is the exact `AccountState` shape above | `true` | none | `-32602` for malformed address or account state |
-| `zevm_dumpState` | `[]` or omitted | opaque `HexData` state blob | `anvil_dumpState` | `-32602` for non-empty params |
-| `zevm_loadState` | `[stateBlob]` where `stateBlob` is the `HexData` blob returned by `zevm_dumpState` | `true` | `anvil_loadState` | `-32602` for malformed hex or state blob |
-| `zevm_setBalance` | `[address, balance]` where `address` is `Address` and `balance` is `QuantityHex` | `true` | `anvil_setBalance`, `hardhat_setBalance` | `-32602` for malformed address or quantity |
-| `zevm_addBalance` | `[address, delta]` where `address` is `Address` and `delta` is `QuantityHex` | `true` | `anvil_addBalance` | `-32602` for malformed address or quantity |
-| `zevm_setCode` | `[address, code]` where `address` is `Address` and `code` is `HexData` | `true` | `anvil_setCode`, `hardhat_setCode` | `-32602` for malformed address or hex data |
-| `zevm_setNonce` | `[address, nonce]` where `address` is `Address` and `nonce` is `QuantityHex` | `true` | `anvil_setNonce`, `hardhat_setNonce` | `-32602` for malformed address or quantity |
-| `zevm_setStorageAt` | `[address, slot, value]` where `address` is `Address` and `slot` and `value` are `Bytes32` | `true` | `anvil_setStorageAt`, `hardhat_setStorageAt` | `-32602` for malformed address, slot, or value |
-| `zevm_setChainId` | `[chainId]` where `chainId` is `QuantityHex` | `true` | `anvil_setChainId` | `-32602` for malformed quantity |
+## Method Rules
 
-## Snapshot And Impersonation
+- malformed addresses, quantities, bytes, selectors, tuple lengths, or object fields return `-32602`
+- `zevm_revert` returns `false` for unknown snapshot id
+- all methods and aliases above return `-32010` in light mode
 
-| Canonical method | Exact params | Exact result | Accepted aliases | Exact errors |
-| --- | --- | --- | --- | --- |
-| `zevm_snapshot` | `[]` or omitted | `QuantityHex` snapshot id | `anvil_snapshot`, `evm_snapshot` | `-32602` for non-empty params |
-| `zevm_revert` | `[snapshotId]` where `snapshotId` is `QuantityHex` | JSON boolean | `anvil_revert`, `evm_revert` | `-32602` for malformed quantity |
-| `zevm_impersonateAccount` | `[address]` where `address` is `Address` | `true` | `anvil_impersonateAccount`, `hardhat_impersonateAccount` | `-32602` for malformed address |
-| `zevm_stopImpersonatingAccount` | `[address]` where `address` is `Address` | `true` | `anvil_stopImpersonatingAccount`, `hardhat_stopImpersonatingAccount` | `-32602` for malformed address |
-| `zevm_autoImpersonateAccount` | `[enabled]` where `enabled` is boolean | `true` | `anvil_autoImpersonateAccount` | `-32602` for malformed boolean |
+## Impersonation Semantics
 
-Rules:
+- `eth_sendTransaction` signer scope is the union of managed trusted accounts, the manual impersonation set (`zevm_impersonateAccount` adds, `zevm_stopImpersonatingAccount` removes), and all addresses while auto impersonation is enabled
+- `zevm_autoImpersonateAccount([true])` enables automatic impersonation for any `from` address
+- `zevm_autoImpersonateAccount([false])` disables automatic impersonation; signer scope then falls back to managed trusted accounts plus the current manual impersonation set
+- toggling `zevm_autoImpersonateAccount` does not clear or mutate manual impersonation entries
+- `zevm_stopImpersonatingAccount` affects only the manual impersonation set; while auto impersonation is enabled, sends from that address remain allowed
 
-- `zevm_revert` returns `false` for an unknown snapshot id instead of raising an error
+## Example: `zevm_setBalance`
 
-## Funding And Metadata
+Request:
 
-| Canonical method | Exact params | Exact result | Accepted aliases | Exact errors |
-| --- | --- | --- | --- | --- |
-| `zevm_deal` | `[address, value]` where `address` is `Address` and `value` is `QuantityHex` | `true` | `anvil_deal` | `-32602` for malformed address or quantity |
-| `zevm_dealErc20` | `[token, address, value]` where `token` and `address` are `Address` and `value` is `QuantityHex` | `true` | `anvil_dealErc20` | `-32602` for malformed address or quantity |
-| `zevm_setErc20Allowance` | `[token, owner, spender, value]` where `token`, `owner`, and `spender` are `Address` and `value` is `QuantityHex` | `true` | `anvil_setErc20Allowance` | `-32602` for malformed address or quantity |
-| `zevm_metadata` | `[]` or omitted | `NodeMetadata` | `anvil_metadata`, `hardhat_metadata` | `-32602` for non-empty params |
-| `zevm_nodeInfo` | `[]` or omitted | `NodeInfo` | `anvil_nodeInfo` | `-32602` for non-empty params |
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "zevm_setBalance",
+  "params": [
+    "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "0x21e19e0c9bab2400000"
+  ]
+}
+```
 
-## Current HEAD As Of 2026-03-29
+Response:
 
-- `zig build` fails first in `src/rpc/server.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope`, and `zig build test` fails in `src/rpc/dispatcher_test.zig`, `src/rpc/server.zig`, and `src/tx_processor.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope` and current `guillotine-mini` requires a wider `evm.init` signature
-- current `HEAD` still does not expose this surface on the live listener: `src/main.zig` passes CLI args only to `src/rpc/server.zig`, `parseConfig` still recognizes only `--host` and `--port`, and the live server starts with an empty handler registry
-- prototype dev-control helpers exist, but they are disconnected from the shipping HTTP path and do not make the full `zevm_*` control contract live on current `HEAD`
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": true
+}
+```
 
-## Traceability
+## Example: `anvil_snapshot` Alias + `zevm_revert`
 
-- Source IDs: `AUTH-02`, `PROC-01`, `HEAD-01`, `TRUST-07`, `TRUST-10`, `TRUST-11`
-- Contradiction IDs: `C-002`, `C-006`, `C-009`
-- Question IDs: -
-- Internal support docs: `state-fork-and-snapshot-semantics.md`, `rpc-support-matrix.md`
-- Notes: Self-contained exact ZEVM-owned control inventory plus the closed-world accepted compatibility aliases.
+Snapshot request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "anvil_snapshot",
+  "params": []
+}
+```
+
+Snapshot response:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": "0x1"
+}
+```
+
+Revert request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "zevm_revert",
+  "params": ["0x1"]
+}
+```
+
+Revert response:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": true
+}
+```
+
+## Related Pages
+
+- [Transactions And Mining](./transactions-and-mining)
+- [Core Reads](./core-reads)
+- [Managed Dev Wallet (Trusted Mode)](./managed-dev-wallet)
+- [Unsupported And Deferred](./unsupported-and-deferred)

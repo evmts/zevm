@@ -1,245 +1,141 @@
 ---
 title: Run Trusted Mode
-description: Exact trusted-mode startup commands, defaults, and repo gaps.
+description: Start ZEVM as a local trusted dev node and validate core RPC flows.
 ---
-
-import TrustedManagedWallet from '../_snippets/trusted-managed-wallet.mdx'
 
 # Run Trusted Mode
 
-Trusted mode is the default ZEVM runtime. The source-build contract installs `zevm` to `./zig-out/bin/zevm`.
+Trusted mode is ZEVM's writable local dev-node runtime.
 
-## Current HEAD As Of 2026-03-29
+> Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).
+>
+> Prerequisite: complete [Installation](./installation) first, including Zig, sibling `voltaire`/`guillotine-mini` checkouts, and a successful source build that produces `./zig-out/bin/zevm`.
 
-- `zig build` currently fails first in `src/rpc/server.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope`
-- `zig build test` currently fails in `src/rpc/dispatcher_test.zig`, `src/rpc/server.zig`, and `src/tx_processor.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope` and current `guillotine-mini` requires a wider `evm.init` signature
-- `src/rpc/server.zig.parseConfig` still only parses `--host` and `--port`
-- there is no executable trusted-mode startup path yet
-- mining, fork startup, and managed-account startup are not wired through the executable path
-- core-read helpers still carry live `C-004` contradictions, including placeholder `eth_getCode`, malformed-slot handling in `eth_getStorageAt`, and synthetic `eth_feeHistory`
-- `src/node/runtime.zig` and `src/genesis.zig` still disagree with the published managed-wallet contract
-- the commands and first-call examples below are contract examples only; current `HEAD` does not run them on March 29, 2026
+## 1. Start The Node
 
-## Intended Behavior
+Before running startup commands, re-check [Installation](./installation) prerequisites: Zig, sibling `../voltaire` and `../guillotine-mini` repos, and the pinned build tuple in release `release-tuple.json` from [ZEVM release metadata](https://github.com/evmts/zevm/releases). For contract source ownership and docs-first change flow, see [Canonical Specs And Docs-First Process](../reference/specs-and-process).
 
-Trusted mode is the writable local dev-node runtime. Its canonical nonstandard methods are `zevm_*`, and the accepted compatibility aliases are documented in the repo-local reference pages.
-
-### Intended Startup
-
-Trusted mode starts by default:
+Default startup (trusted mode):
 
 ```bash
 ./zig-out/bin/zevm
 ```
 
-The equivalent explicit startup is:
+Equivalent explicit startup:
 
 ```bash
 ./zig-out/bin/zevm --mode trusted --host 127.0.0.1 --port 8545
 ```
 
-If a config file already selects `mode.trusted`, `--mode trusted` is optional and only confirms the branch.
+Config-file startup equivalent (`mode.trusted`):
 
-Trusted mode also accepts the phase-1 development flags defined by the PRD:
+```bash
+./zig-out/bin/zevm --config ./zevm.config.json
+```
+
+```json
+{
+  "mode": {
+    "trusted": {
+      "mining": { "type": "auto" }
+    }
+  }
+}
+```
+
+See [Configuration Overview](../reference/configuration/overview) for full config shape and CLI/config precedence.
+
+## 2. Verify Baseline RPC
+
+```bash
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}'
+```
+
+```bash
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":2,"method":"eth_blockNumber","params":[]}'
+```
+
+```bash
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":3,"method":"eth_accounts","params":[]}'
+```
+
+Default trusted-mode values:
+
+- `eth_chainId` returns `0x7a69` (`31337`)
+- `eth_accounts` returns 10 managed dev accounts in index order
+- `eth_coinbase` is the managed account at `coinbaseIndex` (default `0`)
+- exact wallet contract (mnemonic, derivation path, addresses, private keys, and signing constraints): [Managed Dev Wallet (Trusted Mode)](../reference/json-rpc/managed-dev-wallet)
+
+> Warning: managed dev-account keys are deterministic/public test keys. Use them only for local development; never use them in production or with real funds.
+
+## 3. Send A Local Transaction
+
+This sends `1 ETH` from managed account `0` to managed account `1`:
+
+```bash
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{
+    "jsonrpc":"2.0",
+    "id":4,
+    "method":"eth_sendTransaction",
+    "params":[{
+      "from":"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "to":"0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+      "value":"0xde0b6b3a7640000"
+    }]
+  }'
+```
+
+Set `TX_HASH` to the `result` returned by `eth_sendTransaction`, then fetch the receipt:
+
+```bash
+TX_HASH=0x... # use the tx hash returned by the previous call
+
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":5,"method":"eth_getTransactionReceipt","params":["'"$TX_HASH"'"]}'
+```
+
+## 4. Manual Mining Flow (Optional)
+
+Start with manual mining:
 
 ```bash
 ./zig-out/bin/zevm --mode trusted --mining manual
 ```
 
-```bash
-./zig-out/bin/zevm --mode trusted --mining interval --block-time 12
-```
+Mine one block on demand:
 
 ```bash
-./zig-out/bin/zevm --mode trusted --fork-url https://rpc.example --fork-block-number 22000000
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":6,"method":"zevm_mine","params":[]}'
 ```
 
-### Mining Modes
+Mine multiple blocks:
 
-`--mining` maps to `mode.trusted.mining`:
-
-- `auto` uses automatic block production
-- `manual` mines only when requested
-- `interval` requires `--block-time <seconds>`
-
-`--block-time` is only valid with `--mining interval`.
-`--mining interval` without `--block-time` fails startup.
-
-### Forked Startup
-
-Forking stays inside trusted mode and does not change `chainId`.
-
-- `--fork-url` mirrors `mode.trusted.fork.url`
-- `--fork-block-number` mirrors `mode.trusted.fork.blockNumber`
-- omitting the block number forks from the upstream latest block
-- `--fork-block-number` without `--fork-url` is a hard startup failure
-
-### Defaults
-
-| Setting | Default |
-| --- | --- |
-| `chainId` | `31337` |
-| `coinbaseIndex` | `0` |
-| `initialBalance` | `10000000000000000000000` |
-| `gasPrice` | `2000000000` |
-| `baseFee` | `1000000000` |
-| `blobBaseFee` | `1` |
-| `maxPriorityFeePerGas` | `1000000000` |
-| `blockGasLimit` | `30000000` |
-| `mining` | `auto` |
-
-`coinbaseIndex` defaults to `0` and valid values are `0` through `9`.
-
-### Managed Accounts
-
-The exact 10-account managed-wallet table is part of the trusted-mode contract. `coinbaseIndex` selects from that table, `eth_accounts` returns it in ascending index order, and `eth_sendTransaction` signs only for those managed accounts unless impersonation is active.
-
-<TrustedManagedWallet />
-
-### First Successful Calls
-
-These are contract examples for the first calls that should succeed against a fresh trusted node once the documented startup path exists. They are not a claim about current runnable `HEAD`.
-
-The quickstart-owned first-call surface is the trusted identity and default-read baseline: `eth_chainId`, `eth_blockNumber`, `eth_accounts`, `eth_coinbase`, `eth_getBalance`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, and `eth_blobBaseFee`.
-
-```json
-{ "jsonrpc": "2.0", "id": 1, "method": "eth_chainId", "params": [] }
+```bash
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":7,"method":"zevm_mine","params":["0x3"]}'
 ```
 
-Returns `0x7a69` by default.
+## Validation Rules You Will Hit Most Often
 
-```json
-{ "jsonrpc": "2.0", "id": 2, "method": "eth_blockNumber", "params": [] }
-```
+- `--block-time` is valid only with `--mining interval`.
+- `--mining interval` requires `--block-time <seconds>`.
+- `coinbaseIndex` must be in `0..9`.
 
-Returns `0x0` on a fresh trusted node before additional mining.
+## Next Steps
 
-```json
-{ "jsonrpc": "2.0", "id": 3, "method": "eth_accounts", "params": [] }
-```
-
-Returns the exact 10-address managed-account table above in ascending index order.
-
-```json
-{ "jsonrpc": "2.0", "id": 4, "method": "eth_coinbase", "params": [] }
-```
-
-Returns the managed account selected by `coinbaseIndex`, which is account `0` by default.
-
-```json
-{ "jsonrpc": "2.0", "id": 5, "method": "eth_getBalance", "params": ["0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266", "latest"] }
-```
-
-Returns that account's configured trusted-mode balance at the current local head. Exact tuple and error rules for these calls live on [Core Reads](../reference/json-rpc/core-reads).
-
-```json
-{ "jsonrpc": "2.0", "id": 6, "method": "eth_gasPrice", "params": [] }
-```
-
-Returns `0x77359400` by default. On the same fresh node, `eth_maxPriorityFeePerGas` returns `0x3b9aca00` and `eth_blobBaseFee` returns `0x1`.
-
-### Config Examples
-
-The JSON snippets below show the exact settled trusted-mode shapes.
-
-```json
-{
-  "rpc": {
-    "host": "127.0.0.1",
-    "port": 8545
-  },
-  "mode": {
-    "trusted": {
-      "chainId": 31337,
-      "coinbaseIndex": 0,
-      "initialBalance": "10000000000000000000000",
-      "gasPrice": "2000000000",
-      "baseFee": "1000000000",
-      "blobBaseFee": "1",
-      "maxPriorityFeePerGas": "1000000000",
-      "blockGasLimit": 30000000,
-      "mining": {
-        "type": "manual"
-      },
-      "fork": null
-    }
-  }
-}
-```
-
-```json
-{
-  "rpc": {
-    "host": "127.0.0.1",
-    "port": 8545
-  },
-  "mode": {
-    "trusted": {
-      "chainId": 31337,
-      "coinbaseIndex": 0,
-      "initialBalance": "10000000000000000000000",
-      "gasPrice": "2000000000",
-      "baseFee": "1000000000",
-      "blobBaseFee": "1",
-      "maxPriorityFeePerGas": "1000000000",
-      "blockGasLimit": 30000000,
-      "mining": {
-        "type": "interval",
-        "blockTime": 12
-      },
-      "fork": null
-    }
-  }
-}
-```
-
-```json
-{
-  "rpc": {
-    "host": "127.0.0.1",
-    "port": 8545
-  },
-  "mode": {
-    "trusted": {
-      "chainId": 31337,
-      "coinbaseIndex": 0,
-      "initialBalance": "10000000000000000000000",
-      "gasPrice": "2000000000",
-      "baseFee": "1000000000",
-      "blobBaseFee": "1",
-      "maxPriorityFeePerGas": "1000000000",
-      "blockGasLimit": 30000000,
-      "mining": {
-        "type": "manual"
-      },
-      "fork": {
-        "url": "https://rpc.example",
-        "blockNumber": 22000000
-      }
-    }
-  }
-}
-```
-
-### Validation Rules
-
-Startup fails before opening the listener when:
-
-- `--block-time` is supplied without `--mining interval`
-- `--fork-block-number` is supplied without `--fork-url`
-- `coinbaseIndex` is outside `0..9`
-- any trusted-only field is supplied in light mode
-
-## Traceability
-
-- Source IDs: `HEAD-01`, `BOOT-01`, `BOOT-02`, `BOOT-07`, `TRUST-01`, `TRUST-02`, `TRUST-03`, `TRUST-04`, `TRUST-05`, `TRUST-09`
-- Contradiction IDs: `C-001`, `C-002`, `C-004`, `C-008`, `C-010`
-- Question IDs: -
-- Internal support docs: `startup-and-configuration.md`, `trusted-mode-semantics.md`, `rpc-support-matrix.md`
-- Notes: These commands and first-call examples are contract examples only; current `HEAD` does not run them on March 29, 2026.
-
-## Next Pages
-
-- [Runtime Modes](../concepts/runtime-modes)
-- [Core Reads](../reference/json-rpc/core-reads)
-- [JSON-RPC Overview](../reference/json-rpc/overview)
+- [Forked Dev Node](./forked-dev-node)
+- [Managed Dev Wallet (Trusted Mode)](../reference/json-rpc/managed-dev-wallet)
+- [ZEVM Controls](../reference/json-rpc/dev-controls)
+- [Transactions And Mining](../reference/json-rpc/transactions-and-mining)

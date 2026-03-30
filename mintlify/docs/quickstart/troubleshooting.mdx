@@ -1,0 +1,194 @@
+---
+title: Troubleshooting
+description: Diagnose common ZEVM build, startup, configuration, and RPC errors.
+---
+
+# Troubleshooting
+
+Before troubleshooting startup/runtime behavior, confirm [Installation](./installation) prerequisites are satisfied (Zig version, sibling `voltaire`/`guillotine-mini` checkouts, and successful source build output at `./zig-out/bin/zevm`).
+
+## Capture Startup Logs (Phase 1)
+
+Phase 1 has no dedicated ZEVM startup log-level or log-path knobs in the public CLI/config contract.
+Capture process `stderr` from your shell or service manager and inspect it for startup warnings/errors.
+
+Shell redirection example:
+
+```bash
+./zig-out/bin/zevm --mode light --network sepolia --consensus-rpc-url https://beacon.example \
+  1>./zevm.stdout.log \
+  2>./zevm.stderr.log
+```
+
+Systemd example:
+
+```bash
+journalctl -u zevm.service -b --no-pager
+```
+
+When startup fails before listener bind (or warns about non-strict stale checkpoint policy), check captured `stderr` first.
+
+## Build And Startup Issues
+
+| Symptom | Likely cause | Fix |
+| --- | --- | --- |
+| `zig build` fails to resolve dependencies | Missing sibling repos | Ensure `../voltaire` and `../guillotine-mini` exist next to `zevm`, or update `build.zig.zon` paths |
+| Startup fails with unknown flag | Unsupported CLI argument | Use only documented startup flags from configuration reference pages |
+| Startup fails loading `--config` | Missing file, unreadable file, or malformed JSON | Use the reported path/failure class to fix the config file; ZEVM exits non-zero and does not fall back to defaults |
+| Startup fails with `--mode` + `--config` mode mismatch | User-supplied `--mode` disagrees with the single selected config mode branch | Ensure exactly one mode branch is set in config and it matches `--mode` (`mode.trusted` with `--mode trusted`, `mode.light` with `--mode light`); see [Configuration Overview -> Mode-branch Rules](../reference/configuration/overview#mode-branch-rules) |
+| Startup fails with `--mining interval` | Missing `--block-time` | Add `--block-time <seconds>` |
+| Startup fails with `--block-time` | Mining mode is not `interval` | Use `--mining interval --block-time <seconds>` or remove `--block-time` |
+| Startup fails with `--fork-block-number` | Missing `--fork-url` | Provide `--fork-url` whenever `--fork-block-number` is set |
+| Light-mode startup fails | Missing `--consensus-rpc-url` | Provide a valid consensus RPC URL |
+| Light-mode startup fails before RPC listener opens, and logs mention `/eth/v1/beacon/genesis` request/parse errors | Consensus endpoint is unreachable, non-Beacon, requires auth, returns non-`200`, or serves malformed genesis payload | Verify `consensusRpcUrl` reaches a Beacon API and that `GET /eth/v1/beacon/genesis` returns HTTP `200` with `data.genesis_validators_root`; see [Validation Rules](../reference/configuration/light-mode#validation-rules) and [Light-mode startup handshake checks](#light-mode-startup-handshake-checks) |
+| Light-mode startup fails with genesis/root mismatch (selected `network` disagrees with returned `genesis_validators_root`) | Beacon endpoint serves a different network than configured `network` | Point `--consensus-rpc-url` to Beacon API for the same network or switch `--network` to match endpoint root; verify against [Validation Rules](../reference/configuration/light-mode#validation-rules) |
+| Light-mode startup fails with checkpoint/network mismatch | Selected startup checkpoint does not match selected light network | Use a checkpoint for the selected network, or remove/replace explicit and persisted checkpoint inputs |
+| Light-mode startup fails on checkpoint parsing | Bad explicit checkpoint or malformed `checkpointDir/checkpoint` file | Use a 32-byte `0x`-prefixed checkpoint for CLI/config; keep persisted file as 64 hex chars without `0x` |
+| Light-mode startup logs a stale-checkpoint warning but still opens listener | `strictCheckpointAge = false` and checkpoint is older than `maxCheckpointAgeSeconds` | Confirm selected-source winner first, then recompute checkpoint age from the Beacon derivation chain (`checkpointTimeSeconds`, `age` formula) and refresh/tighten policy as needed. See [Light-Mode Configuration -> Checkpoint Selection Precedence](../reference/configuration/light-mode#checkpoint-selection-precedence) and [Validation Rules](../reference/configuration/light-mode#validation-rules). |
+| Light-mode startup fails for stale checkpoint | `strictCheckpointAge = true` and checkpoint is older than `maxCheckpointAgeSeconds` | Strict stale policy is startup-fatal (`-32012`). Verify selected-source/no-fallback behavior, derive `checkpointTimeSeconds` from Beacon genesis+header inputs, then use a newer checkpoint or relax strict age policy. See [Light-Mode Configuration -> Checkpoint Selection Precedence](../reference/configuration/light-mode#checkpoint-selection-precedence) and [Validation Rules](../reference/configuration/light-mode#validation-rules). |
+
+## Light-Mode Startup Handshake Checks
+
+Light-mode startup performs a pre-listener network-validation handshake:
+
+1. `GET <consensusRpcUrl>/eth/v1/beacon/genesis`
+2. require HTTP `200`
+3. require `data.genesis_validators_root` to parse as `Hash32`
+4. require root match for selected `network` using the [canonical chain-id/root mapping](../reference/configuration/light-mode#canonical-chain-id-and-genesis-root-mapping)
+
+Quick check:
+
+```bash
+CONSENSUS_RPC_URL=https://beacon.example
+curl -sS "$CONSENSUS_RPC_URL/eth/v1/beacon/genesis" | jq .
+```
+
+Root-only check:
+
+```bash
+CONSENSUS_RPC_URL=https://beacon.example
+curl -sS "$CONSENSUS_RPC_URL/eth/v1/beacon/genesis" \
+  | jq -r '.data.genesis_validators_root'
+```
+
+If startup fails at this handshake:
+
+- verify URL, DNS, TLS, auth headers/proxy requirements, and that endpoint is Beacon API (not execution JSON-RPC)
+- verify returned root matches selected `--network`
+- if behind a gateway, ensure it preserves Beacon path/version and response body shape
+- re-check [Validation Rules](../reference/configuration/light-mode#validation-rules), then restart ZEVM
+
+## Stale-Checkpoint Debug Chain
+
+When troubleshooting stale-checkpoint warnings/failures, use this order:
+
+1. Confirm which source won startup selection (`explicit`, `persisted`, or `default`) via `zevm_lightSyncStatus.checkpointSource`.
+2. Apply selected-source semantics: once a source is selected, ZEVM does not fall back to lower-precedence sources on selected-source validation/derivation failures.
+3. Recompute age from the documented chain:
+   `checkpointTimeSeconds = genesisTimeSeconds + (checkpointSlot * 12)`,
+   `age = max(0, startupTimeSeconds - checkpointTimeSeconds)`.
+4. Compare `age` to `maxCheckpointAgeSeconds`, then apply stale policy (`strictCheckpointAge = false` warns/continues, `true` fails startup with `-32012`).
+
+Reference contract links:
+
+- [Light-Mode Configuration -> Checkpoint Selection Precedence](../reference/configuration/light-mode#checkpoint-selection-precedence)
+- [Light-Mode Configuration -> Validation Rules](../reference/configuration/light-mode#validation-rules)
+
+## Runtime RPC Error Codes
+
+| Code | Meaning | Typical fix |
+| --- | --- | --- |
+| `-32601` | Method not found | Check method name, spelling, and namespace |
+| `-32602` | Invalid params | Validate tuple length, hex encoding, addresses, and block selectors |
+| `-32010` | Unsupported in current mode | Use methods supported by the active runtime mode, or switch modes |
+| `-32011` | Light mode not ready | Poll `zevm_lightSyncStatus` until `ready = true`; apply [Verified Light-Mode Reads readiness semantics](../reference/json-rpc/verified-light-mode-reads#readiness-and-proof-rules) |
+| `-32014` | Proof verification failure | Retry with a supported selector and verify upstream consensus/execution inputs |
+| `-32015` | Malformed data from upstream proof source | Check upstream RPC health and response format |
+
+## HTTP Transport Statuses (JSON-RPC)
+
+These HTTP statuses are transport-level behavior, not JSON-RPC error objects.
+
+| HTTP status | Meaning | Practical fixes |
+| --- | --- | --- |
+| `404` | Request path does not match the ZEVM JSON-RPC endpoint (`/`) | Send requests to `/` (for example `http://127.0.0.1:8545/`), remove extra path segments (`/rpc`, `/v1`, etc.), and check reverse-proxy path rewrites |
+| `405` | Request to `/` used a method other than `POST` | Use `POST` for JSON-RPC calls; update client/proxy health checks that currently use `GET` on `/` |
+| `415` | `POST /` request has missing/unsupported `Content-Type` | Set `Content-Type: application/json` (parameters like `application/json; charset=utf-8` are allowed) and ensure proxies do not strip or overwrite the header |
+| `204` | Notification-only request (or notification-only batch), so ZEVM returns no JSON-RPC body by design | Include an `id` if you expect a JSON-RPC response payload; keep notification calls id-less when no response is needed |
+
+Quick transport checks:
+
+```bash
+# 404: wrong path
+curl -i -X POST http://127.0.0.1:8545/rpc \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}'
+
+# 405: wrong method
+curl -i -X GET http://127.0.0.1:8545/
+
+# 415: wrong content type
+curl -i -X POST http://127.0.0.1:8545/ \
+  -H 'content-type: text/plain' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}'
+
+# 204: notification (no id)
+curl -i -X POST http://127.0.0.1:8545/ \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","method":"eth_chainId","params":[]}'
+```
+
+## Startup-Reserved Codes (Pre-Listener)
+
+These reserved codes describe startup validation failures before ZEVM opens the HTTP listener. They occur only during startup and are never returned in runtime JSON-RPC responses after the listener is open.
+
+| Code | Meaning | Typical fix |
+| --- | --- | --- |
+| `-32012` | Selected checkpoint too old under strict startup policy | Refresh checkpoint or relax strict age policy |
+| `-32013` | Checkpoint input or persisted checkpoint is malformed/corrupt | Fix checkpoint input or persisted checkpoint file |
+
+## Quick Diagnostics
+
+Check chain ID:
+
+```bash
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}'
+```
+
+Check trusted-mode identity (`zevm_metadata`):
+
+```bash
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":2,"method":"zevm_metadata","params":[]}'
+```
+
+Check light-mode identity/readiness (`zevm_lightSyncStatus`):
+
+```bash
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":3,"method":"zevm_lightSyncStatus","params":[]}'
+```
+
+Interpretation:
+
+- `zevm_metadata` succeeds only in trusted mode (`-32010` in light mode)
+- `zevm_lightSyncStatus` succeeds only in light mode (`-32010` in trusted mode)
+
+Validate JSON config locally:
+
+```bash
+jq . /path/to/zevm.config.json
+```
+
+## Related Pages
+
+- [Run Light Mode](./run-light-mode)
+- [Configuration Overview](../reference/configuration/overview)
+- [Trusted-Mode Configuration](../reference/configuration/trusted-mode)
+- [Light-Mode Configuration](../reference/configuration/light-mode)
+- [JSON-RPC Overview](../reference/json-rpc/overview)
+- [Verified Light-Mode Reads](../reference/json-rpc/verified-light-mode-reads)

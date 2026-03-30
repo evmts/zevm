@@ -5,18 +5,25 @@
 - **Category**: `cat-5-block-queries`
 - **Goal**: Create `TransactionResponse` type in voltaire's JSON-RPC layer that extends primitives.Transaction with block metadata (blockHash, blockNumber, transactionIndex, from), then update Result types for three RPC methods.
 
+## Contract Status (Archival Note)
+
+- As of March 30, 2026, the ZEVM transaction response contract explicitly excludes nonstandard transaction `blockTimestamp`.
+- As of March 30, 2026, the ZEVM phase-1 transaction object contract fixes `type` to `0x0` (legacy-shaped transaction object).
+- Historical references to execution-apis fixtures and EDR/Anvil behavior that include `blockTimestamp` are retained in this document for context only; they are not implementation targets for this ticket.
+- Historical references to typed transaction variants (`0x1`/`0x2`/`0x3`/`0x4`) are retained for context only and do not override the phase-1 contract.
+
 ---
 
 ## Overview
 
-This plan implements a `TransactionResponse` type for Ethereum JSON-RPC transaction queries. The type wraps primitives.Transaction with contextual block metadata required by the execution APIs specification.
+This plan implements a `TransactionResponse` type for Ethereum JSON-RPC transaction queries. The type wraps primitives.Transaction with contextual block metadata required by the ZEVM phase-1 JSON-RPC contract (legacy-shaped transaction object).
 
 ### Key Design Decisions
 
 1. **Location**: Add to `../voltaire/packages/voltaire-zig/src/jsonrpc/types.zig` (or new file `types/TransactionResponse.zig`)
-2. **Structure**: Union type representing all 5 transaction variants (legacy/2930/1559/4844/7702) with common metadata fields
+2. **Structure**: Phase-1 legacy-shaped response (`type = 0x0`) with common metadata fields; typed-union sketches are archival-only context
 3. **Nullability**: Result is `?TransactionResponse` - returns `null` when transaction not found
-4. **Pending Semantics**: Block metadata fields (`blockHash`, `blockNumber`, `transactionIndex`) are optional for pending transactions
+4. **Pending Semantics**: Result remains nullable for not-found; current phase-1 trusted tx query methods return mined responses with non-null block metadata
 5. **Sender Recovery**: `from` field is derived from signature recovery (always present for valid signed transactions)
 
 ---
@@ -31,29 +38,27 @@ This plan implements a `TransactionResponse` type for Ethereum JSON-RPC transact
 **Tests to Write**:
 ```zig
 // Test: TransactionResponse can represent legacy transaction
-// Test: TransactionResponse can represent EIP-2930 transaction  
-// Test: TransactionResponse can represent EIP-1559 transaction
-// Test: TransactionResponse can represent EIP-4844 transaction
-// Test: TransactionResponse can represent EIP-7702 transaction
 // Test: TransactionResponse with block metadata (mined tx)
-// Test: TransactionResponse without block metadata (pending tx)
 // Test: TransactionResponse jsonStringify outputs correct RPC format for legacy
-// Test: TransactionResponse jsonStringify outputs correct RPC format for EIP-1559
-// Test: TransactionResponse jsonStringify outputs correct RPC format for EIP-4844
-// Test: TransactionResponse jsonStringify outputs correct RPC format for EIP-7702
-// Test: TransactionResponse jsonStringify includes accessList for typed txs
-// Test: TransactionResponse jsonStringify includes blob fields for EIP-4844
-// Test: TransactionResponse jsonStringify includes authorizationList for EIP-7702
+// Test: TransactionResponse jsonStringify keeps type fixed to "0x0"
+// Test: TransactionResponse excludes nonstandard blockTimestamp
+// Test: TransactionResponse jsonParseFromValue parses legacy response
 ```
 
 **Acceptance**: Tests compile but fail (type doesn't exist yet).
 
 ---
 
-#### Step 2: Implement TransactionResponse Type
+#### Step 2: Historical Typed-Union Sketch (Superseded)
 **File**: `../voltaire/packages/voltaire-zig/src/jsonrpc/types/TransactionResponse.zig`
 
-**Implementation**:
+**Status**: archival context only; not an active phase-1 implementation step.
+
+> Archive note: the union-style implementation sketch below is historical context only and is not a phase-1 implementation target. Current ZEVM contract output for this surface is legacy-shaped (`type = 0x0`) and excludes nonstandard transaction `blockTimestamp`.
+
+**Phase-1 target for this ticket**: implement a legacy-shaped `TransactionResponse` surface; do not implement typed transaction unions in phase 1.
+
+**Historical sketch (non-target)**:
 ```zig
 const std = @import("std");
 const primitives = @import("../../primitives/root.zig");
@@ -74,8 +79,6 @@ pub const TransactionResponse = union(enum) {
         block_hash: ?types.Hash,
         /// Block number (null for pending)
         block_number: ?u64,
-        /// Block timestamp (null for pending)
-        block_timestamp: ?u64,
         /// Transaction index in block (null for pending)
         transaction_index: ?u64,
         /// Sender address (recovered from signature)
@@ -183,13 +186,13 @@ pub const TransactionResponse = union(enum) {
     /// Serialize to JSON-RPC format per execution-apis spec
     pub fn jsonStringify(self: TransactionResponse, jws: *std.json.Stringify) !void {
         // Implementation outputs spec-compliant JSON
-        // - type: "0x0" | "0x1" | "0x2" | "0x3" | "0x4"
+        // - type: "0x0" in phase 1
         // - blockHash: null | "0x..."
         // - blockNumber: null | "0x..."
-        // - blockTimestamp: null | "0x..."
         // - from: "0x..."
         // - hash: "0x..."
         // - transactionIndex: null | "0x..."
+        // - blockTimestamp: excluded by current ZEVM contract (archival references may still show it)
         // - All tx-type-specific fields
     }
 
@@ -208,7 +211,7 @@ pub const TransactionResponse = union(enum) {
 };
 ```
 
-**Acceptance**: Tests from Step 1 pass.
+**Acceptance (phase-1 active target)**: Legacy-only tests from Step 1 pass.
 
 ---
 
@@ -308,19 +311,12 @@ pub const Result = struct {
 
 **Test Vectors from execution-apis** (already present in context):
 - `get-legacy-tx.io` - Legacy transaction format
-- `get-access-list.io` - EIP-2930 transaction format  
-- `get-dynamic-fee.io` - EIP-1559 transaction format
-- `get-blob-tx.io` - EIP-4844 transaction format
-- `get-setcode-tx.io` - EIP-7702 transaction format
 - `get-notfound-tx.io` - Null result for missing transaction
+- Historical-only vectors (non-gating for phase 1): `get-access-list.io`, `get-dynamic-fee.io`, `get-blob-tx.io`, `get-setcode-tx.io`
 
 **Tests**:
 ```zig
 // Test: Legacy transaction serializes matching execution-apis vector
-// Test: EIP-2930 transaction serializes matching execution-apis vector
-// Test: EIP-1559 transaction serializes matching execution-apis vector
-// Test: EIP-4844 transaction serializes matching execution-apis vector
-// Test: EIP-7702 transaction serializes matching execution-apis vector
 // Test: Not found returns null (matching execution-apis vector)
 ```
 
@@ -348,9 +344,8 @@ pub const Result = struct {
 |------|--------|------------|
 | Circular import between primitives and jsonrpc types | High | TransactionResponse lives in jsonrpc layer, imports primitives. Never import jsonrpc from primitives. |
 | Signature recovery for `from` field is complex | Medium | Document that `from` requires sender recovery. Add helper in crypto module if needed. |
-| Optional block fields vs execution-apis spec | Medium | Spec includes `blockTimestamp` - decide if we include it (reference: EDR/Anvil include it). |
-| JSON serialization of large optional unions | Low | Use explicit jsonStringify implementation, not auto-derived. |
-| EIP-7702 authorization list serialization | Medium | Ensure AuthorizationEntry matches execution-apis schema exactly. |
+| Contract drift vs execution-apis/EDR examples | Medium | ZEVM contract decision is fixed: exclude transaction `blockTimestamp`; keep references archival-only and assert it is not serialized/parsing-required. |
+| Historical typed-union sketch causes implementation drift | Low | Keep typed-union material explicitly archival; phase-1 implementation/tests stay legacy-only (`type = 0x0`). |
 
 ---
 
@@ -363,12 +358,12 @@ pub const Result = struct {
 - [ ] Type includes `blockNumber` field (nullable)
 - [ ] Type includes `transactionIndex` field (nullable)
 - [ ] Type includes `from` field (required)
-- [ ] Type supports all 5 transaction variants
+- [ ] Type is legacy-shaped for phase 1 (`type` fixed to `0x0`)
 - [ ] `eth_getTransactionByHash.zig` Result uses `?TransactionResponse`
 - [ ] `eth_getTransactionByBlockHashAndIndex.zig` Result uses `?TransactionResponse`
 - [ ] `eth_getTransactionByBlockNumberAndIndex.zig` Result uses `?TransactionResponse`
 - [ ] All types have JSON serialization tests
-- [ ] Execution-apis test vectors pass
+- [ ] Phase-1 execution vectors (`get-legacy-tx.io`, `get-notfound-tx.io`) pass
 
 ### Test Execution
 
@@ -387,37 +382,30 @@ zig build test --filter eth_getTransactionByBlockNumberAndIndex
 
 ### JSON Serialization Format
 
-Per execution-apis spec, transaction responses must include:
+Per ZEVM contract, transaction responses must include:
 
-**Common Fields (all types)**:
-- `type`: "0x0" | "0x1" | "0x2" | "0x3" | "0x4"
+**Common Fields (phase-1 legacy response)**:
+- `type`: "0x0"
 - `blockHash`: null or "0x..." (32 bytes)
 - `blockNumber`: null or hex number
-- `blockTimestamp`: null or hex number (optional per ticket, but spec includes)
 - `from`: "0x..." (20 bytes)
 - `hash`: "0x..." (32 bytes)
 - `transactionIndex`: null or hex number
 
+Contract exclusion:
+- `blockTimestamp` is intentionally excluded from transaction responses in ZEVM.
+- Historical context: execution-apis references and EDR/Anvil outputs may include `blockTimestamp`; treat those as non-contract archival references for this ticket.
+- transaction object `type` is fixed to `0x0` in ZEVM phase 1.
+
 **Legacy Fields**:
 - `nonce`, `gasPrice`, `gas`, `to`, `value`, `input`, `v`, `r`, `s`, `chainId`
 
-**EIP-2930 Fields**:
-- `chainId`, `nonce`, `gasPrice`, `gas`, `to`, `value`, `input`, `accessList`
-- `yParity`, `v`, `r`, `s` (v optional for backwards compat)
-
-**EIP-1559 Fields**:
-- All EIP-2930 fields + `maxFeePerGas`, `maxPriorityFeePerGas`
-
-**EIP-4844 Fields**:
-- All EIP-1559 fields + `maxFeePerBlobGas`, `blobVersionedHashes`
-
-**EIP-7702 Fields**:
-- All EIP-1559 fields + `authorizationList`
+Historical context only:
+- Typed transaction field sets (EIP-2930/1559/4844/7702) may appear in archived upstream vectors and references, but they are not phase-1 implementation targets for this plan.
 
 ### Sender Recovery
 
 The `from` field requires ECDSA signature recovery:
-- For typed transactions (1-4): use `y_parity` (0 or 1)
 - For legacy: use `v` (27, 28 for pre-EIP-155; chain_id * 2 + 35/36 for EIP-155)
 - Recovery involves computing tx hash, recovering public key, deriving address
 

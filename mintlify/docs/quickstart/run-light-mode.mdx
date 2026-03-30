@@ -1,0 +1,242 @@
+---
+title: Run Light Mode
+description: Start ZEVM light mode, check readiness, and run proof-backed reads.
+---
+
+# Run Light Mode
+
+Light mode is ZEVM's read-only, proof-backed, consensus-anchored runtime.
+
+> Prerequisite: complete [Installation](./installation) first, including Zig, sibling `voltaire`/`guillotine-mini` checkouts, and a successful source build that produces `./zig-out/bin/zevm`.
+
+## 1. Start Light Mode
+
+Before startup, re-check [Installation](./installation) prerequisites (Zig, sibling repos, successful build).
+For release/build reproducibility and metadata audit workflow, use [Release Metadata Runbook](../reference/release-metadata-runbook).
+
+Minimal startup:
+
+```bash
+./zig-out/bin/zevm \
+  --mode light \
+  --network sepolia \
+  --consensus-rpc-url https://beacon.example
+```
+
+Config-file startup equivalent (`mode.light`):
+
+```bash
+./zig-out/bin/zevm --config ./zevm.config.json
+```
+
+```json
+{
+  "mode": {
+    "light": {
+      "network": "sepolia",
+      "consensusRpcUrl": "https://beacon.example"
+    }
+  }
+}
+```
+
+Security baseline:
+
+- keep `--host 127.0.0.1` unless remote access is required
+- if remote access is required, restrict ingress to trusted source IPs
+- terminate TLS and enforce auth in a reverse proxy or gateway in front of ZEVM
+- do not expose ZEVM RPC directly to the public Internet
+
+Operational startup notes:
+
+- supported light networks are `mainnet`, `sepolia`, `holesky`
+- examples on this page use `sepolia`; keep `--network`, `--consensus-rpc-url`, and `checkpointDir` for the same network
+- `--consensus-rpc-url` must be a Beacon API for the same selected network
+- startup validation runs before listener bind (consensus/network handshake + checkpoint/network checks)
+- handshake root checks use the [canonical chain-id/genesis-root mapping](../reference/configuration/light-mode#canonical-chain-id-and-genesis-root-mapping)
+- startup always calls `GET <consensusRpcUrl>/eth/v1/beacon/genesis` and validates `data.genesis_validators_root` against `network`; any handshake failure or root mismatch exits before listener bind
+
+Canonical chain-id/genesis-root mapping for supported light networks:
+
+| Network | `eth_chainId` | `genesis_validators_root` |
+| --- | --- | --- |
+| `mainnet` | `0x1` | `0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95` |
+| `sepolia` | `0xaa36a7` | `0xd8ea171f3c94aea21ebc42a1ed61052acf3f9209c00e4efbaaddac09ed9b8078` |
+| `holesky` | `0x4268` | `0x9143aa7c615a7f7115e2b6aac319c03529df8242ae705fba9df39b79c59fa8b1` |
+
+Canonical startup/config contract:
+
+- [Light-Mode Configuration](../reference/configuration/light-mode)
+- [CLI And Config Field Map](../reference/configuration/light-mode#cli-and-config-field-map)
+- [Validation Rules](../reference/configuration/light-mode#validation-rules)
+- [Troubleshooting handshake failures](./troubleshooting#light-mode-startup-handshake-checks)
+
+## 2. Choose Startup Checkpoint Input
+
+### Precedence
+
+Startup checkpoint precedence:
+
+1. `--checkpoint` (CLI), when provided
+2. `mode.light.checkpoint` (config), when set to a non-null value
+3. `checkpointDir/checkpoint` (persisted startup input)
+4. baked default checkpoint for selected network
+
+When `--checkpoint` or a non-null `mode.light.checkpoint` is provided, that explicit input overrides `checkpointDir/checkpoint` for startup selection. A config value of `mode.light.checkpoint: null` is treated as absent. To use persisted startup source (`checkpointSource = "persisted"`), remove explicit checkpoint inputs.
+
+`checkpointSource` in `zevm_lightSyncStatus` reports which source won at startup:
+
+- `explicit`: selected from CLI `--checkpoint` or config `mode.light.checkpoint`
+- `persisted`: selected from operator-managed `checkpointDir/checkpoint`
+- `default`: selected from baked network default when explicit and persisted inputs are absent
+- this value is startup-source metadata and remains stable for the process lifetime
+
+Reference callouts:
+
+- [Checkpoint Selection Precedence](../reference/configuration/light-mode#checkpoint-selection-precedence)
+- [Validation Rules](../reference/configuration/light-mode#validation-rules)
+- [`zevm_lightSyncStatus` Result](../reference/json-rpc/verified-light-mode-reads#zevm_lightsyncstatus-result)
+
+Use the configuration reference above for these exact semantics:
+
+- checkpoint age derivation chain, including `checkpointTimeSeconds` and `age = max(0, startupTimeSeconds - checkpointTimeSeconds)`
+- selected-source terminal behavior (no fallback to lower-precedence sources after selection)
+- stale policy behavior (`strictCheckpointAge = false` warns and continues, `strictCheckpointAge = true` fails startup)
+
+### Source Format
+
+Compact source-to-format map:
+
+- CLI/config (`--checkpoint` or `mode.light.checkpoint`) -> checkpoint hash value (required format: `0x`-prefixed 32-byte hash / `Hash32`)
+- persisted file (`checkpointDir/checkpoint`) -> 64 hex chars, no `0x`
+
+### Reuse Runbook Metadata Outputs
+
+If you already ran [Release Metadata Runbook](../reference/release-metadata-runbook), derive a network checkpoint from that runbook's `light-default-checkpoints.json` output:
+
+```bash
+RELEASE_IDENTIFIER='<published-release-identifier>'
+NETWORK=sepolia
+ARTIFACT_DIR=.ops/release-metadata/"$RELEASE_IDENTIFIER"
+
+RELEASE_DEFAULT_CHECKPOINT="$(jq -r --arg network "$NETWORK" '.defaults[$network] // empty' "$ARTIFACT_DIR/light-default-checkpoints.json")"
+
+test -n "$RELEASE_DEFAULT_CHECKPOINT"
+printf '%s\n' "$RELEASE_DEFAULT_CHECKPOINT" | grep -Eq '^0x[0-9a-fA-F]{64}$'
+```
+
+Use that value in either startup path:
+
+- explicit source: pass `--checkpoint "$RELEASE_DEFAULT_CHECKPOINT"` (or `mode.light.checkpoint`)
+- persisted source: write `${RELEASE_DEFAULT_CHECKPOINT#0x}` to `checkpointDir/checkpoint` (64 hex chars, no `0x`)
+
+Example with explicit checkpoint:
+
+```bash
+./zig-out/bin/zevm \
+  --mode light \
+  --network sepolia \
+  --consensus-rpc-url https://beacon.example \
+  --checkpoint 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+```
+
+### Seed Persisted Checkpoint
+
+When `--checkpoint-dir` and `mode.light.checkpointDir` are both unset, ZEVM resolves `checkpointDir` to `.zevm/checkpoints/<network>`, so the default persisted startup path is `.zevm/checkpoints/<network>/checkpoint` (for this page: `.zevm/checkpoints/sepolia/checkpoint`). See [Light-Mode Configuration](../reference/configuration/light-mode#cli-and-config-field-map) for path-resolution details.
+
+If using persisted startup input, write 64 hex characters (no `0x`) to `checkpointDir/checkpoint`. This file is operator-managed startup input: ZEVM does not create, update, or delete it during runtime. Persisted startup input is considered only when both explicit checkpoint inputs (`--checkpoint`, `mode.light.checkpoint`) are absent.
+
+```bash
+CHECKPOINT_DIR=.zevm/checkpoints/sepolia
+CHECKPOINT_HEX=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+mkdir -p "$CHECKPOINT_DIR"
+printf '%s\n' "$CHECKPOINT_HEX" > "$CHECKPOINT_DIR/checkpoint"
+```
+
+```bash
+trimmed="$(tr -d '[:space:]' < "$CHECKPOINT_DIR/checkpoint")"
+printf '%s\n' "$trimmed" | grep -Eq '^[0-9a-fA-F]{64}$'
+```
+
+Then restart ZEVM and confirm `checkpointSource`/`lastCheckpoint` from `zevm_lightSyncStatus`.
+
+Full checkpoint and stale-policy contract:
+
+- [Checkpoint Selection Precedence](../reference/configuration/light-mode#checkpoint-selection-precedence)
+- [Persisted Checkpoint Startup-Input Contract](../reference/configuration/light-mode#persisted-checkpoint-startup-input-contract)
+- [Release Metadata Runbook](../reference/release-metadata-runbook)
+
+## 3. Check Readiness With `zevm_lightSyncStatus`
+
+```bash
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"zevm_lightSyncStatus","params":[]}'
+```
+
+Serving guidance:
+
+- wait for `ready = true` with `status = "synced"` before treating proof-backed reads as available
+- `eth_chainId` is callable before readiness
+- readiness is non-monotonic: after reaching `ready = true`, ZEVM can return to `ready = false` if `status` leaves `synced` or slot coherence no longer holds (`finalizedSlot <= safeSlot <= optimisticSlot`)
+- `status = "error"` requires operator remediation and process restart before expecting readiness-gated reads to recover
+
+Error-state recovery path (`status = "error"`):
+
+1. Verify `network`, `consensusRpcUrl`, and checkpoint inputs (`--checkpoint`, `mode.light.checkpoint`, `checkpointDir/checkpoint`) for format/network mismatches.
+2. Correct the underlying input/configuration issue.
+3. Restart the ZEVM process.
+4. Re-check `zevm_lightSyncStatus` and continue only after `status = "synced"` with `ready = true`.
+
+Canonical readiness semantics:
+
+- [Readiness And Proof Rules](../reference/json-rpc/verified-light-mode-reads#readiness-and-proof-rules)
+- [`zevm_lightSyncStatus` Result](../reference/json-rpc/verified-light-mode-reads#zevm_lightsyncstatus-result)
+
+## 4. Verify Readiness-Gated Behavior
+
+Before ready, `eth_blockNumber` is unavailable:
+
+```bash
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":2,"method":"eth_blockNumber","params":[]}'
+```
+
+Once ready, the same call returns the light-mode `latest` head block number.
+
+Proof-backed read example:
+
+```bash
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{
+    "jsonrpc":"2.0",
+    "id":3,
+    "method":"eth_getBalance",
+    "params":["0x0000000000000000000000000000000000000000","finalized"]
+  }'
+```
+
+Method-level read contract:
+
+- [Verified Light-Mode Reads](../reference/json-rpc/verified-light-mode-reads)
+- [Retained-history numeric selector contract](../reference/json-rpc/verified-light-mode-reads#retained-history-numeric-selector-contract)
+
+Canonical error map in light mode:
+
+- `-32011`: not ready for readiness-gated reads
+- `-32014`: proof verification failed at an otherwise supported selector
+- `-32015`: malformed data from upstream proof source
+
+## Next Steps
+
+- [Light Mode](../concepts/light-mode)
+- [Method Support By Mode](../concepts/method-support-by-mode)
+- [Runtime Modes](../concepts/runtime-modes)
+- [Verified Light-Mode Reads](../reference/json-rpc/verified-light-mode-reads)
+- [Light-Mode Configuration](../reference/configuration/light-mode)
+- [Configuration Overview](../reference/configuration/overview)
+- [Release Metadata Runbook](../reference/release-metadata-runbook)
+- [Troubleshooting](./troubleshooting)

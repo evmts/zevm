@@ -1,70 +1,74 @@
 ---
 title: Core Reads
-description: Exact trusted-mode balance, code, storage, nonce, and account reads.
+description: Core read methods with trusted-mode selector rules and exact eth_feeHistory behavior.
 ---
-
-import TrustedManagedWallet from '../../_snippets/trusted-managed-wallet.mdx'
 
 # Core Reads
 
-Phase 1 trusted mode exposes exact read-only JSON-RPC methods against local state. This page is self-contained for client integrators: the method tuples, selector rules, return payloads, and error rules are spelled out here.
+This page defines trusted-mode core reads and marks the subset that is also available in light mode.
 
-This page defines trusted-mode semantics for these method names. `eth_chainId`, `eth_blockNumber`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, and `eth_getTransactionCount` also exist in light mode with the separate contract documented on [Verified Light-Mode Reads](./verified-light-mode-reads).
+> Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).
+>
+> This page is an operational summary. For API-contract disputes, follow those normative sources.
 
-## Trusted-Mode Selectors
+## Shared Types
 
-| Selector | Meaning in trusted mode |
+| Type | Contract |
+| --- | --- |
+| `BlockTag` | `latest`, `earliest`, `pending`, `safe`, `finalized`, or numeric quantity |
+| `TrustedBlockSelector` | any `BlockTag` |
+| `FeeHistoryResult` | object with `oldestBlock`, `baseFeePerGas`, `gasUsedRatio`, and optional `reward` |
+
+## Trusted-Mode Block Selectors
+
+| Selector | Meaning |
 | --- | --- |
 | `latest` | current canonical local head |
-| `pending` | compatibility alias of `latest` |
-| `safe` | compatibility alias of `latest` |
-| `finalized` | compatibility alias of `latest` |
+| `pending` | alias of `latest` |
+| `safe` | alias of `latest` |
+| `finalized` | alias of `latest` |
 | `earliest` | block `0` |
 | numeric quantity | exact local block number |
 
-Malformed selectors fail with `-32602`.
+Malformed selectors return `-32602`.
 
-## Exact Type Rules
+## Shared Read Methods (Trusted + Light)
 
-- `QuantityHex` is a `0x`-prefixed unsigned integer with no leading zero padding except `0x0`.
-- `Address` is a `0x`-prefixed 20-byte hex address.
-- `Bytes32` is a `0x`-prefixed 32-byte hex value.
-- `HexData` is a `0x`-prefixed hex byte string, including `0x` for empty bytes.
+These methods exist in both modes.
 
-## Exact Method Surface
+For this table, the `Errors` column is trusted-mode scoped. In light mode, these same methods follow the separate light-mode contract, including readiness and proof-verification errors (`-32011`, `-32014`, `-32015` where applicable), in [Verified Light-Mode Reads](./verified-light-mode-reads).
 
-| Method | Exact params | Exact result | Exact error rules |
+| Method | Exact params | Exact result | Errors |
 | --- | --- | --- | --- |
-| `eth_chainId` | `[]` or omitted | `QuantityHex` | non-empty params fail with `-32602` |
-| `eth_blockNumber` | `[]` or omitted | `QuantityHex` | non-empty params fail with `-32602` |
-| `eth_accounts` | `[]` or omitted | array of the 10 managed trusted-mode addresses in ascending index order | non-empty params fail with `-32602` |
-| `eth_coinbase` | `[]` or omitted | `Address` | non-empty params fail with `-32602` |
-| `eth_gasPrice` | `[]` or omitted | `QuantityHex` | non-empty params fail with `-32602` |
-| `eth_maxPriorityFeePerGas` | `[]` or omitted | `QuantityHex` | non-empty params fail with `-32602` |
-| `eth_blobBaseFee` | `[]` or omitted | `QuantityHex` | non-empty params fail with `-32602` |
-| `eth_getBalance` | `[address, block]` | `QuantityHex` | malformed address or selector fail with `-32602` |
-| `eth_getCode` | `[address, block]` | `HexData` | malformed address or selector fail with `-32602` |
-| `eth_getStorageAt` | `[address, slot, block]` | `Bytes32` | malformed address, slot, or selector fail with `-32602` |
-| `eth_getTransactionCount` | `[address, block]` | `QuantityHex` | malformed address or selector fail with `-32602` |
-| `eth_feeHistory` | `[blockCount, newestBlock]` or `[blockCount, newestBlock, rewardPercentiles]` where `blockCount` is `QuantityHex`, `newestBlock` uses the trusted selector set, and `rewardPercentiles` is an optional JSON array of numbers | `FeeHistoryResult` | malformed count, selector, or percentiles fail with `-32602` |
+| `eth_chainId` | `[]` or omitted | `QuantityHex` | trusted mode: `-32602` for non-empty params; light mode: see [Verified Light-Mode Reads](./verified-light-mode-reads) |
+| `eth_blockNumber` | `[]` or omitted | `QuantityHex` | trusted mode: `-32602` for non-empty params; light mode: see [Verified Light-Mode Reads](./verified-light-mode-reads) |
+| `eth_getBalance` | `[address, block]` | `QuantityHex` | trusted mode: `-32602` malformed address or selector; light mode: see [Verified Light-Mode Reads](./verified-light-mode-reads) |
+| `eth_getCode` | `[address, block]` | `HexData` | trusted mode: `-32602` malformed address or selector; light mode: see [Verified Light-Mode Reads](./verified-light-mode-reads) |
+| `eth_getStorageAt` | `[address, slot, block]` | `Bytes32` | trusted mode: `-32602` malformed address, slot, or selector; light mode: see [Verified Light-Mode Reads](./verified-light-mode-reads) |
+| `eth_getTransactionCount` | `[address, block]` | `QuantityHex` | trusted mode: `-32602` malformed address or selector; light mode: see [Verified Light-Mode Reads](./verified-light-mode-reads) |
 
-`eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getTransactionCount`, and `eth_feeHistory` use the trusted-mode selector set above. `pending`, `safe`, and `finalized` are compatibility aliases of `latest`; they do not imply consensus finality.
+## Trusted-Only Read Extensions
 
-## Managed Accounts
+These methods are trusted-mode only and return `-32010` in light mode.
 
-`eth_accounts` returns the exact 10-address managed-wallet table below in ascending index order. `eth_coinbase` selects from the same table by `coinbaseIndex`, and `eth_sendTransaction` may sign only for these managed accounts unless impersonation is active.
+| Method | Exact params | Exact result | Errors |
+| --- | --- | --- | --- |
+| `eth_accounts` | `[]` or omitted | array of 10 managed dev-account addresses in ascending index order | `-32602` for non-empty params |
+| `eth_coinbase` | `[]` or omitted | `Address` | `-32602` for non-empty params |
+| `eth_gasPrice` | `[]` or omitted | `QuantityHex` | `-32602` for non-empty params |
+| `eth_maxPriorityFeePerGas` | `[]` or omitted | `QuantityHex` | `-32602` for non-empty params |
+| `eth_blobBaseFee` | `[]` or omitted | `QuantityHex` | `-32602` for non-empty params |
+| `eth_feeHistory` | `[blockCount, newestBlock]` or `[blockCount, newestBlock, rewardPercentiles]` | `FeeHistoryResult` | `-32602` malformed block count, selector, or percentiles |
 
-<TrustedManagedWallet />
+## Managed Accounts (Summary)
 
-## Mode Scope
+- `eth_accounts` returns the 10 deterministic managed dev-account addresses in ascending index order.
+- `eth_coinbase` returns the current trusted-mode coinbase (default managed account index `0`).
+- For mnemonic, derivation root, full address/private-key table, and signing behavior, see [Managed Dev Wallet (Trusted Mode)](./managed-dev-wallet).
 
-- `eth_accounts`, `eth_coinbase`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_blobBaseFee`, and `eth_feeHistory` are trusted-mode only and fail with `-32010` in light mode.
-- `eth_chainId`, `eth_blockNumber`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, and `eth_getTransactionCount` use the trusted-mode semantics on this page in trusted mode and use the separate light-mode contract on [Verified Light-Mode Reads](./verified-light-mode-reads) in light mode.
-- In trusted mode, malformed selectors and malformed request-shape details fail with the method-specific `-32602` rules above.
+## `FeeHistoryResult`
 
-## Exact Return Shapes
-
-### `FeeHistoryResult`
+Shape:
 
 ```json
 {
@@ -75,24 +79,107 @@ Malformed selectors fail with `-32602`.
 }
 ```
 
-Field rules:
+Rules:
+
+- `oldestBlock`: `QuantityHex`
+- `baseFeePerGas`: length `N + 1`
+- `gasUsedRatio`: length `N`
+- `reward`: optional; when present, length `N`, each inner array length equals requested percentile count
+- when `reward` is present, each reward entry for an empty block is `0x0`
+- `N` is the number of returned blocks after truncation
+
+## `eth_feeHistory` Exact Behavior
+
+Supported params:
+
+- `[blockCount, newestBlock]`
+- `[blockCount, newestBlock, rewardPercentiles]`
+
+Validation:
+
+- tuple length must be 2 or 3
+- `blockCount` must decode as `QuantityHex` and be `>= 1`
+- `newestBlock` must resolve as a trusted selector
+- if `rewardPercentiles` is present, it must be an array with length `<= 100`
+- each percentile value must be finite and within `0 <= p <= 100`
+- percentile values must be non-decreasing
+
+Bounds and truncation:
+
+- max effective `blockCount` is `1024`
+- range is truncated at genesis when needed
+- truncation does not produce an error
+
+Result rules:
 
 - `oldestBlock` is `QuantityHex`
-- `baseFeePerGas` is an array of `QuantityHex` values with length `blockCount + 1`
-- `gasUsedRatio` is an array of JSON numbers with length `blockCount`
-- `reward`, when present, is an array with one item per returned block, and each item is an array of `QuantityHex` values whose length matches `rewardPercentiles`
+- `baseFeePerGas` length is `N + 1`
+- `gasUsedRatio` length is `N`
+- `reward` is omitted when percentiles are omitted
+- when `reward` is present, outer length is `N`; each inner array length equals requested percentile count
+- when `reward` is present, each reward entry for an empty block is `0x0`
 
-## Current HEAD As Of 2026-03-29
+`N` is the number of returned blocks after truncation.
 
-- this surface still carries live `C-004`: helper coverage exists, but it is not executable startup wiring, `eth_getCode` still returns `0x`, malformed `eth_getStorageAt` slots still collapse to zero instead of surfacing `-32602`, and `eth_feeHistory` still returns synthetic output instead of the exact contract above
-- `src/rpc/handlers/block_spec.zig` already resolves `latest`, `pending`, `safe`, `finalized`, and `earliest`, but the balance/code/storage/nonce helper paths still only validate the selector and do not consume the resolved historical block
-- `zig build` fails first in `src/rpc/server.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope`, and `zig build test` fails in `src/rpc/dispatcher_test.zig`, `src/rpc/server.zig`, and `src/tx_processor.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope` and current `guillotine-mini` requires a wider `evm.init` signature
-- the managed-account helper returns `DEFAULT_DEV_ACCOUNTS` directly, so current `HEAD` still relies on implementation constants rather than a single authoritative runtime source for the account table
+## Mode Gating
 
-## Traceability
+- `eth_accounts`, `eth_coinbase`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_blobBaseFee`, and `eth_feeHistory` are trusted-mode only and return `-32010` in light mode.
+- `eth_chainId`, `eth_blockNumber`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, and `eth_getTransactionCount` are also available in light mode with a separate contract and distinct error surface: [Verified Light-Mode Reads](./verified-light-mode-reads).
 
-- Source IDs: `AUTH-02`, `PROC-01`, `HEAD-01`, `TRUST-03`, `TRUST-04`, `TRUST-05`, `RPC-ETH-FEEHISTORY`
-- Contradiction IDs: `C-002`, `C-004`, `C-008`
-- Question IDs: -
-- Internal support docs: `trusted-mode-semantics.md`, `rpc-support-matrix.md`
-- Notes: Exact trusted-mode core read contract for client integrators, with the current helper-path gaps kept separate from the intended contract, including the live synthetic `eth_feeHistory` mismatch.
+## Example: `eth_getBalance`
+
+Request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "eth_getBalance",
+  "params": ["0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266", "latest"]
+}
+```
+
+Response:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": "0x21e19e0c9bab2400000"
+}
+```
+
+## Example: `eth_feeHistory`
+
+Request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "eth_feeHistory",
+  "params": ["0x2", "latest", [25, 75]]
+}
+```
+
+Response shape:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "oldestBlock": "0x0",
+    "baseFeePerGas": ["0x3b9aca00", "0x3b9aca00", "0x3b9aca00"],
+    "gasUsedRatio": [0.0, 0.0],
+    "reward": [["0x0", "0x0"], ["0x0", "0x0"]]
+  }
+}
+```
+
+## Related Pages
+
+- [Managed Dev Wallet (Trusted Mode)](./managed-dev-wallet)
+- [Verified Light-Mode Reads](./verified-light-mode-reads)
+- [Simulation](./simulation)
+- [Transactions And Mining](./transactions-and-mining)

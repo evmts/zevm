@@ -1,5 +1,8 @@
 # Context: implement-http-server-route
 
+> Archival snapshot note: this file is non-normative and may include historical upstream error-code examples.
+> ZEVM authoritative error semantics are in `docs/specs/json-rpc-contract.md` section 5.
+
 ## Ticket Summary
 
 Add HTTP server implementation in `src/rpc_server.zig` using `std.http.Server`. Ensure it handles POST requests appropriately and returns 405 for other methods.
@@ -214,7 +217,6 @@ enum Id { Num(u64), Str(String) }
 | -32601 | METHOD_NOT_FOUND | Method does not exist |
 | -32602 | INVALID_PARAMS | Invalid method parameters |
 | -32603 | INTERNAL_ERROR | Internal JSON-RPC error |
-| -32000 | SERVER_ERROR | Generic server error |
 
 ---
 

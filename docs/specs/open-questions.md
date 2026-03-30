@@ -1,22 +1,73 @@
-# ZEVM Open Questions
+# Redirect Note: Open Questions
 
-Last updated: 2026-03-29
+Last updated: 2026-03-30
 
-The former blocking semantic gaps are now closed in the audit trail below. No open blocking semantic question remains in the current repo authority hierarchy as of `2026-03-29`.
+## Not A Live Backlog
 
-## Open Blocking Questions
+This file remains non-normative and redirect-first.
 
-None.
+Do not use it as a general backlog, roadmap, or status matrix.
 
-The former light-mode numeric-selector blocker `Q-003` was closed in an earlier pass via `DEC-019`. The audit trail below records that closure and the affected surfaces.
+The normative product contract lives in:
 
-## Closed-Question Audit Trail
+- `docs/specs/prd.md`
+- `docs/specs/json-rpc-contract.md`
 
-| Question ID | Status | Closed by | Closed on | Question | Resolution | Affected pages |
-| --- | --- | --- | --- | --- | --- | --- |
-| `Q-001` | `resolved` | `DEC-010` | `2026-03-27` | Does deferred filter scope include `eth_getLogs`, or only lifecycle APIs beyond it? | `eth_getLogs` remains part of the supported trusted-mode canonical query surface; deferred filters means lifecycle APIs beyond `eth_getLogs`. | `docs/specs/maintainer-decisions.md`, `docs/specs/internal/rpc-support-matrix.md`, `docs/specs/contradiction-inventory.md`, `docs/specs/source-evidence-matrix.md`, `docs/specs/public-docs-sources.md`, `docs/specs/final-risk-report.md`, `docs/specs/mintlify-docs-plan.md`, `mintlify/docs/reference/json-rpc/overview.mdx`, `mintlify/docs/reference/json-rpc/blocks-receipts-and-logs.mdx`, `mintlify/docs/reference/json-rpc/unsupported-and-deferred.mdx`, `mintlify/docs/concepts/runtime-modes.mdx`, `mintlify/docs/concepts/trusted-mode.mdx`, `mintlify/docs/concepts/method-support-by-mode.mdx` |
-| `Q-002` | `resolved` | `DEC-011` | `2026-03-27` | Does phase 1 publicly promise packaged binaries, or source-build installation only? | Phase 1 promises source-build installation only; packaged binaries are not part of the published phase-1 contract. | `docs/specs/maintainer-decisions.md`, `mintlify/docs/quickstart/installation.mdx`, `mintlify/docs/index.mdx` |
-| `Q-003` | `resolved` | `DEC-019` | `2026-03-27` | What exact numeric block-selector contract does light mode promise once proof-backed reads are available? | While `ready = false`, ZEVM serves no proof-backed reads and fails them with `-32011`. Once ready, numeric selectors are supported only for block `0` and for exact blocks inside the retained verified-history window containing the most recent `8191` verified execution blocks when ZEVM can verify the exact execution block and the requested proof-backed read against that block's state root. If light mode is ready in general but the requested numeric block is outside that retained verified-history window, the request fails with `-32602`. `earliest` remains block `0`, and ZEVM does not promise arbitrary checkpoint-to-head historical archive reads. | `docs/specs/prd.md`, `docs/specs/maintainer-decisions.md`, `docs/specs/json-rpc-contract.md`, `docs/specs/internal/light-mode-semantics.md`, `docs/specs/internal/runtime-modes-and-boundaries.md`, `docs/specs/source-evidence-matrix.md`, `docs/specs/public-docs-sources.md`, `docs/specs/page-ownership.md`, `docs/specs/final-risk-report.md`, `docs/specs/mintlify-docs-plan.md`, `mintlify/docs/concepts/light-mode.mdx`, `mintlify/docs/concepts/runtime-modes.mdx`, `mintlify/docs/concepts/method-support-by-mode.mdx`, `mintlify/docs/reference/json-rpc/verified-light-mode-reads.mdx` |
-| `Q-004` | `resolved` | `DEC-021` | `2026-03-29` | What exactly does `eth_blockNumber` mean in light mode, including behavior while `ready = false`? | In light mode, `eth_blockNumber` fails with `-32011` while `ready = false`. Once `ready = true`, it returns the block number of the light-mode `latest` head, meaning the latest verified optimistic execution head. | `docs/specs/prd.md`, `docs/specs/maintainer-decisions.md`, `docs/specs/json-rpc-contract.md`, `docs/specs/internal/light-mode-semantics.md`, `docs/specs/internal/rpc-support-matrix.md`, `docs/specs/internal/runtime-modes-and-boundaries.md`, `docs/specs/source-evidence-matrix.md`, `docs/specs/public-docs-sources.md`, `docs/specs/page-ownership.md`, `docs/specs/final-risk-report.md`, `docs/specs/mintlify-docs-plan.md`, `mintlify/docs/concepts/light-mode.mdx`, `mintlify/docs/concepts/runtime-modes.mdx`, `mintlify/docs/concepts/method-support-by-mode.mdx`, `mintlify/docs/reference/json-rpc/overview.mdx`, `mintlify/docs/reference/json-rpc/verified-light-mode-reads.mdx` |
-| `Q-005` | `resolved` | `DEC-022` | `2026-03-29` | What is the exact `--config` loader failure behavior for a missing file, an unreadable file, and malformed JSON? | For all three cases, ZEVM fails startup before opening the listener, exits non-zero, reports an operator-facing error that names the path and failure class, and does not fall back to defaults. | `docs/specs/prd.md`, `docs/specs/maintainer-decisions.md`, `docs/specs/internal/startup-and-configuration.md`, `docs/specs/source-evidence-matrix.md`, `docs/specs/public-docs-sources.md`, `docs/specs/page-ownership.md`, `docs/specs/final-risk-report.md`, `docs/specs/mintlify-docs-plan.md`, `mintlify/docs/reference/configuration/overview.mdx`, `mintlify/docs/reference/configuration/trusted-mode.mdx`, `mintlify/docs/reference/configuration/light-mode.mdx` |
-| `Q-006` | `resolved` | `DEC-023` | `2026-03-29` | What is the exact JSON-RPC response to an empty batch `[]` on the canonical HTTP transport? | HTTP `POST /` with body `[]` returns HTTP `200` and a single JSON-RPC error object with `jsonrpc: "2.0"`, `id: null`, and `error: { "code": -32600, "message": "Invalid Request" }`. | `docs/specs/prd.md`, `docs/specs/maintainer-decisions.md`, `docs/specs/json-rpc-contract.md`, `docs/specs/internal/transport-and-error-semantics.md`, `docs/specs/source-evidence-matrix.md`, `docs/specs/public-docs-sources.md`, `docs/specs/page-ownership.md`, `docs/specs/final-risk-report.md`, `docs/specs/mintlify-docs-plan.md`, `mintlify/docs/reference/json-rpc/overview.mdx` |
+## Docs-First Question Resolution (Non-Normative)
+
+When a blocking product-definition question appears:
+
+1. Resolve it by updating the normative source document(s) directly in the same change.
+2. If rationale is useful, record it in `docs/specs/maintainer-decisions.md`.
+3. Remove any temporary pending metadata entry in this file as soon as closure criteria are met.
+
+## Current Pending State (Auditable Snapshot)
+
+As of `2026-03-30`, pending open questions: `none`.
+
+Audit invariant:
+
+- This file keeps only currently pending rows.
+- When nothing is pending, the table must contain exactly one sentinel row: `_none_`.
+- When one or more items are pending, remove the sentinel row and keep only real pending rows.
+
+## Minimal Pending Metadata (Exception-Only)
+
+Exception: while a decision is genuinely pending, temporary rows are allowed only to prevent owner/target ambiguity.
+
+Allowed fields only:
+
+- `pendingId`: stable short ID (for example `Q-2026-03-30-01`)
+- `openedOn`: ISO date (`YYYY-MM-DD`)
+- `ownerRole`: role, not person name (for example `runtime-maintainer`, `rpc-maintainer`, `spec-maintainer`)
+- `normativeTarget`: explicit section anchors in `prd.md` and/or `json-rpc-contract.md`
+- `closureRule`: explicit condition that closes the row
+
+Prohibited backlog fields:
+
+- priority, severity, ETA, sprint, implementation checklist, percent complete, dependency graph
+- multi-state workflow columns beyond `pending`/removed
+- long historical narrative
+
+Temporary-row mechanism:
+
+1. Add one row per currently unresolved question.
+2. Use only the allowed columns.
+3. Keep the row only while unresolved.
+4. Delete the row immediately after normative anchors are updated and decision closure lands.
+
+Closure rule (mandatory):
+
+- close by deleting the row after the normative anchor update lands
+- if rationale is needed, add/update `docs/specs/maintainer-decisions.md`
+- this file keeps only currently pending rows; no resolved-history ledger
+
+## Pending Rows
+
+| pendingId | openedOn | ownerRole | normativeTarget | closureRule |
+| --- | --- | --- | --- | --- |
+| _none_ | _n/a_ | _n/a_ | _n/a_ | _n/a_ |
+
+## Archive Scope
+
+Historical question ledgers were removed intentionally to avoid stale backlog artifacts and keep the process anchored in normative docs.

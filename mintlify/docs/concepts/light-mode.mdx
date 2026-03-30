@@ -1,118 +1,121 @@
 ---
 title: Light Mode
-description: ZEVM's consensus-backed verified-read runtime, checkpoint policy, and readiness surface.
+description: ZEVM's proof-backed, consensus-anchored read mode with readiness-gated selectors.
 ---
 
 # Light Mode
 
-Light mode is ZEVM's phase-2 consensus-backed verified-read runtime.
+Light mode is ZEVM's read-only, proof-backed, consensus-anchored runtime.
 
-## Intended Behavior
+## What Light Mode Owns
 
-Light mode is read-only. It verifies execution data against consensus and does not expose trusted-mode dev controls.
+Light mode provides proof-backed, consensus-anchored reads and readiness reporting. It does not expose trusted-mode local-dev controls.
 
-It supports:
+Phase-1 operator-facing startup inputs are `network` and `consensusRpcUrl`, plus optional checkpoint controls (`checkpoint`, `checkpointDir`, `maxCheckpointAgeSeconds`, `strictCheckpointAge`).
 
-- selected networks: `mainnet`, `sepolia`, and `holesky`
-- checkpoint bootstrapping from an explicit checkpoint, a persisted checkpoint, or a baked default checkpoint
-- baked network defaults as precedence inputs, without freezing their literal hashes as public contract
-- public readiness reporting through `zevm_lightSyncStatus`
+Supported light networks are a closed phase-1 set: `mainnet`, `sepolia`, and `holesky`.
+Any other `network` value is invalid startup input.
+Selected `network` constrains both runtime `eth_chainId` and pre-listener startup handshake root validation (`GET /eth/v1/beacon/genesis`); mismatch is startup failure before the HTTP listener opens.
+
+For exact startup/config contract wording, see:
+
+- [Light-Mode Configuration](../reference/configuration/light-mode)
+- [Canonical Chain ID And Genesis Root Mapping](../reference/configuration/light-mode#canonical-chain-id-and-genesis-root-mapping)
+- [CLI And Config Field Map](../reference/configuration/light-mode#cli-and-config-field-map)
+- [Validation Rules](../reference/configuration/light-mode#validation-rules)
+
+## Supported Surface
+
+Light mode supports:
+
+- `zevm_lightSyncStatus`
 - `eth_chainId`
-- `eth_blockNumber`, which fails with `-32011` while `ready = false` and once ready returns the block number of the light-mode `latest` head
-- proof-backed `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, and `eth_getTransactionCount`
-- real `safe` and `finalized` semantics
+- `eth_blockNumber` (readiness-gated)
+- proof-backed `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getTransactionCount`
+- consensus-anchored selector semantics for `latest`, `safe`, and `finalized`
 
-It does not expose:
+Not exposed in light mode:
 
-- trusted-mode `zevm_*` controls
-- the trusted-mode compatibility-alias set
-- unverified execution reads
+- trusted-mode `zevm_*` controls (except `zevm_lightSyncStatus`)
+- trusted compatibility aliases (`anvil_*`, `hardhat_*`, `evm_*`)
+- simulation, transaction submission, mining, and trusted canonical block/receipt/log query surfaces
 
-## Checkpoint Contract
+Method-level support and exact alias handling are defined in:
 
-Light mode selects its startup checkpoint in this order:
+- [Verified Light-Mode Reads](../reference/json-rpc/verified-light-mode-reads)
+- [ZEVM Controls](../reference/json-rpc/dev-controls)
+- [Transactions And Mining](../reference/json-rpc/transactions-and-mining)
 
-1. explicit user checkpoint
-2. persisted checkpoint from `checkpointDir/checkpoint`
-3. baked network default
+## Readiness Model
 
-The persisted checkpoint file is `checkpointDir/checkpoint`, containing a trimmed 64-hex-character checkpoint hash. Malformed content fails startup.
+`zevm_lightSyncStatus` is the readiness control point for light mode.
 
-The public contract guarantees that baked network defaults exist and participate in checkpoint precedence. It does not freeze the literal default checkpoint hashes as public compatibility guarantees.
+Operational guidance:
 
-Checkpoint age policy is part of the intended light-mode contract:
+- poll `zevm_lightSyncStatus` until `ready = true` and `status = "synced"` before treating proof-backed reads as serviceable
+- `ready` is non-monotonic: after `ready = true`, ZEVM can transition back to `ready = false` if `status` leaves `synced` or slot coherence no longer holds (`finalizedSlot <= safeSlot <= optimisticSlot`)
+- `eth_chainId` is available before readiness
+- while not ready, readiness-gated reads (including `eth_blockNumber`) are unavailable
+- if status remains `error`, verify `network`, `consensusRpcUrl`, and checkpoint inputs, then restart
+- `zevm_lightSyncStatus` observability uses slot fields `optimisticSlot`, `safeSlot`, and `finalizedSlot`; while ready, expect `finalizedSlot <= safeSlot <= optimisticSlot`
 
-- `src/consensus_sync.zig` defines a 14-day default max checkpoint age
-- a checkpoint whose age is exactly `maxCheckpointAgeSeconds` is still valid; stale means strictly older than the limit
-- the default policy is non-strict, so a stale checkpoint warns during bootstrap instead of failing
-- strict age mode turns that stale-checkpoint warning into startup failure
-- the executable startup path does not yet expose this policy, so the repository still treats it as intended behavior rather than shipped runtime behavior
+Canonical readiness/proof contract:
 
-## Status Method
+- [Readiness And Proof Rules](../reference/json-rpc/verified-light-mode-reads#readiness-and-proof-rules)
+- [`zevm_lightSyncStatus` Result](../reference/json-rpc/verified-light-mode-reads#zevm_lightsyncstatus-result)
 
-`zevm_lightSyncStatus` takes no params and returns readiness plus checkpoint progress:
+Canonical error map for readiness-gated reads:
 
-```json
-{
-  "ready": true,
-  "status": "synced",
-  "network": "mainnet",
-  "checkpointSource": "explicit",
-  "lastCheckpoint": "0x...",
-  "optimisticSlot": "0x1234",
-  "finalizedSlot": "0x1230"
-}
-```
+- `-32011`: light mode is not ready (`eth_blockNumber` and proof-backed reads are gated)
+- `-32014`: proof verification failed at an otherwise supported selector
+- `-32015`: malformed data from upstream proof source
 
-While `ready` is `false`, proof-backed read methods fail with `-32011` instead of serving unverified data.
+## Selector Model
 
-`ready` is `true` only when `status = "synced"` and ZEVM can serve proof-backed reads.
-While `ready` is `false`, `eth_blockNumber` also fails with `-32011`. Once `ready` is `true`, `eth_blockNumber` returns the block number of the light-mode `latest` head, meaning the latest verified optimistic execution head.
+In light mode:
 
-## Block Tags
-
-| Tag | Meaning |
+| Tag or selector | Meaning |
 | --- | --- |
 | `latest` | latest verified optimistic execution head |
-| `safe` | consensus-backed safe head |
+| `safe` | consensus-anchored safe head |
 | `finalized` | consensus-finalized head |
 | `earliest` | block `0` |
-| numeric quantity | block `0`, or an exact block inside the retained verified-history window containing the most recent `8191` verified execution blocks when ZEVM can verify that exact execution block and the requested proof-backed read against that block's state root |
+| numeric quantity | block `0` or retained verified-history block |
 | `pending` | unsupported |
 
-`pending` fails with `-32010` in light mode.
+Numeric selector acceptance is bounded to retained verified history plus genesis (`0`).
+For exact accepted-set and error behavior, see [Retained-history numeric selector contract](../reference/json-rpc/verified-light-mode-reads#retained-history-numeric-selector-contract).
 
-The light-mode numeric-selector contract is intentionally bounded:
+## Checkpoint Selection (Startup)
 
-- while `ready = false`, ZEVM serves no proof-backed reads and fails them with `-32011`
-- once ready, numeric selectors are supported only for block `0` and for exact blocks inside the retained verified-history window containing the most recent `8191` verified execution blocks when ZEVM can verify the exact execution block and the requested proof-backed read against that block's state root
-- if the requested numeric block is outside that retained verified-history window, the request fails with `-32602`
-- if an otherwise-supported proof-backed read cannot be verified against the resolved block state root, the read fails with the proof-verification error documented on [Verified Light-Mode Reads](../reference/json-rpc/verified-light-mode-reads)
-- ZEVM does not promise arbitrary checkpoint-to-head historical archive reads
+Startup checkpoint precedence:
 
-## Current HEAD As Of 2026-03-29
+1. CLI checkpoint (`--checkpoint`), when provided
+2. Config checkpoint (`mode.light.checkpoint`), when set
+3. Persisted startup checkpoint input (`checkpointDir/checkpoint`)
+4. Baked default checkpoint for the selected network
 
-- `zig build` currently fails first in `src/rpc/server.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope`
-- `zig build test` currently fails in `src/rpc/dispatcher_test.zig`, `src/rpc/server.zig`, and `src/tx_processor.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope` and current `guillotine-mini` requires a wider `evm.init` signature
-- the repo contains consensus helpers in `src/consensus_sync.zig` and checkpoint handling in `src/checkpoint.zig`
-- no startup path exposes light mode publicly yet
-- no public `zevm_lightSyncStatus` method is wired yet
-- no proof-backed execution-read bridge is wired yet
-- current `HEAD` still leaves trusted-mode helper code aliasing `safe` and `finalized` to the local head because the light-mode bridge is missing
-- current `HEAD` also has no live retained-history numeric-selector implementation, so the settled `-32011` versus `-32602` split is still docs-first only
-- current `HEAD` also still uses a strict `< maxCheckpointAgeSeconds` helper check and an internal `err` status spelling, which contradict the intended public equality boundary and `status: "error"` contract
-- the checkpoint-age rules above are intended semantics, not runtime behavior already exercised through startup
+Operational notes:
 
-## Traceability
+- persisted checkpoint file lifecycle is operator-managed
+- baked defaults are release/build-specific and can rotate
+- `checkpointSource` in `zevm_lightSyncStatus` reports which startup source won precedence
 
-- Source IDs: `PROC-01`, `HEAD-01`, `LIGHT-01`, `LIGHT-02`, `LIGHT-03`, `LIGHT-04`, `LIGHT-05`, `LIGHT-06`, `RPC-TAGS-LIGHT`, `RPC-ETH-BLOCKNUMBER`
-- Contradiction IDs: `C-002`, `C-011`, `C-012`
-- Question IDs: `Q-003`, `Q-004`
-- Internal support docs: `light-mode-semantics.md`, `runtime-modes-and-boundaries.md`
+Canonical startup/checkpoint contract:
 
-## Notes
+- [Checkpoint Selection Precedence](../reference/configuration/light-mode#checkpoint-selection-precedence)
+- [Persisted Checkpoint Startup-Input Contract](../reference/configuration/light-mode#persisted-checkpoint-startup-input-contract)
 
-- Light mode is proof-backed only; any request that cannot be verified must fail rather than falling back to placeholder data.
+For detailed internal semantics (checkpoint-age policy, persisted-checkpoint handling, and readiness transitions), see [`docs/specs/internal/light-mode-semantics.md`](https://github.com/evmts/zevm/blob/main/docs/specs/internal/light-mode-semantics.md).
+
+## Where To Go Next
+
+- Quickstart: [Run Light Mode](../quickstart/run-light-mode)
+- Quickstart: [Installation](../quickstart/installation)
+- Reference: [Light-Mode Configuration](../reference/configuration/light-mode)
+- Reference: [Verified Light-Mode Reads](../reference/json-rpc/verified-light-mode-reads)
+- Reference: [Core Reads](../reference/json-rpc/core-reads)
+- Reference: [Unsupported And Deferred](../reference/json-rpc/unsupported-and-deferred)
 
 ## Related Pages
 

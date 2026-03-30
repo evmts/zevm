@@ -1,19 +1,27 @@
-## Canonical Managed Dev Wallet
+---
+title: Managed Dev Wallet (Trusted Mode)
+description: Exact trusted-mode managed dev-wallet contract: mnemonic, derivation root, addresses, private keys, and signing behavior.
+---
 
-ZEVM trusted mode ships one exact managed dev-wallet contract.
+# Managed Dev Wallet (Trusted Mode)
 
+This page defines ZEVM trusted mode's exact deterministic managed dev-wallet contract.
+
+> Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).
+>
+> This page is an operational summary. For API-contract disputes, follow those normative sources.
+
+## Exact Wallet Contract
+
+- mode scope: trusted mode only
 - mnemonic: `test test test test test test test test test test test junk`
 - derivation path root: `m/44'/60'/0'/0/`
 - initial index: `0`
 - account count: `10`
-- `eth_accounts` returns these addresses in index order
-- `eth_sendTransaction` may sign only for these managed accounts unless impersonation is active
+- `eth_accounts` returns the managed addresses below in ascending index order
+- `eth_sendTransaction` may sign only for these managed accounts, unless impersonation is active
 
-Trusted runtime defaults (not wallet-contract identity fields):
-
-- chain ID: `31337`
-- startup balance per managed account: `10000 ETH`
-- `eth_coinbase` returns the managed account at `coinbaseIndex` (default `0`; valid range `0..9`)
+## Managed Accounts (Exact)
 
 | Index | Address | Private key |
 | --- | --- | --- |
@@ -28,4 +36,15 @@ Trusted runtime defaults (not wallet-contract identity fields):
 | `8` | `0x23618e81E3f5cdF7f54C3d65f7FBc0aBf5B21E8f` | `0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97` |
 | `9` | `0xa0Ee7A142d267C1f36714E4a8F75612F20a79720` | `0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6` |
 
-These are public development-only keys. They are never safe for public networks.
+## Trusted Runtime Defaults (Not Wallet-Contract Fields)
+
+- default chain ID: `31337` (`0x7a69`)
+- initial balance per managed account at startup: `10000000000000000000000` wei (`10000 ETH`)
+- `eth_coinbase` returns the managed account at `coinbaseIndex` (default `0`)
+- `coinbaseIndex` must be in `0..9`.
+
+## Behavioral Notes
+
+- In light mode, wallet-dependent trusted methods are unavailable and fail with `-32010`.
+
+These keys are public development-only keys and are never safe for public networks.

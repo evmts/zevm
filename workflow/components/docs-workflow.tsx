@@ -20,9 +20,18 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
   return parsed;
 }
 
+function parseBooleanFlag(value: string | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+
+  return ["1", "true", "yes", "on"].includes(value.toLowerCase());
+}
+
 const MAX_ITERATIONS = parsePositiveInt(process.env.ZEVM_DOCS_MAX_ITERATIONS, 6);
 const DB_PATH = process.env.ZEVM_DOCS_WORKFLOW_DB ?? "./zevm-docs.db";
 const SMOKE_MODE = process.env.SMITHERS_DOCS_SMOKE === "1";
+const SKIP_IMPLEMENTATION = parseBooleanFlag(process.env.ZEVM_DOCS_SKIP_IMPLEMENTATION);
 
 const findingSchema = z.object({
   severity: z.enum(["critical", "high", "medium", "low"]),
@@ -244,37 +253,42 @@ export default smithers((ctx) => {
   const latestImplementation = ctx.latest("docsPass", "implementation");
   const reviewRound = ctx.iterations?.["docs-review-loop"] ?? 0;
   const reviewApproved = latestReview?.verdict === "LGTM";
+  const lastDocsPass = latestFix ?? latestImplementation;
 
   return (
     <Workflow name="zevm-docs-convergence-loop" cache={false}>
       <Sequence>
-        <Task
-          id="implementation"
-          output={outputs.docsPass}
-          agent={implementationAgent}
-          timeoutMs={60 * 60 * 1000}
-        >
-          <ImplementationPrompt />
-        </Task>
+        {!SKIP_IMPLEMENTATION ? (
+          <Task
+            id="implementation"
+            output={outputs.docsPass}
+            agent={implementationAgent}
+            timeoutMs={60 * 60 * 1000}
+          >
+            <ImplementationPrompt />
+          </Task>
+        ) : null}
 
-        <Task id="implementation-gate" output={outputs.gate}>
-          {() => {
-            if (!latestImplementation) {
-              throw new Error("Implementation pass did not produce output.");
-            }
+        {!SKIP_IMPLEMENTATION ? (
+          <Task id="implementation-gate" output={outputs.gate}>
+            {() => {
+              if (!latestImplementation) {
+                throw new Error("Implementation pass did not produce output.");
+              }
 
-            if (latestImplementation.status !== "READY_FOR_COLD_REVIEW") {
-              throw new Error(
-                `Implementation requires a product decision: ${latestImplementation.productDecisionsNeeded.join(" | ")}`,
-              );
-            }
+              if (latestImplementation.status !== "READY_FOR_COLD_REVIEW") {
+                throw new Error(
+                  `Implementation requires a product decision: ${latestImplementation.productDecisionsNeeded.join(" | ")}`,
+                );
+              }
 
-            return {
-              ok: true,
-              reason: "Implementation pass is ready for cold review.",
-            };
-          }}
-        </Task>
+              return {
+                ok: true,
+                reason: "Implementation pass is ready for cold review.",
+              };
+            }}
+          </Task>
+        ) : null}
 
         <Loop
           id="docs-review-loop"
@@ -336,7 +350,7 @@ export default smithers((ctx) => {
             finalSummary:
               latestReview?.verdict === "LGTM"
                 ? "LGTM"
-                : (latestFix ?? latestImplementation)?.summary ??
+                : lastDocsPass?.summary ??
                   "Review loop ended without a final summary.",
           })}
         </Task>

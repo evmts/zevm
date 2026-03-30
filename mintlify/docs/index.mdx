@@ -1,51 +1,87 @@
 ---
 title: ZEVM
-description: The docs-first product contract for ZEVM.
+description: Run a local trusted dev node or a proof-backed, consensus-anchored light client.
 ---
 
 import CurrentHeadNote from './_snippets/current-head-note.mdx'
 
 # ZEVM
 
-ZEVM is a docs-first Zig Ethereum client with two runtime modes:
+ZEVM is a Zig Ethereum client with two runtime modes:
 
-- trusted mode for the phase-1 local dev node, local mutation, and optional fork-backed development
-- light mode for the phase-2 consensus-backed verified-read client
+- **Trusted mode**: a writable local dev node with mining controls, transaction submission, and ZEVM dev methods.
+- **Light mode**: a read-only, proof-backed, consensus-anchored client for execution reads.
 
-Forking is configuration inside trusted mode, not a third product mode.
-
-## What These Docs Promise
-
-These docs define the intended ZEVM contract, publishing exact public behavior where the repo authority settles it and explicit blocking questions where it does not, including:
-
-- exact startup flags and config-file fields
-- defaults and precedence rules
-- invalid combinations and startup failure behavior
-- HTTP JSON-RPC transport and notification behavior
-- mode-specific method availability and block-tag semantics
-- canonical `zevm_*` trusted-mode controls, with compatibility aliases captured in the repo-local reference pages
-- explicit phase-3 deferral for advanced tooling that is not part of the phase-1 contract
-- exact separation between intended behavior and current `HEAD`
-
-## Repo Authority
-
-The repo-local authority order is PRD first, `docs-first-process` second, current `src/` and tests third as contradiction evidence, and older issue/context/plan docs last as non-normative evidence. Maintainer decisions and other control docs backfill exact detail or record explicit contradiction plus public-doc stance for a surface, but they do not silently override that hierarchy. The public docs here are the contract surface; they do not depend on an external spec file for their exact startup and configuration claims.
+Forking is trusted-mode configuration, not a separate runtime mode.
 
 <CurrentHeadNote />
 
-## Traceability
+## Phase 1 Scope (Public Contract)
 
-- Source IDs: `AUTH-01`, `AUTH-02`, `PROC-01`, `HEAD-01`, `ARCH-01`, `BOOT-01`, `TRUST-01`, `LIGHT-01`, `LIGHT-04`, `LIGHT-05`
-- Contradiction IDs: `C-001`, `C-002`, `C-011`, `C-012`, `C-013`
-- Question IDs: -
-- Internal support docs: `phase-1-product-shape.md`, `runtime-modes-and-boundaries.md`, `upstream-ownership-and-boundaries.md`
-- Notes: Exact RPC request and response details are documented in the JSON-RPC reference pages in this repo.
+For phase-1 scope, route to canonical sources instead of restated checklists:
 
-## Start Here
+- product/runtime and JSON-RPC contract boundaries: [Canonical Specs](./reference/canonical-specs)
+- startup/config precedence and phase-1 operator contract: [Configuration Overview](./reference/configuration/overview)
+- deferred-surface promotion and phase-1 boundary/graduation criteria: [Specs And Process](./reference/specs-and-process#deferred-surface-promotion-and-phase-1-boundary-and-graduation-criteria)
 
-- [Installation](./quickstart/installation)
-- [Run Trusted Mode](./quickstart/run-trusted-mode)
+Phase 1 remains source-build only; packaged binaries/installers/distribution-channel guarantees are out of scope.
+GA posture in this docs set is scoped to that source-build public contract only.
+For release/build metadata routing, see [Release Metadata And Behavior Deltas](#release-metadata-and-behavior-deltas).
+
+## Choose Your Path
+
+| I want to... | Start here |
+| --- | --- |
+| Install from source and run ZEVM locally | [Installation](./quickstart/installation) |
+| Start a local trusted dev node | [Run Trusted Mode](./quickstart/run-trusted-mode) |
+| Start trusted mode against an upstream fork | [Forked Dev Node](./quickstart/forked-dev-node) |
+| Run the proof-backed, consensus-anchored light client | [Run Light Mode](./quickstart/run-light-mode) |
+| Jump to authoritative contract source files | [Canonical Specs](./reference/canonical-specs) |
+| Follow docs-first update order and release/qualification policy | [Specs And Process](./reference/specs-and-process) |
+| Reproduce release metadata and operator provenance | [Release Metadata Runbook](./reference/release-metadata-runbook) |
+| Check behavior changes by release | [ZEVM Release Notes (GitHub)](https://github.com/evmts/zevm/releases) |
+| Fix startup, configuration, or RPC issues | [Troubleshooting](./quickstart/troubleshooting) |
+
+## Canonical Specs And Process
+
+- contract-source index page: [Canonical Specs](./reference/canonical-specs)
+- process/policy page: [Specs And Process](./reference/specs-and-process)
+- active public contract sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md)
+- contract-affecting changes are docs-first: update the canonical spec sources first, then land implementation/docs updates that match
+- docs-first process contract: [`docs/specs/docs-first-process.md`](https://github.com/evmts/zevm/blob/main/docs/specs/docs-first-process.md)
+- `docs/plans/` files are implementation planning context and non-normative for runtime/RPC behavior
+- for release-specific behavior deltas, use [ZEVM Release Notes](https://github.com/evmts/zevm/releases)
+
+## Learn The Runtime Model
+
 - [Runtime Modes](./concepts/runtime-modes)
+- [Trusted Mode](./concepts/trusted-mode)
 - [Light Mode](./concepts/light-mode)
+- [State Fork And Snapshots](./concepts/state-fork-and-snapshots)
+- [Method Support By Mode](./concepts/method-support-by-mode)
 - [Architecture And Upstream Ownership](./concepts/architecture-and-upstream-ownership)
+
+## Release Metadata And Behavior Deltas
+
+For exact release/build pins and baked defaults, use [Release Metadata Runbook](./reference/release-metadata-runbook); use runtime `zevm_lightSyncStatus` as an audit signal only. For behavior deltas by release, use [ZEVM Release Notes](https://github.com/evmts/zevm/releases).
+
+## JSON-RPC And Configuration Reference
+
+Normative source ownership:
+- [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md)
+- [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md)
+- [Canonical Specs](./reference/canonical-specs)
+- [Specs And Process](./reference/specs-and-process)
+
 - [JSON-RPC Overview](./reference/json-rpc/overview)
+- [Core Reads](./reference/json-rpc/core-reads)
+- [Managed Dev Wallet (Trusted Mode)](./reference/json-rpc/managed-dev-wallet)
+- [Simulation](./reference/json-rpc/simulation)
+- [Transactions And Mining](./reference/json-rpc/transactions-and-mining)
+- [Blocks, Receipts, And Logs](./reference/json-rpc/blocks-receipts-and-logs)
+- [ZEVM Controls](./reference/json-rpc/dev-controls)
+- [Verified Light-Mode Reads](./reference/json-rpc/verified-light-mode-reads)
+- [Unsupported And Deferred](./reference/json-rpc/unsupported-and-deferred)
+- [Configuration Overview](./reference/configuration/overview)
+- [Trusted-Mode Configuration](./reference/configuration/trusted-mode)
+- [Light-Mode Configuration](./reference/configuration/light-mode)

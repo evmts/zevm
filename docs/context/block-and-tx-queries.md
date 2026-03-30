@@ -162,22 +162,22 @@ Observed expected behavior from vectors:
 - Topic matching includes wildcard and positional matching behavior.
 
 ### EIPs (Normative Semantics)
-- `EIPs/EIPS/eip-1474.md`
+- `https://eips.ethereum.org/EIPS/eip-1474`
   - Quantity/data encoding rules.
   - JSON-RPC error code conventions.
   - `eth_getLogs` note: `blockhash` mutually exclusive with range fields.
-- `EIPs/EIPS/eip-234.md`
+- `https://eips.ethereum.org/EIPS/eip-234`
   - `blockHash` filter option rationale and exclusivity with `fromBlock`/`toBlock`.
-- `EIPs/EIPS/eip-1898.md`
+- `https://eips.ethereum.org/EIPS/eip-1898`
   - Canonical block selector object semantics (`blockHash` / `blockNumber` / `requireCanonical`) for block-spec patterns.
-- `EIPs/EIPS/eip-658.md`
+- `https://eips.ethereum.org/EIPS/eip-658`
   - Receipt status replacing intermediate state root post-Byzantium.
 - Typed tx/receipt envelope implications:
-  - `EIPs/EIPS/eip-2718.md`
-  - `EIPs/EIPS/eip-2930.md`
-  - `EIPs/EIPS/eip-1559.md`
-  - `EIPs/EIPS/eip-4844.md`
-  - `EIPs/EIPS/eip-7702.md`
+  - `https://eips.ethereum.org/EIPS/eip-2718`
+  - `https://eips.ethereum.org/EIPS/eip-2930`
+  - `https://eips.ethereum.org/EIPS/eip-1559`
+  - `https://eips.ethereum.org/EIPS/eip-4844`
+  - `https://eips.ethereum.org/EIPS/eip-7702`
 
 ### Execution Specs (Data-Structure Grounding)
 - `execution-specs/src/ethereum/`

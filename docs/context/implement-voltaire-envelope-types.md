@@ -1,5 +1,8 @@
 # Research Context: `implement-voltaire-envelope-types`
 
+> Archival snapshot note: this document is non-normative for ZEVM contract behavior.
+> ZEVM authoritative error semantics are in `docs/specs/json-rpc-contract.md` section 5; EIP-1474 ranges listed below are ecosystem reference context.
+
 ## Ticket
 Add JSON-RPC envelope primitives in Voltaire Zig at:
 - `../voltaire/packages/voltaire-zig/src/jsonrpc/envelope.zig`
@@ -53,7 +56,7 @@ Key rules extracted:
 
 ### EIP-1474 (Ethereum RPC conventions)
 Source:
-- `EIPs/EIPS/eip-1474.md`
+- `https://eips.ethereum.org/EIPS/eip-1474`
 
 Key rules extracted:
 - Ethereum RPC methods must be called via JSON-RPC request objects and return JSON-RPC response objects.
@@ -73,6 +76,8 @@ Key rules extracted:
     - `-32004` Method not supported
     - `-32005` Limit exceeded
     - `-32006` JSON-RPC version not supported
+
+Contract guardrail: this `-32000` to `-32006` list is reference material for upstream interoperability, not a ZEVM contract commitment.
 
 ### Project product spec
 Source:
@@ -218,7 +223,7 @@ Usefulness:
 - Only incidental JSON-RPC examples in comments.
 
 ### `EIPs/EIPS/`
-- File read: `EIPs/EIPS/eip-1474.md`
+- File read: `https://eips.ethereum.org/EIPS/eip-1474`
 - High relevance for Ethereum JSON-RPC error code conventions.
 
 ### `consensus-specs/specs/`
@@ -342,7 +347,7 @@ To export:
 
 ## Sources
 - JSON-RPC spec: https://www.jsonrpc.org/specification
-- EIP-1474: `EIPs/EIPS/eip-1474.md`
+- EIP-1474: `https://eips.ethereum.org/EIPS/eip-1474`
 - Voltaire Zig JSON-RPC module: `../voltaire/packages/voltaire-zig/src/jsonrpc/`
 - Foundry Anvil RPC envelope refs:
   - `foundry/crates/anvil/rpc/src/request.rs`

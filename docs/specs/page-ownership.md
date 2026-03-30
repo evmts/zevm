@@ -1,78 +1,125 @@
-# ZEVM Page Ownership
+# Active Map: Mintlify Page Ownership, Anchors, and Verification
 
-Last updated: 2026-03-29
+Last updated: 2026-03-30
 
-## Write-Scope Rules
+## Status
 
-1. Control docs under `docs/specs/` are main-thread-owned and must be updated atomically when IDs change.
-2. `mintlify/mint.json` and all files under `mintlify/docs/_snippets/` are main-thread-owned shared files.
-3. Worker scopes are frozen by exact file path. Workers may edit only the files assigned to their slice.
-4. No page may cite a source ID, contradiction ID, or question ID that is absent from the corresponding control doc.
-5. No public page may hide a contradiction or depend on a blocking question without saying so explicitly.
+This file is the active, non-normative traceability and maintenance map for public Mintlify docs.
 
-## Shared Files
+It maps each current navigation page to:
 
-| Exact file path | Purpose | Owner |
+1. owner-role routing (no personal-name assignments)
+2. authoritative normative source docs
+3. required normative section anchors
+4. per-page verification status and dates
+5. optional internal support docs
+
+## Normative Boundary
+
+Product behavior is normative only in:
+
+- `docs/specs/prd.md`
+- `docs/specs/json-rpc-contract.md`
+
+If this map conflicts with normative docs, normative docs win.
+
+## Scope
+
+- In scope: pages listed in `mintlify/mint.json` navigation.
+- Out of scope: merge authority, personnel assignment, and product behavior definition.
+- This map is for maintenance routing and active source traceability only.
+- Archival redirect docs (`contradiction-inventory.md`, `open-questions.md`, `public-docs-sources.md`, `source-evidence-matrix.md`, `final-risk-report.md`) are history-only and are not active planning or source-of-truth inputs.
+
+## Verification Field Rules
+
+Required per-page fields in the Active Page Map:
+
+- `Normative anchors (required)`: explicit section anchors in `docs/specs/prd.md` and/or `docs/specs/json-rpc-contract.md`.
+- `Verification status`: one of `verified`, `pending-review`, `blocked`.
+- `Last content verified on`: ISO date (`YYYY-MM-DD`) or `_never_`.
+- `Last nav reconciled on`: ISO date (`YYYY-MM-DD`) or `_never_`.
+
+Status usage:
+
+- `verified`: owner checked page coverage against declared normative anchors and current `mintlify/mint.json` tuple.
+- `pending-review`: row exists but needs content and/or nav verification after a change.
+- `blocked`: verification blocked by unresolved normative contradiction/question; row must reference active `pendingId` from `contradiction-inventory.md` or `open-questions.md` in `Verification notes`.
+
+## Deterministic Nav Reconciliation Procedure (`mintlify/mint.json`)
+
+1. Read `mintlify/mint.json` and flatten `navigation` into ordered `(Navigation group, Page)` tuples by list order.
+2. Flatten the Active Page Map below into ordered `(Navigation group, Page)` tuples.
+3. Validate both tuple lists:
+- each page ID appears once (no duplicates)
+- tuple counts are equal
+- every tuple in `mintlify/mint.json` appears in this table with the same group label
+- this table has no extra tuples not present in `mintlify/mint.json`
+4. For each tuple, confirm required traceability fields are populated: owner role, authoritative source docs, normative anchors, verification status, and both verification dates.
+5. If any mismatch exists, update this file in the same PR as the `mintlify/mint.json` change and set affected rows to `pending-review` (or `blocked` with active `pendingId` when applicable).
+6. After reconciliation and anchor verification are complete, set affected rows to `verified` and set both date fields to the reconciliation date.
+
+## Role Labels
+
+- `Docs IA Owner`: owns page placement, grouping, and cross-link coherence.
+- `Runtime/Mode Spec Owner`: owns runtime-mode semantics and behavior wording.
+- `Configuration Spec Owner`: owns startup/configuration semantics and validation wording.
+- `JSON-RPC Spec Owner`: owns method-level RPC contract wording and inventories.
+
+## Update Policy
+
+1. Update this file in the same PR when `mintlify/mint.json` navigation groups/pages change.
+2. Update per-page normative anchors and verification fields in the same PR when normative docs change for affected topics.
+3. When PRD or JSON-RPC contract semantics change (`docs/specs/prd.md` or `docs/specs/json-rpc-contract.md`), reconcile affected Mintlify pages plus this map and `docs/specs/mintlify-docs-plan.md` in the same PR.
+4. Keep optional internal support-doc pointers only when they are still aligned; remove stale pointers until refreshed.
+5. Treat archival redirect artifacts (`contradiction-inventory.md`, `open-questions.md`, `public-docs-sources.md`, `source-evidence-matrix.md`, `final-risk-report.md`) as history-only pointers; do not use them as active planning inputs and do not duplicate active mappings there.
+6. Maintain explicit owner-role and update-expectation entries for every `docs/specs/internal/*` support doc used by active pages.
+
+## Internal Dependency Maintenance Ownership
+
+These internal docs are non-normative support dependencies for active Mintlify pages. Owners keep them aligned with normative sources and page usage.
+
+| Internal support doc (`docs/specs/internal/*`) | Owner role label | Update expectation |
 | --- | --- | --- |
-| `docs/specs/prd.md` | authoritative product definition | `main-thread` |
-| `docs/specs/docs-first-process.md` | authoritative process constraint | `main-thread` |
-| `docs/specs/json-rpc-contract.md` | exact JSON-RPC detail backfill and contradiction-sensitive support doc | `main-thread` |
-| `docs/specs/mintlify-docs-plan.md` | phase plan and gate status | `main-thread` |
-| `docs/specs/source-evidence-matrix.md` | claim-to-evidence map | `main-thread` |
-| `docs/specs/contradiction-inventory.md` | mismatch inventory | `main-thread` |
-| `docs/specs/open-questions.md` | unresolved semantic questions | `main-thread` |
-| `docs/specs/public-docs-sources.md` | public page traceability map | `main-thread` |
-| `docs/specs/page-ownership.md` | write-scope freeze | `main-thread` |
-| `docs/specs/maintainer-decisions.md` | resolved decisions and explicit contradiction/public-doc stance records | `main-thread` |
-| `docs/specs/final-risk-report.md` | residual-risk report | `main-thread` |
-| `mintlify/mint.json` | Mintlify navigation | `main-thread` |
-| `mintlify/docs/_snippets/current-head-note.mdx` | shared dated repo-baseline caveat | `main-thread` |
-| `mintlify/docs/_snippets/trusted-managed-wallet.mdx` | shared exact managed-wallet table | `main-thread` |
+| `phase-1-product-shape.md` | `Docs IA Owner` | Refresh in the same PR when PRD scope/framing changes or mapped pages (`index`, `reference/canonical-specs`, `reference/specs-and-process`, `reference/json-rpc/unsupported-and-deferred`) are updated. |
+| `startup-and-configuration.md` | `Configuration Spec Owner` | Refresh in the same PR when startup/config semantics in `docs/specs/prd.md` change or mapped quickstart/config pages are updated. |
+| `trusted-mode-semantics.md` | `Runtime/Mode Spec Owner` | Refresh in the same PR when trusted-mode semantics in `docs/specs/prd.md` change or mapped trusted-mode/RPC pages are updated. |
+| `state-fork-and-snapshot-semantics.md` | `Runtime/Mode Spec Owner` | Refresh in the same PR when state-fork/snapshot semantics in `docs/specs/prd.md` change or mapped fork/snapshot pages are updated. |
+| `light-mode-semantics.md` | `Runtime/Mode Spec Owner` | Refresh in the same PR when light-mode semantics in `docs/specs/prd.md` change or mapped light-mode pages are updated. |
+| `runtime-modes-and-boundaries.md` | `Runtime/Mode Spec Owner` | Refresh in the same PR when runtime-mode boundaries in `docs/specs/prd.md` change or `concepts/runtime-modes` is updated. |
+| `rpc-support-matrix.md` | `JSON-RPC Spec Owner` | Refresh in the same PR when method inventories/mode support in `docs/specs/json-rpc-contract.md` change or mapped JSON-RPC pages are updated. |
+| `transport-and-error-semantics.md` | `JSON-RPC Spec Owner` | Refresh in the same PR when transport/error semantics in `docs/specs/json-rpc-contract.md` change or mapped troubleshooting/JSON-RPC pages are updated. |
+| `upstream-ownership-and-boundaries.md` | `Docs IA Owner` | Refresh in the same PR when architecture/upstream ownership boundaries in `docs/specs/prd.md` change or `concepts/architecture-and-upstream-ownership` is updated. |
 
-## Shared Public Artifacts
+## Active Page Map
 
-| Exact file path | Purpose | Source IDs | Contradiction IDs | Question IDs | Internal support docs | Owner |
-| --- | --- | --- | --- | --- | --- | --- |
-| `mintlify/mint.json` | Mintlify navigation for the required public tree | `AUTH-02`, `PROC-01` | `-` | `-` | `-` | `main-thread` |
-| `mintlify/docs/_snippets/current-head-note.mdx` | shared dated current-`HEAD` caveat snippet | `HEAD-01` | `C-002` | `-` | `-` | `main-thread` |
-| `mintlify/docs/_snippets/trusted-managed-wallet.mdx` | shared exact managed-wallet contract snippet | `TRUST-03` | `C-008` | `-` | `trusted-mode-semantics.md` | `main-thread` |
+As of `2026-03-30`, all rows below are `verified` for both anchor coverage and nav reconciliation against `mintlify/mint.json`.
 
-## Internal Support Docs
-
-| Exact file path | Purpose | Owner |
-| --- | --- | --- |
-| `docs/specs/internal/phase-1-product-shape.md` | product boundary and docs-first framing | `contract-core-slice` |
-| `docs/specs/internal/runtime-modes-and-boundaries.md` | mode split and tag semantics | `modes-slice` |
-| `docs/specs/internal/startup-and-configuration.md` | startup and config contract support | `startup-config-slice` |
-| `docs/specs/internal/trusted-mode-semantics.md` | trusted-mode semantics and defaults | `modes-slice` |
-| `docs/specs/internal/light-mode-semantics.md` | light-mode semantics and readiness | `modes-slice` |
-| `docs/specs/internal/rpc-support-matrix.md` | exact method-by-mode backing matrix | `rpc-slice` |
-| `docs/specs/internal/state-fork-and-snapshot-semantics.md` | fork and snapshot boundary support | `modes-slice` |
-| `docs/specs/internal/transport-and-error-semantics.md` | HTTP, notification, and error contract support | `rpc-slice` |
-| `docs/specs/internal/upstream-ownership-and-boundaries.md` | repo-boundary and ownership support | `contract-core-slice` |
-
-## Public Pages
-
-| Exact file path | Purpose | Target reader | Source IDs | Contradiction IDs | Question IDs | Internal support docs | Owner |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `mintlify/docs/index.mdx` | landing page, docs-first framing, and mode overview | evaluator deciding what ZEVM is | `AUTH-01`, `AUTH-02`, `PROC-01`, `HEAD-01`, `ARCH-01`, `BOOT-01`, `TRUST-01`, `LIGHT-01`, `LIGHT-04`, `LIGHT-05` | `C-001`, `C-002`, `C-011`, `C-012`, `C-013` | `-` | `phase-1-product-shape.md`, `runtime-modes-and-boundaries.md`, `upstream-ownership-and-boundaries.md` | `contract-core-slice` |
-| `mintlify/docs/quickstart/installation.mdx` | source-build install path and current executable baseline | first-time repo user | `PROC-01`, `HEAD-01`, `BOOT-01`, `RPC-01` | `C-001`, `C-002`, `C-003` | `-` | `phase-1-product-shape.md`, `startup-and-configuration.md`, `transport-and-error-semantics.md` | `startup-config-slice` |
-| `mintlify/docs/quickstart/run-trusted-mode.mdx` | exact trusted-mode startup path and first successful calls | user starting the local dev node contract | `HEAD-01`, `BOOT-01`, `BOOT-02`, `BOOT-07`, `TRUST-01`, `TRUST-02`, `TRUST-03`, `TRUST-04`, `TRUST-05`, `TRUST-09` | `C-001`, `C-002`, `C-004`, `C-008`, `C-010` | `-` | `startup-and-configuration.md`, `trusted-mode-semantics.md`, `rpc-support-matrix.md` | `startup-config-slice` |
-| `mintlify/docs/quickstart/forked-dev-node.mdx` | trusted-mode fork startup and local-on-top-of-remote semantics | user evaluating fork-backed development | `HEAD-01`, `BOOT-02`, `BOOT-07`, `TRUST-09` | `C-001`, `C-002`, `C-010` | `-` | `startup-and-configuration.md`, `state-fork-and-snapshot-semantics.md` | `startup-config-slice` |
-| `mintlify/docs/concepts/runtime-modes.mdx` | two-mode product boundary, tag differences, and live contradiction boundaries | reader comparing trusted vs light | `PROC-01`, `HEAD-01`, `BOOT-01`, `BOOT-03`, `BOOT-04`, `BOOT-07`, `RPC-04`, `RPC-ETH-BLOCKNUMBER`, `TRUST-01`, `TRUST-04`, `TRUST-08`, `TRUST-09`, `LIGHT-01`, `LIGHT-04`, `LIGHT-05`, `RPC-TAGS-LIGHT`, `DEFER-01` | `C-001`, `C-002`, `C-007`, `C-010`, `C-011`, `C-012` | `Q-003`, `Q-004` | `runtime-modes-and-boundaries.md`, `trusted-mode-semantics.md`, `light-mode-semantics.md` | `modes-slice` |
-| `mintlify/docs/concepts/trusted-mode.mdx` | trusted-mode behavior, defaults, accounts, local-only boundaries, and canonical query scope | user reasoning about phase-1 dev-node semantics | `PROC-01`, `HEAD-01`, `BOOT-01`, `BOOT-02`, `BOOT-04`, `TRUST-01`, `TRUST-02`, `TRUST-03`, `TRUST-04`, `TRUST-07`, `TRUST-08`, `TRUST-09`, `TRUST-10`, `TRUST-11`, `DEFER-01` | `C-001`, `C-002`, `C-006`, `C-007`, `C-008`, `C-009`, `C-010` | `-` | `trusted-mode-semantics.md`, `state-fork-and-snapshot-semantics.md` | `modes-slice` |
-| `mintlify/docs/concepts/light-mode.mdx` | light-mode purpose, readiness, verified-read boundary, and bounded numeric-selector semantics | user evaluating phase-2 read-only mode | `PROC-01`, `HEAD-01`, `LIGHT-01`, `LIGHT-02`, `LIGHT-03`, `LIGHT-04`, `LIGHT-05`, `LIGHT-06`, `RPC-TAGS-LIGHT`, `RPC-ETH-BLOCKNUMBER` | `C-002`, `C-011`, `C-012` | `Q-003`, `Q-004` | `light-mode-semantics.md`, `runtime-modes-and-boundaries.md` | `modes-slice` |
-| `mintlify/docs/concepts/state-fork-and-snapshots.mdx` | local overlay, snapshot boundary, and fork-local semantics | user reasoning about reversible trusted local state | `HEAD-01`, `TRUST-09`, `TRUST-10`, `TRUST-11` | `C-002`, `C-009`, `C-010` | `-` | `state-fork-and-snapshot-semantics.md`, `trusted-mode-semantics.md` | `modes-slice` |
-| `mintlify/docs/concepts/method-support-by-mode.mdx` | high-level method availability by trusted, light, and deferred scope | reader choosing the right mode for a method | `PROC-01`, `HEAD-01`, `RPC-04`, `RPC-ETH-BLOCKNUMBER`, `TRUST-05`, `TRUST-06`, `TRUST-07`, `TRUST-08`, `TRUST-11`, `LIGHT-05`, `RPC-TAGS-LIGHT`, `DEFER-01` | `C-002`, `C-004`, `C-005`, `C-006`, `C-007`, `C-009`, `C-012` | `Q-003`, `Q-004` | `rpc-support-matrix.md`, `runtime-modes-and-boundaries.md`, `trusted-mode-semantics.md`, `light-mode-semantics.md` | `modes-slice` |
-| `mintlify/docs/concepts/architecture-and-upstream-ownership.mdx` | ownership boundaries between ZEVM, Voltaire, and `guillotine-mini` | maintainer or contributor mapping implementation ownership | `AUTH-01`, `HEAD-01`, `ARCH-01` | `C-002`, `C-013` | `-` | `phase-1-product-shape.md`, `upstream-ownership-and-boundaries.md` | `contract-core-slice` |
-| `mintlify/docs/reference/configuration/overview.mdx` | shared startup contract, precedence, invalid-combination rules, exact `--config` loader failures, and current repo baseline caveat | user reading the top-level config contract | `PROC-01`, `HEAD-01`, `BOOT-01`, `BOOT-04`, `BOOT-05`, `BOOT-06`, `BOOT-07`, `BOOT-08`, `LIGHT-03` | `C-001`, `C-002`, `C-010`, `C-011` | `Q-005` | `startup-and-configuration.md` | `startup-config-slice` |
-| `mintlify/docs/reference/configuration/trusted-mode.mdx` | exact trusted-mode fields, defaults, validation, fork notes, and current repo baseline caveat | user configuring trusted mode | `HEAD-01`, `BOOT-02`, `BOOT-04`, `BOOT-07`, `BOOT-08`, `TRUST-02`, `TRUST-03`, `TRUST-09` | `C-001`, `C-002`, `C-008`, `C-010` | `Q-005` | `startup-and-configuration.md`, `trusted-mode-semantics.md` | `startup-config-slice` |
-| `mintlify/docs/reference/configuration/light-mode.mdx` | exact light-mode config fields, checkpoint file contract, age policy, baked-default precedence, and current repo baseline caveat | user configuring light mode | `PROC-01`, `HEAD-01`, `BOOT-03`, `BOOT-04`, `BOOT-05`, `BOOT-06`, `BOOT-08`, `LIGHT-01`, `LIGHT-02`, `LIGHT-03`, `LIGHT-06` | `C-001`, `C-002`, `C-011` | `Q-005` | `startup-and-configuration.md`, `light-mode-semantics.md` | `startup-config-slice` |
-| `mintlify/docs/reference/json-rpc/overview.mdx` | canonical transport, batch, notification, error rules, exact empty-batch behavior, and JSON-RPC authority model | client integrator | `AUTH-01`, `AUTH-02`, `PROC-01`, `HEAD-01`, `RPC-01`, `RPC-02`, `RPC-03`, `RPC-04`, `RPC-05`, `RPC-ETH-BLOCKNUMBER`, `DEFER-01` | `C-002`, `C-003`, `C-004`, `C-005`, `C-006`, `C-007`, `C-009`, `C-012` | `Q-004`, `Q-006` | `transport-and-error-semantics.md`, `rpc-support-matrix.md` | `rpc-slice` |
-| `mintlify/docs/reference/json-rpc/core-reads.mdx` | exact trusted-mode core read reference | client integrator using core trusted reads | `AUTH-02`, `PROC-01`, `HEAD-01`, `TRUST-03`, `TRUST-04`, `TRUST-05`, `RPC-ETH-FEEHISTORY` | `C-002`, `C-004`, `C-008` | `-` | `trusted-mode-semantics.md`, `rpc-support-matrix.md` | `rpc-slice` |
-| `mintlify/docs/reference/json-rpc/simulation.mdx` | exact trusted-mode simulation contract | client integrator using `eth_call` or `eth_estimateGas` | `AUTH-02`, `PROC-01`, `HEAD-01`, `TRUST-06` | `C-002`, `C-005` | `-` | `trusted-mode-semantics.md`, `rpc-support-matrix.md` | `rpc-slice` |
-| `mintlify/docs/reference/json-rpc/transactions-and-mining.mdx` | exact submission, pending-state, and mining contract | client integrator sending txs or controlling mining | `AUTH-02`, `PROC-01`, `HEAD-01`, `TRUST-03`, `TRUST-07`, `TRUST-11` | `C-002`, `C-006`, `C-008`, `C-009` | `-` | `trusted-mode-semantics.md`, `state-fork-and-snapshot-semantics.md`, `rpc-support-matrix.md` | `rpc-slice` |
-| `mintlify/docs/reference/json-rpc/blocks-receipts-and-logs.mdx` | exact canonical query surface | client integrator querying canonical chain state | `AUTH-02`, `PROC-01`, `HEAD-01`, `TRUST-04`, `TRUST-08` | `C-002`, `C-007` | `-` | `trusted-mode-semantics.md`, `rpc-support-matrix.md` | `rpc-slice` |
-| `mintlify/docs/reference/json-rpc/dev-controls.mdx` | exact nonstandard ZEVM-control contract | client integrator using state mutation, snapshots, or time controls | `AUTH-02`, `PROC-01`, `HEAD-01`, `TRUST-07`, `TRUST-10`, `TRUST-11` | `C-002`, `C-006`, `C-009` | `-` | `state-fork-and-snapshot-semantics.md`, `rpc-support-matrix.md` | `rpc-slice` |
-| `mintlify/docs/reference/json-rpc/verified-light-mode-reads.mdx` | light-mode verified-read and status reference, including the readiness-gated `eth_blockNumber` rule | client integrator using proof-backed reads | `AUTH-02`, `PROC-01`, `HEAD-01`, `LIGHT-04`, `LIGHT-05`, `RPC-TAGS-LIGHT`, `RPC-ETH-BLOCKNUMBER` | `C-002`, `C-012` | `Q-003`, `Q-004` | `light-mode-semantics.md`, `rpc-support-matrix.md` | `rpc-slice` |
-| `mintlify/docs/reference/json-rpc/unsupported-and-deferred.mdx` | deferred and intentionally unsupported surfaces | reader checking what is out of scope | `AUTH-02`, `PROC-01`, `HEAD-01`, `DEFER-01` | `C-002` | `-` | `rpc-support-matrix.md`, `phase-1-product-shape.md` | `rpc-slice` |
+| Navigation group | Page | Owner role label | Authoritative normative source docs | Normative anchors (required) | Optional internal support docs | Verification status | Last content verified on | Last nav reconciled on | Verification notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Overview | `index` | `Docs IA Owner` | `docs/specs/prd.md` | `docs/specs/prd.md#1-purpose`; `docs/specs/prd.md#3-product-scope` | `docs/specs/internal/phase-1-product-shape.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |
+| Overview | `reference/canonical-specs` | `Docs IA Owner` | `docs/specs/prd.md`; `docs/specs/json-rpc-contract.md` | `docs/specs/prd.md#2-normative-documents`; `docs/specs/json-rpc-contract.md#zevm-json-rpc-contract` | `docs/specs/internal/phase-1-product-shape.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |
+| Overview | `reference/specs-and-process` | `Docs IA Owner` | `docs/specs/prd.md`; `docs/specs/json-rpc-contract.md` | `docs/specs/prd.md#2-normative-documents`; `docs/specs/json-rpc-contract.md#zevm-json-rpc-contract` | `docs/specs/internal/phase-1-product-shape.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |
+| Overview | `reference/release-metadata-runbook` | `Configuration Spec Owner` | `docs/specs/prd.md` | `docs/specs/prd.md#34-release-metadata-and-provenance-contract`; `docs/specs/prd.md#35-release-qualification-and-verification-acceptance-criteria` | `docs/specs/internal/startup-and-configuration.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |
+| Quickstart | `quickstart/installation` | `Configuration Spec Owner` | `docs/specs/prd.md` | `docs/specs/prd.md#33-phase-1-source-build-installation-contract` | `docs/specs/internal/startup-and-configuration.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |
+| Quickstart | `quickstart/run-trusted-mode` | `Runtime/Mode Spec Owner` | `docs/specs/prd.md` | `docs/specs/prd.md#41-trusted-mode`; `docs/specs/prd.md#52-trusted-mode-cli` | `docs/specs/internal/trusted-mode-semantics.md`; `docs/specs/internal/startup-and-configuration.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |
+| Quickstart | `quickstart/forked-dev-node` | `Runtime/Mode Spec Owner` | `docs/specs/prd.md`; `docs/specs/json-rpc-contract.md` | `docs/specs/prd.md#41-trusted-mode`; `docs/specs/prd.md#8-trusted-mode-mining-semantics`; `docs/specs/json-rpc-contract.md#94-zevm_reset-semantics` | `docs/specs/internal/state-fork-and-snapshot-semantics.md`; `docs/specs/internal/trusted-mode-semantics.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |
+| Quickstart | `quickstart/run-light-mode` | `Runtime/Mode Spec Owner` | `docs/specs/prd.md` | `docs/specs/prd.md#42-light-mode`; `docs/specs/prd.md#53-light-mode-cli`; `docs/specs/prd.md#10-light-mode-checkpoint-and-history-semantics` | `docs/specs/internal/light-mode-semantics.md`; `docs/specs/internal/startup-and-configuration.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |
+| Quickstart | `quickstart/troubleshooting` | `Configuration Spec Owner` | `docs/specs/prd.md`; `docs/specs/json-rpc-contract.md` | `docs/specs/prd.md#58-startup-failure-behavior`; `docs/specs/prd.md#59-startup-logging-surface`; `docs/specs/json-rpc-contract.md#5-errors` | `docs/specs/internal/transport-and-error-semantics.md`; `docs/specs/internal/startup-and-configuration.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |
+| Concepts | `concepts/runtime-modes` | `Runtime/Mode Spec Owner` | `docs/specs/prd.md` | `docs/specs/prd.md#4-runtime-modes` | `docs/specs/internal/runtime-modes-and-boundaries.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |
+| Concepts | `concepts/trusted-mode` | `Runtime/Mode Spec Owner` | `docs/specs/prd.md` | `docs/specs/prd.md#41-trusted-mode`; `docs/specs/prd.md#8-trusted-mode-mining-semantics` | `docs/specs/internal/trusted-mode-semantics.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |
+| Concepts | `concepts/light-mode` | `Runtime/Mode Spec Owner` | `docs/specs/prd.md` | `docs/specs/prd.md#42-light-mode`; `docs/specs/prd.md#10-light-mode-checkpoint-and-history-semantics` | `docs/specs/internal/light-mode-semantics.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |
+| Concepts | `concepts/state-fork-and-snapshots` | `Runtime/Mode Spec Owner` | `docs/specs/prd.md`; `docs/specs/json-rpc-contract.md` | `docs/specs/prd.md#41-trusted-mode`; `docs/specs/prd.md#10-light-mode-checkpoint-and-history-semantics`; `docs/specs/json-rpc-contract.md#94-zevm_reset-semantics` | `docs/specs/internal/state-fork-and-snapshot-semantics.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |
+| Concepts | `concepts/method-support-by-mode` | `JSON-RPC Spec Owner` | `docs/specs/prd.md`; `docs/specs/json-rpc-contract.md` | `docs/specs/prd.md#7-json-rpc-method-surface`; `docs/specs/json-rpc-contract.md#8-trusted-mode-standard-methods`; `docs/specs/json-rpc-contract.md#9-trusted-mode-zevm_-methods`; `docs/specs/json-rpc-contract.md#13-light-mode-methods`; `docs/specs/json-rpc-contract.md#14-unsupported-public-surface` | `docs/specs/internal/rpc-support-matrix.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |
+| Concepts | `concepts/architecture-and-upstream-ownership` | `Docs IA Owner` | `docs/specs/prd.md` | `docs/specs/prd.md#12-architecture-and-ownership-boundaries` | `docs/specs/internal/upstream-ownership-and-boundaries.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |
+| Configuration Reference | `reference/configuration/overview` | `Configuration Spec Owner` | `docs/specs/prd.md` | `docs/specs/prd.md#5-startup-and-configuration`; `docs/specs/prd.md#51-shared-cli`; `docs/specs/prd.md#54-config-file-schema`; `docs/specs/prd.md#55-precedence` | `docs/specs/internal/startup-and-configuration.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |
+| Configuration Reference | `reference/configuration/trusted-mode` | `Configuration Spec Owner` | `docs/specs/prd.md` | `docs/specs/prd.md#52-trusted-mode-cli`; `docs/specs/prd.md#54-config-file-schema`; `docs/specs/prd.md#55-precedence` | `docs/specs/internal/startup-and-configuration.md`; `docs/specs/internal/trusted-mode-semantics.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |
+| Configuration Reference | `reference/configuration/light-mode` | `Configuration Spec Owner` | `docs/specs/prd.md` | `docs/specs/prd.md#53-light-mode-cli`; `docs/specs/prd.md#54-config-file-schema`; `docs/specs/prd.md#55-precedence`; `docs/specs/prd.md#56-persisted-checkpoint-file-contract`; `docs/specs/prd.md#57-checkpoint-age-policy` | `docs/specs/internal/startup-and-configuration.md`; `docs/specs/internal/light-mode-semantics.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |
+| JSON-RPC Reference | `reference/json-rpc/overview` | `JSON-RPC Spec Owner` | `docs/specs/json-rpc-contract.md`; `docs/specs/prd.md` | `docs/specs/json-rpc-contract.md#1-common-types`; `docs/specs/json-rpc-contract.md#4-json-rpc-envelope`; `docs/specs/json-rpc-contract.md#5-errors`; `docs/specs/json-rpc-contract.md#6-selector-and-mode-semantics`; `docs/specs/prd.md#6-json-rpc-transport` | `docs/specs/internal/rpc-support-matrix.md`; `docs/specs/internal/transport-and-error-semantics.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |
+| JSON-RPC Reference | `reference/json-rpc/core-reads` | `JSON-RPC Spec Owner` | `docs/specs/json-rpc-contract.md`; `docs/specs/prd.md` | `docs/specs/json-rpc-contract.md#81-core-reads`; `docs/specs/prd.md#7-json-rpc-method-surface` | `docs/specs/internal/rpc-support-matrix.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |
+| JSON-RPC Reference | `reference/json-rpc/managed-dev-wallet` | `JSON-RPC Spec Owner` | `docs/specs/json-rpc-contract.md`; `docs/specs/prd.md` | `docs/specs/json-rpc-contract.md#93-canonical-methods-and-accepted-aliases`; `docs/specs/json-rpc-contract.md#96-impersonation-semantics`; `docs/specs/prd.md#7-json-rpc-method-surface` | `docs/specs/internal/trusted-mode-semantics.md`; `docs/specs/internal/rpc-support-matrix.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |
+| JSON-RPC Reference | `reference/json-rpc/simulation` | `JSON-RPC Spec Owner` | `docs/specs/json-rpc-contract.md`; `docs/specs/prd.md` | `docs/specs/json-rpc-contract.md#82-simulation`; `docs/specs/json-rpc-contract.md#73-stateoverrideset`; `docs/specs/prd.md#7-json-rpc-method-surface` | `docs/specs/internal/rpc-support-matrix.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |
+| JSON-RPC Reference | `reference/json-rpc/transactions-and-mining` | `JSON-RPC Spec Owner` | `docs/specs/json-rpc-contract.md`; `docs/specs/prd.md` | `docs/specs/json-rpc-contract.md#83-submission`; `docs/specs/json-rpc-contract.md#10-trusted-mining-semantics`; `docs/specs/prd.md#8-trusted-mode-mining-semantics`; `docs/specs/prd.md#9-fee-model-and-transaction-types` | `docs/specs/internal/rpc-support-matrix.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |
+| JSON-RPC Reference | `reference/json-rpc/blocks-receipts-and-logs` | `JSON-RPC Spec Owner` | `docs/specs/json-rpc-contract.md`; `docs/specs/prd.md` | `docs/specs/json-rpc-contract.md#76-block-object`; `docs/specs/json-rpc-contract.md#77-receipt-object`; `docs/specs/json-rpc-contract.md#78-log-object`; `docs/specs/json-rpc-contract.md#79-logfilter-for-eth_getlogs`; `docs/specs/json-rpc-contract.md#84-queries` | `docs/specs/internal/rpc-support-matrix.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |
+| JSON-RPC Reference | `reference/json-rpc/dev-controls` | `JSON-RPC Spec Owner` | `docs/specs/json-rpc-contract.md`; `docs/specs/prd.md` | `docs/specs/json-rpc-contract.md#93-canonical-methods-and-accepted-aliases`; `docs/specs/json-rpc-contract.md#94-zevm_reset-semantics`; `docs/specs/json-rpc-contract.md#95-zevm_setrpcurl-semantics`; `docs/specs/json-rpc-contract.md#96-impersonation-semantics` | `docs/specs/internal/rpc-support-matrix.md`; `docs/specs/internal/trusted-mode-semantics.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |
+| JSON-RPC Reference | `reference/json-rpc/verified-light-mode-reads` | `JSON-RPC Spec Owner` | `docs/specs/json-rpc-contract.md`; `docs/specs/prd.md` | `docs/specs/json-rpc-contract.md#62-light-selectors-and-retained-history`; `docs/specs/json-rpc-contract.md#13-light-mode-methods`; `docs/specs/prd.md#10-light-mode-checkpoint-and-history-semantics` | `docs/specs/internal/light-mode-semantics.md`; `docs/specs/internal/rpc-support-matrix.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |
+| JSON-RPC Reference | `reference/json-rpc/unsupported-and-deferred` | `JSON-RPC Spec Owner` | `docs/specs/json-rpc-contract.md`; `docs/specs/prd.md` | `docs/specs/json-rpc-contract.md#12-deferred-trusted-helpers`; `docs/specs/json-rpc-contract.md#14-unsupported-public-surface`; `docs/specs/prd.md#32-out-of-scope` | `docs/specs/internal/rpc-support-matrix.md`; `docs/specs/internal/phase-1-product-shape.md` | `verified` | `2026-03-30` | `2026-03-30` | `Baseline reconciliation complete.` |

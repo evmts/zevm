@@ -1,38 +1,59 @@
 ---
 title: Architecture And Upstream Ownership
-description: ZEVM, Voltaire, and guillotine-mini ownership boundaries.
+description: Concise ownership boundary between ZEVM and upstream execution components.
 ---
 
 # Architecture And Upstream Ownership
 
-ZEVM is an integration shell, not a second owner of upstream execution infrastructure.
+ZEVM is an integration shell. It does not re-own upstream execution internals.
+
+## Layered Composition
+
+ZEVM composes upstream layers and keeps ownership boundaries explicit:
+
+| Layer | Primary owner | Role in ZEVM |
+| --- | --- | --- |
+| Execution foundations | `voltaire` | Ethereum primitives, state/journal/snapshot foundations, fork backend, and shared core data structures |
+| EVM execution engine | `guillotine-mini` | Interpreter, execution host integration, and tracing substrate |
+| Host adapter bridge | ZEVM composition over upstream APIs | Bridges ZEVM JSON-RPC/runtime context into upstream host/execution interfaces and maps results back into ZEVM method contracts |
+| Product/runtime shell | ZEVM | CLI/config, mode selection, lifecycle, HTTP JSON-RPC transport/dispatch, mode gating, checkpoint wiring, and ZEVM canonical control naming (`zevm_*`) |
 
 ## Ownership Boundary
 
-- Voltaire owns Ethereum primitives, JSON-RPC types, state manager, journal and snapshot support, fork backend, blockchain, crypto, and execution-layer foundations.
-- `guillotine-mini` owns the EVM interpreter, tracing substrate, and execution host integration.
-- ZEVM owns CLI and config parsing, mode selection, runtime composition, lifecycle, canonical HTTP JSON-RPC transport, mode-aware routing, startup and shutdown, checkpoint wiring, readiness reporting, and the public naming of nonstandard trusted-mode controls under the canonical `zevm_*` namespace.
-- The canonical transport owner on the shipping path is ZEVM's `server.zig` plus `dispatcher.zig` path, not the stale local helper stack.
+Voltaire owns execution primitives and shared Ethereum foundations, including:
 
-## Observed `HEAD` Constraints, 2026-03-29
+- JSON-RPC types
+- state manager, journal, and snapshot foundations
+- fork backend and blockchain data structures
+- cryptographic and execution-layer primitives
 
-- `zig build` fails first in `src/rpc/server.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope`, and `zig build test` fails in `src/rpc/dispatcher_test.zig`, `src/rpc/server.zig`, and `src/tx_processor.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope` and current `guillotine-mini` requires a wider `evm.init` signature.
-- Current `HEAD` still carries duplicate-stack drift: a local `envelope` / `router` / handler stack exists alongside the upstream-backed path.
-- That local stack is non-shipping drift until it is reconciled with the canonical transport path or removed.
-- The build uses the sibling workspace path `../guillotine-mini`.
-- Public docs intentionally separate the canonical `zevm_*` surface from compatibility aliases such as `anvil_*`, `hardhat_*`, and `evm_*` where those aliases are supported.
-- These are observed implementation constraints, not a change in ownership.
+`guillotine-mini` owns:
 
-## Traceability
+- EVM interpreter
+- execution host integration
+- tracing substrate
 
-- Source IDs: `AUTH-01`, `HEAD-01`, `ARCH-01`
-- Contradiction IDs: `C-002`, `C-013`
-- Question IDs: -
-- Internal support docs: `phase-1-product-shape.md`, `upstream-ownership-and-boundaries.md`
-- Notes: Namespace policy is a product-contract rule, not a docs preference.
+ZEVM owns product-surface composition and runtime operations, including:
 
-## Related Pages
+- CLI/config parsing and mode selection
+- runtime composition and lifecycle
+- HTTP JSON-RPC transport and dispatch
+- mode-aware routing and gating
+- checkpoint wiring and light readiness reporting
+- canonical naming for ZEVM nonstandard controls (`zevm_*`)
 
-- [Runtime Modes](./runtime-modes)
-- [Run Trusted Mode](../quickstart/run-trusted-mode)
-- [JSON-RPC Overview](../reference/json-rpc/overview)
+Execution internals remain upstream-owned: ZEVM composes these components but does not re-specify or override EVM/state-transition semantics, proof-generation internals, or interpreter behavior.
+Behavior changes or defects in those internals are owned by upstream projects; ZEVM owns integration behavior at the product/runtime shell boundary.
+
+## Contract Boundary
+
+- ZEVM concept docs define mode boundaries and selector behavior
+- JSON-RPC reference pages define exact method-level contracts
+- trusted compatibility aliases (`anvil_*`, selected `hardhat_*`, selected `evm_*`) are compatibility inputs, not canonical naming
+
+## Where To Go Next
+
+- Concept: [Runtime Modes](./runtime-modes)
+- Concept: [Method Support By Mode](./method-support-by-mode)
+- Quickstart: [Run Trusted Mode](../quickstart/run-trusted-mode)
+- Reference: [JSON-RPC Overview](../reference/json-rpc/overview)

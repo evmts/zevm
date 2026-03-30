@@ -1,6 +1,11 @@
 # Light Client Mode And Proof-Verified Reads
 
-## Verified Gap
+> **Archived / non-normative:** This issue is historical context only. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md).
+>
+> **Resolved / superseded status:** The gaps recorded below were resolved in later product convergence work and are superseded by the normative docs above. Treat this file as historical evidence, not as a current open product gap list.
+
+
+## Historical Gap Snapshot At Filing Time (Resolved)
 
 - `consensus_sync`, `consensus_verifier`, `beacon_api`, and `checkpoint` provide library-level light-client functionality, but `main` has no light-client mode.
 - There are no CLI/runtime flags for network selection, checkpoint input/output, checkpoint-age policy, or light-client readiness.

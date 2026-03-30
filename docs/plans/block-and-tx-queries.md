@@ -14,6 +14,11 @@ All storage primitives already exist in **voltaire** (`Blockchain`, `Receipt`, `
 
 No stored allocators. No local type aliases. Pass allocator explicitly everywhere.
 
+> Historical archive note: this implementation plan is point-in-time context and may differ
+> from the active ZEVM contract. For current normative payload and method-surface rules, use
+> `docs/specs/prd.md` and `docs/specs/json-rpc-contract.md`. Historical mentions of tx
+> `blockTimestamp`/`chainId` are non-contract extensions.
+
 ---
 
 ## Architecture Summary
@@ -329,7 +334,6 @@ pub fn getTransactionByBlockNumberAndIndex(
 pub const TxResponse = struct {
     blockHash: ?[32]u8,
     blockNumber: ?u64,
-    blockTimestamp: ?u64,
     from: [20]u8,
     gas: u64,
     gasPrice: u256,
@@ -344,7 +348,6 @@ pub const TxResponse = struct {
     type: u8,
     // EIP-2930
     accessList: ?[]AccessListEntry,
-    chainId: ?u64,
     // EIP-1559 (no extra fields beyond max fees above)
     // EIP-4844
     maxFeePerBlobGas: ?u256,
@@ -358,6 +361,10 @@ pub const TxResponse = struct {
     yParity: ?u8,
 };
 ```
+
+Historical vector note: some older vectors included tx-level `blockTimestamp` and `chainId`
+extension fields. These are non-contract for ZEVM and should not be treated as required by the
+current RPC contract.
 
 Note: `BlockBody.TransactionData` stores raw RLP bytes. The tx handler must decode these
 to populate `TxResponse`. Decoding logic lives in voltaire's `primitives.Transaction` or
@@ -583,9 +590,10 @@ voltaire before implementing `getTransactionByHash`.
 
 The preferred approach is to add the field to voltaire `EventLog.zig`. Do this first.
 
-### 4. BlockHeader missing `blockTimestamp` on transactions
-`eth_getTransactionByBlockHashAndIndex` vector returns `blockTimestamp`. Must be populated
-from block header when building `TxResponse`. No voltaire change needed — read from block.
+### 4. Historical vector note: tx `blockTimestamp` extension
+Some archived vectors show tx-level `blockTimestamp`. Treat this as non-contract extension
+context only; do not model it as a required `TxResponse` field unless the normative contract
+(`docs/specs/prd.md` + `docs/specs/json-rpc-contract.md`) is updated.
 
 ---
 

@@ -1,41 +1,34 @@
-# ZEVM Public Docs Sources
+# Archival Note: Public Docs Sources
 
-Last updated: 2026-03-29
+Last updated: 2026-03-30
 
-This file is the page-by-page traceability map for the required Mintlify public tree.
+## Status
 
-Supported-surface public reference pages are the self-contained contract surfaces when repo authority has actually settled the semantics. If the authority hierarchy still leaves a semantic open, the affected public reference page must mark the blocking question explicitly rather than pretending the contract is exact. Concept pages summarize and link to those public reference pages rather than to internal support docs for method-level exactness.
+This file is an archival traceability artifact from prior public-docs reconciliation.
 
-## Shared Public Artifacts
+It is non-normative and is not an active source map for current page maintenance.
 
-| Page | Source IDs | Contradiction IDs | Question IDs | Internal support docs | Notes |
-| --- | --- | --- | --- | --- | --- |
-| `mintlify/mint.json` | `AUTH-02`, `PROC-01` | `-` | `-` | `-` | Required Mintlify navigation artifact for the supported public tree and JSON-RPC reference IA. |
-| `mintlify/docs/_snippets/current-head-note.mdx` | `HEAD-01` | `C-002` | `-` | `-` | Shared dated current-`HEAD` caveat snippet used by public pages. |
-| `mintlify/docs/_snippets/trusted-managed-wallet.mdx` | `TRUST-03` | `C-008` | `-` | `trusted-mode-semantics.md` | Shared exact managed-wallet contract snippet used on trusted-mode public surfaces. |
+## Active Replacement
 
-## Public Pages
+Active page-level ownership and source traceability now live in:
 
-| Page | Source IDs | Contradiction IDs | Question IDs | Internal support docs | Notes |
-| --- | --- | --- | --- | --- | --- |
-| `mintlify/docs/index.mdx` | `AUTH-01`, `AUTH-02`, `PROC-01`, `HEAD-01`, `ARCH-01`, `BOOT-01`, `TRUST-01`, `LIGHT-01`, `LIGHT-04`, `LIGHT-05` | `C-001`, `C-002`, `C-011`, `C-012`, `C-013` | `-` | `phase-1-product-shape.md`, `runtime-modes-and-boundaries.md`, `upstream-ownership-and-boundaries.md` | Exact RPC request and response details are documented in the JSON-RPC reference pages in this repo. |
-| `mintlify/docs/quickstart/installation.mdx` | `PROC-01`, `HEAD-01`, `BOOT-01`, `RPC-01` | `C-001`, `C-002`, `C-003` | `-` | `phase-1-product-shape.md`, `startup-and-configuration.md`, `transport-and-error-semantics.md` | Phase 1 is source-build only, and the current source-build workflow expects sibling `../voltaire` and `../guillotine-mini` repositories because the build uses local path dependencies. |
-| `mintlify/docs/quickstart/run-trusted-mode.mdx` | `HEAD-01`, `BOOT-01`, `BOOT-02`, `BOOT-07`, `TRUST-01`, `TRUST-02`, `TRUST-03`, `TRUST-04`, `TRUST-05`, `TRUST-09` | `C-001`, `C-002`, `C-004`, `C-008`, `C-010` | `-` | `startup-and-configuration.md`, `trusted-mode-semantics.md`, `rpc-support-matrix.md` | These commands and first-call examples are contract examples only; current `HEAD` does not run them as rechecked on March 29, 2026. |
-| `mintlify/docs/quickstart/forked-dev-node.mdx` | `HEAD-01`, `BOOT-02`, `BOOT-07`, `TRUST-09` | `C-001`, `C-002`, `C-010` | `-` | `startup-and-configuration.md`, `state-fork-and-snapshot-semantics.md` | `--fork-block-number` without `--fork-url` is a startup failure, not a valid alternate form; fork semantics remain local-overlay-first, remote-fallback, and local-only for writes. |
-| `mintlify/docs/concepts/runtime-modes.mdx` | `PROC-01`, `HEAD-01`, `BOOT-01`, `BOOT-03`, `BOOT-04`, `BOOT-07`, `RPC-04`, `RPC-ETH-BLOCKNUMBER`, `TRUST-01`, `TRUST-04`, `TRUST-08`, `TRUST-09`, `LIGHT-01`, `LIGHT-04`, `LIGHT-05`, `RPC-TAGS-LIGHT`, `DEFER-01` | `C-001`, `C-002`, `C-007`, `C-010`, `C-011`, `C-012` | `Q-003`, `Q-004` | `runtime-modes-and-boundaries.md`, `trusted-mode-semantics.md`, `light-mode-semantics.md` | Public prose defines the two-mode boundary directly, including direct `--mode light` selection, the bounded light numeric-selector contract, the `-32011` versus `-32602` split, and the settled light-mode `eth_blockNumber` rule that shares the readiness gate and returns the `latest` verified optimistic head number once ready. |
-| `mintlify/docs/concepts/trusted-mode.mdx` | `PROC-01`, `HEAD-01`, `BOOT-01`, `BOOT-02`, `BOOT-04`, `TRUST-01`, `TRUST-02`, `TRUST-03`, `TRUST-04`, `TRUST-07`, `TRUST-08`, `TRUST-09`, `TRUST-10`, `TRUST-11`, `DEFER-01` | `C-001`, `C-002`, `C-006`, `C-007`, `C-008`, `C-009`, `C-010` | `-` | `trusted-mode-semantics.md`, `state-fork-and-snapshot-semantics.md` | Public prose defines canonical `zevm_*` naming, alias policy, startup boundaries, and the intended canonical query surface directly while keeping current `HEAD` query defects explicit. |
-| `mintlify/docs/concepts/light-mode.mdx` | `PROC-01`, `HEAD-01`, `LIGHT-01`, `LIGHT-02`, `LIGHT-03`, `LIGHT-04`, `LIGHT-05`, `LIGHT-06`, `RPC-TAGS-LIGHT`, `RPC-ETH-BLOCKNUMBER` | `C-002`, `C-011`, `C-012` | `Q-003`, `Q-004` | `light-mode-semantics.md`, `runtime-modes-and-boundaries.md` | Light mode is proof-backed only; any request that cannot be verified must fail rather than falling back to placeholder data, `-32011` is the not-ready error, `-32602` is the ready-but-out-of-window numeric-selector error, literal baked default checkpoint hashes are not frozen as contract, and `eth_blockNumber` shares the readiness gate and returns the `latest` verified optimistic head number once ready. |
-| `mintlify/docs/concepts/state-fork-and-snapshots.mdx` | `HEAD-01`, `TRUST-09`, `TRUST-10`, `TRUST-11` | `C-002`, `C-009`, `C-010` | `-` | `state-fork-and-snapshot-semantics.md`, `trusted-mode-semantics.md` | Fork and snapshot behavior are trusted-mode-only contract rules; the accepted alias set is fixed and does not expand by same-suffix family matching. |
-| `mintlify/docs/concepts/method-support-by-mode.mdx` | `PROC-01`, `HEAD-01`, `RPC-04`, `RPC-ETH-BLOCKNUMBER`, `TRUST-05`, `TRUST-06`, `TRUST-07`, `TRUST-08`, `TRUST-11`, `LIGHT-05`, `RPC-TAGS-LIGHT`, `DEFER-01` | `C-002`, `C-004`, `C-005`, `C-006`, `C-007`, `C-009`, `C-012` | `Q-003`, `Q-004` | `rpc-support-matrix.md`, `runtime-modes-and-boundaries.md`, `trusted-mode-semantics.md`, `light-mode-semantics.md` | Summarizes canonical surfaces, compatibility aliases, deferred boundaries, and the bounded light numeric-selector contract directly, including the `-32011` versus `-32602` split; helper presence on current `HEAD` does not imply contract-complete canonical query support, and light-mode `eth_blockNumber` shares the readiness gate and returns the `latest` verified optimistic head number once ready. |
-| `mintlify/docs/concepts/architecture-and-upstream-ownership.mdx` | `AUTH-01`, `HEAD-01`, `ARCH-01` | `C-002`, `C-013` | `-` | `phase-1-product-shape.md`, `upstream-ownership-and-boundaries.md` | Namespace policy is a product-contract rule, not a docs preference. |
-| `mintlify/docs/reference/configuration/overview.mdx` | `PROC-01`, `HEAD-01`, `BOOT-01`, `BOOT-04`, `BOOT-05`, `BOOT-06`, `BOOT-07`, `BOOT-08`, `LIGHT-03` | `C-001`, `C-002`, `C-010`, `C-011` | `Q-005` | `startup-and-configuration.md` | Default startup behavior is separate from config-file shape; CLI `--mode` can select the active runtime directly or confirm a config-selected runtime, but it may not conflict, and `--config` missing-file, unreadable-file, and malformed-JSON failures are exact startup failures rather than fallback cases. |
-| `mintlify/docs/reference/configuration/trusted-mode.mdx` | `HEAD-01`, `BOOT-02`, `BOOT-04`, `BOOT-07`, `BOOT-08`, `TRUST-02`, `TRUST-03`, `TRUST-09` | `C-001`, `C-002`, `C-008`, `C-010` | `Q-005` | `startup-and-configuration.md`, `trusted-mode-semantics.md` | Exact trusted-mode aliases are documented in the trusted-mode and JSON-RPC reference pages in this repo; shared `--config` loader failures now fail startup before ZEVM listens and do not fall back to defaults. |
-| `mintlify/docs/reference/configuration/light-mode.mdx` | `PROC-01`, `HEAD-01`, `BOOT-03`, `BOOT-04`, `BOOT-05`, `BOOT-06`, `BOOT-08`, `LIGHT-01`, `LIGHT-02`, `LIGHT-03`, `LIGHT-06` | `C-001`, `C-002`, `C-011` | `Q-005` | `startup-and-configuration.md`, `light-mode-semantics.md` | Default startup remains trusted when startup inputs do not select a mode; `--mode light` can select light mode directly, config plus CLI must agree when both are present, baked defaults participate in precedence without freezing literal hashes as public contract, and shared `--config` loader failures are exact hard failures before listener startup. |
-| `mintlify/docs/reference/json-rpc/overview.mdx` | `AUTH-01`, `AUTH-02`, `PROC-01`, `HEAD-01`, `RPC-01`, `RPC-02`, `RPC-03`, `RPC-04`, `RPC-05`, `RPC-ETH-BLOCKNUMBER`, `DEFER-01` | `C-002`, `C-003`, `C-004`, `C-005`, `C-006`, `C-007`, `C-009`, `C-012` | `Q-004`, `Q-006` | `transport-and-error-semantics.md`, `rpc-support-matrix.md` | Canonical home for transport, notifications, error behavior, the mode-gated JSON-RPC surface summary, the exact empty-batch invalid-request contract, and the settled light-mode `eth_blockNumber` rule. |
-| `mintlify/docs/reference/json-rpc/core-reads.mdx` | `AUTH-02`, `PROC-01`, `HEAD-01`, `TRUST-03`, `TRUST-04`, `TRUST-05`, `RPC-ETH-FEEHISTORY` | `C-002`, `C-004`, `C-008` | `-` | `trusted-mode-semantics.md`, `rpc-support-matrix.md` | Self-contained exact trusted-mode core read contract, with current helper-path contradictions kept separate from the intended surface, including the live synthetic `eth_feeHistory` mismatch. |
-| `mintlify/docs/reference/json-rpc/simulation.mdx` | `AUTH-02`, `PROC-01`, `HEAD-01`, `TRUST-06` | `C-002`, `C-005` | `-` | `trusted-mode-semantics.md`, `rpc-support-matrix.md` | Self-contained exact phase-1 simulation contract, with missing current-`HEAD` wiring kept explicit. |
-| `mintlify/docs/reference/json-rpc/transactions-and-mining.mdx` | `AUTH-02`, `PROC-01`, `HEAD-01`, `TRUST-03`, `TRUST-07`, `TRUST-11` | `C-002`, `C-006`, `C-008`, `C-009` | `-` | `trusted-mode-semantics.md`, `state-fork-and-snapshot-semantics.md`, `rpc-support-matrix.md` | Self-contained exact trusted-mode submission, mining, pool, and fork-control contract with the fixed accepted alias inventory. |
-| `mintlify/docs/reference/json-rpc/blocks-receipts-and-logs.mdx` | `AUTH-02`, `PROC-01`, `HEAD-01`, `TRUST-04`, `TRUST-08` | `C-002`, `C-007` | `-` | `trusted-mode-semantics.md`, `rpc-support-matrix.md` | Self-contained exact trusted query contract for blocks, receipts, transactions, and logs, including `eth_getLogs` as supported rather than deferred. |
-| `mintlify/docs/reference/json-rpc/dev-controls.mdx` | `AUTH-02`, `PROC-01`, `HEAD-01`, `TRUST-07`, `TRUST-10`, `TRUST-11` | `C-002`, `C-006`, `C-009` | `-` | `state-fork-and-snapshot-semantics.md`, `rpc-support-matrix.md` | Self-contained exact ZEVM-owned control inventory plus the closed-world accepted compatibility aliases. |
-| `mintlify/docs/reference/json-rpc/verified-light-mode-reads.mdx` | `AUTH-02`, `PROC-01`, `HEAD-01`, `LIGHT-04`, `LIGHT-05`, `RPC-TAGS-LIGHT`, `RPC-ETH-BLOCKNUMBER` | `C-002`, `C-012` | `Q-003`, `Q-004` | `light-mode-semantics.md`, `rpc-support-matrix.md` | Light-mode status and proof-backed read contract, with the bounded verified-history numeric-selector rule, the `ready = true` invariant, the `-32011` versus `-32602` split, and the settled rule that `eth_blockNumber` shares the readiness gate and returns the `latest` verified optimistic head number once ready. |
-| `mintlify/docs/reference/json-rpc/unsupported-and-deferred.mdx` | `AUTH-02`, `PROC-01`, `HEAD-01`, `DEFER-01` | `C-002` | `-` | `rpc-support-matrix.md`, `phase-1-product-shape.md` | Reserved for intentionally unsupported or later-scope surfaces; the deferred set explicitly excludes `eth_getLogs` and is limited to filter lifecycle APIs beyond it, subscriptions, WebSocket transport, tracing, and advanced helpers. |
+- `docs/specs/page-ownership.md`
+
+Moved from this file to `page-ownership.md`:
+
+- current Mintlify page-by-page ownership routing
+- current authoritative source-document pointers per page
+- active update policy for nav/source-map maintenance
+
+## Current Normative Sources
+
+- `docs/specs/prd.md`
+- `docs/specs/json-rpc-contract.md`
+
+## Non-Normative Support Summaries
+
+- `docs/specs/internal/*` provides mode, transport, configuration, and RPC-support detail only and is not normative.
+
+## Archival Scope
+
+Historical source-ID, contradiction-ID, and question-ID mapping tables remain retired to avoid stale control data.

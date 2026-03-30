@@ -1,87 +1,47 @@
 ---
 title: Method Support By Mode
-description: Mode-specific public surfaces, compatibility aliases, and deferred families.
+description: Practical capability matrix for trusted and light mode without duplicating method reference pages.
 ---
 
 # Method Support By Mode
 
-ZEVM's public contract separates canonical surfaces, compatibility aliases, and deferred surfaces by mode.
+Use this matrix to choose the right mode. This page is a summary of the normative contract sources in `docs/specs/prd.md` and `docs/specs/json-rpc-contract.md`.
+Use JSON-RPC reference pages for exact method signatures, params, payloads, and errors.
 
-For exact request tuples, return payloads, selector rules, and error behavior, use the public reference pages: [Core Reads](../reference/json-rpc/core-reads), [Simulation](../reference/json-rpc/simulation), [Transactions And Mining](../reference/json-rpc/transactions-and-mining), [Blocks, Receipts, And Logs](../reference/json-rpc/blocks-receipts-and-logs), [ZEVM Controls](../reference/json-rpc/dev-controls), [Verified Light-Mode Reads](../reference/json-rpc/verified-light-mode-reads), and [Unsupported And Deferred](../reference/json-rpc/unsupported-and-deferred).
+## Capability Matrix
 
-## Canonical Surfaces
-
-| Surface | Trusted mode | Light mode | Canonical public naming |
+| Capability family | Trusted mode | Light mode | Method details |
 | --- | --- | --- | --- |
-| Core reads, including `eth_chainId` and `eth_blockNumber` | yes | yes | standard `eth_*` reads |
-| Simulation | yes | no | `eth_call`, `eth_estimateGas` |
-| Transaction submission and mining | yes | no | transaction `eth_*` methods plus `zevm_*` mining controls |
-| Log queries, including `eth_getLogs` | yes | no | canonical block, receipt, and log queries |
-| Snapshots and revert | yes | no | canonical `zevm_*` snapshot controls |
-| State mutation, impersonation, and time controls | yes | no | canonical `zevm_*` dev-node controls |
-| Fork overlay configuration | yes | no | trusted-mode config plus canonical `zevm_*` controls |
-| Verified light-mode status | no | yes | `zevm_lightSyncStatus` |
-| Proof-backed reads | no | yes | standard `eth_*` reads only |
-| Filter lifecycle APIs beyond `eth_getLogs` | no | no | deferred |
-| Subscriptions | no | no | deferred |
-| WebSocket transport | no | no | deferred |
+| Core reads (`eth_chainId`, `eth_blockNumber`, account/code/storage/nonce reads) | yes | yes (`eth_chainId` always; proof-backed account/code/storage/nonce reads and `eth_blockNumber` require `ready = true`; proof-backed numeric selectors are limited to block `0` plus the retained verified-history window) | [Core Reads](../reference/json-rpc/core-reads), [Verified Light-Mode Reads](../reference/json-rpc/verified-light-mode-reads) |
+| Simulation (`eth_call`, `eth_estimateGas`) | yes | no (`-32010`; both are trusted-only in phase 1, and `eth_call` remains a deferred light-mode proof-backed target) | [Simulation](../reference/json-rpc/simulation), [Unsupported And Deferred](../reference/json-rpc/unsupported-and-deferred) |
+| Transaction submission and mining | yes | no | [Transactions And Mining](../reference/json-rpc/transactions-and-mining) |
+| Canonical block/transaction/receipt/log queries, including block tx counts, tx-by-block-index lookups, and `eth_getLogs` | yes | no | [Blocks, Receipts, And Logs](../reference/json-rpc/blocks-receipts-and-logs) |
+| ZEVM trusted namespace (`zevm_*` except `zevm_lightSyncStatus`) | yes | no | [ZEVM Controls](../reference/json-rpc/dev-controls) |
+| ZEVM light namespace (`zevm_lightSyncStatus`) | no | yes | [Verified Light-Mode Reads](../reference/json-rpc/verified-light-mode-reads) |
+| Trusted compatibility aliases (`anvil_*`, selected `hardhat_*`, selected `evm_*`) | yes | no | [ZEVM Controls](../reference/json-rpc/dev-controls), [Transactions And Mining](../reference/json-rpc/transactions-and-mining) |
+| Filter lifecycle beyond `eth_getLogs` | not part of current contract (deferred) | not part of current contract (deferred) | [Unsupported And Deferred](../reference/json-rpc/unsupported-and-deferred) |
+| Subscriptions (`eth_subscribe`, `eth_unsubscribe`) | not part of current contract (deferred method surface) | not part of current contract (deferred method surface) | [Unsupported And Deferred](../reference/json-rpc/unsupported-and-deferred) |
+| WebSocket transport | transport-level unsupported (HTTP JSON-RPC only; outside JSON-RPC method dispatch, not a method-level deferred mapping) | transport-level unsupported (HTTP JSON-RPC only; outside JSON-RPC method dispatch, not a method-level deferred mapping) | [Unsupported And Deferred](../reference/json-rpc/unsupported-and-deferred) |
 
-For light-mode proof-backed reads, selector support is also mode-specific:
+## Selector And Readiness Rules
 
-- `latest`, `safe`, `finalized`, and `earliest` are part of the intended light-mode contract
-- while `ready = false`, `eth_blockNumber` fails with `-32011`
-- once ready, `eth_blockNumber` returns the block number of the light-mode `latest` head
-- while `ready = false`, ZEVM serves no proof-backed reads and fails them with `-32011`
-- once ready, numeric selectors are supported only for block `0` and for exact blocks inside the retained verified-history window containing the most recent `8191` verified execution blocks when ZEVM can verify the exact execution block and the requested proof-backed read against that block's state root
-- if light mode is ready in general but the requested numeric block is outside that retained verified-history window, the request fails with `-32602`
-- if an otherwise-supported proof-backed read cannot be verified against the resolved block state root, the read fails with the proof-verification error documented on [Verified Light-Mode Reads](../reference/json-rpc/verified-light-mode-reads)
-- ZEVM does not promise arbitrary checkpoint-to-head historical archive reads
+- mode-incompatible methods fail with `-32010`
+- compatibility alias acceptance is closed-world: only aliases explicitly enumerated on JSON-RPC reference pages are accepted
+- deferred-surface promotion and phase-1 boundary/graduation criteria are canonicalized in [Specs And Process](../reference/specs-and-process#deferred-surface-promotion-and-phase-1-boundary-and-graduation-criteria)
+- in light mode, `eth_chainId` is always callable
+- in light mode, while `ready = false`, proof-backed reads and `eth_blockNumber` fail with `-32011`
+- in light mode, numeric selectors are limited to block `0` plus the retained verified-history window
+- in light mode, numeric selectors outside that retained window fail with `-32602`
+- in light mode, canonical query methods on the blocks/receipts/logs page (`eth_getBlockBy*`, `eth_getBlockTransactionCountBy*`, `eth_getTransactionBy*`, `eth_getTransactionReceipt`, `eth_getBlockReceipts`, `eth_getLogs`) fail with `-32010`
+- trusted-mode `pending`, `safe`, and `finalized` are aliases of `latest`
+- light-mode `safe` and `finalized` are consensus-anchored heads
 
-## Compatibility Aliases
+## Where To Go Next
 
-Trusted mode also accepts a defined compatibility-alias set for the same trusted-mode behavior:
-
-- the accepted `anvil_*`, `hardhat_*`, and `evm_*` names are fixed rather than open-ended
-- no other same-suffix `anvil_*`, `hardhat_*`, or `evm_*` names are part of the phase-1 public contract
-
-These aliases are supported in trusted mode only. Public docs use the canonical `zevm_*` names when describing ZEVM behavior.
-
-## Deferred Surfaces
-
-Trace and verbose logging tooling is phase-3 work, not phase-1 product surface. If it appears in the codebase, it should be documented as deferred rather than canonical.
-
-Additional deferred public surfaces:
-
-- filter lifecycle APIs beyond `eth_getLogs`
-- subscriptions
-- WebSocket transport
-
-## Not Public ZEVM
-
-- light mode does not expose trusted-mode dev controls
-- trusted mode does not expose `zevm_lightSyncStatus`
-
-## Current HEAD As Of 2026-03-29
-
-- `zig build` fails first in `src/rpc/server.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope`, and `zig build test` fails in `src/rpc/dispatcher_test.zig`, `src/rpc/server.zig`, and `src/tx_processor.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope` and current `guillotine-mini` requires a wider `evm.init` signature
-- `src/main.zig` still constructs an empty `dispatcher.HandlerRegistry`, so the live listener does not yet expose the modeled mode split
-- the deferred bucket still excludes `eth_getLogs`, but current helper presence does not imply contract-complete trusted canonical queries: current `HEAD` still carries live `C-007` contradictions, including `eth_getTransactionByHash` remaining a stub, block/receipt/log payloads remaining placeholder-backed, and invalid log filters collapsing to `[]`
-- trusted core read helpers remain contradictory too: `eth_getCode` still returns `0x`, malformed storage slots still collapse to zero, and `eth_feeHistory` still synthesizes history instead of reflecting mined blocks
-- there is still no live `zevm_lightSyncStatus` route in the executable path
-- there is still no live retained-history numeric-selector implementation for light mode
-- light-mode `eth_blockNumber` semantics are settled in the docs contract, but no live light-mode route exists yet
-- the public contract on this page is the intended mode split, not the current implementation shape
-
-## Traceability
-
-- Source IDs: `PROC-01`, `HEAD-01`, `RPC-04`, `RPC-ETH-BLOCKNUMBER`, `TRUST-05`, `TRUST-06`, `TRUST-07`, `TRUST-08`, `TRUST-11`, `LIGHT-05`, `RPC-TAGS-LIGHT`, `DEFER-01`
-- Contradiction IDs: `C-002`, `C-004`, `C-005`, `C-006`, `C-007`, `C-009`, `C-012`
-- Question IDs: `Q-003`, `Q-004`
-- Internal support docs: `rpc-support-matrix.md`, `runtime-modes-and-boundaries.md`, `trusted-mode-semantics.md`, `light-mode-semantics.md`
-
-## Related Pages
-
-- [Runtime Modes](./runtime-modes)
-- [Trusted Mode](./trusted-mode)
-- [Light Mode](./light-mode)
-- [State Fork And Snapshots](./state-fork-and-snapshots)
+- Concept: [Runtime Modes](./runtime-modes)
+- Concept: [Trusted Mode](./trusted-mode)
+- Concept: [Light Mode](./light-mode)
+- Quickstart: [Run Trusted Mode](../quickstart/run-trusted-mode)
+- Quickstart: [Forked Dev Node](../quickstart/forked-dev-node)
+- Reference: [Canonical Specs And Docs-First Process](../reference/specs-and-process)
+- Reference: [Configuration Overview](../reference/configuration/overview)

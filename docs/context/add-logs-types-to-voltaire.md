@@ -1,5 +1,7 @@
 # Research Context: add-logs-types-to-voltaire
 
+> **Historical / Non-Normative Note:** This is local archival context and not a ZEVM phase-1 requirements document. Method references here, including filter lifecycle APIs beyond `eth_getLogs` and `eth_getProof` discussion (for example `eth_newFilter`, `eth_getFilterChanges`, `eth_getFilterLogs`), are upstream/history context only and are **not** current ZEVM phase-1 supported method commitments. For active scope, see `docs/specs/prd.md` and `docs/specs/json-rpc-contract.md`.
+
 **Ticket:** `add-logs-types-to-voltaire`  
 **Category:** `cat-5-block-queries`  
 **Date:** 2026-02-27
@@ -139,10 +141,10 @@ Key behavior covered:
 
 ## EIP and Protocol References
 
-- `EIPs/EIPS/eip-234.md`
+- `https://eips.ethereum.org/EIPS/eip-234`
   - Introduces `blockHash` for filter options used by `eth_newFilter` and `eth_getLogs`.
   - Explicitly states `blockHash` should be mutually exclusive with `fromBlock`/`toBlock`.
-- `EIPs/EIPS/eip-1474.md`
+- `https://eips.ethereum.org/EIPS/eip-1474`
   - Defines RPC method-level shape for `eth_getLogs` and log object fields.
   - Documents topic order semantics and wildcard/OR matching patterns.
 - `yellowpaper/Paper.tex`

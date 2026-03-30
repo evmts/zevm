@@ -1,3 +1,14 @@
+Template note: this file is a workflow prompt template. `{props.*}` placeholders are intentionally unresolved in source and are resolved by the workflow runtime before execution.
+
+Runtime props contract (required at workflow execution):
+- `props.reviewRound` (string | number): review pass identifier used as context for this cold review.
+- `props.schema` (string): JSON Schema text that defines the required JSON output format for this workflow run.
+
+Execution guard:
+- Unresolved placeholders are valid in repository source templates.
+- After runtime render, any unresolved template placeholder (for example `{props.*}` or `{JSON.stringify(...)}`) is a hard error and the workflow must fail before executing this prompt.
+- The fallback instructions below are only for pasted/raw prompt usage outside the workflow runtime.
+
 Fresh thread. Do a cold review of the entire ZEVM docs corpus as a self-contained product-definition system. Do not assume the production thread was correct. Work from docs only.
 
 Ignore `src/`, tests, and implementation artifacts entirely unless the human explicitly asks otherwise.
@@ -29,9 +40,43 @@ Look for:
 
 Review round: {props.reviewRound}
 
+If `Review round: {props.reviewRound}` is unresolved template text in a pasted/raw prompt, treat review round as unknown context and continue.
+This fallback is pasted/raw resilience only and must not override runtime render-failure behavior.
+
 Set `verdict` to `LGTM` only if there are absolutely zero findings and zero blockers.
 If there is any finding or any blocker, set `verdict` to `CHANGES_REQUIRED`.
 
 Return JSON matching this schema:
 
 {props.schema}
+
+If `{props.schema}` is unresolved template text in a pasted/raw prompt, use this fallback output schema and still return valid JSON.
+This fallback is pasted/raw resilience only and must not override runtime render-failure behavior.
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "findings", "blockers", "residualRisks"],
+  "properties": {
+    "verdict": { "type": "string", "enum": ["LGTM", "CHANGES_REQUIRED"] },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "location", "problem", "requiredAction"],
+        "properties": {
+          "severity": { "type": "string", "enum": ["critical", "high", "medium", "low"] },
+          "location": { "type": "string" },
+          "problem": { "type": "string" },
+          "requiredAction": { "type": "string" }
+        }
+      }
+    },
+    "blockers": { "type": "array", "items": { "type": "string" } },
+    "residualRisks": { "type": "array", "items": { "type": "string" } }
+  }
+}
+```

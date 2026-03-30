@@ -11,8 +11,8 @@
 ### Existing Method Files
 
 Located at:
-- `/Users/williamcory/voltaire/packages/voltaire-zig/src/jsonrpc/eth/getBlockByNumber/eth_getBlockByNumber.zig`
-- `/Users/williamcory/voltaire/packages/voltaire-zig/src/jsonrpc/eth/getBlockByHash/eth_getBlockByHash.zig`
+- `../voltaire/packages/voltaire-zig/src/jsonrpc/eth/getBlockByNumber/eth_getBlockByNumber.zig`
+- `../voltaire/packages/voltaire-zig/src/jsonrpc/eth/getBlockByHash/eth_getBlockByHash.zig`
 
 Both files currently have minimal placeholder `Result` types:
 
@@ -28,7 +28,7 @@ This needs to be replaced with a proper `BlockResponse` type.
 
 ### Existing Type Infrastructure
 
-Located at `/Users/williamcory/voltaire/packages/voltaire-zig/src/jsonrpc/types/`:
+Located at `../voltaire/packages/voltaire-zig/src/jsonrpc/types/`:
 - `Quantity.zig` - Generic JSON value wrapper for hex quantities
 - `Hash.zig` - 32-byte hash with JSON hex encoding
 - `Address.zig` - 20-byte address with JSON hex encoding
@@ -115,7 +115,7 @@ Key patterns:
 
 ### TEVM (TypeScript)
 
-File: `/Users/williamcory/tevm-monorepo/packages/actions/src/utils/blockToJsonRpcBlock.js`
+File: `../tevm-monorepo/packages/actions/src/utils/blockToJsonRpcBlock.js`
 
 Key patterns:
 - Converts internal Block to JSON-RPC response format
@@ -132,7 +132,7 @@ Key patterns:
 
 ### Block Structure
 
-From `/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/Block/Block.zig`:
+From `../voltaire/packages/voltaire-zig/src/primitives/Block/Block.zig`:
 ```zig
 pub const Block = struct {
     header: BlockHeader.BlockHeader,
@@ -145,7 +145,7 @@ pub const Block = struct {
 
 ### BlockHeader Structure
 
-From `/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/BlockHeader/BlockHeader.zig`:
+From `../voltaire/packages/voltaire-zig/src/primitives/BlockHeader/BlockHeader.zig`:
 ```zig
 pub const BlockHeader = struct {
     parent_hash: Hash.Hash = Hash.ZERO,
@@ -173,7 +173,7 @@ pub const BlockHeader = struct {
 
 ### BlockBody Structure
 
-From `/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/BlockBody/BlockBody.zig`:
+From `../voltaire/packages/voltaire-zig/src/primitives/BlockBody/BlockBody.zig`:
 ```zig
 pub const BlockBody = struct {
     transactions: []const TransactionData = &[_]TransactionData{},
@@ -253,7 +253,7 @@ From `execution-apis/tests/eth_getBlockByNumber/`:
 
 ### 1. Create `BlockResponse.zig` Type
 
-Location: `/Users/williamcory/voltaire/packages/voltaire-zig/src/jsonrpc/types/BlockResponse.zig`
+Location: `../voltaire/packages/voltaire-zig/src/jsonrpc/types/BlockResponse.zig`
 
 The type should include:
 
@@ -294,13 +294,13 @@ pub const BlockResponse = struct {
 
 ### 2. Create `TransactionInfo.zig` Type (for hydrated transactions)
 
-Location: `/Users/williamcory/voltaire/packages/voltaire-zig/src/jsonrpc/types/TransactionInfo.zig`
+Location: `../voltaire/packages/voltaire-zig/src/jsonrpc/types/TransactionInfo.zig`
 
 Must support all transaction types (legacy, 2930, 1559, 4844, 7702) with proper field selection per type.
 
 ### 3. Create `Withdrawal.zig` Type
 
-Location: `/Users/williamcory/voltaire/packages/voltaire-zig/src/jsonrpc/types/Withdrawal.zig`
+Location: `../voltaire/packages/voltaire-zig/src/jsonrpc/types/Withdrawal.zig`
 
 ```zig
 pub const Withdrawal = struct {
@@ -333,12 +333,12 @@ pub const Withdrawal = @import("types/Withdrawal.zig");
 
 | File | Purpose |
 |------|---------|
-| `/Users/williamcory/voltaire/packages/voltaire-zig/src/jsonrpc/eth/getBlockByNumber/eth_getBlockByNumber.zig` | Method definition to update |
-| `/Users/williamcory/voltaire/packages/voltaire-zig/src/jsonrpc/eth/getBlockByHash/eth_getBlockByHash.zig` | Method definition to update |
-| `/Users/williamcory/voltaire/packages/voltaire-zig/src/jsonrpc/types.zig` | Type exports to update |
-| `/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/Block/Block.zig` | Source block structure |
-| `/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/BlockHeader/BlockHeader.zig` | Source header fields |
-| `/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/BlockBody/BlockBody.zig` | Source body/withdrawals |
+| `../voltaire/packages/voltaire-zig/src/jsonrpc/eth/getBlockByNumber/eth_getBlockByNumber.zig` | Method definition to update |
+| `../voltaire/packages/voltaire-zig/src/jsonrpc/eth/getBlockByHash/eth_getBlockByHash.zig` | Method definition to update |
+| `../voltaire/packages/voltaire-zig/src/jsonrpc/types.zig` | Type exports to update |
+| `../voltaire/packages/voltaire-zig/src/primitives/Block/Block.zig` | Source block structure |
+| `../voltaire/packages/voltaire-zig/src/primitives/BlockHeader/BlockHeader.zig` | Source header fields |
+| `../voltaire/packages/voltaire-zig/src/primitives/BlockBody/BlockBody.zig` | Source body/withdrawals |
 | `execution-apis/src/schemas/block.yaml` | Block schema spec |
 | `execution-apis/src/schemas/transaction.yaml` | Transaction schema spec |
 | `execution-apis/tests/eth_getBlockByNumber/` | Test vectors |

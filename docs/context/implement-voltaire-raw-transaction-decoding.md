@@ -13,7 +13,7 @@
 **Summary:** Defines the JSON-RPC interface and parameter structure for the `eth_sendRawTransaction` method. Once decoding is implemented in `Transaction.zig`, this handler will need to be updated to parse the `types.Quantity` (hex encoded bytes) into a fully typed transaction structure.
 
 ### 3. EIP Specifications (`EIPs/EIPS/`)
-- `eip-1559.md`, `eip-2930.md`, `eip-4844.md`, `eip-7702.md`
+- `https://eips.ethereum.org/EIPS/eip-1559`, `https://eips.ethereum.org/EIPS/eip-2930`, `https://eips.ethereum.org/EIPS/eip-4844`, `https://eips.ethereum.org/EIPS/eip-7702`
 **Summary:** Provide the definitive specifications for the typed transaction envelopes. We must rigorously implement envelope type prefixes (`0x01`, `0x02`, `0x03`, `0x04`) and standard RLP parsing for each type.
 
 ### 4. `ethereum-tests/TransactionTests/`

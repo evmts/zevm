@@ -1,134 +1,66 @@
 # ZEVM Internal Support: Transport And Error Semantics
 
-Last updated: 2026-03-29
+Last updated: 2026-03-30
 
-This file is a support-layer summary. The exact contract lives in `../json-rpc-contract.md`.
+This page is non-normative support for:
 
-## HTTP Transport
+- `docs/specs/prd.md`
+- `docs/specs/json-rpc-contract.md`
 
-### Intended behavior
+Use the JSON-RPC contract for exact request/response tuples and method-level error mapping.
 
-- HTTP JSON-RPC requests are served at `/`
-- request method is `POST`
-- success and error responses use HTTP `200`
-- notification requests and notification-only batches use HTTP `204` with an empty body
-- non-`POST` requests use HTTP `405`
+## 1. Transport Invariants
 
-### Observed code constraints
+- HTTP JSON-RPC 2.0 only
+- JSON-RPC endpoint path is `/` only
+- JSON-RPC method is `POST` only
+- request path other than `/` returns HTTP `404` with no JSON-RPC body
+- non-`POST` request to `/` returns HTTP `405` with no JSON-RPC body
+- `POST /` must use content type `application/json` (media-type parameters allowed); unsupported or missing content type returns HTTP `415` with no JSON-RPC body
+- JSON-RPC success and error envelopes return HTTP `200`
+- notification-only request or notification-only batch returns HTTP `204` with empty body
+- one canonical ZEVM-owned HTTP transport/parser stack is the shipping path for request parsing and envelope dispatch; divergent production parser stacks are outside the phase-1 contract
+- whenever a JSON body is returned, content type is `application/json`
 
-- `src/rpc/server.zig` plus `src/rpc/dispatcher.zig` is the intended shipping path
-- `src/rpc/server.zig` does not inspect the request target and therefore does not enforce the documented `/` path
-- the older `src/rpc/envelope.zig` plus `src/rpc/router.zig` stack is still present in-tree but is stale and non-shipping
-- both in-tree transport paths still violate notification semantics, and the current helper tests codify the wrong response-bearing behavior instead of the HTTP `204` no-body contract
+## 2. Envelope Semantics
 
-### Affected public pages
+- single requests are supported
+- batches are supported
+- empty batch `[]` is invalid request content and returns JSON-RPC `-32600` with `id: null`
+- notification means request object without `id`
+- notifications do not produce JSON-RPC response bodies
+- mixed batches return responses only for entries that included `id`, in the same relative order as those entries in the request batch
+- `"id": null` is not a notification and receives a response
 
-- `mintlify/docs/reference/json-rpc/overview.mdx`
-- `mintlify/docs/quickstart/installation.mdx`
+## 3. Standard JSON-RPC Error Codes
 
-### Source IDs
+- parse error: `-32700`
+- invalid request: `-32600`
+- method not found: `-32601`
+- invalid params: `-32602`
+- internal error: `-32603`
 
-- `RPC-01`
-- `RPC-02`
+## 4. ZEVM Runtime Error Codes
 
-## Empty Batch Behavior
+- method unsupported in active mode: `-32010`
+- light mode not ready for proof-backed reads: `-32011`
+- reserved startup checkpoint-age condition code (not runtime-emitted): `-32012`
+- reserved startup checkpoint-malformed condition code (not runtime-emitted): `-32013`
+- proof verification failed: `-32014`
+- malformed data from upstream proof source: `-32015`
 
-### Intended behavior
+## 5. Shared Error Rules
 
-- Non-empty batch support is part of the intended transport contract.
-- Empty batch `[]` is invalid request content.
-- HTTP `POST /` with body `[]` returns HTTP `200` and a single JSON-RPC error object with `jsonrpc: "2.0"`, `id: null`, and `error: { "code": -32600, "message": "Invalid Request" }`.
+- malformed addresses, selectors, quantities, hex values, tuple lengths, and invalid field combinations fail with `-32602`
+- well-formed request for a method defined by the contract but unavailable in active mode fails with `-32010`
+- well-formed request using a deferred/out-of-contract JSON-RPC method name fails with `-32601`
+- trusted lookup misses for block/tx/receipt-returning methods return `null`
+- `eth_getLogs` with no matches returns `[]`
+- stale/malformed selected startup checkpoint failures happen before listening; `-32012` and `-32013` remain reserved and are not emitted once the listener is active
+- WebSocket remains transport-level unsupported; it is not a JSON-RPC method-level error mapping
 
-### Observed code constraints
+## 6. Release-Verification Summary (PRD 3.5)
 
-- The prototype `src/rpc/envelope.zig` path rejects `[]` with `error.InvalidRequest`, and `src/rpc/envelope_test.zig` codifies that behavior.
-- The intended `src/rpc/server.zig` path delegates batch parsing to upstream `jsonrpc.envelope.parseSingleOrBatch`, but that path does not compile against the current upstream export surface.
-
-### Affected public pages
-
-- `mintlify/docs/reference/json-rpc/overview.mdx`
-
-### Source IDs
-
-- `RPC-05`
-
-## Notification Semantics
-
-### Intended behavior
-
-- mixed valid and invalid items inside a batch are supported
-- a notification is a JSON-RPC request object with no `id` member
-- ZEVM sends no response for notifications
-- mixed batches emit responses only for requests that included an `id`
-- `"id": null` is not a notification and receives a response with `id: null`
-
-### Observed code constraints
-
-- the current repository still serializes responses for notification-shaped requests
-
-### Affected public pages
-
-- `mintlify/docs/reference/json-rpc/overview.mdx`
-
-### Source IDs
-
-- `RPC-02`
-
-## Standard JSON-RPC Errors
-
-### Intended behavior
-
-- parse error maps to `-32700`
-- invalid request maps to `-32600`
-- method not found maps to `-32601`
-- invalid params maps to `-32602`
-- internal error maps to `-32603`
-
-### Observed code constraints
-
-- current dispatcher validation is shallow
-- failure paths commonly collapse into `-32603` instead of preserving the more specific code
-
-### Affected public pages
-
-- `mintlify/docs/reference/json-rpc/overview.mdx`
-- `mintlify/docs/reference/json-rpc/core-reads.mdx`
-- `mintlify/docs/reference/json-rpc/simulation.mdx`
-- `mintlify/docs/reference/json-rpc/transactions-and-mining.mdx`
-- `mintlify/docs/reference/json-rpc/blocks-receipts-and-logs.mdx`
-- `mintlify/docs/reference/json-rpc/dev-controls.mdx`
-- `mintlify/docs/reference/json-rpc/verified-light-mode-reads.mdx`
-- `mintlify/docs/reference/json-rpc/unsupported-and-deferred.mdx`
-
-### Source IDs
-
-- `RPC-03`
-
-## ZEVM Runtime Errors
-
-### Intended behavior
-
-- `-32010` means the method is unsupported in the active mode
-- `-32011` means light mode is not ready
-- `-32012` is reserved for light-mode checkpoint-age failures
-- `-32013` is reserved for light-mode checkpoint-validation failures
-- `-32014` means proof verification failed
-- `-32015` means the upstream response was malformed
-
-### Observed code constraints
-
-- the repository does not yet implement the ZEVM-specific runtime error layer
-- the current codebase does not have public light-mode routing for readiness failures or verified-read failures
-- the initial light-mode checkpoint failures documented in config remain startup failures before ZEVM listens
-
-### Affected public pages
-
-- `mintlify/docs/reference/json-rpc/overview.mdx`
-- `mintlify/docs/reference/json-rpc/simulation.mdx`
-- `mintlify/docs/reference/json-rpc/transactions-and-mining.mdx`
-- `mintlify/docs/reference/json-rpc/verified-light-mode-reads.mdx`
-- `mintlify/docs/reference/json-rpc/unsupported-and-deferred.mdx`
-
-### Source IDs
-
-- `RPC-04`
+- phase-1 release qualification verifies transport behavior on the shipping path using a real bound HTTP listener socket in trusted mode and in light startup/resume coverage
+- notification-only single requests and notification-only batches are explicitly verified to return HTTP `204` with empty body
+- release verification is expected to exercise one canonical ZEVM-owned HTTP transport/parser stack on the shipping path (no divergent production parser stacks)

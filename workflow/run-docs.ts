@@ -14,6 +14,7 @@ const SMITHERS_NODE_MODULES = resolve(ROOT_DIR, "docs/references/smithers/node_m
 
 const args = new Set(process.argv.slice(2));
 const smoke = args.has("--smoke");
+const reviewOnly = args.has("--review-only");
 
 let tempDir: string | null = null;
 let linkedSmithersNodeModules = false;
@@ -27,6 +28,10 @@ if (smoke) {
   process.env.SMITHERS_DOCS_SMOKE = "1";
   process.env.ZEVM_DOCS_WORKFLOW_DB = join(tempDir, "docs-workflow.db");
   process.env.ZEVM_DOCS_MAX_ITERATIONS = process.env.ZEVM_DOCS_MAX_ITERATIONS ?? "3";
+}
+
+if (reviewOnly) {
+  process.env.ZEVM_DOCS_SKIP_IMPLEMENTATION = "1";
 }
 
 if (!existsSync(SMITHERS_NODE_MODULES)) {
@@ -54,7 +59,14 @@ const workflowModule = await import("../docs/workflows/docs.tsx");
 const workflow = workflowModule.default;
 
 try {
-  console.log(`Running docs workflow${smoke ? " in smoke mode" : ""}`);
+  const mode = [
+    "Running docs workflow",
+    reviewOnly ? "in review-only mode" : "",
+    smoke ? "in smoke mode" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  console.log(mode);
   const result = await runWorkflow(workflow, {
     input: {},
     runId: smoke ? "zevm-docs-smoke" : undefined,

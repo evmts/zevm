@@ -1,55 +1,62 @@
 # ZEVM JSON-RPC Contract
 
-Last updated: 2026-03-29
+Last updated: 2026-03-30
 
-This file is the repo-local exact JSON-RPC backfill for ZEVM.
+This file is the exact ZEVM JSON-RPC API contract.
 
-Use it for:
+It defines:
 
-- exact request tuples
-- exact request-object fields
-- exact return payloads
-- exact trusted-mode `zevm_*` method names
-- exact accepted `anvil_*`, `hardhat_*`, and `evm_*` compatibility aliases
-- exact block-tag and selector behavior
-- exact mode gating
-- exact JSON-RPC error behavior
+- request tuples
+- request-object fields
+- return payload shapes
+- mode gating
+- selector resolution
+- error behavior
+- trusted-mode canonical `zevm_*` methods and accepted aliases
 
-Within the repo-local hierarchy, `docs/specs/prd.md` remains the authoritative intended phase-1 product definition and `docs/specs/docs-first-process.md` remains the process constraint. This file backfills exact JSON-RPC detail referenced by the product contract and may record an explicit contradiction plus public-doc stance for an affected surface, but it must not silently override the PRD or the process docs.
+## 1. Common Types
 
-## Common Types
-
-| Type | Exact contract |
+| Type | Contract |
 | --- | --- |
-| `QuantityHex` | `0x`-prefixed unsigned integer with no leading zero padding except `0x0` |
-| `Address` | `0x`-prefixed 20-byte hex address |
-| `Hash32` | `0x`-prefixed 32-byte hex value |
-| `Bytes32` | `0x`-prefixed 32-byte hex value |
-| `HexData` | `0x`-prefixed hex byte string, including `0x` for empty bytes |
-| `BlockTag` | `latest`, `earliest`, `pending`, `safe`, `finalized`, or a numeric quantity |
+| `QuantityHex` | `0x`-prefixed unsigned integer, minimal hex encoding except `0x0` |
+| `Address` | `0x`-prefixed 20-byte hex |
+| `Hash32` | `0x`-prefixed 32-byte hex |
+| `Bytes32` | `0x`-prefixed 32-byte hex |
+| `HexData` | `0x`-prefixed byte string hex; `0x` means empty |
+| `BlockTag` | `latest`, `earliest`, `pending`, `safe`, `finalized`, or numeric quantity |
 | `TrustedBlockSelector` | any `BlockTag` |
-| `LightBlockSelector` | `latest`, `earliest`, `safe`, `finalized`, or a numeric quantity |
-| `ReceiptSelector` | a single `BlockTag` or a single `Hash32` block hash |
+| `LightBlockSelector` | `latest`, `earliest`, `pending`, `safe`, `finalized`, or numeric quantity; `pending` is rejected for light proof-backed reads with `-32010` |
+| `ReceiptSelector` | one `BlockTag` or one `Hash32` block hash |
 
-## Transport
+## 2. Chain ID Rules
 
-The ZEVM transport contract is:
+| Runtime | Source | `eth_chainId` result |
+| --- | --- | --- |
+| trusted mode | configured `chainId` | configured value as `QuantityHex` |
+| light mode + `mainnet` | fixed mapping | `0x1` |
+| light mode + `sepolia` | fixed mapping | `0xaa36a7` |
+| light mode + `holesky` | fixed mapping | `0x4268` |
+
+## 3. Transport
 
 - HTTP only
-- path `/`
-- request method `POST`
-- non-`POST` requests fail with HTTP `405`
-- JSON-RPC success responses use HTTP `200`
-- JSON-RPC error responses use HTTP `200`
-- notification-only requests and notification-only batches use HTTP `204` with an empty body
-- response content type is `application/json` whenever a JSON-RPC body is returned
+- JSON-RPC endpoint path is `/` only
+- request method for JSON-RPC endpoint is `POST` only
+- request path other than `/` -> HTTP `404` with no JSON-RPC body
+- non-`POST` request to `/` -> HTTP `405` with no JSON-RPC body
+- `POST /` request content type must be `application/json` (media-type parameters allowed); unsupported or missing content type -> HTTP `415` with no JSON-RPC body
+- JSON-RPC success responses -> HTTP `200`
+- JSON-RPC error responses -> HTTP `200`
+- notification-only request or notification-only batch -> HTTP `204` with empty body
+- one canonical ZEVM-owned HTTP transport/parser stack is the shipping path for request parsing and envelope dispatch; divergent production parser stacks are out of contract for phase 1
+- whenever a JSON-RPC body is returned, content type is `application/json`
 
-## JSON-RPC Envelope
+## 4. JSON-RPC Envelope
 
-- ZEVM speaks JSON-RPC `2.0`.
-- Single requests are supported.
-- Batch requests are supported.
-- Empty batch `[]` is invalid request content and returns HTTP `200` with this exact JSON-RPC body:
+- protocol: JSON-RPC `2.0`
+- single requests: supported
+- batches: supported
+- empty batch `[]`: invalid request and returns HTTP `200` with exactly:
 
 ```json
 {
@@ -61,15 +68,15 @@ The ZEVM transport contract is:
   }
 }
 ```
-- Mixed valid and invalid items inside a batch are supported.
-- A notification is a request object with no `id` member.
-- ZEVM sends no JSON-RPC response for notifications.
-- A mixed batch emits responses only for items that included an `id`.
-- `"id": null` is not a notification and receives a response with `id: null`.
 
-## Global Errors
+- notification = request object with no `id`
+- ZEVM sends no JSON-RPC response for notifications
+- mixed batches return responses only for entries that had `id`, preserving the input order of those entries
+- `"id": null` is not a notification and receives a response
 
-### Standard JSON-RPC codes
+## 5. Errors
+
+### 5.1 Standard codes
 
 | Condition | Code |
 | --- | --- |
@@ -79,75 +86,125 @@ The ZEVM transport contract is:
 | invalid params | `-32602` |
 | internal error | `-32603` |
 
-### ZEVM runtime codes
+### 5.2 ZEVM runtime codes
 
 | Condition | Code |
 | --- | --- |
-| method unsupported in the active mode | `-32010` |
-| light mode is not ready to serve proof-backed reads | `-32011` |
-| reserved: selected checkpoint is too old under strict checkpoint-age policy | `-32012` |
-| reserved: checkpoint input or persisted checkpoint file is invalid or corrupt | `-32013` |
+| method unsupported in active mode | `-32010` |
+| light mode not ready for proof-backed reads | `-32011` |
+| reserved: selected checkpoint too old under strict startup policy | `-32012` |
+| reserved: checkpoint input or persisted checkpoint is malformed/corrupt | `-32013` |
 | proof verification failed | `-32014` |
-| upstream light-mode proof source returned malformed data | `-32015` |
+| malformed data from upstream proof source | `-32015` |
 
-### Shared method-level error rules
+### 5.3 Shared error rules
 
-- malformed addresses, malformed hex data, malformed quantities, malformed block selectors, malformed filter objects, invalid tuple lengths, and invalid request-object field combinations fail with `-32602`
-- valid request shapes that target a surface unavailable in the active mode fail with `-32010`
-- trusted block or transaction lookup methods return `null` for a well-formed selector that does not resolve to an existing object
-- `eth_getLogs` returns `[]` for a well-formed filter that matches no logs
-- if the initially selected light-mode checkpoint is stale under strict policy or malformed or corrupt, ZEVM fails startup before opening the listener; `-32012` and `-32013` are therefore reserved codes, not part of the initial proof-backed read method surface in this pass
+- malformed addresses, quantities, hex bytes, selectors, filters, tuple lengths, or invalid object field combinations -> `-32602`
+- well-formed requests for methods defined by this contract but unavailable in active mode -> `-32010`
+- well-formed requests that use deferred/out-of-contract JSON-RPC method names (section 14) -> `-32601`
+- trusted block/tx lookup miss -> `null`
+- `eth_getLogs` no matches -> `[]`
+- selected light checkpoint is stale only when `age > maxCheckpointAgeSeconds`; `age == maxCheckpointAgeSeconds` is valid
+- `age` is ZEVM's startup-time freshness value for the selected startup checkpoint
+- `age` is evaluated once during startup, after checkpoint selection and before stale-policy decision
+- `age` is measured in whole seconds: `age = max(0, startupTimeSeconds - checkpointTimeSeconds)`
+- `startupTimeSeconds` is sampled at age-check time
+- selected startup checkpoint hash must resolve on the selected network via the configured consensus source (`consensusRpcUrl`); network mismatch is startup failure before listening
+- `checkpointTimeSeconds` is derived deterministically from Beacon API data for the selected startup checkpoint hash and is anchored to that checkpoint, not to filesystem metadata or local file/write times
+- derivation steps are exact:
+  1. call `GET <consensusRpcUrl>/eth/v1/beacon/genesis`, require HTTP `200`, parse `data.genesis_time` as decimal unsigned integer `genesisTimeSeconds`
+  2. call `GET <consensusRpcUrl>/eth/v1/beacon/headers/{selectedCheckpointHash}`, require HTTP `200`, parse `data.root` as `Hash32` and require equality with `selectedCheckpointHash`, then parse `data.header.message.slot` as decimal unsigned integer `checkpointSlot`
+  3. use `SECONDS_PER_SLOT = 12` for phase-1 supported light networks and compute `checkpointTimeSeconds = genesisTimeSeconds + (checkpointSlot * SECONDS_PER_SLOT)` with integer arithmetic
+  4. use computed `checkpointTimeSeconds` as integer Unix seconds in age evaluation
+- any request failure, non-`200`, missing/malformed required field, checkpoint-root mismatch, or arithmetic overflow in this derivation is inability to resolve `checkpointTimeSeconds` and is startup failure before listening
+- stale selected checkpoint + `strictCheckpointAge = false`: emit one operator-facing startup warning before listening, then continue startup
+- non-strict stale warnings must be surfaced on startup logs via process `stderr` and must not be surfaced via JSON-RPC
+- phase 1 defines no dedicated CLI/config controls for startup log level, log file paths, or alternative startup log sinks
+- the non-strict stale warning must include: selected checkpoint hash, `checkpointSource`, `checkpointTimeSeconds`, `startupTimeSeconds`, computed `age`, `maxCheckpointAgeSeconds`, and `strictCheckpointAge = false`
+- stale selected checkpoint + `strictCheckpointAge = true`: startup failure before listening
+- inability to resolve `checkpointTimeSeconds` for the selected startup checkpoint is startup failure before listening
+- checkpoint startup input format split is intentional: CLI/config startup checkpoint input must be `Hash32` (`0x` + 64 hex chars), while persisted `${resolvedCheckpointDir}/checkpoint` content must be 64 hex chars without `0x`
+- persisted checkpoint startup input path is `${resolvedCheckpointDir}/checkpoint`, where `resolvedCheckpointDir` is derived from startup `checkpointDir` by applying `<network>` expansion and then resolving relative paths against startup current working directory
+- if `${resolvedCheckpointDir}` is missing at startup (including missing expanded `<network>` subdirectory), persisted checkpoint input is treated as absent and startup precedence continues
+- if `${resolvedCheckpointDir}/checkpoint` is missing, persisted checkpoint input is treated as absent and startup precedence continues
+- startup checkpoint precedence fallthrough is absence-driven only; once a checkpoint source is selected, any validation/derivation failure for that selected source is startup failure before listening and must not trigger fallback to lower-precedence sources
+- if `${resolvedCheckpointDir}/checkpoint` exists but is unreadable, startup fails before listening
+- malformed initial checkpoint input or malformed readable persisted checkpoint file is startup failure before listening
+- ZEVM does not auto-create `${resolvedCheckpointDir}` during startup
+- in phase 1, `${resolvedCheckpointDir}/checkpoint` is startup input only; ZEVM does not create, update, or delete this file after the HTTP listener has started
+- `-32012` and `-32013` remain reserved at runtime and are not emitted after the HTTP listener has started
 
-## Mode And Block-Tag Rules
+## 6. Selector And Mode Semantics
 
-### Trusted mode
+### 6.1 Trusted selectors
 
-| Selector | Exact meaning |
+| Selector | Meaning |
 | --- | --- |
 | `latest` | current canonical local head |
-| `pending` | compatibility alias of `latest` |
-| `safe` | compatibility alias of `latest` |
-| `finalized` | compatibility alias of `latest` |
+| `pending` | alias of `latest` |
+| `safe` | alias of `latest` |
+| `finalized` | alias of `latest` |
 | `earliest` | block `0` |
 | numeric quantity | exact local block number |
 
-Trusted-mode `pending`, `safe`, and `finalized` do not provide consensus-backed finality.
+`pending`, `safe`, and `finalized` in trusted mode are compatibility aliases only.
 
-### Light mode
+Pending-alias rule in trusted mode:
 
-| Selector | Exact meaning |
+- there is no separate pending block view for selector-based queries
+- any trusted-mode method that accepts a block selector and receives `pending` must resolve it exactly as `latest`
+
+### 6.2 Light selectors and retained history
+
+| Selector | Meaning |
 | --- | --- |
 | `latest` | latest verified optimistic execution head |
 | `safe` | consensus-backed safe execution head |
 | `finalized` | consensus-finalized execution head |
 | `earliest` | block `0` |
-| numeric quantity | block `0`, or an exact block inside the retained verified-history window containing the most recent `8191` verified execution blocks when ZEVM can verify that exact execution block and the requested proof-backed read against that block's state root |
-| `pending` | unsupported in light mode and fails with `-32010` |
+| numeric quantity | block `0` or a retained numeric block inside the moving verified-history window |
+| `pending` | unsupported -> `-32010` |
 
-If light mode is generally not ready for proof-backed reads, ZEVM serves no proof-backed reads and fails them with `-32011`.
+Retained-history window contract:
 
-If light mode is ready in general, numeric selectors are supported only for block `0` and for exact blocks inside the retained verified-history window containing the most recent `8191` verified execution blocks when ZEVM can verify the exact execution block and the requested proof-backed read against that block's state root.
+- constant window size: `8191` verified execution blocks
+- let `H` be current `latest` block number when `ready = true`
+- retained numeric range excluding genesis is `[max(1, H - 8190), H]`
+- accepted numeric selector set in light mode when ready is:
+  - `{0}` union `[max(1, H - 8190), H]`
+- numeric selector outside that set -> `-32602`
+- selector token `pending` is recognized but unsupported for light proof-backed reads and returns `-32010` (it never aliases `latest`)
+- selector `pending` rejection occurs before readiness gating and before retained-window numeric validation
+- ZEVM does not promise archive reads outside retained history
 
-If light mode is ready in general but the requested numeric block is outside that retained verified-history window, the request fails with `-32602`.
+Readiness contract:
 
-If a selector is otherwise supported but proof verification of the requested read against the resolved block state root fails, the request fails with `-32014`.
+- proof-backed reads are callable only when `ready = true`
+- when `ready = false`, all proof-backed reads fail with `-32011`
+- `eth_blockNumber` also fails with `-32011` while not ready
+- `eth_chainId` and `zevm_lightSyncStatus` are callable regardless of readiness (`zevm_lightSyncStatus` remains light-mode only)
+- `ready` may transition from `false` to `true` only when `status` transitions to `synced` after ZEVM has accepted verified optimistic, safe, and finalized heads for the selected network
+- while `ready = true`, `zevm_lightSyncStatus` slot coherence must hold: `finalizedSlot <= safeSlot <= optimisticSlot`
+- selector semantics are unchanged: `latest` resolves to the optimistic execution head, `safe` resolves to the consensus-backed safe execution head, and `finalized` resolves to the consensus-finalized execution head
+- if `status` leaves `synced` or slot coherence cannot be maintained, ZEVM must set `ready = false` in the same state transition before serving subsequent gated RPC calls
 
-If the upstream proof source returns malformed data, the request fails with `-32015`.
+Proof failure contract when ready:
 
-ZEVM does not promise arbitrary checkpoint-to-head historical archive reads.
+- selector is supported but proof cannot be verified against resolved state root -> `-32014`
+- upstream proof response malformed -> `-32015`
 
-## Shared Objects
+## 7. Shared Objects
 
-### Phase-1 transaction request
+### 7.1 TransactionRequest (phase 1)
 
-`TransactionRequest` is the exact request object used by `eth_call`, `eth_estimateGas`, and `eth_sendTransaction`.
+`TransactionRequest` is used by `eth_call`, `eth_estimateGas`, and `eth_sendTransaction`.
 
-Allowed fields:
+Allowed fields only:
 
 | Field | Type | Rule |
 | --- | --- | --- |
 | `from` | `Address` | required for `eth_sendTransaction`; optional for `eth_call` and `eth_estimateGas` |
-| `to` | `Address \| null` | omit or use `null` for contract creation |
+| `to` | `Address` or `null` | omitted or `null` for create |
 | `gas` | `QuantityHex` | optional |
 | `gasPrice` | `QuantityHex` | optional |
 | `value` | `QuantityHex` | optional |
@@ -155,26 +212,41 @@ Allowed fields:
 | `data` | `HexData` | optional |
 | `input` | `HexData` | optional alias of `data` |
 
-Rules:
+Field rules:
 
 - `data` and `input` may both be omitted
-- if both `data` and `input` are present, they must be byte-for-byte equal or the request fails with `-32602`
-- any field not listed above is invalid in the phase-1 ZEVM contract and fails with `-32602`
+- if both are present they must be byte-identical, else `-32602`
+- any field not listed above is invalid and fails with `-32602`
 
-### State overrides
+Fee-model and tx-type constraints:
 
-`StateOverrideSet` is an object keyed by address. Each keyed value may include:
+- phase-1 request fee field is `gasPrice`
+- `maxFeePerGas`, `maxPriorityFeePerGas`, `maxFeePerBlobGas`, `blobVersionedHashes`, `accessList`, `authorizationList`, `type`, and `chainId` are unsupported in `TransactionRequest` and fail with `-32602`
+- if `eth_sendTransaction` omits `gasPrice`, ZEVM uses trusted-mode node gas price (`eth_gasPrice`) at submission time
+
+### 7.2 Supported transaction envelope types
+
+Submission contract:
+
+- only legacy transaction type `0x0` is supported in phase 1
+- `eth_sendTransaction` produces legacy `0x0` transactions
+- `eth_sendRawTransaction` accepts only legacy raw transactions
+- typed EIP-2718 envelopes (`0x1`, `0x2`, `0x3`, or unknown type byte) are unsupported and fail with `-32602`
+
+### 7.3 StateOverrideSet
+
+Object keyed by address; each value may include:
 
 | Field | Type |
 | --- | --- |
 | `balance` | `QuantityHex` |
 | `nonce` | `QuantityHex` |
 | `code` | `HexData` |
-| `storage` | object whose keys are `Bytes32` storage slots and whose values are `Bytes32` storage values |
+| `storage` | object mapping `Bytes32` slot -> `Bytes32` value |
 
-### Fee history result
+### 7.4 FeeHistoryResult
 
-`FeeHistoryResult` uses this exact shape:
+`FeeHistoryResult` shape:
 
 ```json
 {
@@ -188,13 +260,12 @@ Rules:
 Field rules:
 
 - `oldestBlock`: `QuantityHex`
-- `baseFeePerGas`: array of `QuantityHex` with length `blockCount + 1`
-- `gasUsedRatio`: array of JSON numbers with length `blockCount`
-- `reward`: optional; when present, it is an array with one item per returned block, and each item is an array of `QuantityHex` values that matches the requested `rewardPercentiles` length
+- `baseFeePerGas`: length `N + 1`
+- `gasUsedRatio`: length `N`
+- `reward`: optional; when present, length `N`, each inner array length equals requested percentile count
+- `N` is the number of returned blocks after truncation (see `eth_feeHistory`)
 
-### Transaction object
-
-The exact ZEVM phase-1 transaction object shape is:
+### 7.5 Transaction object
 
 ```json
 {
@@ -212,15 +283,14 @@ The exact ZEVM phase-1 transaction object shape is:
 }
 ```
 
-Field rules:
+Rules:
 
-- `type`, `hash`, `nonce`, `from`, `value`, `gas`, and `input` are always present
-- `to` may be `null` for contract creation
-- `blockHash`, `blockNumber`, and `transactionIndex` are `null` for pending transactions and populated for mined transactions
+- `type` is always `0x0` in phase 1
+- `to` may be `null` for create
+- for current phase-1 trusted query methods, `blockHash`, `blockNumber`, and `transactionIndex` are non-null because txpool-only pending entries are not surfaced by `eth_getTransactionByHash`
+- transaction objects in this contract must not include a nonstandard `blockTimestamp` field
 
-### Block object
-
-The exact ZEVM phase-1 block object shape is:
+### 7.6 Block object
 
 ```json
 {
@@ -252,15 +322,45 @@ The exact ZEVM phase-1 block object shape is:
 }
 ```
 
-Field rules:
+Rules:
 
-- `transactions` is an array of `Hash32` values when `fullTransactions = false`
-- `transactions` is an array of transaction objects when `fullTransactions = true`
-- optional fork-era fields may be omitted when not applicable
+- `transactions` is array of `Hash32` when `fullTransactions=false`
+- `transactions` is array of transaction objects when `fullTransactions=true`
+- `hash` and `number` are non-null for returned canonical blocks
+- `nonce` is `HexData` encoding exactly 8 bytes (`0x` + 16 hex chars)
+- fork-era fields may be omitted when not applicable
 
-### Receipt object
+Field contract:
 
-The exact ZEVM phase-1 receipt object shape is:
+| Field | Required | Type | Nullability / rule |
+| --- | --- | --- | --- |
+| `hash` | yes | `Hash32` | non-null for returned block objects |
+| `parentHash` | yes | `Hash32` | non-null |
+| `sha3Uncles` | yes | `Hash32` | non-null |
+| `miner` | yes | `Address` | non-null |
+| `stateRoot` | yes | `Hash32` | non-null |
+| `transactionsRoot` | yes | `Hash32` | non-null |
+| `receiptsRoot` | yes | `Hash32` | non-null |
+| `logsBloom` | yes | `HexData` | non-null bloom bytes |
+| `number` | yes | `QuantityHex` | non-null for returned block objects |
+| `gasLimit` | yes | `QuantityHex` | non-null |
+| `gasUsed` | yes | `QuantityHex` | non-null |
+| `timestamp` | yes | `QuantityHex` | non-null |
+| `extraData` | yes | `HexData` | non-null |
+| `mixHash` | yes | `Hash32` | non-null |
+| `nonce` | yes | `HexData` | exactly 8-byte value |
+| `size` | yes | `QuantityHex` | non-null |
+| `transactions` | yes | array | element type depends on `fullTransactions` |
+| `uncles` | yes | array of `Hash32` | non-null (empty array allowed) |
+| `difficulty` | yes | `QuantityHex` | non-null |
+| `totalDifficulty` | yes | `QuantityHex` | non-null |
+| `baseFeePerGas` | conditional | `QuantityHex` | omitted when not applicable |
+| `withdrawalsRoot` | conditional | `Hash32` | omitted when not applicable |
+| `blobGasUsed` | conditional | `QuantityHex` | omitted when not applicable |
+| `excessBlobGas` | conditional | `QuantityHex` | omitted when not applicable |
+| `parentBeaconBlockRoot` | conditional | `Hash32` | omitted when not applicable |
+
+### 7.7 Receipt object
 
 ```json
 {
@@ -284,9 +384,33 @@ The exact ZEVM phase-1 receipt object shape is:
 }
 ```
 
-### Log object
+Field contract:
 
-The exact ZEVM phase-1 log object shape is:
+| Field | Required | Type | Nullability / rule |
+| --- | --- | --- | --- |
+| `transactionHash` | yes | `Hash32` | non-null |
+| `transactionIndex` | yes | `QuantityHex` | non-null |
+| `blockHash` | yes | `Hash32` | non-null |
+| `blockNumber` | yes | `QuantityHex` | non-null |
+| `from` | yes | `Address` | non-null |
+| `to` | yes | `Address` or `null` | `null` only for create transactions |
+| `cumulativeGasUsed` | yes | `QuantityHex` | non-null |
+| `gasUsed` | yes | `QuantityHex` | non-null |
+| `contractAddress` | yes | `Address` or `null` | non-null only for create transactions |
+| `logs` | yes | array of log objects | non-null (empty array allowed) |
+| `logsBloom` | yes | `HexData` | non-null bloom bytes |
+| `status` | yes | `QuantityHex` | must be `0x0` or `0x1` in phase 1 |
+| `root` | yes | `Hash32` or `null` | `null` in phase 1 |
+| `effectiveGasPrice` | yes | `QuantityHex` | non-null |
+| `type` | yes | `QuantityHex` | always `0x0` in phase 1 |
+| `blobGasUsed` | yes | `QuantityHex` or `null` | `null` in phase 1 |
+| `blobGasPrice` | yes | `QuantityHex` or `null` | `null` in phase 1 |
+
+Rules:
+
+- receipt objects in this contract must not include a nonstandard `blockTimestamp` field
+
+### 7.8 Log object
 
 ```json
 {
@@ -302,9 +426,25 @@ The exact ZEVM phase-1 log object shape is:
 }
 ```
 
-### Log filter
+Field contract:
 
-`LogFilter` is the exact request object for `eth_getLogs`.
+| Field | Required | Type | Nullability / rule |
+| --- | --- | --- | --- |
+| `removed` | yes | boolean | always `false` for canonical ZEVM responses |
+| `logIndex` | yes | `QuantityHex` | non-null |
+| `transactionIndex` | yes | `QuantityHex` | non-null |
+| `transactionHash` | yes | `Hash32` | non-null |
+| `blockHash` | yes | `Hash32` | non-null |
+| `blockNumber` | yes | `QuantityHex` | non-null |
+| `address` | yes | `Address` | non-null |
+| `data` | yes | `HexData` | non-null |
+| `topics` | yes | array of `Hash32` | non-null (empty array allowed) |
+
+Rules:
+
+- log objects in this contract must not include a nonstandard `blockTimestamp` field
+
+### 7.9 LogFilter for `eth_getLogs`
 
 Allowed fields:
 
@@ -314,17 +454,28 @@ Allowed fields:
 | `toBlock` | `TrustedBlockSelector` |
 | `blockHash` | `Hash32` |
 | `address` | `Address` or array of `Address` |
-| `topics` | array where each item is `null`, a single `Hash32`, or an array of `Hash32` |
+| `topics` | array of `null`, `Hash32`, or array of `Hash32` |
 
 Rules:
 
 - `blockHash` is mutually exclusive with `fromBlock` and `toBlock`
-- `fromBlock` must be less than or equal to `toBlock` when both are present
-- malformed filter combinations fail with `-32602`
+- if both `fromBlock` and `toBlock` are present, resolved `fromBlock <= toBlock` is required
+- if `blockHash` is provided, ZEVM searches only that canonical block's logs
+- if `blockHash` is omitted, default `fromBlock` is `latest` and default `toBlock` is `latest`
+- when `blockHash` is omitted, `fromBlock` and `toBlock` are resolved with trusted selector semantics (`pending`, `safe`, `finalized` alias `latest`)
+- address filtering:
+  - omitted `address` matches all emitters
+  - single `address` matches exact emitter address
+  - address array is OR semantics across provided addresses
+- topics filtering:
+  - topic positions are ANDed by index
+  - each topic position entry is either wildcard `null`, one exact topic, or an OR-array of exact topics
+- result ordering is deterministic ascending: `blockNumber`, then `transactionIndex`, then `logIndex`
+- malformed filters fail with `-32602`
 
-### Light sync status object
+### 7.10 Light sync status object
 
-`zevm_lightSyncStatus` returns this exact top-level object shape:
+`zevm_lightSyncStatus` result:
 
 ```json
 {
@@ -334,23 +485,53 @@ Rules:
   "checkpointSource": "explicit",
   "lastCheckpoint": "0x...",
   "optimisticSlot": "0x1234",
+  "safeSlot": "0x1232",
   "finalizedSlot": "0x1230"
 }
 ```
 
 Field rules:
 
-- `ready`: boolean; `true` only when `status = "synced"` and ZEVM can serve proof-backed reads
+- `ready`: boolean; true only when proof-backed reads are available
 - `status`: `syncing`, `synced`, or `error`
 - `network`: `mainnet`, `sepolia`, or `holesky`
-- `checkpointSource`: `explicit`, `persisted`, or `default`
-- `lastCheckpoint`: `Hash32` or `null`
-- `optimisticSlot`: `QuantityHex`
-- `finalizedSlot`: `QuantityHex`
+- `checkpointSource`: startup checkpoint-selection source and stable for process lifetime:
+  - `explicit`: selected from user-provided checkpoint input (CLI `--checkpoint` or config `mode.light.checkpoint`)
+  - `persisted`: selected from `${resolvedCheckpointDir}/checkpoint` (section 5.3)
+  - `default`: selected from ZEVM bundled release/build default checkpoint for the selected network (deterministic for that release/build artifact, may rotate across releases/builds, and is not a frozen API hash)
+- `lastCheckpoint`: `Hash32`, non-null after listener startup
+- `optimisticSlot`: `QuantityHex`, non-null
+- `safeSlot`: `QuantityHex`, non-null
+- `finalizedSlot`: `QuantityHex`, non-null
+- `finalizedSlot <= safeSlot <= optimisticSlot`
+- effective release/build defaults are auditable by startup with no explicit or persisted checkpoint override; in that case `checkpointSource = "default"` and `lastCheckpoint` is the selected default
+- release metadata provenance policy for release/build default claims is defined in PRD section 3.4 (`docs/specs/prd.md`) and applies unchanged here
 
-## Trusted-Mode Standard Methods
+Lifecycle contract by `status`:
 
-### Core reads
+| `status` | `ready` | `optimisticSlot` / `safeSlot` / `finalizedSlot` |
+| --- | --- | --- |
+| `syncing` | must be `false` | all required `QuantityHex`; may be `0x0` until corresponding headers are available |
+| `synced` | must be `true` | all required `QuantityHex` representing current optimistic/safe/finalized slots |
+| `error` | must be `false` | all required `QuantityHex` representing last known slots at/just before failure; not nullified |
+
+Readiness and head-coherence invariants:
+
+- `ready` may transition from `false` to `true` only when `status` transitions to `synced` after ZEVM has accepted verified optimistic, safe, and finalized heads for the selected network
+- while `ready = true`, slot coherence must hold: `finalizedSlot <= safeSlot <= optimisticSlot`
+- if `status` leaves `synced` or slot coherence cannot be maintained, ZEVM must set `ready = false` in the same state transition before serving subsequent gated RPC calls
+
+`lastCheckpoint` semantics:
+
+- `lastCheckpoint` is the most recently accepted checkpoint root in the local light-sync state
+- after successful startup checkpoint selection and validation, it equals the selected startup checkpoint
+- it updates whenever ZEVM accepts a newer checkpoint during sync progression
+- it is not pinned to the configured checkpoint once sync has advanced
+- `checkpointSource` does not track later `lastCheckpoint` updates and remains the startup source (`explicit`, `persisted`, or `default`)
+
+## 8. Trusted-Mode Standard Methods
+
+### 8.1 Core reads
 
 | Method | Exact params | Exact result | Errors |
 | --- | --- | --- | --- |
@@ -365,47 +546,74 @@ Field rules:
 | `eth_gasPrice` | `[]` or omitted | `QuantityHex` | `-32602` for non-empty params |
 | `eth_maxPriorityFeePerGas` | `[]` or omitted | `QuantityHex` | `-32602` for non-empty params |
 | `eth_blobBaseFee` | `[]` or omitted | `QuantityHex` | `-32602` for non-empty params |
-| `eth_feeHistory` | `[blockCount, newestBlock]` or `[blockCount, newestBlock, rewardPercentiles]` | `FeeHistoryResult` | `-32602` for malformed count, selector, or percentiles |
+| `eth_feeHistory` | `[blockCount, newestBlock]` or `[blockCount, newestBlock, rewardPercentiles]` | `FeeHistoryResult` | `-32602` on malformed count, selector, or percentiles |
 
-### Simulation
-
-| Method | Exact params | Exact result | Errors |
-| --- | --- | --- | --- |
-| `eth_call` | `[tx, block]` or `[tx, block, stateOverrides]` | `HexData` | `-32602` for malformed tx object, selector, or overrides |
-| `eth_estimateGas` | `[tx]`, `[tx, block]`, or `[tx, block, stateOverrides]` | `QuantityHex` | `-32602` for malformed tx object, selector, or overrides |
-
-Rules:
-
-- these methods are trusted-mode only
-- they use checkpoint-and-revert semantics and must not mutate canonical state
-
-### Submission and mining-adjacent standard methods
+### 8.2 Simulation
 
 | Method | Exact params | Exact result | Errors |
 | --- | --- | --- | --- |
-| `eth_sendTransaction` | `[tx]` using the phase-1 `TransactionRequest` object | `Hash32` | `-32602` for malformed tx object; `-32603` for unmanaged account, nonce mismatch, insufficient balance, intrinsic gas failure, or signing failure |
-| `eth_sendRawTransaction` | `[rawTx]` where `rawTx` is `HexData` | `Hash32` | `-32602` for malformed hex or decode failure; `-32603` for chain-id mismatch, nonce mismatch, insufficient balance, or intrinsic gas failure |
+| `eth_call` | `[tx, block]` or `[tx, block, stateOverrides]` | `HexData` | `-32602` for malformed tx/selectors/overrides; `-32603` for runtime execution failure |
+| `eth_estimateGas` | `[tx]`, `[tx, block]`, or `[tx, block, stateOverrides]` | `QuantityHex` | `-32602` for malformed tx/selectors/overrides; `-32603` for runtime execution failure |
 
-### Queries
+Simulation semantics:
+
+- checkpoint-and-revert execution path
+- no canonical state mutation
+- success path:
+  - `eth_call` returns `HexData`
+  - `eth_estimateGas` returns `QuantityHex`
+- runtime execution failure path (for example revert/out-of-gas/invalid execution in simulation context): JSON-RPC error `-32603` with no `result`
+- phase-1 implementation-defined details:
+  - exact `error.message` text and optional `error.data` payload for runtime execution failure
+  - gas-search strategy and tie-breaking used by `eth_estimateGas`
+  - internal defaults for omitted simulation fields (`from`, `gas`, `gasPrice`, `value`, `nonce`) beyond this document's required validation and tuple contract
+
+### 8.3 Submission
 
 | Method | Exact params | Exact result | Errors |
 | --- | --- | --- | --- |
-| `eth_getBlockByNumber` | `[block, fullTransactions]` | block object or `null` | `-32602` for malformed selector or boolean |
-| `eth_getBlockByHash` | `[blockHash, fullTransactions]` | block object or `null` | `-32602` for malformed hash or boolean |
-| `eth_getTransactionByHash` | `[transactionHash]` | transaction object or `null` | `-32602` for malformed hash |
-| `eth_getTransactionReceipt` | `[transactionHash]` | receipt object or `null` | `-32602` for malformed hash |
-| `eth_getBlockReceipts` | `[block]` where `block` is a `ReceiptSelector` | array of receipt objects or `null` | `-32602` for malformed selector |
-| `eth_getLogs` | `[filter]` | array of log objects | `-32602` for malformed filter |
+| `eth_sendTransaction` | `[tx]` (`TransactionRequest`) | `Hash32` | `-32602` malformed request/unsupported fields; `-32603` runtime rejection |
+| `eth_sendRawTransaction` | `[rawTx]` | `Hash32` | `-32602` malformed hex/decode/unsupported tx type; `-32603` runtime rejection |
 
-## Trusted-Mode `zevm_*` Methods
+Submission outcome semantics:
 
-### Alias rule
+- success: ZEVM accepts submission into trusted runtime and returns the tx hash as `result` (the tx may be pending or already mined depending on mining mode)
+- runtime rejection: ZEVM returns JSON-RPC error `-32603`
+- runtime rejection must not include a tx hash result (`result` is absent)
+- `eth_sendTransaction` signer scope is managed trusted accounts plus currently impersonated accounts; unmanaged non-impersonated `from` is a runtime rejection (`-32603`)
+- phase-1 implementation-defined for runtime rejection: exact reason classification and `error.message` text
 
-Accepted compatibility aliases are alternate method names for the same ZEVM contract. They share the canonical ZEVM params, return payloads, mode-gating, and error behavior exactly.
+### 8.4 Queries
 
-ZEVM does not promise byte-for-byte response-shape parity with every external alias source where those external products disagree with one another.
+| Method | Exact params | Exact result | Errors |
+| --- | --- | --- | --- |
+| `eth_getBlockByNumber` | `[block, fullTransactions]` | block object or `null` | `-32602` malformed selector/boolean |
+| `eth_getBlockByHash` | `[blockHash, fullTransactions]` | block object or `null` | `-32602` malformed hash/boolean |
+| `eth_getBlockTransactionCountByHash` | `[blockHash]` | `QuantityHex` or `null` | `-32602` malformed hash |
+| `eth_getBlockTransactionCountByNumber` | `[block]` | `QuantityHex` or `null` | `-32602` malformed selector |
+| `eth_getTransactionByHash` | `[transactionHash]` | tx object or `null` | `-32602` malformed hash |
+| `eth_getTransactionByBlockHashAndIndex` | `[blockHash, index]` | tx object or `null` | `-32602` malformed hash/index |
+| `eth_getTransactionByBlockNumberAndIndex` | `[block, index]` | tx object or `null` | `-32602` malformed selector/index |
+| `eth_getTransactionReceipt` | `[transactionHash]` | receipt object or `null` | `-32602` malformed hash |
+| `eth_getBlockReceipts` | `[block]` (`ReceiptSelector`) | receipt array or `null` | `-32602` malformed selector |
+| `eth_getLogs` | `[filter]` | log array | `-32602` malformed filter |
 
-### Account and state objects
+Query selector behavior:
+
+- for trusted selector-based queries, `pending` resolves exactly as `latest` (compatibility alias only)
+- `eth_getBlockByNumber("pending", ...)`, `eth_getBlockTransactionCountByNumber("pending")`, `eth_getTransactionByBlockNumberAndIndex("pending", ...)`, and `eth_getBlockReceipts("pending")` therefore query the current canonical head block, not a separate mempool/pending block
+- `eth_getBlockTransactionCountByHash`, `eth_getBlockTransactionCountByNumber`, `eth_getTransactionByBlockHashAndIndex`, and `eth_getTransactionByBlockNumberAndIndex` return `null` when the referenced canonical block is not found
+- `eth_getTransactionByBlockHashAndIndex` and `eth_getTransactionByBlockNumberAndIndex` return `null` when `index` is out of range for a found block
+- `eth_getTransactionByHash` is canonical-mined only and returns `null` for txpool-only pending entries
+- `eth_getTransactionReceipt` is mined-only and returns `null` until inclusion
+
+## 9. Trusted-Mode `zevm_*` Methods
+
+### 9.1 Alias rule
+
+Accepted aliases in this section are alternative method names for the same ZEVM behavior and payload contract.
+
+### 9.2 Objects
 
 `AccountState`:
 
@@ -420,7 +628,14 @@ ZEVM does not promise byte-for-byte response-shape parity with every external al
 }
 ```
 
-### Metadata objects
+Field contract:
+
+| Field | Required | Type | Nullability / rule |
+| --- | --- | --- | --- |
+| `balance` | yes | `QuantityHex` | non-null |
+| `nonce` | yes | `QuantityHex` | non-null |
+| `code` | yes | `HexData` | non-null |
+| `storage` | yes | object mapping `Bytes32` -> `Bytes32` | non-null (empty object allowed) |
 
 `MinedBlockSummary`:
 
@@ -431,6 +646,14 @@ ZEVM does not promise byte-for-byte response-shape parity with every external al
   "timestamp": "0x1"
 }
 ```
+
+Field contract:
+
+| Field | Required | Type | Nullability / rule |
+| --- | --- | --- | --- |
+| `number` | yes | `QuantityHex` | non-null |
+| `hash` | yes | `Hash32` | non-null |
+| `timestamp` | yes | `QuantityHex` | non-null |
 
 `NodeMetadata`:
 
@@ -443,6 +666,16 @@ ZEVM does not promise byte-for-byte response-shape parity with every external al
   "forkBlockNumber": null
 }
 ```
+
+Field contract:
+
+| Field | Required | Type | Nullability / rule |
+| --- | --- | --- | --- |
+| `mode` | yes | string literal | always `"trusted"` |
+| `chainId` | yes | `QuantityHex` | non-null |
+| `forking` | yes | boolean | non-null |
+| `forkUrl` | yes | string or `null` | must be `null` when `forking=false` |
+| `forkBlockNumber` | yes | `QuantityHex` or `null` | must be `null` when `forking=false` |
 
 `NodeInfo`:
 
@@ -466,7 +699,33 @@ ZEVM does not promise byte-for-byte response-shape parity with every external al
 }
 ```
 
-### Canonical methods and exact accepted aliases
+Field contract:
+
+| Field | Required | Type | Nullability / rule |
+| --- | --- | --- | --- |
+| `chainId` | yes | `QuantityHex` | non-null |
+| `coinbase` | yes | `Address` | non-null |
+| `blockNumber` | yes | `QuantityHex` | non-null |
+| `managedAccounts` | yes | array of `Address` | non-null; addresses are returned in managed index order |
+| `mining` | yes | object | non-null; see nested contract below |
+| `fork` | yes | object | non-null; see nested contract below |
+
+`NodeInfo.mining` nested contract:
+
+| Field | Required | Type | Nullability / rule |
+| --- | --- | --- | --- |
+| `type` | yes | string enum | `auto`, `manual`, or `interval` |
+| `blockTime` | yes | `QuantityHex` or `null` | non-null only when `type = "interval"` |
+
+`NodeInfo.fork` nested contract:
+
+| Field | Required | Type | Nullability / rule |
+| --- | --- | --- | --- |
+| `enabled` | yes | boolean | non-null |
+| `url` | yes | string or `null` | non-null only when `enabled = true` |
+| `blockNumber` | yes | `QuantityHex` or `null` | `null` means fork head; may be non-null only when `enabled = true` |
+
+### 9.3 Canonical methods and accepted aliases
 
 | Canonical method | Exact params | Exact result | Exact accepted aliases |
 | --- | --- | --- | --- |
@@ -494,7 +753,7 @@ ZEVM does not promise byte-for-byte response-shape parity with every external al
 | `zevm_impersonateAccount` | `[address]` | `true` | `anvil_impersonateAccount`, `hardhat_impersonateAccount` |
 | `zevm_stopImpersonatingAccount` | `[address]` | `true` | `anvil_stopImpersonatingAccount`, `hardhat_stopImpersonatingAccount` |
 | `zevm_autoImpersonateAccount` | `[enabled]` | `true` | `anvil_autoImpersonateAccount` |
-| `zevm_increaseTime` | `[seconds]` | `QuantityHex` new accumulated time offset | `anvil_increaseTime`, `evm_increaseTime` |
+| `zevm_increaseTime` | `[seconds]` | `QuantityHex` accumulated offset | `anvil_increaseTime`, `evm_increaseTime` |
 | `zevm_setNextBlockTimestamp` | `[timestamp]` | `true` | `anvil_setNextBlockTimestamp`, `evm_setNextBlockTimestamp` |
 | `zevm_setTime` | `[timestamp]` | `QuantityHex` effective current timestamp | `anvil_setTime` |
 | `zevm_setBlockTimestampInterval` | `[seconds]` | `true` | `anvil_setBlockTimestampInterval` |
@@ -511,17 +770,180 @@ ZEVM does not promise byte-for-byte response-shape parity with every external al
 | `zevm_metadata` | `[]` or omitted | `NodeMetadata` | `anvil_metadata`, `hardhat_metadata` |
 | `zevm_nodeInfo` | `[]` or omitted | `NodeInfo` | `anvil_nodeInfo` |
 
+Parameter token typing contract (applies to the `Exact params` column above):
+
+| Param token | Type | Contract |
+| --- | --- | --- |
+| `address`, `token`, `owner`, `spender` | `Address` | section 1 `Address` |
+| `block` | `TrustedBlockSelector` | section 1 `TrustedBlockSelector` |
+| `accountState` | `AccountState` | section 9.2 `AccountState` object |
+| `stateBlob`, `code` | `HexData` | section 1 `HexData` |
+| `slot` | `Bytes32` | section 1 `Bytes32` |
+| `transactionHash` | `Hash32` | section 1 `Hash32` |
+| `transactionHashes` | array of `Hash32` | each element must satisfy section 1 `Hash32` |
+| `enabled` | boolean | JSON boolean |
+| `seconds`, `count`, `intervalSeconds`, `chainId`, `balance`, `delta`, `nonce`, `snapshotId`, `timestamp`, `gasLimit`, `baseFee`, `gasPrice`, `value` | `QuantityHex` | section 1 `QuantityHex` |
+| `url` | string | non-empty `http://` or `https://` URL string |
+| `forkConfig` | `null` or object | exact forms: `null`, `{ "url": "https://..." }`, or `{ "url": "https://...", "blockNumber": "0x..." }`; when present, `blockNumber` is `QuantityHex` |
+
 Rules:
 
-- every method in this section is trusted-mode only and fails with `-32010` in light mode
-- malformed params fail with `-32602`
-- `zevm_revert` returns `false` for an unknown snapshot id instead of raising an error
-- `zevm_dropTransaction` returns `false` when the target tx is not in the pool
-- `zevm_setIntervalMining([\"0x0\"])` disables interval mining and leaves trusted mode in non-interval operation
+- methods in this section are trusted-mode only -> `-32010` in light mode
+- malformed params -> `-32602`
+- `zevm_revert` returns `false` for unknown snapshot id
+- `zevm_dropTransaction` returns `false` if tx is absent
+- `zevm_setIntervalMining(["0x0"])` disables interval mining
+- `zevm_reset` uses `QuantityHex` for `forkConfig.blockNumber`; startup CLI/config fork block numbers use decimal `u64` (example: startup decimal `1000000` corresponds to JSON-RPC `"blockNumber": "0xf4240"`)
+- `zevm_autoImpersonateAccount([enabled])` toggles automatic impersonation mode; signer-scope interaction with manual impersonation is defined in section 9.6
+- snapshot/revert boundary:
+  - `zevm_snapshot`/`zevm_revert` capture and restore trusted local runtime state (local chain/state/journal, receipt/log indexes, pending tx pool, mining/block-environment overrides, impersonation, and time controls)
+  - `zevm_snapshot`/`zevm_revert` do not capture light-mode consensus/checkpoint-sync state and do not mutate remote fork-source state
 
-## Deferred Trusted-Mode Helpers
+### 9.4 `zevm_reset` semantics
 
-These helpers are outside the phase-1 exact contract and remain deferred:
+- call forms:
+  - `[]` or omitted: reset trusted runtime state while keeping current fork configuration unchanged
+  - `[null]`: reset trusted runtime state and disable fork backing
+  - `[forkConfig]` object: reset trusted runtime state and replace fork backing with the provided URL and optional pinned block
+- successful reset always:
+  - sets canonical local chain back to trusted genesis (`0x0`)
+  - clears pending transaction pool
+  - invalidates previously created snapshot IDs
+  - clears impersonation state and one-shot time/timestamp overrides
+  - keeps configured startup `chainId` unchanged
+- fork config object semantics:
+  - `{ "url": "https://..." }`: enable fork backing at upstream head
+  - `{ "url": "https://...", "blockNumber": "0x..." }`: enable fork backing pinned to that block
+- if fork initialization fails (for example unreachable upstream or invalid fork block), call fails with `-32603`
+
+### 9.5 `zevm_setRpcUrl` semantics
+
+- exact params: `[url]` with non-empty `http://` or `https://` URL string
+- precondition: fork backing is currently enabled; otherwise call fails with `-32603`
+- effect: updates the active fork upstream URL in place
+- non-effects: does not reset local chain state, does not clear pending pool, and does not invalidate snapshots
+- current fork block pin behavior:
+  - if current fork config has `blockNumber = null`, backing remains at upstream head semantics
+  - if current fork config has a pinned `blockNumber`, that same pin remains active after URL update
+
+### 9.6 Impersonation semantics
+
+- `eth_sendTransaction` signer scope is the union of:
+  - managed trusted accounts
+  - manual impersonation set (`zevm_impersonateAccount` adds, `zevm_stopImpersonatingAccount` removes)
+  - all addresses when auto impersonation is enabled
+- `zevm_autoImpersonateAccount([true])` enables automatic impersonation for any `from` address
+- `zevm_autoImpersonateAccount([false])` disables automatic impersonation; signer scope then falls back to managed accounts plus the current manual impersonation set
+- toggling `zevm_autoImpersonateAccount` does not clear or mutate manual impersonation entries
+- `zevm_stopImpersonatingAccount` affects only the manual impersonation set; while auto impersonation is enabled, sends from that address remain allowed
+
+## 10. Trusted Mining Semantics
+
+### 10.1 Pending pool and inclusion
+
+- pending ordering is nonce-aware per sender
+- when a block is mined, ZEVM includes executable pending transactions in canonical order up to block gas limit
+- non-executable queued transactions remain pending
+
+### 10.2 Mining mode triggers
+
+- `auto`:
+  - trigger: accepting an executable transaction via `eth_sendTransaction` or `eth_sendRawTransaction`
+  - effect: immediate single-block mining pass
+  - empty blocks: not produced by automine trigger
+- `manual`:
+  - trigger: explicit mine RPC only (`zevm_mine`, `zevm_mineDetailed`, aliases)
+  - effect: no background mining on tx submission
+  - empty blocks: allowed during explicit mine calls
+- `interval`:
+  - trigger: periodic timer every configured `blockTime` seconds
+  - effect: one block per tick
+  - empty blocks: allowed and expected when no executable tx is pending
+
+Explicit mine calls are valid in all mining modes and mine immediately.
+
+### 10.3 Explicit mine call semantics
+
+For `zevm_mine`/`zevm_mineDetailed`:
+
+- default params (`[]`) -> mine exactly 1 block
+- `[count]` -> mine exactly `count` blocks
+- `[count, intervalSeconds]` -> mine exactly `count` blocks and increment timestamp by `intervalSeconds` between consecutive mined blocks in that call
+- if pending txs are exhausted before `count` blocks are mined, remaining blocks are empty
+
+### 10.4 Timestamp progression
+
+Timestamp invariants:
+
+- every new block must satisfy `timestamp > parent.timestamp`
+- timer-mined interval blocks advance by interval cadence
+- explicit multi-block mine calls advance timestamp for each mined block
+
+Timestamp precedence for the next mined block:
+
+1. one-shot `zevm_setNextBlockTimestamp` override (must be greater than parent)
+2. explicit `intervalSeconds` argument for current `zevm_mine`/`zevm_mineDetailed` call
+3. `zevm_setBlockTimestampInterval` override if enabled
+4. interval-mining `blockTime` when block comes from interval tick
+5. otherwise `max(parent.timestamp + 1, effective_current_time)`
+
+`effective_current_time` includes active time offset from `zevm_increaseTime` and `zevm_setTime`.
+
+## 11. `eth_feeHistory` Exact Behavior
+
+Method: `eth_feeHistory`
+
+Supported params:
+
+- `[blockCount, newestBlock]`
+- `[blockCount, newestBlock, rewardPercentiles]`
+
+Validation:
+
+- tuple length must be 2 or 3, else `-32602`
+- `blockCount` must decode as `QuantityHex` and be `>= 1`, else `-32602`
+- `newestBlock` is resolved as a trusted selector
+  - `pending`, `safe`, `finalized` resolve as `latest`
+  - `earliest` resolves as `0`
+  - numeric selector must resolve to an existing canonical block number, else `-32602`
+- if `rewardPercentiles` is present:
+  - must be an array
+  - length must be `<= 100`
+  - each item must be finite numeric `0 <= p <= 100`
+  - array must be non-decreasing
+  - otherwise `-32602`
+
+Bounds and truncation:
+
+- maximum effective `blockCount` is `1024`
+- `effectiveCount = min(requestedBlockCount, 1024)`
+- result range ends at resolved `newestBlock`
+- range is truncated at genesis if needed
+- no error is raised for either truncation
+
+Returned range computation:
+
+- `newest = resolved newest block number`
+- `returnedCount = min(effectiveCount, newest + 1)`
+- `oldest = newest + 1 - returnedCount`
+
+Result construction:
+
+- `oldestBlock = oldest`
+- `baseFeePerGas` has `returnedCount + 1` items:
+  - one per block in `[oldest, newest]`
+  - plus the next-block base fee after `newest`
+- `gasUsedRatio` has `returnedCount` items, one per block in `[oldest, newest]`
+- `reward` behavior:
+  - omitted entirely when `rewardPercentiles` param is absent
+  - present when `rewardPercentiles` is provided (including empty array)
+  - outer length is `returnedCount`
+  - each inner array length equals `rewardPercentiles.length`
+  - for empty blocks, all reward entries are `0x0`
+
+## 12. Deferred Trusted Helpers
+
+These are outside the exact phase-1 contract:
 
 | Canonical deferred helper | Deferred accepted aliases |
 | --- | --- |
@@ -529,39 +951,59 @@ These helpers are outside the phase-1 exact contract and remain deferred:
 | `zevm_addCompilationResult` | `hardhat_addCompilationResult` |
 | `zevm_setPrevRandao` | `hardhat_setPrevRandao` |
 
-`hardhat_setLoggingEnabled` is treated as a deferred compatibility alias for `zevm_enableTraces`.
+`hardhat_setLoggingEnabled` is deferred as a compatibility alias of `zevm_enableTraces`.
 
-## Light-Mode Methods
+## 13. Light-Mode Methods
 
 | Method | Exact params | Exact result | Errors |
 | --- | --- | --- | --- |
 | `zevm_lightSyncStatus` | `[]` or omitted | light sync status object | `-32010` in trusted mode; `-32602` for non-empty params |
-| `eth_chainId` | `[]` or omitted | `QuantityHex` | `-32602` for non-empty params |
-| `eth_blockNumber` | `[]` or omitted | `QuantityHex` | `-32602` for non-empty params; `-32011` while `ready = false` |
-| `eth_getBalance` | `[address, block]` where `block` is a `LightBlockSelector` | `QuantityHex` | `-32011`, `-32014`, `-32015`, `-32602` |
-| `eth_getCode` | `[address, block]` where `block` is a `LightBlockSelector` | `HexData` | `-32011`, `-32014`, `-32015`, `-32602` |
-| `eth_getStorageAt` | `[address, slot, block]` where `block` is a `LightBlockSelector` | `Bytes32` | `-32011`, `-32014`, `-32015`, `-32602` |
-| `eth_getTransactionCount` | `[address, block]` where `block` is a `LightBlockSelector` | `QuantityHex` | `-32011`, `-32014`, `-32015`, `-32602` |
+| `eth_chainId` | `[]` or omitted | `QuantityHex` from network mapping (`0x1`, `0xaa36a7`, `0x4268`) | `-32602` for non-empty params |
+| `eth_blockNumber` | `[]` or omitted | `QuantityHex` | `-32602` for non-empty params; `-32011` while not ready |
+| `eth_getBalance` | `[address, block]` where `block` is `LightBlockSelector` | `QuantityHex` | `-32602`, `-32010`, `-32011`, `-32015`, `-32014` |
+| `eth_getCode` | `[address, block]` where `block` is `LightBlockSelector` | `HexData` | `-32602`, `-32010`, `-32011`, `-32015`, `-32014` |
+| `eth_getStorageAt` | `[address, slot, block]` where `block` is `LightBlockSelector` | `Bytes32` | `-32602`, `-32010`, `-32011`, `-32015`, `-32014` |
+| `eth_getTransactionCount` | `[address, block]` where `block` is `LightBlockSelector` | `QuantityHex` | `-32602`, `-32010`, `-32011`, `-32015`, `-32014` |
 
 Rules:
 
-- `eth_call`, `eth_estimateGas`, transaction submission, mining, snapshots, state mutation, impersonation, filters, subscriptions, and WebSocket transport are unsupported in light mode and fail with `-32010`
-- `ready = true` only when `status = "synced"` and ZEVM can serve proof-backed reads
-- while `ready = false`, `eth_blockNumber` fails with `-32011`
-- once `ready = true`, `eth_blockNumber` returns the block number of the light-mode `latest` head, meaning the latest verified optimistic execution head
-- light-mode proof-backed reads never serve unverified data
-- while `ready = false`, ZEVM serves no proof-backed reads and fails them with `-32011`
-- once ready, numeric selectors are supported only for block `0` and for exact blocks inside the retained verified-history window containing the most recent `8191` verified execution blocks when ZEVM can verify the exact execution block and the requested proof-backed read against that block's state root
-- when a ready light-mode node receives a numeric selector outside that retained verified-history window, the request fails with `-32602`
-- when a ready light-mode node accepts a supported selector but cannot verify the requested proof-backed read against the resolved block state root, the request fails with `-32014`
-- when the upstream proof source returns malformed data for an otherwise-supported light-mode read, the request fails with `-32015`
-- light mode does not promise arbitrary checkpoint-to-head historical archive reads
+- unsupported in light mode (-> `-32010`) includes:
+  - `eth_call` (trusted-only in phase 1; deferred light-mode proof-backed target)
+  - `eth_estimateGas`
+  - `eth_feeHistory`
+  - `eth_sendTransaction`, `eth_sendRawTransaction`
+  - `eth_getBlockByNumber`, `eth_getBlockByHash`
+  - `eth_getBlockTransactionCountByHash`, `eth_getBlockTransactionCountByNumber`
+  - `eth_getTransactionByHash`, `eth_getTransactionByBlockHashAndIndex`, `eth_getTransactionByBlockNumberAndIndex`, `eth_getTransactionReceipt`
+  - `eth_getBlockReceipts`, `eth_getLogs`
+  - all trusted-mode `zevm_*` mutation, mining, snapshot/revert, and impersonation controls
+- proof-backed read evaluation order in light mode is exact:
+  1. malformed tuple/field/encoding input (including malformed selector token) -> `-32602`
+  2. selector `pending` -> `-32010`
+  3. `ready = false` -> `-32011` for all remaining selectors, including numeric selectors that would be outside retained history
+  4. when `ready = true`, numeric selector outside retained set `{0}` union `[max(1, H - 8190), H]` -> `-32602`
+  5. when `ready = true`, malformed upstream proof payload -> `-32015`
+  6. when `ready = true`, well-formed proof payload that fails verification against resolved state root -> `-32014`
+- while not ready: proof-backed reads and `eth_blockNumber` fail with `-32011` after input validation and selector-support checks
+- once ready: `eth_blockNumber` returns light-mode `latest` head number
+- light-mode numeric selector acceptance is exactly the retained-history rule in section 6.2
+- in phase 1, `${resolvedCheckpointDir}/checkpoint` is startup input only; `lastCheckpoint` runtime progression is not persisted to this file
+- phase-1 operator-facing light-mode startup inputs are `network`, `consensusRpcUrl`, `checkpoint`, `checkpointDir`, `maxCheckpointAgeSeconds`, and `strictCheckpointAge`
+- among proof-source plumbing inputs, only `consensusRpcUrl` is operator-configurable in this JSON-RPC contract; other proof-source internals are not user-configurable
+- deferred/out-of-contract method families (for example filter lifecycle beyond `eth_getLogs`, subscriptions, and debug tracing) are listed in section 14
+- deferred/out-of-contract method names return JSON-RPC `-32601` (method not found), not `-32010`
+- WebSocket transport is unsupported at transport layer (section 3) and is not a JSON-RPC method mapping
 
-## Deferred And Unsupported Public Surface
+## 14. Unsupported Public Surface
 
-These surfaces are not part of the phase-1 or light-mode exact contract:
+Not part of the current contract:
 
-- debug tracing
-- filter lifecycle APIs beyond `eth_getLogs`
+- debug tracing methods
+- filter lifecycle beyond `eth_getLogs`
 - subscriptions
 - WebSocket transport
+
+JSON-RPC mapping for this deferred/out-of-contract surface:
+
+- requesting a deferred/out-of-contract JSON-RPC method name returns `-32601` (method not found)
+- WebSocket remains transport-level unsupported (section 3) rather than a JSON-RPC method-level mapping

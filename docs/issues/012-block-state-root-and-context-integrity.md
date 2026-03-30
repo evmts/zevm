@@ -1,5 +1,8 @@
 # Block State Root And Context Integrity
 
+> **Archived / non-normative:** This issue is historical context only. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md).
+
+
 ## Verified Gap
 
 - `initGenesis` funds dev accounts in `db.state` and stores a genesis block without flushing accounts into the trie or setting `header.state_root`, so the stored genesis header is already inconsistent with funded state.

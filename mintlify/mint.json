@@ -10,7 +10,10 @@
     {
       "group": "Overview",
       "pages": [
-        "index"
+        "index",
+        "reference/canonical-specs",
+        "reference/specs-and-process",
+        "reference/release-metadata-runbook"
       ]
     },
     {
@@ -18,7 +21,9 @@
       "pages": [
         "quickstart/installation",
         "quickstart/run-trusted-mode",
-        "quickstart/forked-dev-node"
+        "quickstart/forked-dev-node",
+        "quickstart/run-light-mode",
+        "quickstart/troubleshooting"
       ]
     },
     {
@@ -45,6 +50,7 @@
       "pages": [
         "reference/json-rpc/overview",
         "reference/json-rpc/core-reads",
+        "reference/json-rpc/managed-dev-wallet",
         "reference/json-rpc/simulation",
         "reference/json-rpc/transactions-and-mining",
         "reference/json-rpc/blocks-receipts-and-logs",

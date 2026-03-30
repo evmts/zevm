@@ -1,55 +1,65 @@
 # ZEVM Internal Support: Upstream Ownership And Boundaries
 
-Last updated: 2026-03-27
+Last updated: 2026-03-30
 
-## Ownership Boundary
+This page is non-normative support for:
 
-### Intended behavior
+- `docs/specs/prd.md`
+- `docs/specs/json-rpc-contract.md`
 
-ZEVM is the integration shell. Voltaire owns Ethereum primitives, JSON-RPC types, state manager, journal and snapshot support, fork backend, blockchain, crypto, and execution-layer foundations. `guillotine-mini` owns the EVM interpreter, tracing substrate, and execution host integration. ZEVM owns CLI and config parsing, mode selection, runtime composition, lifecycle, HTTP JSON-RPC transport, mode-aware routing, startup and shutdown, checkpoint wiring, readiness reporting, and the public naming of nonstandard trusted-mode controls under the canonical `zevm_*` namespace. The canonical shipping transport path is `src/rpc/server.zig` plus `src/rpc/dispatcher.zig`; the older `src/rpc/envelope.zig` plus `src/rpc/router.zig` stack is stale and non-shipping. Exact request, payload, alias, selector, and error detail lives in `docs/specs/json-rpc-contract.md`.
+This page is intentionally non-normative. Use those normative docs for exact API behavior and public contract details.
 
-### Observed code constraints
+## 1. Ownership Boundary
 
-The repo still carries a local transport, envelope, router, and handler stack alongside the shipping path, and runtime-critical pieces are not consistently wired through the shipping startup path. That is duplicate-stack drift, not a change in ownership.
+ZEVM is the integration shell and product surface.
 
-### Unresolved ambiguity
+ZEVM owns:
 
-None on ownership roles. The remaining issue is implementation alignment, including the docs-first rule that compatibility aliases do not replace the canonical `zevm_*` surface in public docs.
+- startup, configuration parsing, and runtime selection (`trusted` or `light`)
+- runtime composition and lifecycle
+- HTTP JSON-RPC transport and dispatch
+- mode-aware method gating and public method namespace policy
+- light-mode checkpoint ownership: startup checkpoint source precedence, selected-source failure behavior, persisted-checkpoint input contract, and startup checkpoint-age policy handling
+- light-mode readiness ownership: `status`/`ready` derivation and lifecycle transitions, readiness gating decisions for proof-backed reads and `eth_blockNumber`, and exposure through `zevm_lightSyncStatus`
+- light-mode proof-path surface ownership: mapping proof-path outcomes to ZEVM contract-visible runtime behavior and error codes
+- publication of canonical nonstandard trusted controls under `zevm_*`, with accepted compatibility aliases only as listed in `docs/specs/json-rpc-contract.md`
 
-### Affected public pages
+Voltaire owns Ethereum execution foundations used by ZEVM integration, including:
 
-`mintlify/docs/concepts/architecture-and-upstream-ownership.mdx`, `mintlify/docs/index.mdx`, `mintlify/docs/concepts/runtime-modes.mdx`, `mintlify/docs/reference/json-rpc/overview.mdx`.
+- Ethereum primitives and JSON-RPC foundational types
+- state manager, journal, and snapshot primitives
+- fork backend integration and blockchain-level foundations
+- core crypto and execution support layers consumed by ZEVM
 
-## Traceability
+`guillotine-mini` owns the EVM interpreter layer and tracing substrate integrated by ZEVM.
 
-- Source IDs: `ARCH-01`, `PROC-01`
-- Contradiction IDs: `C-002`, `C-013`
-- Question IDs: `-`
-- Internal support docs: `phase-1-product-shape.md`
-- Notes: Namespace policy is a product-contract rule, not a docs preference.
+Proof/readiness boundary clarification:
 
-## Repo-Path Drift
+- Voltaire and `guillotine-mini` expose primitives used in proof-backed execution flows.
+- ZEVM owns how those primitives are composed into startup/runtime behavior and public JSON-RPC surface semantics.
 
-### Intended behavior
+## 2. Runtime Boundary Notes
 
-repository references should identify the upstream checkout path consistently when docs explain ownership or integration boundaries.
+- ZEVM has exactly two runtime modes: trusted mode and light mode.
+- Forking is trusted-mode configuration, not a third runtime mode.
+- Light-mode proof-backed behavior is defined by the PRD and JSON-RPC contract, not by this support page.
+- For canonical light-mode checkpoint/readiness/proof behavior, use PRD sections 4.2, 5.5, 5.6, 5.7, 5.8, 10, and JSON-RPC contract sections 5, 6.2, 7.10, 13.
 
-### Observed code constraints
+## 3. Repository Path Convention
 
-the PRD Architecture section names `guillotine-mini` as `../guillotine-mini`; preserve that exact checkout path here and do not repeat the stale `../bench/guillotine-mini` variant.
+When ownership docs reference the interpreter upstream checkout in local workspace examples, use:
 
-### Unresolved ambiguity
+- `../guillotine-mini`
 
-None on the local path spelling.
+## 4. Contract Precedence
 
-### Affected public pages
+If this support summary ever differs from normative wording:
 
-`mintlify/docs/concepts/architecture-and-upstream-ownership.mdx`.
+1. `docs/specs/prd.md` defines product scope and behavior boundaries.
+2. `docs/specs/json-rpc-contract.md` defines exact JSON-RPC tuples, payloads, aliases, selectors, and errors.
 
-## Traceability
+Canonical references for this page:
 
-- Source IDs: `ARCH-01`
-- Contradiction IDs: `-`
-- Question IDs: `-`
-- Internal support docs: `phase-1-product-shape.md`
-- Notes: The local workspace path is `../guillotine-mini`; exact RPC details are delegated to `docs/specs/json-rpc-contract.md`.
+- PRD architecture boundary: section 12
+- Light-mode runtime/checkpoint/readiness semantics: PRD sections 4.2, 5.5, 5.6, 5.7, 5.8, 10
+- Exact light-mode API and error tuples: JSON-RPC contract sections 5, 6.2, 7.10, 13

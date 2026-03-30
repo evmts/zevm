@@ -1,5 +1,8 @@
 # Runnable Dev Node And RPC Wiring
 
+> **Archived / non-normative:** This issue is historical context only. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md).
+
+
 ## Verified Gap
 
 - `src/main.zig` only parses `--host` / `--port`, creates an empty `HandlerRegistry`, and starts the HTTP server.

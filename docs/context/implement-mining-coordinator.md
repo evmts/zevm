@@ -1,5 +1,8 @@
 # Context: implement-mining-coordinator
 
+> Archival snapshot note: this is a point-in-time research artifact, not the active ZEVM contract.
+> For current mining RPC aliases/returns, use `docs/specs/json-rpc-contract.md` sections 9.3 and 10. For current error semantics, use section 5.
+
 ## Ticket
 - ID: `implement-mining-coordinator`
 - Title: Implement `MiningCoordinator` with `MiningMode` state management
@@ -87,7 +90,7 @@
 
 ### 4. Hardhat EDR mining contract and scheduler
 - Method contracts: `edr/crates/edr_provider/src/requests/methods.rs`
-  - `evm_mine` returns string `"0"`
+  - `evm_mine` returns string `"0"` (EDR-specific upstream behavior, not ZEVM contract)
   - `evm_setAutomine` returns `true`
   - `evm_setIntervalMining` accepts milliseconds (`0`, fixed, or `[min,max]` range)
   - `hardhat_getAutomine` returns bool
@@ -141,6 +144,7 @@
   - automine (default)
   - manual mining (`evm_mine`, `hardhat_mine`)
   - interval mining (timer-based)
+- `docs/specs/json-rpc-contract.md` is the normative source for canonical method aliases and return types (`zevm_mine` + accepted aliases return `true`).
 
 ### execution-apis
 - No official `evm_setAutomine` / `evm_setIntervalMining` / `hardhat_mine` methods in execution API docs.

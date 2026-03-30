@@ -1,5 +1,8 @@
 # JSON-RPC Transport Compliance
 
+> **Archived / non-normative:** This issue is historical context only. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md).
+
+
 ## Verified Gap
 
 - The live transport path is not release-ready even aside from the startup gap: it depends on a broken upstream `jsonrpc.envelope` API, and the alternate in-tree `envelope` / `router` stack is not the product path.

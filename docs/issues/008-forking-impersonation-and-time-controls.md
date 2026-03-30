@@ -1,5 +1,8 @@
 # Forking, Impersonation, And Time Controls
 
+> **Archived / non-normative:** This issue is historical context only. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md).
+
+
 ## Verified Gap
 
 - There is no `--fork-url` or other fork-mode startup/config surface in ZEVM.

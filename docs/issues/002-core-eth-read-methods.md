@@ -1,5 +1,8 @@
 # Core Eth Read Methods
 
+> **Archived / non-normative:** This issue is historical context only. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md).
+
+
 ## Verified Gap
 
 - The executable does not expose the read helpers at all; the live dispatcher still returns `Method not found`.

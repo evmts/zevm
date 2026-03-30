@@ -1,5 +1,8 @@
 # Snapshots And State Manipulation
 
+> **Archived / non-normative:** This issue is historical context only. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md).
+
+
 ## Verified Gap
 
 - `dev_runtime.zig` and `dev_handlers.zig` are disconnected from `main`, and the live dispatcher rejects `evm_*` / `hardhat_*` methods outright.

@@ -1,99 +1,114 @@
 ---
 title: Forked Dev Node
-description: Start trusted mode against an upstream fork with exact config shapes.
+description: Run trusted mode with an upstream fork and validate local overlay behavior.
 ---
 
 # Forked Dev Node
 
-Forked trusted mode is trusted mode with `mode.trusted.fork` set, or the equivalent `--fork-url` CLI flag.
+A forked dev node is still trusted mode. ZEVM keeps local state and mining, and uses the upstream RPC as a backing read source.
 
-## Current HEAD As Of 2026-03-29
+> Prerequisite: complete [Installation](./installation) first, including Zig, sibling `voltaire`/`guillotine-mini` checkouts, and a successful source build that produces `./zig-out/bin/zevm`.
 
-- `zig build` currently fails first in `src/rpc/server.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope`
-- `zig build test` currently fails in `src/rpc/dispatcher_test.zig`, `src/rpc/server.zig`, and `src/tx_processor.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope` and current `guillotine-mini` requires a wider `evm.init` signature
-- `src/rpc/server.zig.parseConfig` still only parses `--host` and `--port`
-- there is no executable trusted-mode startup path yet
-- fork startup is not wired through the executable path
-- config loading is not yet part of the startup flow
-- the commands below are contract examples only; current `HEAD` does not run them on March 29, 2026
+## 1. Start Trusted Mode With A Fork
 
-## Intended Behavior
+Before running fork startup commands, re-check [Installation](./installation) prerequisites: Zig, sibling `../voltaire` and `../guillotine-mini` repos, and the pinned build tuple in release `release-tuple.json` from [ZEVM release metadata](https://github.com/evmts/zevm/releases). For contract source ownership and docs-first change flow, see [Canonical Specs And Docs-First Process](../reference/specs-and-process).
 
-Forking stays inside trusted mode and does not create a third product mode. The fork configuration mirrors the CLI surface:
-
-- `fork.url` mirrors `--fork-url`
-- `fork.blockNumber` mirrors `--fork-block-number`
-- omitting `fork.blockNumber` means fork from the upstream latest block
-- `fork` does not implicitly change `chainId`
-- `--fork-block-number` without `--fork-url` is a hard startup failure
-
-## Intended Startup
-
-Forked trusted mode starts with the same binary as the default trusted node:
+Pinned fork:
 
 ```bash
-./zig-out/bin/zevm --mode trusted --fork-url https://rpc.example --fork-block-number 22000000 --mining manual
+./zig-out/bin/zevm \
+  --mode trusted \
+  --fork-url https://rpc.example \
+  --fork-block-number 22000000 \
+  --mining manual
 ```
 
-If a config file already selects `mode.trusted`, `--mode trusted` is optional and only confirms the branch.
-
-If you want a time-based local chain on top of the fork, use interval mining:
+Follow upstream latest instead of pinning:
 
 ```bash
-./zig-out/bin/zevm --mode trusted --fork-url https://rpc.example --mining interval --block-time 12
+./zig-out/bin/zevm --mode trusted --fork-url https://rpc.example
 ```
 
-## Local Overlay Semantics
+## 2. Confirm Forked Runtime State
 
-Forked trusted mode keeps ZEVM's local dev-node behavior on top of remote state:
+Check local chain identity (trusted default chain ID remains `31337` unless changed):
 
-- reads resolve from the local trusted overlay first
-- if the local overlay does not provide the requested state, ZEVM falls back to the upstream fork source
-- all writes, mining, snapshots, impersonation, and time controls remain local to ZEVM and do not mutate the upstream RPC
-- `chainId` stays a trusted-mode startup setting and is not inferred from `fork.url`
-
-This means a forked dev node is still a local trusted runtime. The fork is a read backing source, not a remote execution owner.
-
-## Exact Config
-
-```json
-{
-  "rpc": {
-    "host": "127.0.0.1",
-    "port": 8545
-  },
-  "mode": {
-    "trusted": {
-      "chainId": 31337,
-      "coinbaseIndex": 0,
-      "initialBalance": "10000000000000000000000",
-      "gasPrice": "2000000000",
-      "baseFee": "1000000000",
-      "blobBaseFee": "1",
-      "maxPriorityFeePerGas": "1000000000",
-      "blockGasLimit": 30000000,
-      "mining": {
-        "type": "manual"
-      },
-      "fork": {
-        "url": "https://rpc.example",
-        "blockNumber": 22000000
-      }
-    }
-  }
-}
+```bash
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}'
 ```
 
-## Traceability
+Check node metadata for fork status:
 
-- Source IDs: `HEAD-01`, `BOOT-02`, `BOOT-07`, `TRUST-09`
-- Contradiction IDs: `C-001`, `C-002`, `C-010`
-- Question IDs: -
-- Internal support docs: `startup-and-configuration.md`, `state-fork-and-snapshot-semantics.md`
-- Notes: `--fork-block-number` without `--fork-url` is a startup failure, not a valid alternate form; forked reads are local-overlay-first, remote-fallback, and local-only for writes.
+```bash
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":2,"method":"zevm_metadata","params":[]}'
+```
 
-## Related Pages
+`zevm_metadata` reports whether forking is enabled and includes `forkUrl` and `forkBlockNumber`.
+
+## 3. Validate Local Overlay Behavior
+
+Take a snapshot:
+
+```bash
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":3,"method":"zevm_snapshot","params":[]}'
+```
+
+Set local balance for an account:
+
+```bash
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{
+    "jsonrpc":"2.0",
+    "id":4,
+    "method":"zevm_setBalance",
+    "params":[
+      "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "0x8ac7230489e80000"
+    ]
+  }'
+```
+
+Read the same account:
+
+```bash
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{
+    "jsonrpc":"2.0",
+    "id":5,
+    "method":"eth_getBalance",
+    "params":["0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266","latest"]
+  }'
+```
+
+Set `SNAPSHOT_ID` to the `result` returned by `zevm_snapshot`, then revert:
+
+```bash
+SNAPSHOT_ID=0x1 # use the snapshot id returned by zevm_snapshot
+
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":6,"method":"zevm_revert","params":["'"$SNAPSHOT_ID"'"]}'
+```
+
+## Fork Rules
+
+- `--fork-block-number` without `--fork-url` is a startup failure.
+- `--fork-url` without `--fork-block-number` follows upstream head by default.
+- Forking does not create a third mode and does not implicitly change `chainId`.
+- Writes, mining, snapshots, and impersonation remain local to ZEVM.
+
+## Next Steps
 
 - [Run Trusted Mode](./run-trusted-mode)
-- [Configuration Overview](../reference/configuration/overview)
+- [Run Light Mode](./run-light-mode)
+- [State Fork And Snapshots](../concepts/state-fork-and-snapshots)
 - [Trusted-Mode Configuration](../reference/configuration/trusted-mode)
+- [Transactions And Mining](../reference/json-rpc/transactions-and-mining)

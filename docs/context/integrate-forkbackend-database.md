@@ -1,5 +1,7 @@
 # Context: Integrate ForkBackend into Database Initialization
 
+> **Historical / Non-Normative Note:** This is local archival context and not a ZEVM phase-1 requirements document. Method references here, including filter lifecycle APIs beyond `eth_getLogs` and `eth_getProof` discussion, are upstream/history context only and are **not** current ZEVM phase-1 supported method commitments. For active scope, see `docs/specs/prd.md` and `docs/specs/json-rpc-contract.md`.
+
 ## Ticket Info
 - **Ticket ID**: `integrate-forkbackend-database`
 - **Category**: `cat-10-forking`
@@ -246,13 +248,13 @@
 ## EIP / Consensus / Yellow Paper / Hive References
 
 ### EIPs
-#### `EIPs/EIPS/eip-1186.md`
+#### `https://eips.ethereum.org/EIPS/eip-1186`
 - Defines `eth_getProof` semantics and return payload shape.
 
-#### `EIPs/EIPS/eip-1474.md`
+#### `https://eips.ethereum.org/EIPS/eip-1474`
 - Defines JSON-RPC error code expectations and quantity/data encoding rules.
 
-#### `EIPs/EIPS/eip-1898.md`
+#### `https://eips.ethereum.org/EIPS/eip-1898`
 - Defines block selector object with `blockHash` / `blockNumber` and optional `requireCanonical`.
 - Relevant to fork reads pinned to non-canonical or explicit block hashes.
 
@@ -331,4 +333,3 @@
 - Update all `database_test.zig` init calls to new signature.
 - Run `zig build test`.
 - If failures surface around `accountIterator` or pending RPC semantics, split into follow-up ticket(s).
-

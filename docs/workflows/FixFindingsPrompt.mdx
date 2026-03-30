@@ -1,3 +1,18 @@
+Template note: this file is a workflow prompt template. `{props.*}` placeholders are intentionally unresolved in source and are resolved by the workflow runtime before execution.
+
+Runtime props contract (required at workflow execution):
+- `props.reviewRound` (string | number): review pass identifier for the findings being addressed.
+- `props.reviewVerdict` (string): cold-review verdict context (expected `LGTM` or `CHANGES_REQUIRED`).
+- `props.findings` (array): structured cold-review findings payload to evaluate and fix.
+- `props.blockers` (array): cold-review blockers payload to evaluate and resolve where valid.
+- `props.residualRisks` (array): cold-review residual risks payload to evaluate during integration.
+- `props.schema` (string): JSON Schema text that defines the required JSON output format for this workflow run.
+
+Execution guard:
+- Unresolved placeholders are valid in repository source templates.
+- After runtime render, any unresolved template placeholder (for example `{props.*}` or `{JSON.stringify(...)}`) is a hard error and the workflow must fail before executing this prompt.
+- The fallback instructions below are only for pasted/raw prompt usage outside the workflow runtime.
+
 You are the lead agent for the ZEVM docs-convergence program in this repository.
 
 This is a fix-and-integrate pass after a cold review.
@@ -35,6 +50,9 @@ Rules:
 Review round: {props.reviewRound}
 Review verdict: {props.reviewVerdict}
 
+If `Review round: {props.reviewRound}` or `Review verdict: {props.reviewVerdict}` is unresolved template text in a pasted/raw prompt, treat the value as unknown context and continue.
+This fallback is pasted/raw resilience only and must not override runtime render-failure behavior.
+
 Cold-review findings:
 
 ```json
@@ -53,6 +71,9 @@ Cold-review residual risks:
 {JSON.stringify(props.residualRisks, null, 2)}
 ```
 
+If any cold-review section is unresolved template text (for example raw `{JSON.stringify(...)}` placeholders), treat that section as missing payload, state it briefly, and continue by rebuilding findings from the docs corpus.
+This fallback is pasted/raw resilience only and must not override runtime render-failure behavior.
+
 Stop only when one of these is true:
 1. the docs corpus is again coherent and complete enough for a fresh cold review
 2. a true product decision is required from the human and cannot be responsibly resolved from the docs corpus alone
@@ -60,3 +81,21 @@ Stop only when one of these is true:
 Return JSON matching this schema:
 
 {props.schema}
+
+If `{props.schema}` is unresolved template text in a pasted/raw prompt, use this fallback output schema and still return valid JSON.
+This fallback is pasted/raw resilience only and must not override runtime render-failure behavior.
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "summary", "filesChanged", "productDecisionsNeeded"],
+  "properties": {
+    "status": { "type": "string", "enum": ["READY_FOR_COLD_REVIEW", "NEEDS_PRODUCT_DECISION"] },
+    "summary": { "type": "string" },
+    "filesChanged": { "type": "array", "items": { "type": "string" } },
+    "productDecisionsNeeded": { "type": "array", "items": { "type": "string" } }
+  }
+}
+```

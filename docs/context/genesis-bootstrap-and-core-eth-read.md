@@ -1,5 +1,11 @@
 # Context for genesis-bootstrap-and-core-eth-read
 
+> **Archival / Non-Normative Notice**
+> This document is retained for historical implementation context only and is **not** a source of requirements.
+> For canonical, normative requirements, use:
+> - `docs/specs/prd.md`
+> - `docs/specs/json-rpc-contract.md`
+
 ## Ticket Details
 - **Title**: Add node bootstrap state and core eth_* read handlers
 - **Description**: Build a minimal ZEVM node runtime that initializes chain config and state needed for read methods, then implement core read handlers using existing StateManager/Database wiring. Focus on `eth_chainId`, `eth_blockNumber`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getTransactionCount`, `eth_gasPrice`, `eth_coinbase`, `eth_accounts`, `eth_maxPriorityFeePerGas`, `eth_blobBaseFee`, and `eth_feeHistory`. Reuse voltaire JSON-RPC types and existing ZEVM database/state components; avoid duplicating account/state primitives.

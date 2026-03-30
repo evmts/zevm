@@ -1,119 +1,157 @@
 ---
 title: Simulation
-description: Exact trusted-mode execution simulation and gas estimation behavior.
+description: Trusted-mode eth_call and eth_estimateGas contract, including TransactionRequest and StateOverrideSet.
 ---
 
 # Simulation
 
-Phase 1 trusted mode supports exact execution simulation without mutating canonical state. This page is self-contained for client integrators: it defines the tuple shapes, request objects, mode gate, and error rules on-page.
+`eth_call` and `eth_estimateGas` are trusted-mode simulation methods.
 
-These methods are trusted-mode only. In light mode they fail with `-32010`.
+- trusted mode: supported
+- light mode: unsupported (`-32010`)
 
-## Exact Method Surface
+Both methods execute on a checkpoint-and-revert path and do not mutate canonical state.
 
-| Method | Exact params | Exact result | Exact error rules |
+## Methods
+
+| Method | Exact params | Exact result | Errors |
 | --- | --- | --- | --- |
-| `eth_call` | `[tx, block]` or `[tx, block, stateOverrides]` | `HexData` | malformed transaction object, selector, or overrides fail with `-32602`; unavailable in light mode and fails with `-32010` |
-| `eth_estimateGas` | `[tx]`, `[tx, block]`, or `[tx, block, stateOverrides]` | `QuantityHex` | malformed transaction object, selector, or overrides fail with `-32602`; unavailable in light mode and fails with `-32010` |
+| `eth_call` | `[tx, block]` or `[tx, block, stateOverrides]` | `HexData` | `-32602` malformed tx, selector, or overrides; `-32603` runtime execution failure; `-32010` in light mode |
+| `eth_estimateGas` | `[tx]`, `[tx, block]`, or `[tx, block, stateOverrides]` | `QuantityHex` | `-32602` malformed tx, selector, or overrides; `-32603` runtime execution failure; `-32010` in light mode |
 
-Any tuple length other than the listed variants fails with `-32602`.
+Any tuple length not listed above returns `-32602`.
 
-## Trusted-Mode Selectors
+Execution outcome semantics:
 
-| Selector | Meaning in trusted mode |
-| --- | --- |
-| `latest` | current canonical local head |
-| `pending` | compatibility alias of `latest` |
-| `safe` | compatibility alias of `latest` |
-| `finalized` | compatibility alias of `latest` |
-| `earliest` | block `0` |
-| numeric quantity | exact local block number |
+- success path:
+  - `eth_call` returns `HexData`
+  - `eth_estimateGas` returns `QuantityHex`
+- runtime execution failure path (for example revert, out-of-gas, invalid execution in simulation context): JSON-RPC `-32603` with no `result`
+- phase-1 implementation-defined details:
+  - exact `error.message` text and optional `error.data` payload for runtime execution failure
+  - gas-search strategy and tie-breaking used by `eth_estimateGas`
+  - internal defaults for omitted simulation fields beyond the required tuple/validation contract on this page
 
-Malformed selectors fail with `-32602`.
+## `TransactionRequest`
 
-## Exact Type Rules
+Allowed fields only:
 
-- `QuantityHex` is a `0x`-prefixed unsigned integer with no leading zero padding except `0x0`.
-- `HexData` is a `0x`-prefixed hex byte string, including `0x` for empty bytes.
-- `Address` is a `0x`-prefixed 20-byte hex address.
-- `Bytes32` is a `0x`-prefixed 32-byte hex value.
+| Field | Type | Rule |
+| --- | --- | --- |
+| `from` | `Address` | optional for `eth_call` and `eth_estimateGas` |
+| `to` | `Address` or `null` | omitted or `null` for create |
+| `gas` | `QuantityHex` | optional |
+| `gasPrice` | `QuantityHex` | optional |
+| `value` | `QuantityHex` | optional |
+| `nonce` | `QuantityHex` | optional |
+| `data` | `HexData` | optional |
+| `input` | `HexData` | optional alias of `data` |
 
-Both methods use checkpoint-and-revert semantics and must not mutate canonical state.
+Rules:
 
-## Exact Request Objects
-
-### `TransactionRequest`
-
-`TransactionRequest` is the exact request object used by `eth_call` and `eth_estimateGas`.
-
-The only documented fields are `from`, `to`, `gas`, `gasPrice`, `value`, `nonce`, `data`, and `input`.
-
-```json
-{
-  "from": "0x...",
-  "to": null,
-  "gas": "0x...",
-  "gasPrice": "0x...",
-  "value": "0x...",
-  "nonce": "0x...",
-  "data": "0x...",
-  "input": "0x..."
-}
-```
-
-Field rules:
-
-- `from` is optional for `eth_call` and `eth_estimateGas`
-- `to` may be omitted or `null` for contract creation
-- `gas`, `gasPrice`, `value`, `nonce`, `data`, and `input` are optional
 - `data` and `input` may both be omitted
-- if both `data` and `input` are present, they must be byte-for-byte equal or the request fails with `-32602`
-- any field not listed above is invalid and fails with `-32602`
+- if both are present, they must be byte-identical
+- any field not listed above returns `-32602`
+- unsupported request fields and return `-32602`: `maxFeePerGas`, `maxPriorityFeePerGas`, `maxFeePerBlobGas`, `blobVersionedHashes`, `accessList`, `authorizationList`, `type`, `chainId`
 
-### `StateOverrideSet`
+## `StateOverrideSet`
 
-`StateOverrideSet` is an object keyed by address. Each keyed value may include:
+`stateOverrides` is an object keyed by address. Each value may include:
+
+| Field | Type |
+| --- | --- |
+| `balance` | `QuantityHex` |
+| `nonce` | `QuantityHex` |
+| `code` | `HexData` |
+| `storage` | object mapping `Bytes32` slot -> `Bytes32` value |
+
+Example:
 
 ```json
 {
-  "0x0000000000000000000000000000000000000000": {
-    "balance": "0x0",
-    "nonce": "0x0",
-    "code": "0x",
+  "0x0000000000000000000000000000000000000001": {
+    "balance": "0xde0b6b3a7640000",
+    "nonce": "0x1",
+    "code": "0x60006000",
     "storage": {
-      "0x0000000000000000000000000000000000000000000000000000000000000000": "0x0000000000000000000000000000000000000000000000000000000000000000"
+      "0x0000000000000000000000000000000000000000000000000000000000000000": "0x0000000000000000000000000000000000000000000000000000000000000001"
     }
   }
 }
 ```
 
-Allowed fields:
+## Trusted Selector Rules
 
-- `balance` is `QuantityHex`
-- `nonce` is `QuantityHex`
-- `code` is `HexData`
-- `storage` is an object whose keys are `Bytes32` storage slots and whose values are `Bytes32` storage values
+Simulation selectors use trusted-mode selector semantics:
 
-When present, `stateOverrides` in the method tuple must be a `StateOverrideSet`.
+- `latest`: current local head
+- `pending`, `safe`, `finalized`: aliases of `latest`
+- `earliest`: block `0`
+- numeric quantity: exact local block number
 
-## Trusted-Mode Mode Gate
+Malformed selectors return `-32602`.
 
-All methods on this page are trusted-mode only.
+## Example: `eth_call`
 
-- In light mode, each method fails with `-32010`.
-- In trusted mode, malformed selectors and malformed request-shape details fail with the method-specific `-32602` rules above.
+Request:
 
-## Current HEAD As Of 2026-03-29
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "eth_call",
+  "params": [
+    {
+      "to": "0x0000000000000000000000000000000000000001",
+      "data": "0x70a08231000000000000000000000000f39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+    },
+    "latest"
+  ]
+}
+```
 
-- `zig build` fails first in `src/rpc/server.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope`, and `zig build test` fails in `src/rpc/dispatcher_test.zig`, `src/rpc/server.zig`, and `src/tx_processor.zig` because current upstream `jsonrpc` no longer exposes `jsonrpc.envelope` and current `guillotine-mini` requires a wider `evm.init` signature
-- no `eth_call` implementation is present in `src/rpc/handlers`
-- no `eth_estimateGas` implementation is present in `src/rpc/handlers`
-- no dispatcher route exposes the simulation surface yet, so the checkpoint-and-revert contract is still documentation only in current `HEAD`
+Response:
 
-## Traceability
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": "0x0000000000000000000000000000000000000000000000000000000000000000"
+}
+```
 
-- Source IDs: `AUTH-02`, `PROC-01`, `HEAD-01`, `TRUST-06`
-- Contradiction IDs: `C-002`, `C-005`
-- Question IDs: -
-- Internal support docs: `trusted-mode-semantics.md`, `rpc-support-matrix.md`
-- Notes: Exact trusted-mode simulation contract for client integrators, with the missing current-`HEAD` wiring kept separate from the intended behavior.
+## Example: `eth_estimateGas`
+
+Request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "eth_estimateGas",
+  "params": [
+    {
+      "from": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "to": "0x0000000000000000000000000000000000000001",
+      "data": "0x"
+    }
+  ]
+}
+```
+
+Response:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": "0x5208"
+}
+```
+
+## Related Pages
+
+- [Core Reads](./core-reads)
+- [Transactions And Mining](./transactions-and-mining)
+- [ZEVM Controls](./dev-controls)
+- [Unsupported And Deferred](./unsupported-and-deferred)

@@ -1,246 +1,251 @@
 # ZEVM Internal Support: Startup And Configuration
 
-Last updated: 2026-03-29
-
-## Shared Startup Contract
-
-### Intended behavior
-
-- ZEVM ships as one binary, `zevm`, and starts in trusted mode by default.
-- Shared startup accepts `--config`, `--mode`, `--host`, and `--port`.
-- Shared JSON config has `rpc.host`, `rpc.port`, and exactly one runtime branch under `mode`.
-- `--config` is optional and is loaded before CLI overrides.
-- If `--config` points to a missing file, an unreadable file, or malformed JSON, ZEVM fails startup before opening the listener, exits non-zero, reports an operator-facing error that names the path and failure class, and does not fall back to defaults.
-- The active runtime may be selected directly by CLI `--mode` or by the config-file `mode` branch. `--mode light` is a direct light-mode selection path, not merely a confirmation of config, and when both sources are present they must agree.
-- Default shared listener values are `127.0.0.1` for `--host` and `8545` for `--port`.
-- Source-build installation is the public contract for phase 1; do not promise packaged binaries.
-
-### Default startup behavior
-
-- The default runtime is trusted mode.
-- Light mode is explicit through either `--mode light` or the `mode.light` config branch, and `--mode light` itself selects light mode.
-- The shared config shape is independent from the default runtime. A valid config file still must contain exactly one runtime branch under `mode`.
-
-### Observed code constraints
-
-- On 2026-03-29, `src/main.zig` still only forwards argv to `src/rpc/server.zig`.
-- On 2026-03-29, `src/rpc/server.zig::parseConfig` still accepts only `--host` and `--port`; it rejects any other argument, including `--mode` and `--config`.
-- On 2026-03-29, that same parser still returns `error.UnknownArgument` for any unsupported CLI flag, so current `HEAD` already hard-fails unknown arguments even though it does not implement the intended full startup surface.
-- On 2026-03-29, `src/main.zig` still has no executable `--config` loader, `--mode` selector, or mode-dispatch path.
-- The current executable path therefore does not yet exercise the CLI-selection contract, even though the product contract allows `--mode light` to select light mode directly.
-- On 2026-03-29, `src/node/runtime.zig` still carries the authoritative trusted-mode runtime/config model in source; `src/rpc/dev_runtime.zig` is only a partial snapshot helper prototype.
-- Current startup cannot enforce the one-branch mode contract before listener creation.
-
-### Unresolved ambiguity
-
-- None remains for installation posture; `DEC-011` resolved phase-1 install guidance to source-build only.
-- No other ambiguity is accepted for the shared startup contract.
-
-### Affected public pages
-
-- `mintlify/docs/index.mdx`
-- `mintlify/docs/quickstart/installation.mdx`
-- `mintlify/docs/reference/configuration/overview.mdx`
-- `mintlify/docs/quickstart/run-trusted-mode.mdx`
-- `mintlify/docs/quickstart/forked-dev-node.mdx`
-- `mintlify/docs/concepts/runtime-modes.mdx`
-
-### Source IDs
-
-- `BOOT-01`
-- `BOOT-04`
-- `BOOT-08`
-- `PROC-01`
-
-### Contradiction IDs
-
-- `C-001`
-- `C-002`
+Last updated: 2026-03-30
+
+This page supports `docs/specs/prd.md` and `docs/specs/json-rpc-contract.md`.
 
-## Trusted-Mode CLI/Config
-
-### Intended behavior
-
-- Trusted mode is the default runtime and the phase-1 local dev-node surface.
-- Canonical trusted-mode nonstandard methods are `zevm_*`.
-- Exact accepted compatibility aliases are defined in `docs/specs/json-rpc-contract.md`.
-- Trusted-mode CLI covers `--chain-id`, `--coinbase-index`, `--initial-balance`, `--gas-price`, `--base-fee`, `--blob-base-fee`, `--max-priority-fee-per-gas`, `--block-gas-limit`, `--mining`, `--block-time`, `--fork-url`, and `--fork-block-number`.
-- Unknown CLI flags, missing values, invalid integer literals, and invalid wei literals are startup failures.
-- Trusted-mode config lives under `mode.trusted`.
-- `mode.trusted.mining` accepts exactly these JSON shapes:
-  - `{ "type": "auto" }`
-  - `{ "type": "manual" }`
-  - `{ "type": "interval", "blockTime": <seconds> }`
-- `blockTime` is an integer number of seconds and is valid only when `type = "interval"`.
-- `mode.trusted.fork` accepts exactly these JSON shapes:
-  - `null`
-  - `{ "url": "https://rpc.example" }`
-  - `{ "url": "https://rpc.example", "blockNumber": <u64> }`
-- `fork.url` mirrors CLI `--fork-url`.
-- `fork.blockNumber` mirrors CLI `--fork-block-number`.
-- Omitting `fork.blockNumber` means fork from the upstream latest block.
-- `chainId` remains top-level under `mode.trusted`; `fork` does not implicitly change it.
-- Forking stays inside trusted mode and does not create a third product mode.
-- `coinbaseIndex` selects from the managed-account table and must be within `0..9`.
-- This section is the authoritative trusted-mode runtime/config model; `src/rpc/dev_runtime.zig` only carries prototype snapshot bookkeeping.
+## 1. Startup Model
 
-### Observed code constraints
+- one binary: `zevm`
+- default runtime: trusted mode
+- alternate runtime: light mode
+- runtime selected by user-supplied `--mode` or config `mode` branch (config must include exactly one of `mode.trusted` or `mode.light`)
+- parser-provided CLI defaults are applied after CLI/config merge and do not create mode conflicts
+- if user-supplied `--mode` and config `mode` are both present, they must agree
+
+## 2. Shared CLI
+
+| Flag | Type | Default |
+| --- | --- | --- |
+| `--config` | JSON path | none |
+| `--mode` | `trusted` or `light` | `trusted` (effective only when neither user-supplied `--mode` nor `--config` selects mode; if `--config` is provided it must include exactly one `mode` branch, and user-supplied `--mode` must match that branch) |
+| `--host` | bind host | `127.0.0.1` |
+| `--port` | TCP port | `8545` |
+
+## 3. Trusted CLI And Config
 
-- On 2026-03-29, there is still no executable trusted-mode startup path.
-- On 2026-03-29, `src/node/runtime.zig` contains trusted defaults and helper logic, but startup does not ingest them.
-- Fork startup remains unwired.
-- Managed-account and mining behavior still diverge between runtime helpers and the published contract.
-- The public trusted-mode namespace is not yet wired through startup, so the `zevm_*` surface and compatibility aliases remain a product contract, not a shipped entrypoint.
+Trusted CLI flags:
 
-### Unresolved ambiguity
+- `--chain-id`
+- `--coinbase-index`
+- `--initial-balance`
+- `--gas-price`
+- `--base-fee`
+- `--blob-base-fee`
+- `--max-priority-fee-per-gas`
+- `--block-gas-limit`
+- `--mining`
+- `--block-time`
+- `--fork-url`
+- `--fork-block-number`
 
-- None remains for the trusted-mode JSON subshapes or the public trusted-mode namespace.
+Trusted config branch: `mode.trusted`
 
-### Affected public pages
+Resolved config sub-shapes:
 
-- `mintlify/docs/quickstart/run-trusted-mode.mdx`
-- `mintlify/docs/quickstart/forked-dev-node.mdx`
-- `mintlify/docs/reference/configuration/trusted-mode.mdx`
-- `mintlify/docs/reference/configuration/overview.mdx`
-- `mintlify/docs/concepts/trusted-mode.mdx`
+- `mining`: `{ "type": "auto" }`, `{ "type": "manual" }`, or `{ "type": "interval", "blockTime": <u64> }`
+- `fork`: `null`, `{ "url": "https://..." }`, or `{ "url": "https://...", "blockNumber": <u64> }`
 
-### Source IDs
+Validation:
 
-- `BOOT-02`
-- `BOOT-07`
-- `TRUST-01`
-- `TRUST-02`
-- `TRUST-03`
-- `TRUST-09`
-- `TRUST-11`
+- `blockTime` required only for interval mining
+- `blockTime` invalid for auto and manual mining
+- `forkBlockNumber` requires `forkUrl`
+- providing `forkUrl` without `forkBlockNumber` uses unpinned upstream-head (`latest`) fork semantics at startup
+- `coinbaseIndex` must be `0..9`
+- trusted startup fork block numbers use decimal `u64` in CLI/config (`--fork-block-number`, `mode.trusted.fork.blockNumber`)
+- runtime `zevm_reset` uses `QuantityHex` for `forkConfig.blockNumber`; example: startup decimal `1000000` corresponds to JSON-RPC `"blockNumber": "0xf4240"`
 
-### Contradiction IDs
+## 4. Light CLI And Config
 
-- `C-001`
-- `C-008`
-- `C-010`
+Light CLI flags:
 
-## Light-Mode CLI/Config
+- `--network` (`mainnet`, `sepolia`, `holesky`)
+- `--consensus-rpc-url`
+- `--checkpoint`
+- `--checkpoint-dir`
+- `--max-checkpoint-age-seconds` (default `1209600`)
+- `--strict-checkpoint-age` presence flag (default `false`)
 
-### Intended behavior
+Light config branch: `mode.light`
 
-- Light mode is explicit and is the phase-2 read-only runtime.
-- Light-mode CLI covers `--network`, `--consensus-rpc-url`, `--checkpoint`, `--checkpoint-dir`, `--max-checkpoint-age-seconds`, and `--strict-checkpoint-age`.
-- `network` accepts exactly `mainnet`, `sepolia`, or `holesky`; any other value is invalid and fails startup.
-- Light-mode config lives under `mode.light`.
-- `consensusRpcUrl` is required in light mode.
-- `checkpoint` may be supplied explicitly, then falls back to persisted checkpoint, then to the baked network default.
-- The public contract guarantees that baked network defaults exist and participate in checkpoint precedence, but their exact literal hashes remain implementation defaults rather than frozen compatibility guarantees.
-- Persisted checkpoint lives at `checkpointDir/checkpoint` and must be exactly 64 hex characters.
-- A checkpoint whose age is exactly `maxCheckpointAgeSeconds` is still valid; the stale-checkpoint check is strictly greater-than.
-- If the selected checkpoint is older than `maxCheckpointAgeSeconds` and `strictCheckpointAge = false`, ZEVM logs a warning and continues.
-- If the selected checkpoint is older than `maxCheckpointAgeSeconds` and `strictCheckpointAge = true`, ZEVM fails startup.
+Checkpoint-age defaults for light mode:
 
-### Observed code constraints
+- `mode.light.maxCheckpointAgeSeconds` defaults to `1209600`
+- `mode.light.strictCheckpointAge` defaults to `false`
+- normative source: [`docs/specs/prd.md` section 5.3 (Light-mode CLI)](../prd.md#53-light-mode-cli)
 
-- On 2026-03-29, consensus and checkpoint helpers still exist, but `src/main.zig` has no light-mode startup branch.
-- On 2026-03-29, no executable path wires network selection, checkpoint persistence, or readiness gating from startup.
-- On 2026-03-29, the checkpoint helpers in `src/checkpoint.zig` and `src/consensus_sync.zig` are not surfaced through the startup contract.
+Naming/path bridge for light startup inputs:
 
-### Unresolved ambiguity
+- hyphenated CLI flags map to camelCase config keys: `--network` -> `network`, `--consensus-rpc-url` -> `consensusRpcUrl`, `--checkpoint` -> `checkpoint`, `--checkpoint-dir` -> `checkpointDir`, `--max-checkpoint-age-seconds` -> `maxCheckpointAgeSeconds`, `--strict-checkpoint-age` -> `strictCheckpointAge`
+- checkpoint-dir default template is `.zevm/checkpoints/<network>`; `<network>` expands from resolved startup `network` after CLI/config merge
+- after CLI/config merge and `<network>` expansion, any relative `checkpointDir` value is resolved against the process current working directory at startup
+- persisted checkpoint startup input path is `${resolvedCheckpointDir}/checkpoint`, where `resolvedCheckpointDir` is the absolute path after that resolution step
 
-- No unresolved semantic question is opened for the light-mode config shape here.
-- If public install text ever needs a light-mode note, keep it aligned with the resolved source-build-only posture, but do not turn that into a startup rule.
+Validation:
 
-### Affected public pages
+- `consensusRpcUrl` is required in light mode
+- `network` must be one of `mainnet`, `sepolia`, `holesky`
+- `consensusRpcUrl` must serve the same network selected by `network`
+- `--strict-checkpoint-age` CLI semantics are presence-based: present means `true`, omitted means `false`, and explicit assignment forms (for example `--strict-checkpoint-age=false`) are invalid
+- checkpoint startup inputs from CLI/config are nullable for precedence selection: `--checkpoint` absent and `mode.light.checkpoint` absent or `null` are treated as absent startup inputs
+- only non-null CLI/config checkpoint values (`--checkpoint`, `mode.light.checkpoint`) must be `0x`-prefixed 32-byte hashes (`Hash32`)
+- selected startup checkpoint hash must resolve on the configured `network` via `consensusRpcUrl`; network mismatch is startup failure before opening the HTTP listener
 
-- `mintlify/docs/concepts/light-mode.mdx`
-- `mintlify/docs/reference/configuration/light-mode.mdx`
-- `mintlify/docs/reference/configuration/overview.mdx`
-- `mintlify/docs/concepts/runtime-modes.mdx`
-
-### Source IDs
-
-- `BOOT-03`
-- `LIGHT-01`
-- `LIGHT-02`
-- `LIGHT-03`
-
-### Contradiction IDs
-
-- `C-011`
-- `C-012`
-
-## Precedence
-
-### Intended behavior
-
-- CLI flags win over config-file values for non-mode fields.
-- Startup resolves values in this order: CLI flags, config-file fields from `--config`, persisted light-mode checkpoint if applicable, baked defaults in the selected mode.
-- The active runtime may be selected directly by CLI `--mode` or by the config-file `mode` branch. `--mode light` can select light mode directly, and if config is present the resulting runtime must match it.
-- In light mode, explicit checkpoint wins over persisted checkpoint, which wins over the baked network default.
-- `--mode` is a direct runtime selector; when config is present it must resolve to the same runtime and it may not conflict with the resulting runtime.
-
-### Observed code constraints
-
-- On 2026-03-29, `src/main.zig` still does not implement config loading or precedence resolution.
-- On 2026-03-29, no startup path merges CLI values with config-file values because config parsing is absent.
-- On 2026-03-29, light checkpoint selection still exists in helper code, but it is not connected to executable startup.
-
-### Unresolved ambiguity
-
-- None remains on trusted-mode JSON subshapes; precedence does not change the resolved shapes above.
-- No additional precedence ambiguity is acceptable in public docs.
-
-### Affected public pages
-
-- `mintlify/docs/reference/configuration/overview.mdx`
-- `mintlify/docs/reference/configuration/trusted-mode.mdx`
-- `mintlify/docs/reference/configuration/light-mode.mdx`
-- `mintlify/docs/quickstart/forked-dev-node.mdx`
-- `mintlify/docs/quickstart/run-trusted-mode.mdx`
-
-### Source IDs
-
-- `BOOT-05`
-- `LIGHT-03`
-
-### Contradiction IDs
-
-- `C-001`
-- `C-011`
-
-## Invalid Combinations
-
-### Intended behavior
-
-- Startup must fail before opening the listener when input is invalid.
-- Invalid combinations include: unknown CLI flag, missing value, invalid integer or wei literal, invalid `--network` or `mode.light.network` value outside `mainnet` / `sepolia` / `holesky`, conflicting `--mode` and config mode, both mode branches in config, neither mode branch in config, trusted-only flags in light mode, light-only flags in trusted mode, missing `--consensus-rpc-url` in light mode, missing `--block-time` for interval mining, `--block-time` outside interval mining, `--fork-block-number` without `--fork-url`, `coinbaseIndex` outside `0..9`, and malformed checkpoint hex.
-- `--fork-url` does not implicitly change `chainId`.
-- `--consensus-rpc-url` is required for light mode.
-
-### Observed code constraints
-
-- Current executable startup does not implement these validation gates.
-- The current binary only parses `--host` and `--port`.
-- In current `HEAD`, `src/rpc/server.zig::parseConfig` already hard-fails unknown CLI arguments and malformed `--port` values, but no executable path yet exercises the broader invalid-integer, invalid-wei, or invalid-network contract.
-- Invalid-combination behavior is therefore specified by the PRD, not by `HEAD`.
-
-### Unresolved ambiguity
-
-- None remains for trusted-mode JSON subshapes.
-- Do not infer additional invalid combinations from prototype code.
-
-### Affected public pages
-
-- `mintlify/docs/reference/configuration/overview.mdx`
-- `mintlify/docs/reference/configuration/trusted-mode.mdx`
-- `mintlify/docs/reference/configuration/light-mode.mdx`
-- `mintlify/docs/quickstart/run-trusted-mode.mdx`
-- `mintlify/docs/quickstart/forked-dev-node.mdx`
-
-### Source IDs
-
-- `BOOT-06`
-- `BOOT-02`
-- `BOOT-03`
-
-### Contradiction IDs
-
-- `C-001`
-- `C-011`
+Startup consensus-network handshake (before listener):
+
+1. resolve `network`, `consensusRpcUrl`, and selected startup checkpoint from startup precedence
+2. call `GET <consensusRpcUrl>/eth/v1/beacon/genesis`
+3. require HTTP `200` and parse `data.genesis_validators_root` as `Hash32`
+4. require root match for selected `network`:
+   - `mainnet` -> `0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95`
+   - `sepolia` -> `0xd8ea171f3c94aea21ebc42a1ed61052acf3f9209c00e4efbaaddac09ed9b8078`
+   - `holesky` -> `0x9143aa7c615a7f7115e2b6aac319c03529df8242ae705fba9df39b79c59fa8b1`
+5. if handshake fails (request failure, non-`200`, malformed payload, missing/invalid root, or root mismatch), ZEVM must fail before opening the HTTP listener
+
+## 5. Config File Rules
+
+- allowed top-level keys are `rpc` and `mode`; unknown top-level keys are invalid
+- unknown keys inside `rpc`, `mode`, `mode.trusted`, `mode.light`, and trusted structured objects (`mining`, `fork`) are invalid
+- `rpc` is optional; when omitted, defaults are `host = 127.0.0.1`, `port = 8545`
+- when `rpc` is present, `host` and `port` default independently if omitted
+- `mode` must contain exactly one of `trusted` or `light`
+- config with both is invalid
+- config with neither is invalid
+- explicit `--config` load failure (missing file, unreadable file, invalid JSON) is startup failure
+
+## 6. Precedence
+
+Startup precedence:
+
+1. user-supplied CLI flag values
+2. config file values
+3. persisted light checkpoint (light mode only)
+4. mode defaults
+
+Precedence scope clarification for light mode:
+
+- precedence item 3 applies only to startup checkpoint selection
+- `checkpointDir`, `maxCheckpointAgeSeconds`, and `strictCheckpointAge` resolve independently per field as: user-supplied CLI value > config value > mode default
+- persisted `${resolvedCheckpointDir}/checkpoint` does not set or override `checkpointDir`, `maxCheckpointAgeSeconds`, or `strictCheckpointAge`
+
+Merge clarifications:
+
+- only user-supplied CLI flags override config
+- parser-provided CLI defaults fill missing fields only after CLI/config merge
+- parser-provided CLI defaults are not treated as user overrides and cannot cause mode conflicts
+
+Structured trusted-setting resolution:
+
+- `mining` resolves as one unit from CLI `--mining` and `--block-time`; if either flag is present, ZEVM builds `mining` from CLI and ignores `mode.trusted.mining`
+- `fork` resolves as one unit from CLI `--fork-url` and `--fork-block-number`; if either flag is present, ZEVM builds `fork` from CLI and ignores `mode.trusted.fork`
+- when no related CLI flags are present for that unit, ZEVM uses config value for that unit, then mode default
+- resolved trusted `fork` with `url` and no `blockNumber` uses unpinned upstream-head (`latest`) semantics; resolved trusted `fork` with `blockNumber` is pinned to that block
+
+Light checkpoint selection precedence:
+
+1. user-supplied CLI checkpoint (`--checkpoint`), when provided and non-null
+2. config checkpoint (`mode.light.checkpoint`), when set to a non-null value
+3. persisted `${resolvedCheckpointDir}/checkpoint`
+4. baked network default
+
+Precedence fallthrough is absence-driven only: ZEVM advances to a lower-precedence checkpoint source only when the higher-precedence source is absent. For CLI/config checkpoint inputs, absence includes omitted values and config `null`.
+
+Once a checkpoint source is selected by precedence, that selected source is final for that startup attempt; any validation/derivation failure for the selected source must fail startup before opening the HTTP listener, and ZEVM must not fall back to lower-precedence checkpoint sources.
+
+If CLI checkpoint, config checkpoint, and persisted `${resolvedCheckpointDir}/checkpoint` are all absent, ZEVM selects the baked network default checkpoint and `checkpointSource = "default"`. Here, "absent" includes config `mode.light.checkpoint = null`.
+
+Baked default checkpoints are precedence inputs, not frozen public compatibility hashes.
+
+Baked default checkpoint values are ZEVM bundled release/build inputs. For a given ZEVM release/build artifact and network, the selected baked default is deterministic.
+
+Baked defaults are implementation-defined and may rotate across releases/builds.
+
+Canonical release metadata artifact for baked defaults:
+
+- `releaseIdentifier` must exactly equal the GitHub release tag name that carries metadata assets; tag-based identifiers match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`, and commit-based identifiers match `^commit-[0-9a-f]{40}$`
+- each ZEVM `releaseIdentifier` publishes exactly one machine-readable `light-default-checkpoints.json` asset at `https://github.com/evmts/zevm/releases/download/<releaseIdentifier>/light-default-checkpoints.json`
+- `light-default-checkpoints.json` top-level fields are exactly `schemaVersion`, `releaseIdentifier`, and `defaults`
+- `schemaVersion` is `zevm-light-default-checkpoints.v1`
+- `releaseIdentifier` matches the publishing `releaseIdentifier`
+- `defaults` contains exactly `mainnet`, `sepolia`, and `holesky`; each value is a `0x`-prefixed 32-byte hash (`Hash32`) equal to that release/build's bundled baked default for the network
+- values are immutable per published release identifier; corrections publish a new release identifier with its own `light-default-checkpoints.json`
+- correction releases include one release-notes supersession note under heading `## ZEVM Supersession Note` with required lines: `schemaVersion`, `supersedesReleaseIdentifier`, `correctedArtifacts`, and `reason`
+- publication-time validation gate is mandatory for canonical publication claims: before a release is treated or announced as canonical under this contract, CI/release automation validates both required artifacts (`release-tuple.json`, `light-default-checkpoints.json`) from published release assets against PRD section 3.4 requirements
+- publication-time gate failure on either required artifact (missing, duplicate, unreadable, malformed, schema-mismatched, or value-mismatched) blocks canonical publication claims for that `releaseIdentifier`; correction requires a new `releaseIdentifier` (no in-place repair)
+- operators deterministically discover per-network baked defaults from that artifact; runtime probing via `zevm_lightSyncStatus` is optional verification
+- deterministic baked-default discovery from release metadata is defined only for published release identifiers
+- for unreleased commit builds without published `light-default-checkpoints.json`, baked defaults remain implementation-defined and are not contract-discoverable from metadata
+- operators that require deterministic checkpoint selection for unreleased commit builds must provide an explicit checkpoint via CLI/config instead of relying on baked defaults
+- phase 1 does not define a runtime JSON-RPC or CLI surface to directly report `releaseIdentifier`; operators identify release/build boundaries from preserved provenance records
+- phase-1 source-build provenance has exactly two states: metadata-backed published-release provenance and operator-recorded unreleased-commit provenance
+- metadata-backed published-release flow is strict and ordered: select one `releaseIdentifier` -> fetch required assets for that identifier -> validate PRD section 3.4 invariants -> materialize pinned commits/toolchain -> build
+- unreleased-commit flow has no release-asset discovery step; operators derive and record `(zevmGitRevision, voltaireGitRevision, guillotineMiniGitRevision, zigVersion)` from local state
+- operators must not mix metadata assets across `releaseIdentifier` values and must not claim metadata-backed reproducibility for metadata-invalid identifiers or unreleased commit builds
+
+Persisted checkpoint startup-input contract:
+
+- `${resolvedCheckpointDir}/checkpoint` is read-only startup input in phase 1 (`resolvedCheckpointDir` is derived from merged `checkpointDir` by applying `<network>` expansion and then resolving relative paths against startup current working directory)
+- if `${resolvedCheckpointDir}` does not exist at startup (including a missing expanded `<network>` directory), persisted checkpoint input is treated as absent and precedence falls through
+- if `${resolvedCheckpointDir}/checkpoint` is missing, persisted checkpoint input is treated as absent and precedence falls through
+- if `${resolvedCheckpointDir}/checkpoint` exists but is unreadable, startup fails before opening the HTTP listener
+- if the file is readable but trimmed content is malformed, startup fails before opening the HTTP listener
+- ZEVM does not auto-create `${resolvedCheckpointDir}` (including `<network>` directory expansion targets) during startup
+- ZEVM does not create, update, or delete `${resolvedCheckpointDir}/checkpoint` after listener startup
+- seeding and management are operator-only workflows: operators seed `${resolvedCheckpointDir}/checkpoint` by creating/updating it before process start or between restarts
+- ZEVM does not seed `${resolvedCheckpointDir}/checkpoint` from baked defaults, explicit startup checkpoint inputs, or `zevm_lightSyncStatus.lastCheckpoint`
+- startup reads `${resolvedCheckpointDir}/checkpoint` once during precedence resolution; runtime writes or external file changes after listener startup do not change the active process checkpoint source
+- `zevm_lightSyncStatus.lastCheckpoint` progression is runtime state only and is not persisted to `${resolvedCheckpointDir}/checkpoint` in phase 1
+- operators may update `${resolvedCheckpointDir}/checkpoint` between restarts; startup precedence is re-evaluated on each process start
+
+Checkpoint age policy for the selected startup checkpoint:
+
+- `age` is ZEVM's startup-time freshness value for the selected startup checkpoint
+- `age` is evaluated once during startup, after checkpoint selection and before stale-policy decision
+- `age` is measured in whole seconds: `age = max(0, startupTimeSeconds - checkpointTimeSeconds)`
+- `startupTimeSeconds` is sampled at age-check time
+- `checkpointTimeSeconds` is derived deterministically from Beacon API data for the selected startup checkpoint hash on the selected network, using `consensusRpcUrl` and not filesystem metadata/local file times
+- derivation steps are exact:
+  1. call `GET <consensusRpcUrl>/eth/v1/beacon/genesis`, require HTTP `200`, parse `data.genesis_time` as decimal unsigned integer `genesisTimeSeconds`
+  2. call `GET <consensusRpcUrl>/eth/v1/beacon/headers/{selectedCheckpointHash}`, require HTTP `200`, parse `data.root` as `Hash32` and require equality with `selectedCheckpointHash`, then parse `data.header.message.slot` as decimal unsigned integer `checkpointSlot`
+  3. use `SECONDS_PER_SLOT = 12` for phase-1 supported light networks and compute `checkpointTimeSeconds = genesisTimeSeconds + (checkpointSlot * SECONDS_PER_SLOT)` with integer arithmetic
+  4. use computed `checkpointTimeSeconds` as integer Unix seconds in age evaluation
+- any request failure, non-`200`, missing/malformed required field, checkpoint-root mismatch, or arithmetic overflow in this derivation is inability to resolve `checkpointTimeSeconds` and is startup failure before listening
+- `age == maxCheckpointAgeSeconds` is valid
+- only `age > maxCheckpointAgeSeconds` is stale
+- stale + `strictCheckpointAge = false`: emit one operator-facing startup warning before listening, then continue startup
+- non-strict stale warnings must be emitted on process `stderr` during startup and must not rely on JSON-RPC visibility
+- the non-strict stale warning must include: selected checkpoint hash, `checkpointSource`, `checkpointTimeSeconds`, `startupTimeSeconds`, computed `age`, `maxCheckpointAgeSeconds`, and `strictCheckpointAge = false`
+- stale + `strictCheckpointAge = true`: startup failure before listening
+
+Startup logging surface (phase 1):
+
+- operator-facing startup warnings and startup-failure errors are emitted via process `stderr`
+- phase 1 does not define dedicated CLI/config controls for startup log level, log file paths, or alternative log sinks
+- capture/routing of startup `stderr` output is external process/shell responsibility
+
+## 7. Startup Failure Contract
+
+ZEVM must fail before opening the HTTP listener for invalid startup input, including:
+
+- unknown flags
+- missing flag values
+- malformed numeric or wei values
+- malformed checkpoint input or malformed checkpoint file
+- explicit `--mode` mismatch with config mode branch
+- trusted-only flags in light mode
+- light-only flags in trusted mode
+- missing required light consensus URL
+- light consensus endpoint/network mismatch
+- light startup consensus-network handshake failure (`GET /eth/v1/beacon/genesis` request failure, non-`200`, malformed payload, missing/invalid `data.genesis_validators_root`, or root mismatch with selected network)
+- selected startup checkpoint/network mismatch
+- invalid mining/fork combinations
+- invalid `coinbaseIndex`
+- stale selected checkpoint when `strictCheckpointAge = true`
+- explicit assignment form `--strict-checkpoint-age=false`
+- inability to resolve `checkpointTimeSeconds` for the selected startup checkpoint
+- once a checkpoint source is selected by startup precedence, any selected-source validation/derivation failure is terminal for that startup attempt and must not trigger fallback to lower-precedence checkpoint sources
+- startup-failure errors in this section are operator-facing startup logs emitted on process `stderr`
+- `--config` load failure (missing file, unreadable file, or invalid JSON): startup fails before opening the HTTP listener, exits non-zero, reports an operator-facing error naming the config path and failure class, and does not fall back to defaults
+
+For exact field-level and RPC-level behavior, use `docs/specs/json-rpc-contract.md`.

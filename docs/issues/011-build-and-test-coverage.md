@@ -1,5 +1,8 @@
 # Build And Test Coverage
 
+> **Archived / non-normative:** This issue is historical context only. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md).
+
+
 ## Verified Gap
 
 - `zig build` and `zig build -j1` are still blocked by the sibling `blst` shell build step, which mutates shared in-tree outputs in place. Running `../voltaire/packages/voltaire-zig/lib/c-kzg-4844/blst/build.sh` manually succeeds, which points to an invocation/race issue rather than a permanently broken dependency.

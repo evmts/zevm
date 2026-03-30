@@ -1,5 +1,8 @@
 # Block, Transaction, And Log Queries
 
+> **Archived / non-normative:** This issue is historical context only. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md).
+
+
 ## Verified Gap
 
 - These handlers are not on the runnable node path.

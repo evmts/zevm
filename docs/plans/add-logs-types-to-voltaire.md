@@ -1,5 +1,7 @@
 # TDD Implementation Plan: Add Logs Types to Voltaire
 
+> Historical archive note: this document captures upstream Voltaire type work and is non-normative for current ZEVM phase-1 behavior. For current ZEVM API/runtime contract, see `docs/specs/prd.md` and `docs/specs/json-rpc-contract.md`.
+
 ## Overview
 The goal is to implement the JSON-RPC `Filter` and `LogEntry` types in the `voltaire` repository for the `eth_getLogs` method. These types must strictly match the Ethereum Execution APIs specification for log filtering and log entry responses.
 
@@ -49,6 +51,7 @@ We will follow a strict Test-Driven Development approach, ensuring that serializ
   - Topics field handling: null, single topics, or array of topic arrays (wildcard support)
   - JSON serialization roundtrip
 - **Implementation**: Create `Filter.zig`. Define the struct with all filter fields as optionals. Implement `jsonParseFromValue` and `jsonStringify` methods. Export it in `types.zig`.
+- **Contract alignment note**: Keep parse/stringify permissive at the type layer, but enforce `blockHash` vs `fromBlock`/`toBlock` exclusivity (and other malformed filter combinations) in the ZEVM handler/validation layer, returning `-32602` per active contract.
 
 ### Step 2: Implement `LogEntry` type
 - **Test First**: Create `LogEntry_test.zig`. Write tests to verify:
@@ -75,14 +78,14 @@ We will follow a strict Test-Driven Development approach, ensuring that serializ
 ## Files to Create and Modify
 
 **Create:**
-- `/Users/williamcory/voltaire/packages/voltaire-zig/src/jsonrpc/types/Filter_test.zig`
-- `/Users/williamcory/voltaire/packages/voltaire-zig/src/jsonrpc/types/Filter.zig`
-- `/Users/williamcory/voltaire/packages/voltaire-zig/src/jsonrpc/types/LogEntry_test.zig`
-- `/Users/williamcory/voltaire/packages/voltaire-zig/src/jsonrpc/types/LogEntry.zig`
+- `../voltaire/packages/voltaire-zig/src/jsonrpc/types/Filter_test.zig`
+- `../voltaire/packages/voltaire-zig/src/jsonrpc/types/Filter.zig`
+- `../voltaire/packages/voltaire-zig/src/jsonrpc/types/LogEntry_test.zig`
+- `../voltaire/packages/voltaire-zig/src/jsonrpc/types/LogEntry.zig`
 
 **Modify:**
-- `/Users/williamcory/voltaire/packages/voltaire-zig/src/jsonrpc/types.zig` (Export the new types `Filter` and `LogEntry`)
-- `/Users/williamcory/voltaire/packages/voltaire-zig/src/jsonrpc/eth/getLogs/eth_getLogs.zig` (Update Params and Result types)
+- `../voltaire/packages/voltaire-zig/src/jsonrpc/types.zig` (Export the new types `Filter` and `LogEntry`)
+- `../voltaire/packages/voltaire-zig/src/jsonrpc/eth/getLogs/eth_getLogs.zig` (Update Params and Result types)
 
 ## Type Signatures
 
@@ -188,7 +191,7 @@ These vectors validate the Filter input shapes and expected log outputs.
 | Risk | Mitigation |
 |------|------------|
 | **Complex union types for address/topics** - Filter.address and FilterTopic can be single value or array | Use Zig tagged unions (`union(enum)`) with custom `jsonStringify`/`jsonParseFromValue` to handle the polymorphic JSON shapes |
-| **Optional fields in Filter** - Filter has mutually exclusive patterns (blockHash vs fromBlock/toBlock) | All fields optional in struct; no runtime validation needed for parsing - higher layers handle validation |
+| **Optional fields in Filter** - Filter has mutually exclusive patterns (blockHash vs fromBlock/toBlock) | Keep fields optional in the Voltaire type layer, but ZEVM handler validation must enforce `blockHash` exclusivity and reject malformed filter combinations with `-32602` (active JSON-RPC contract) |
 | **Array allocation in parsing** - topics and address arrays need allocator | Accept `std.mem.Allocator` in `jsonParseFromValue` and document ownership semantics (caller owns returned slices) |
 | **Hex encoding consistency** - Must match Ethereum hex format (0x prefix, lowercase) | Reuse existing `types.Address` and `types.Hash` stringification logic which already handles this |
 | **BlockTimestamp field** - execution-apis includes blockTimestamp but EIP-1474 examples don't always show it | Include blockTimestamp as optional field in LogEntry for forward compatibility with newer clients |
@@ -205,3 +208,4 @@ After implementation, verify:
 6. **Field coverage**: 
    - Filter has: `fromBlock`, `toBlock`, `blockHash`, `address`, `topics`
    - LogEntry has: `address`, `topics`, `data`, `blockNumber`, `transactionHash`, `transactionIndex`, `blockHash`, `logIndex`, `removed` (plus `blockTimestamp` for completeness)
+7. **Handler-layer contract checks**: ZEVM enforces `blockHash` vs `fromBlock`/`toBlock` exclusivity and maps malformed filters to `-32602`.
