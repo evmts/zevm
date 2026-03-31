@@ -7,9 +7,11 @@ description: Build ZEVM from source and run it locally.
 
 ZEVM is installed from source.
 
+If you only need a local ZEVM build, complete this page through [Build ZEVM](#build-zevm) and skip the optional release-metadata path below.
+
 ## Prerequisites
 
-- Zig `0.15.2` or newer for local source builds (`minimum_zig_version` in `build.zig.zon`)
+- Zig `0.15.2` or newer for local source builds (phase-1 minimum toolchain: [`docs/specs/prd.md` section 3.3](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md#33-phase-1-source-build-installation-contract))
 - exact Zig version pinned in `release-tuple.json` when making canonical release reproducibility claims (see [Release Metadata Runbook](../reference/release-metadata-runbook))
 - Git
 - Local sibling checkouts of `voltaire` and `guillotine-mini` (ZEVM uses path dependencies)
@@ -26,7 +28,7 @@ ZEVM expects this directory shape by default:
   guillotine-mini/
 ```
 
-Phase-1 quickstart contract assumes this sibling layout. Alternate workspace layouts and `build.zig.zon` path rewrites are out of scope for this public flow.
+Phase-1 quickstart contract assumes this sibling layout. Alternate workspace layouts and dependency-path rewrites are out of scope for this public flow.
 
 ## Clone And Set Up Sibling Repos
 

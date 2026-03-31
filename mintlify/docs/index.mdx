@@ -47,9 +47,8 @@ For release/build metadata routing, see [Release Metadata And Behavior Deltas](#
 
 - contract-source index page: [Canonical Specs](./reference/canonical-specs)
 - process/policy page: [Specs And Process](./reference/specs-and-process)
-- active public contract sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md)
 - contract-affecting changes are docs-first: update the canonical spec sources first, then land implementation/docs updates that match
-- docs-first process contract: [`docs/specs/docs-first-process.md`](https://github.com/evmts/zevm/blob/main/docs/specs/docs-first-process.md)
+- source-file links live behind [Canonical Specs](./reference/canonical-specs); treat those GitHub links as repository-head references, and use the exact checked-out source pinned by [Release Metadata Runbook](./reference/release-metadata-runbook) when auditing a published release or pinned build
 - `docs/plans/` files are implementation planning context and non-normative for runtime/RPC behavior
 - for release-specific behavior deltas, use [ZEVM Release Notes](https://github.com/evmts/zevm/releases)
 
@@ -68,11 +67,7 @@ For exact release/build pins and baked defaults, use [Release Metadata Runbook](
 
 ## JSON-RPC And Configuration Reference
 
-Normative source ownership:
-- [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md)
-- [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md)
-- [Canonical Specs](./reference/canonical-specs)
-- [Specs And Process](./reference/specs-and-process)
+Use [Canonical Specs](./reference/canonical-specs) for source-file entry and [Specs And Process](./reference/specs-and-process) for docs-first change policy. The pages below stay task-oriented and should match that contract.
 
 - [JSON-RPC Overview](./reference/json-rpc/overview)
 - [Core Reads](./reference/json-rpc/core-reads)

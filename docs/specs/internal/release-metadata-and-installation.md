@@ -1,6 +1,6 @@
 # ZEVM Internal Support: Release Metadata And Installation
 
-Last updated: 2026-03-30
+Last updated: 2026-03-31
 
 This page is non-normative support for:
 
@@ -8,14 +8,13 @@ This page is non-normative support for:
 
 Use the PRD for exact source-build, release-metadata, and qualification contract details.
 
-## 1. Page Routing Scope
+## 1. Support Scope
 
-This support doc exists to back the active Mintlify pages:
+This support summary exists to condense three related PRD boundaries without turning into a second runbook:
 
-- `quickstart/installation`
-- `reference/release-metadata-runbook`
-
-Traceability authority remains `docs/specs/page-ownership.md`.
+- phase-1 source-build installation scope
+- release-metadata reproducibility and provenance states
+- release qualification linkage for metadata-backed candidates
 
 ## 2. Installation Contract Summary (PRD 3.3)
 
@@ -54,6 +53,7 @@ Release/install docs must stay consistent with qualification constraints:
 - clean checkout `zig build` and `zig build test` coverage for shipped phase-1 surfaces
 - release-asset validation and provenance checks when metadata-backed release claims are made
 - explicit supersession-note behavior when publishing correction identifiers
+- public installation pages should keep the default source-build path short and route optional provenance depth to the release-metadata runbook rather than restating full qualification policy
 
 ## 5. Maintenance Boundary
 

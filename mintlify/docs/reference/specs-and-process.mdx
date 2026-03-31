@@ -10,6 +10,8 @@ If you only need direct contract-source links, use [Canonical Specs](./canonical
 
 ## Canonical Contract Sources
 
+Use [Canonical Specs](./canonical-specs) as the stable public entry point. The source-file links in this section point at repository `main`; for release-specific or pinned-build audits, read the same files from the exact ZEVM checkout selected through [Release Metadata Runbook](./release-metadata-runbook).
+
 - product and startup/runtime contract: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md)
 - exact JSON-RPC tuples and errors: [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md)
 - docs-first update process: [`docs/specs/docs-first-process.md`](https://github.com/evmts/zevm/blob/main/docs/specs/docs-first-process.md)
@@ -23,6 +25,7 @@ For contract-affecting behavior changes:
 1. Update `docs/specs/prd.md` and `docs/specs/json-rpc-contract.md` first.
 2. Update internal support docs under `docs/specs/internal/`.
 3. Update public Mintlify pages under `mintlify/docs/`.
+4. In that same docs cycle, reconcile the active traceability map and Mintlify maintenance plan so page ownership, anchors, and verification dates stay aligned with the updated public pages.
 
 Planning/history files under `docs/plans/` and `docs/context/` are non-normative unless explicitly marked otherwise.
 
@@ -36,8 +39,9 @@ This section is the canonical public-doc criteria for:
 
 Criteria:
 
-- deferred/out-of-contract status changes only through docs-first updates to canonical spec sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md)
+- deferred/out-of-contract status changes only through docs-first updates to the canonical spec sources listed on [Canonical Specs](./canonical-specs)
 - update order is mandatory: canonical spec sources first, then internal support docs, then public Mintlify docs
+- the same docs cycle must also reconcile page-level traceability metadata so the public pages and maintenance map do not drift
 - public pages that inventory deferred surfaces (for example [Unsupported And Deferred](./json-rpc/unsupported-and-deferred)) are summaries and do not independently promote contract status
 - phase-1 boundary or graduation claims are canonical only after matching updates land in the same docs-first path above; planning/context files are non-normative
 - when wording differs across public pages, canonical spec sources remain authoritative for runtime/RPC scope

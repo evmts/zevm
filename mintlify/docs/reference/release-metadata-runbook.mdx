@@ -16,9 +16,9 @@ Publication-time validation gate for canonical claims:
 - publication validation requires exactly one published asset named `release-tuple.json` and exactly one published asset named `light-default-checkpoints.json` for that identifier
 - zero matches or more than one match for either required filename fails the gate and marks the identifier metadata-invalid for canonical claims
 
-## PRD 3.5 Qualification Mapping (Metadata-Backed Candidates)
+## Qualification Use Of This Runbook
 
-For page-ownership and qualification traceability, treat this runbook as the public-doc anchor for PRD section [3.5 release qualification and verification acceptance criteria](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md#35-release-qualification-and-verification-acceptance-criteria) expectations that apply to metadata-backed candidates:
+When a candidate claims metadata-backed reproducibility, this runbook is the operator workflow for the release-asset and provenance checks summarized on [Specs And Process](./specs-and-process#phase-1-release-qualification-checklist):
 
 - include explicit `release-asset` mapping rows for both required artifacts (`release-tuple.json`, `light-default-checkpoints.json`), with URL/identifier binding plus schema/value/cross-field checks required by PRD section `3.4`
 - include explicit `release-provenance` and `supersession-note` mapping rows when PRD section `3.4` operator-flow/correction-note invariants apply
@@ -81,6 +81,7 @@ Treat published release metadata as append-only by `releaseIdentifier`:
 - the correcting release entry must include one supersession note in the release notes body under `## ZEVM Supersession Note` using exactly:
 
 ```text
+## ZEVM Supersession Note
 schemaVersion: zevm-supersession-note.v1
 supersedesReleaseIdentifier: v0.6.1
 correctedArtifacts: both

@@ -13,7 +13,7 @@ In JSON-RPC docs, **phase 1** means the current public ZEVM RPC contract:
 
 - HTTP JSON-RPC transport only on `/`
 - mode-gated method surface (`trusted` vs `light`) with explicit unsupported behavior
-- light mode always-callable `eth_chainId` plus readiness-gated `eth_blockNumber` and proof-backed reads
+- light mode always-callable `zevm_lightSyncStatus` and `eth_chainId`, plus readiness-gated `eth_blockNumber` and proof-backed reads
 - phase 1 installation/distribution guarantee is source-build installation only
 - packaged binaries, installers, and distribution-channel guarantees are out of scope for phase 1
 
@@ -42,9 +42,9 @@ Canonical ZEVM-owned transport/parser shipping-path requirement:
 
 ## Normative Sources
 
-- Product requirements: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md)
-- JSON-RPC contract source: [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md)
-- Contract ownership and docs-first change flow: [Canonical Specs And Docs-First Process](../specs-and-process)
+- Current contract-source entry point: [Canonical Specs](../canonical-specs)
+- Docs-first change flow and release/versioning policy: [Canonical Specs And Docs-First Process](../specs-and-process)
+- When auditing a pinned build or published release, read `docs/specs/prd.md` and `docs/specs/json-rpc-contract.md` from that exact ZEVM checkout rather than repository `main`
 
 ## JSON-RPC Envelope Rules
 
