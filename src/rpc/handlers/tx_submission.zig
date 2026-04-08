@@ -116,7 +116,7 @@ pub fn handleSendRawTransactionWithIndexes(
 
     // Automine if in auto mode
     if (rt.mining_mode == .auto) {
-        automine(allocator, rt, indexes) catch {};
+        automine(allocator, rt, indexes, null) catch {};
     }
 
     return .{ .value = .{ .bytes = tx_hash } };
@@ -445,28 +445,30 @@ pub fn handleSendTransactionWithIndexes(
 
     // Automine if in auto mode
     if (rt.mining_mode == .auto) {
-        automine(allocator, rt, indexes) catch {};
+        automine(allocator, rt, indexes, null) catch {};
     }
 
     return .{ .value = .{ .bytes = tx_hash } };
 }
 
 pub fn minePendingTransactions(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime) !void {
-    try automine(allocator, rt, null);
+    try automine(allocator, rt, null, null);
 }
 
 pub fn minePendingTransactionsWithIndexes(
     allocator: std.mem.Allocator,
     rt: *runtime.NodeRuntime,
     indexes: ?MiningIndexes,
+    explicit_interval_seconds: ?u64,
 ) !void {
-    try automine(allocator, rt, indexes);
+    try automine(allocator, rt, indexes, explicit_interval_seconds);
 }
 
 fn automine(
     allocator: std.mem.Allocator,
     rt: *runtime.NodeRuntime,
     indexes: ?MiningIndexes,
+    explicit_interval_seconds: ?u64,
 ) !void {
     const ready = try rt.pool.getReady(allocator);
     defer allocator.free(ready);
@@ -475,10 +477,7 @@ fn automine(
 
     const parent_hash = rt.head_block_hash;
     const next_block_number = rt.head_block_number + 1;
-    const next_timestamp: u64 = rt.next_block_timestamp_override orelse if (rt.mining_mode == .interval and rt.interval_seconds > 0)
-        rt.current_timestamp + rt.interval_seconds
-    else
-        rt.current_timestamp + 1;
+    const next_timestamp = resolveNextTimestamp(rt, explicit_interval_seconds);
     const next_base_fee = rt.next_block_base_fee_override orelse rt.base_fee;
     const block_ctx = guillotine_mini.BlockContext{
         .chain_id = rt.chain_id,
@@ -619,20 +618,18 @@ fn automine(
 }
 
 pub fn mineEmptyBlock(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime) ![32]u8 {
-    return mineEmptyBlockWithIndexes(allocator, rt, null);
+    return mineEmptyBlockWithIndexes(allocator, rt, null, null);
 }
 
 pub fn mineEmptyBlockWithIndexes(
     allocator: std.mem.Allocator,
     rt: *runtime.NodeRuntime,
     indexes: ?MiningIndexes,
+    explicit_interval_seconds: ?u64,
 ) ![32]u8 {
     const parent_hash = rt.head_block_hash;
     const next_block_number = rt.head_block_number + 1;
-    const next_timestamp: u64 = rt.next_block_timestamp_override orelse if (rt.mining_mode == .interval and rt.interval_seconds > 0)
-        rt.current_timestamp + rt.interval_seconds
-    else
-        rt.current_timestamp + 1;
+    const next_timestamp = resolveNextTimestamp(rt, explicit_interval_seconds);
     const next_base_fee = rt.next_block_base_fee_override orelse rt.base_fee;
 
     const block = try sealCanonicalBlock(
@@ -673,6 +670,15 @@ pub fn mineEmptyBlockWithIndexes(
     }
 
     return block.hash;
+}
+
+fn resolveNextTimestamp(rt: *runtime.NodeRuntime, explicit_interval_seconds: ?u64) u64 {
+    return rt.next_block_timestamp_override orelse if (explicit_interval_seconds) |interval_seconds|
+        rt.current_timestamp + @max(@as(u64, 1), interval_seconds)
+    else if (rt.mining_mode == .interval and rt.interval_seconds > 0)
+        rt.current_timestamp + rt.interval_seconds
+    else
+        rt.current_timestamp + 1;
 }
 
 fn sealCanonicalBlock(

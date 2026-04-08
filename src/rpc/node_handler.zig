@@ -399,14 +399,13 @@ pub const NodeHandler = struct {
             return .{ .bool = true };
         }
         if (std.mem.eql(u8, method_name, "hardhat_setIntervalMining") or std.mem.eql(u8, method_name, "evm_setIntervalMining") or std.mem.eql(u8, method_name, "anvil_setIntervalMining")) {
-            const interval_millis = parseOptionalFirstU64(params, 0) catch return error.InvalidParams;
-            if (interval_millis == 0) {
+            const interval_seconds = parseOptionalFirstU64(params, 0) catch return error.InvalidParams;
+            if (interval_seconds == 0) {
                 self.node_runtime.setMiningConfig(.manual);
                 self.last_interval_mine_ns = null;
                 return .{ .bool = true };
             }
 
-            const interval_seconds = @max(@as(u64, 1), (interval_millis + 999) / 1000);
             self.node_runtime.setMiningConfig(.{ .interval = .{ .block_time = interval_seconds } });
             self.last_interval_mine_ns = std.time.nanoTimestamp();
             return .{ .bool = true };
@@ -442,18 +441,20 @@ pub const NodeHandler = struct {
             std.mem.eql(u8, method_name, "hardhat_mine"))
         {
             const count = parseOptionalFirstU64(params, 1) catch return error.InvalidParams;
+            const interval_seconds = parseOptionalU64At(params, 1) catch return error.InvalidParams;
             var i: u64 = 0;
             while (i < count) : (i += 1) {
-                if (self.node_runtime.pool.pendingCount() > 0) {
-                    try tx_submission.minePendingTransactionsWithIndexes(
-                        allocator,
-                        &self.node_runtime,
-                        .{
-                            .receipt_index = &self.receipt_index,
-                            .log_index = &self.log_index,
-                        },
-                    );
-                } else {
+                const previous_head = self.node_runtime.head_block_number;
+                try tx_submission.minePendingTransactionsWithIndexes(
+                    allocator,
+                    &self.node_runtime,
+                    .{
+                        .receipt_index = &self.receipt_index,
+                        .log_index = &self.log_index,
+                    },
+                    interval_seconds,
+                );
+                if (self.node_runtime.head_block_number == previous_head) {
                     _ = try tx_submission.mineEmptyBlockWithIndexes(
                         allocator,
                         &self.node_runtime,
@@ -461,6 +462,7 @@ pub const NodeHandler = struct {
                             .receipt_index = &self.receipt_index,
                             .log_index = &self.log_index,
                         },
+                        interval_seconds,
                     );
                 }
             }
@@ -1149,9 +1151,6 @@ pub const NodeHandler = struct {
             self.last_interval_mine_ns = null;
             return;
         }
-        if (self.node_runtime.pool.pendingCount() == 0) {
-            return;
-        }
 
         const now = std.time.nanoTimestamp();
         if (self.last_interval_mine_ns == null) {
@@ -1161,6 +1160,7 @@ pub const NodeHandler = struct {
 
         const interval_ns: i128 = @as(i128, @intCast(self.node_runtime.interval_seconds)) * std.time.ns_per_s;
         if (now - self.last_interval_mine_ns.? >= interval_ns) {
+            const previous_head = self.node_runtime.head_block_number;
             try tx_submission.minePendingTransactionsWithIndexes(
                 allocator,
                 &self.node_runtime,
@@ -1168,7 +1168,19 @@ pub const NodeHandler = struct {
                     .receipt_index = &self.receipt_index,
                     .log_index = &self.log_index,
                 },
+                null,
             );
+            if (self.node_runtime.head_block_number == previous_head) {
+                _ = try tx_submission.mineEmptyBlockWithIndexes(
+                    allocator,
+                    &self.node_runtime,
+                    .{
+                        .receipt_index = &self.receipt_index,
+                        .log_index = &self.log_index,
+                    },
+                    null,
+                );
+            }
             self.last_interval_mine_ns = now;
         }
     }
@@ -1888,6 +1900,15 @@ fn parseOptionalFirstU64(params: ?std.json.Value, default_value: u64) !u64 {
     };
     if (array.len == 0) return default_value;
     return parseJsonQuantityToU64(array[0]) orelse return error.InvalidParams;
+}
+
+fn parseOptionalU64At(params: ?std.json.Value, index: usize) !?u64 {
+    const array = switch (params orelse return null) {
+        .array => |arr| arr.items,
+        else => return error.InvalidParams,
+    };
+    if (index >= array.len) return null;
+    return parseJsonQuantityToU64(array[index]) orelse return error.InvalidParams;
 }
 
 fn parseJsonQuantityToU64(value: std.json.Value) ?u64 {

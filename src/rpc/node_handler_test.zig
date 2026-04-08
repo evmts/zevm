@@ -1401,7 +1401,7 @@ test "NodeHandler interval mining tick mines pending transactions" {
 
     var interval_params = std.json.Array.init(allocator);
     defer interval_params.deinit();
-    try interval_params.append(.{ .string = "0x3e8" }); // 1000 ms
+    try interval_params.append(.{ .string = "0x1" }); // 1 second
     _ = try callMethod(allocator, &handler, "hardhat_setIntervalMining", .{ .array = interval_params });
     try std.testing.expectEqual(runtime.MiningMode.interval, handler.node_runtime.mining_mode);
 
@@ -1425,6 +1425,49 @@ test "NodeHandler interval mining tick mines pending transactions" {
 
     try std.testing.expectEqual(@as(usize, 0), handler.node_runtime.pool.pendingCount());
     try std.testing.expectEqual(initial_block_number + 1, handler.node_runtime.head_block_number);
+}
+
+test "NodeHandler interval mining tick mines empty blocks when idle" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var interval_params = std.json.Array.init(allocator);
+    defer interval_params.deinit();
+    try interval_params.append(.{ .string = "0x2" });
+    _ = try callMethod(allocator, &handler, "hardhat_setIntervalMining", .{ .array = interval_params });
+
+    const initial_block_number = handler.node_runtime.head_block_number;
+    const initial_timestamp = handler.node_runtime.current_timestamp;
+    const elapsed_ns: i128 = @as(i128, @intCast(handler.node_runtime.interval_seconds)) * std.time.ns_per_s;
+    handler.last_interval_mine_ns = std.time.nanoTimestamp() - elapsed_ns;
+    try handler.maybeMineInterval(allocator);
+
+    try std.testing.expectEqual(initial_block_number + 1, handler.node_runtime.head_block_number);
+    try std.testing.expectEqual(@as(usize, 0), handler.node_runtime.pool.pendingCount());
+    try std.testing.expectEqual(initial_timestamp + 2, handler.node_runtime.current_timestamp);
+
+    const mined_block = try handler.node_runtime.blockchain.getBlockByNumber(initial_block_number + 1);
+    try std.testing.expect(mined_block != null);
+    try std.testing.expectEqual(@as(usize, 0), mined_block.?.body.transactions.len);
+}
+
+test "NodeHandler hardhat_setIntervalMining uses seconds units" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var interval_params = std.json.Array.init(allocator);
+    defer interval_params.deinit();
+    try interval_params.append(.{ .string = "0x3e8" }); // 1000 seconds
+    _ = try callMethod(allocator, &handler, "hardhat_setIntervalMining", .{ .array = interval_params });
+
+    try std.testing.expectEqual(runtime.MiningMode.interval, handler.node_runtime.mining_mode);
+    try std.testing.expectEqual(@as(u64, 1000), handler.node_runtime.interval_seconds);
 }
 
 test "NodeHandler hardhat_setIntervalMining rejects malformed interval" {
@@ -1453,6 +1496,24 @@ test "NodeHandler evm_mine rejects malformed count" {
 
     var mine_params = std.json.Array.init(allocator);
     defer mine_params.deinit();
+    try mine_params.append(.{ .string = "0xZZ" });
+
+    try std.testing.expectError(
+        error.InvalidParams,
+        callMethod(allocator, &handler, "evm_mine", .{ .array = mine_params }),
+    );
+}
+
+test "NodeHandler evm_mine rejects malformed intervalSeconds" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    var mine_params = std.json.Array.init(allocator);
+    defer mine_params.deinit();
+    try mine_params.append(.{ .string = "0x2" });
     try mine_params.append(.{ .string = "0xZZ" });
 
     try std.testing.expectError(
@@ -1704,6 +1765,38 @@ test "NodeHandler hardhat_mine mines requested number of blocks" {
 
     _ = try callMethod(allocator, &handler, "hardhat_mine", .{ .array = mine_params });
     try std.testing.expectEqual(initial + 3, handler.node_runtime.head_block_number);
+}
+
+test "NodeHandler hardhat_mine applies intervalSeconds timestamp stepping" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    const initial_block_number = handler.node_runtime.head_block_number;
+    const initial_timestamp = handler.node_runtime.current_timestamp;
+
+    var mine_params = std.json.Array.init(allocator);
+    defer mine_params.deinit();
+    try mine_params.append(.{ .string = "0x3" });
+    try mine_params.append(.{ .string = "0xa" });
+
+    _ = try callMethod(allocator, &handler, "hardhat_mine", .{ .array = mine_params });
+
+    try std.testing.expectEqual(initial_block_number + 3, handler.node_runtime.head_block_number);
+    try std.testing.expectEqual(initial_timestamp + 30, handler.node_runtime.current_timestamp);
+
+    const first_block = try handler.node_runtime.blockchain.getBlockByNumber(initial_block_number + 1);
+    const second_block = try handler.node_runtime.blockchain.getBlockByNumber(initial_block_number + 2);
+    const third_block = try handler.node_runtime.blockchain.getBlockByNumber(initial_block_number + 3);
+    try std.testing.expect(first_block != null);
+    try std.testing.expect(second_block != null);
+    try std.testing.expect(third_block != null);
+
+    try std.testing.expectEqual(initial_timestamp + 10, first_block.?.header.timestamp);
+    try std.testing.expectEqual(first_block.?.header.timestamp + 10, second_block.?.header.timestamp);
+    try std.testing.expectEqual(second_block.?.header.timestamp + 10, third_block.?.header.timestamp);
 }
 
 test "NodeHandler block filter returns mined block hashes via eth_getFilterChanges" {
@@ -2000,10 +2093,10 @@ test "NodeHandler interval mining aliases set and clear interval mode" {
 
     var set_params = std.json.Array.init(allocator);
     defer set_params.deinit();
-    try set_params.append(.{ .string = "0x3e8" });
+    try set_params.append(.{ .string = "0x2" });
     _ = try callMethod(allocator, &handler, "anvil_setIntervalMining", .{ .array = set_params });
     try std.testing.expectEqual(runtime.MiningMode.interval, handler.node_runtime.mining_mode);
-    try std.testing.expectEqual(@as(u64, 1), handler.node_runtime.interval_seconds);
+    try std.testing.expectEqual(@as(u64, 2), handler.node_runtime.interval_seconds);
 
     var clear_params = std.json.Array.init(allocator);
     defer clear_params.deinit();
