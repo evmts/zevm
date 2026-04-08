@@ -746,7 +746,47 @@ test "server with NodeHandler context handles hardhat_mine response ownership sa
     const parsed = try parseJson(response.body.?);
     defer parsed.deinit();
     const result = try getObjectField(parsed.value, "result");
-    try std.testing.expectEqualStrings("0x0", result.string);
+    try std.testing.expect(result.bool);
+}
+
+test "server with NodeHandler context mine canonical and aliases return boolean true" {
+    const method_names = [_][]const u8{
+        "zevm_mine",
+        "anvil_mine",
+        "hardhat_mine",
+        "evm_mine",
+    };
+
+    for (method_names) |method_name| {
+        var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
+        defer handler.deinit(std.testing.allocator);
+
+        const handlers = dispatcher.HandlerRegistry{
+            .context = &handler,
+            .on_method_with_context = &node_handler.NodeHandler.onMethod,
+        };
+
+        const request = try std.fmt.allocPrint(
+            std.testing.allocator,
+            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"{s}\",\"params\":[\"0x1\"]}}",
+            .{method_name},
+        );
+        defer std.testing.allocator.free(request);
+
+        var response = try server.handleHttpRequestForTest(
+            std.testing.allocator,
+            .POST,
+            request,
+            &handlers,
+        );
+        defer response.deinit(std.testing.allocator);
+
+        try std.testing.expectEqual(std.http.Status.ok, response.status);
+        const parsed = try parseJson(response.body.?);
+        defer parsed.deinit();
+        const result = try getObjectField(parsed.value, "result");
+        try std.testing.expect(result.bool);
+    }
 }
 
 test "server with NodeHandler context handles eth_feeHistory ownership safely" {

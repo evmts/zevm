@@ -243,3 +243,6 @@ workflow/.db-backups/
 workflow/*.db-wal
 workflow/*.db
 workflow/*.bak
+
+# Smithers database
+smithers.db*
