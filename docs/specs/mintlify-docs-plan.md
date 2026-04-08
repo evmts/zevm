@@ -1,6 +1,6 @@
 # Active Plan: Mintlify Docs Maintenance
 
-Last updated: 2026-03-30
+Last updated: 2026-03-31
 
 ## Status
 
@@ -23,6 +23,7 @@ It is non-normative and does not define product behavior. Normative behavior rem
 2. When `mintlify/mint.json` or normative docs change, set affected page rows in `page-ownership.md` to `pending-review` (or `blocked` with active `pendingId`), then return them to `verified` after anchor and nav reconciliation.
 3. Keep `page-ownership.md` `Normative anchors (required)`, `Last content verified on`, and `Last nav reconciled on` current for each affected page in the same PR.
 4. Keep process artifacts redirect-first: `contradiction-inventory.md` and `open-questions.md` may contain temporary pending rows only while unresolved.
+5. Keep public routing Mintlify-first: when a page cites repository source files, use Mintlify canonical/process pages as the primary entry path and treat GitHub `main` links as repository-head references only.
 
 ## Structure-Level Plan
 

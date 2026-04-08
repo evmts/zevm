@@ -195,7 +195,7 @@ The baked default checkpoint is a startup precedence input, not a frozen public 
 Baked default values are bundled per ZEVM release/build and may rotate across releases.
 This docs page specifies selection behavior and precedence, not immutable checkpoint constants.
 For published release identifiers, release-specific baked defaults are published in `light-default-checkpoints.json`; use [Release Metadata Runbook](../release-metadata-runbook) and [ZEVM release metadata](https://github.com/evmts/zevm/releases) for exact release/build boundaries, provenance, and default-checkpoint audit flow.
-If a build has no published `light-default-checkpoints.json`, treat it as an unpublished source-build boundary and provide an explicit checkpoint when deterministic startup selection is required.
+If the selected build boundary has no valid published `light-default-checkpoints.json`, do not treat default selection as metadata-backed; continue only under operator-recorded provenance and provide an explicit checkpoint when deterministic startup selection is required.
 Phase-1 persisted checkpoint contract: `checkpointDir/checkpoint` is startup input only. ZEVM does not create, update, or delete it during runtime, and runtime `lastCheckpoint` progression is not persisted there.
 Operators who want persisted-source startup behavior (`checkpointSource = "persisted"`) must provision and manage `checkpointDir/checkpoint` themselves; ZEVM does not auto-populate it.
 ZEVM does not auto-create `checkpointDir` during startup.

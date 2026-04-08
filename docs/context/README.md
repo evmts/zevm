@@ -17,6 +17,7 @@ Known historical divergences in this archive:
 
 - some ticket context files enumerate broader method inventories than the active phase-1 ZEVM contract
 - some ticket context files discuss `blockTimestamp` extension fields in transaction/receipt/log payloads; the active ZEVM contract intentionally excludes those extension fields
+- some historical light-client notes discuss checkpoint persistence and runtime checkpoint-file writes; the current PRD phase-1 contract treats checkpoint as startup input only and does not include runtime checkpoint file writes
 
 Active contract sources:
 

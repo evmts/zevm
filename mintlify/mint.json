@@ -8,9 +8,14 @@
   },
   "navigation": [
     {
-      "group": "Overview",
+      "group": "Start",
       "pages": [
-        "index",
+        "index"
+      ]
+    },
+    {
+      "group": "Specs & Policy",
+      "pages": [
         "reference/canonical-specs",
         "reference/specs-and-process",
         "reference/release-metadata-runbook"
@@ -32,8 +37,8 @@
         "concepts/runtime-modes",
         "concepts/trusted-mode",
         "concepts/light-mode",
-        "concepts/state-fork-and-snapshots",
         "concepts/method-support-by-mode",
+        "concepts/state-fork-and-snapshots",
         "concepts/architecture-and-upstream-ownership"
       ]
     },

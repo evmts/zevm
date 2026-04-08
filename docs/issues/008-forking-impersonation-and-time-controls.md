@@ -1,9 +1,11 @@
 # Forking, Impersonation, And Time Controls
 
-> **Archived / non-normative:** This issue is historical context only. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md).
+> **Archived / non-normative:** This issue is historical context only. Claims below are filing-time observations and may contradict current contract docs. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md); if anything differs, those normative docs win.
+>
+> **Resolved / superseded status:** This issue is closed as an active gap tracker and retained for archive history only. For current requirements and behavior, use [docs/specs/prd.md](../specs/prd.md), [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md), and [docs/specs/page-ownership.md](../specs/page-ownership.md).
 
 
-## Verified Gap
+## Historical Gap Snapshot At Filing Time
 
 - There is no `--fork-url` or other fork-mode startup/config surface in ZEVM.
 - `NodeRuntime` and `Database` hardcode `StateManager.init(..., null)` and never use upstream `ForkBackend`.
@@ -19,7 +21,7 @@
 - `../voltaire/packages/voltaire-zig/src/state-manager/root.zig`
 - `../voltaire/packages/voltaire-zig/src/state-manager/StateManager.zig`
 
-## Resolution Verification
+## Historical Resolution Criteria
 
 - Starting with a fork URL reads remote state while preserving local overlays.
 - Local writes on forked state are isolated from the remote source and survive subsequent reads.

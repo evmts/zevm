@@ -1,26 +1,29 @@
 ---
 title: Unsupported And Deferred
-description: Public JSON-RPC and transport surfaces intentionally outside the current ZEVM contract.
+description: Deferred/out-of-contract JSON-RPC and transport surfaces, plus mode-gated in-contract method families.
 ---
 
 # Unsupported And Deferred
 
-This page lists surfaces intentionally outside the current public ZEVM contract.
+This page separates deferred/out-of-contract surfaces from mode-gated method families that are in-contract but unavailable in some active modes.
 
-## Unsupported Public Surface
+## Deferred / Out Of Contract Surface
 
-Not part of the current contract:
+Not part of the current public ZEVM method contract:
 
 - debug tracing methods
 - filter lifecycle methods beyond `eth_getLogs`
 - subscriptions
+- deferred trusted helper controls listed below
+
+Transport-level note:
+
 - WebSocket transport (`ws://` / `wss://`) is outside the current public contract scope (ZEVM JSON-RPC is HTTP-only)
 
-### Integrator Error Boundaries
+### Integrator Error Boundaries (Deferred / Out Of Contract)
 
-- out-of-contract/deferred method names: well-formed JSON-RPC requests to names not in the current ZEVM method contract return `-32601` (`Method not found`)
-- mode-unsupported for supported families: when a method family is part of the ZEVM contract but unavailable in the active mode, well-formed requests return `-32010`
-- transport-level unsupported WebSocket behavior: ZEVM exposes HTTP JSON-RPC only, so WebSocket absence is handled at the transport layer (no JSON-RPC `-32010` envelope)
+- deferred/out-of-contract method names: well-formed JSON-RPC requests to names not in the current ZEVM method contract return `-32601` (`Method not found`)
+- transport-level unsupported WebSocket behavior: ZEVM exposes HTTP JSON-RPC only, so WebSocket absence is handled at the transport layer (no JSON-RPC envelope mapping)
 
 ### Deferred filter lifecycle inventory
 
@@ -38,31 +41,7 @@ Not part of the current contract:
 - `eth_subscribe`
 - `eth_unsubscribe`
 
-### Transport-level unsupported inventory
-
-- WebSocket transport (`ws://` / `wss://`) is transport-level unsupported and outside JSON-RPC method dispatch
-
-### Deferred light-mode simulation target
-
-- `eth_call` (deferred light-mode proof-backed target; trusted-only in phase 1)
-
-### Current mode-gated simulation behavior
-
-- `eth_call` and `eth_estimateGas` are trusted-only methods in phase 1
-- in light mode, well-formed requests to those methods return JSON-RPC `-32010` (unsupported in active mode)
-
-### Current mode-gated trusted-only read extensions
-
-- `eth_accounts`, `eth_coinbase`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_blobBaseFee`, and `eth_feeHistory` are trusted-only today
-- in light mode, well-formed requests to those methods return JSON-RPC `-32010` (unsupported in active mode)
-
-### Error-mapping summary
-
-- deferred/out-of-contract method inventories on this page map to JSON-RPC `-32601`
-- mode-gated method families listed on this page map to JSON-RPC `-32010` when called in an unsupported active mode
-- transport absence (for example, WebSocket) is outside JSON-RPC method dispatch and does not map to JSON-RPC `-32010`
-
-## Deferred Trusted Helpers
+### Deferred Trusted Helpers
 
 These helper families are outside the current trusted-mode contract.
 
@@ -74,19 +53,61 @@ These helper families are outside the current trusted-mode contract.
 
 `hardhat_setLoggingEnabled` is deferred as a compatibility alias of `zevm_enableTraces`.
 
+## Mode-Gated In-Contract Surface
+
+These method families are part of the current ZEVM contract with published request/response behavior on their method pages.
+
+### Current mode-gated simulation behavior
+
+- `eth_call` and `eth_estimateGas` are trusted-only methods in phase 1
+- in light mode, well-formed requests to those methods return JSON-RPC `-32010` (unsupported in active mode)
+
+### Current mode-gated trusted-only read extensions
+
+- `eth_accounts`, `eth_coinbase`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_blobBaseFee`, and `eth_feeHistory` are trusted-only today
+- in light mode, well-formed requests to those methods return JSON-RPC `-32010` (unsupported in active mode)
+
+### Current light-mode read gating
+
+- always callable in light mode: `eth_chainId` and `zevm_lightSyncStatus`
+- readiness-gated in light mode: `eth_blockNumber` plus proof-backed reads (`eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getTransactionCount`)
+- while `ready = false`, readiness-gated calls return `-32011` before retained-history numeric selector checks
+- when `ready = true`, numeric selectors outside retained verified history return `-32602`
+
+### Light-mode simulation graduation target
+
+- `eth_call` remains in-contract today (trusted-only) and is the deferred light-mode proof-backed target for future promotion
+
+### Integrator Error Boundary (Mode-Gated In-Contract)
+
+- when a method family is in the current ZEVM contract but unavailable in the active mode, well-formed requests return `-32010`
+
+In-contract method references:
+
+- [Simulation](./simulation)
+- [Core Reads](./core-reads)
+- [Verified Light-Mode Reads](./verified-light-mode-reads)
+- [JSON-RPC Overview](./overview#method-surface-by-mode)
+
+## Error-Mapping Summary
+
+- deferred/out-of-contract method inventories on this page map to JSON-RPC `-32601`
+- mode-gated in-contract method families listed on this page map to JSON-RPC `-32010` when called in an unsupported active mode
+- transport absence (for example, WebSocket) is outside JSON-RPC method dispatch and does not map to a JSON-RPC envelope error
+
 ## Notes For Integrators
 
-- The methods on this page have no published request/response contract in ZEVM docs.
+- Deferred / out-of-contract methods on this page have no published request/response contract in ZEVM docs.
+- Mode-gated in-contract method families on this page have published request/response contracts on their dedicated method pages and are gated by active mode (`-32010` when unsupported in that mode).
 - Clients should treat them as unavailable unless canonical spec sources are updated through the docs-first process to promote them into supported surface.
-- Normative source ownership lives in [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).
+- Current contract sources are routed through [Canonical Specs](../canonical-specs).
 - Canonical promotion/boundary criteria: [Specs And Process](../specs-and-process#deferred-surface-promotion-and-phase-1-boundary-and-graduation-criteria).
 
-## Docs-First Tracking
+## Contract Change Path
 
 - Canonical deferred-surface promotion criteria and phase-1 boundary/graduation criteria: [Specs And Process](../specs-and-process#deferred-surface-promotion-and-phase-1-boundary-and-graduation-criteria)
-- Process gate for promotions/contract changes: [`docs/specs/docs-first-process.md` (Change Rules, Review Gate)](https://github.com/evmts/zevm/blob/main/docs/specs/docs-first-process.md#change-rules)
-- Canonical promotion targets (normative contract docs): [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md), [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md)
-- Deferred-promotion rationale/history is recorded in [`docs/specs/maintainer-decisions.md`](https://github.com/evmts/zevm/blob/main/docs/specs/maintainer-decisions.md), while page-level source/anchor tracking for this surface is maintained in [`docs/specs/page-ownership.md`](https://github.com/evmts/zevm/blob/main/docs/specs/page-ownership.md#active-page-map)
+- Current contract-source entry point: [Canonical Specs](../canonical-specs)
+- Public method pages describe the supported surface but do not promote deferred methods on their own; promotion happens only after the canonical spec sources change through the docs-first path above
 
 ## Related Pages
 

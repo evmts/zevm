@@ -70,88 +70,26 @@ Startup consensus-network handshake (before listener):
 
 ## 3. Checkpoint Selection And Age
 
-Checkpoint precedence:
+This section stays intentionally brief to reduce drift. Canonical checkpoint-selection and checkpoint-age behavior is defined in:
 
-1. user-supplied CLI checkpoint (`--checkpoint`), when provided
-2. config checkpoint (`mode.light.checkpoint`), when set
-3. persisted `${resolvedCheckpointDir}/checkpoint`
-4. baked network default
+- `docs/specs/prd.md#53-light-mode-cli`
+- `docs/specs/prd.md#55-precedence`
+- `docs/specs/prd.md#56-persisted-checkpoint-file-contract`
+- `docs/specs/prd.md#57-checkpoint-age-policy`
+- `docs/specs/prd.md#58-startup-failure-behavior`
+- `docs/specs/prd.md#10-light-mode-checkpoint-and-history-semantics`
+- `docs/specs/json-rpc-contract.md#5-errors` (especially sections 5.2 and 5.3)
+- `docs/specs/json-rpc-contract.md#53-shared-error-rules`
+- `docs/specs/json-rpc-contract.md#62-light-selectors-and-retained-history`
+- `docs/specs/json-rpc-contract.md#710-light-sync-status-object`
+- `docs/specs/json-rpc-contract.md#13-light-mode-methods`
 
-Precedence fallthrough is absence-driven only: ZEVM advances to a lower-precedence checkpoint source only when the higher-precedence source is absent.
+Operational support notes (non-normative):
 
-Once a checkpoint source is selected by precedence, that selected source is final for that startup attempt; any validation/derivation failure for the selected source must fail startup before opening the HTTP listener, and ZEVM must not fall back to lower-precedence checkpoint sources.
-
-Precedence scope clarification:
-
-- this precedence applies only to startup checkpoint selection
-- `checkpointDir`, `maxCheckpointAgeSeconds`, and `strictCheckpointAge` resolve independently per field as: user-supplied CLI value > config value > mode default
-- persisted `${resolvedCheckpointDir}/checkpoint` does not set or override `checkpointDir`, `maxCheckpointAgeSeconds`, or `strictCheckpointAge`
-
-Path resolution for persisted checkpoint input:
-
-- `checkpointDir` default template is `.zevm/checkpoints/<network>`; `<network>` expands from resolved startup `network` after CLI/config merge
-- after CLI/config merge and `<network>` expansion, any relative `checkpointDir` value (including the default `.zevm/checkpoints/<network>`) is resolved against the process current working directory at startup
-- persisted checkpoint startup input path is `${resolvedCheckpointDir}/checkpoint`, where `resolvedCheckpointDir` is the absolute path after that resolution step
-
-If CLI checkpoint, config checkpoint, and persisted `${resolvedCheckpointDir}/checkpoint` are all absent, ZEVM selects the baked network default checkpoint and `checkpointSource = "default"`.
-
-Baked default checkpoints are precedence inputs, not frozen public compatibility hashes.
-
-Baked default checkpoint values are ZEVM bundled release/build inputs. For a given ZEVM release/build artifact and network, the selected baked default is deterministic.
-
-Baked defaults are implementation-defined and may rotate across releases/builds.
-
-Canonical release metadata artifact for baked defaults:
-
-- `releaseIdentifier` must exactly equal the GitHub release tag name that carries metadata assets; tag-based identifiers match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`, and commit-based identifiers match `^commit-[0-9a-f]{40}$`
-- each ZEVM `releaseIdentifier` publishes exactly one machine-readable `light-default-checkpoints.json` asset at `https://github.com/evmts/zevm/releases/download/<releaseIdentifier>/light-default-checkpoints.json`
-- `light-default-checkpoints.json` top-level fields are exactly `schemaVersion`, `releaseIdentifier`, and `defaults`
-- `schemaVersion` is `zevm-light-default-checkpoints.v1`
-- `releaseIdentifier` matches the publishing `releaseIdentifier`
-- `defaults` contains exactly `mainnet`, `sepolia`, and `holesky`; each value is a `0x`-prefixed 32-byte hash (`Hash32`) equal to that release/build's bundled baked default for the network
-- values are immutable per published release identifier; corrections publish a new release identifier with its own `light-default-checkpoints.json`
-- correction releases include one release-notes supersession note under heading `## ZEVM Supersession Note` with required lines: `schemaVersion`, `supersedesReleaseIdentifier`, `correctedArtifacts`, and `reason`
-- publication-time validation gate is mandatory for canonical publication claims: before a release is treated or announced as canonical under this contract, CI/release automation validates both required artifacts (`release-tuple.json`, `light-default-checkpoints.json`) from published release assets against PRD section 3.4 requirements
-- publication-time gate failure on either required artifact (missing, duplicate, unreadable, malformed, schema-mismatched, or value-mismatched) blocks canonical publication claims for that `releaseIdentifier`; correction requires a new `releaseIdentifier` (no in-place repair)
-- operators deterministically discover per-network baked defaults from that artifact; runtime probing via `zevm_lightSyncStatus` is optional verification
-- deterministic baked-default discovery from release metadata is defined only for published release identifiers
-- for unreleased commit builds without published `light-default-checkpoints.json`, baked defaults remain implementation-defined and are not contract-discoverable from metadata
-- operators that require deterministic checkpoint selection for unreleased commit builds must provide an explicit checkpoint via CLI/config instead of relying on baked defaults
-
-Persisted checkpoint file contract:
-
-- file path: `${resolvedCheckpointDir}/checkpoint`, where `resolvedCheckpointDir` is derived from merged `checkpointDir` by applying `<network>` expansion and then resolving relative paths against startup current working directory
-- if `${resolvedCheckpointDir}/checkpoint` is missing, persisted checkpoint input is treated as absent and precedence falls through
-- content: exactly 64 hex chars (32-byte hash, no `0x` prefix)
-- trimmed whitespace is ignored on read
-- this format split is intentional: CLI/config checkpoint inputs use `0x`-prefixed 32-byte hashes, while persisted `${resolvedCheckpointDir}/checkpoint` uses 64 hex chars without `0x`
-- if the file exists but is unreadable, startup fails before opening the HTTP listener
-- if the file is readable but trimmed content is malformed, startup fails before opening the HTTP listener
-- in phase 1, ZEVM treats `${resolvedCheckpointDir}/checkpoint` as startup input only and does not create, update, or delete this file during runtime
-- `lastCheckpoint` runtime progression is not persisted to `${resolvedCheckpointDir}/checkpoint` in phase 1
-- operators may update `${resolvedCheckpointDir}/checkpoint` between restarts; startup precedence is re-evaluated on each process start
-
-Age policy:
-
-- `age` is ZEVM's startup-time freshness value for the selected startup checkpoint
-- `age` is evaluated once during startup, after checkpoint selection and before stale-policy decision
-- `age` is measured in whole seconds: `age = max(0, startupTimeSeconds - checkpointTimeSeconds)`
-- `startupTimeSeconds` is sampled at age-check time
-- `checkpointTimeSeconds` is derived deterministically from Beacon API data for the selected startup checkpoint hash on the selected network, using `consensusRpcUrl` and not filesystem metadata/local file times
-- derivation steps are exact:
-  1. call `GET <consensusRpcUrl>/eth/v1/beacon/genesis`, require HTTP `200`, parse `data.genesis_time` as decimal unsigned integer `genesisTimeSeconds`
-  2. call `GET <consensusRpcUrl>/eth/v1/beacon/headers/{selectedCheckpointHash}`, require HTTP `200`, parse `data.root` as `Hash32` and require equality with `selectedCheckpointHash`, then parse `data.header.message.slot` as decimal unsigned integer `checkpointSlot`
-  3. use `SECONDS_PER_SLOT = 12` for phase-1 supported light networks and compute `checkpointTimeSeconds = genesisTimeSeconds + (checkpointSlot * SECONDS_PER_SLOT)` with integer arithmetic
-  4. use computed `checkpointTimeSeconds` as integer Unix seconds in age evaluation
-- any request failure, non-`200`, missing/malformed required field, checkpoint-root mismatch, or arithmetic overflow in this derivation is inability to resolve `checkpointTimeSeconds` and is startup failure before listening
-- `age == maxCheckpointAgeSeconds` is valid
-- only `age > maxCheckpointAgeSeconds` is stale
-- stale + `strictCheckpointAge = false`: emit one operator-facing startup warning before listening, then continue startup
-- non-strict stale warnings must be surfaced on startup logs via process `stderr` and must not rely on JSON-RPC visibility
-- phase 1 defines no dedicated CLI/config controls for startup log level, log file paths, or alternative startup log sinks
-- the non-strict stale warning must include: selected checkpoint hash, `checkpointSource`, `checkpointTimeSeconds`, `startupTimeSeconds`, computed `age`, `maxCheckpointAgeSeconds`, and `strictCheckpointAge = false`
-- stale + `strictCheckpointAge = true`: startup failure before listening
-- inability to resolve `checkpointTimeSeconds` for the selected startup checkpoint is startup failure before listening
+- Startup checkpoint source resolution feeds `checkpointSource` provenance in `zevm_lightSyncStatus` (`explicit`, `persisted`, `default`).
+- Persisted checkpoint handling uses `${resolvedCheckpointDir}/checkpoint` as startup input; runtime `lastCheckpoint` progression remains runtime state in phase 1.
+- Checkpoint-age evaluation and strict/non-strict stale handling are startup-time concerns; error-code and readiness interactions are carried by the JSON-RPC contract sections listed above.
+- For implementation context on merge precedence and startup validation flow, see `docs/specs/internal/startup-and-configuration.md` (especially sections 6 and 7).
 
 ## 4. Sync Status Semantics
 
@@ -176,12 +114,13 @@ Invariants:
 - `checkpointSource` reflects the selected startup checkpoint source and remains stable for the process lifetime:
   - `explicit`: selected from user-provided checkpoint input (CLI `--checkpoint` or config `mode.light.checkpoint`)
   - `persisted`: selected from `${resolvedCheckpointDir}/checkpoint`
-  - `default`: selected from ZEVM bundled release/build default checkpoint for the selected network (deterministic for that release/build artifact; may rotate across releases/builds and is published in that release's required `light-default-checkpoints.json`)
+  - `default`: selected from ZEVM bundled release/build default checkpoint for the selected network (deterministic for that release/build artifact; may rotate across releases/builds; for published release identifiers, the bundled value is published in that release's required `light-default-checkpoints.json`)
 - `lastCheckpoint` is always present as `Hash32` after listener startup
 - `optimisticSlot`, `safeSlot`, and `finalizedSlot` are always present as `QuantityHex` values (not `null`)
 - `finalizedSlot <= safeSlot <= optimisticSlot`
 - while `status = "syncing"`, slot values may remain `0x0` until headers are available
 - when `status = "error"`, slot fields keep the last known values and are not nullified
+- `checkpointSource = "default"` does not expose `releaseIdentifier` and cannot by itself prove metadata-backed provenance
 
 `lastCheckpoint` semantics:
 

@@ -5,7 +5,7 @@ description: Transport, envelope rules, error codes, selector semantics, and met
 
 # JSON-RPC Overview
 
-This page defines the ZEVM HTTP JSON-RPC 2.0 contract shared across trusted mode and light mode.
+This page summarizes ZEVM HTTP JSON-RPC 2.0 behavior shared across trusted mode and light mode.
 
 ## Phase 1 Scope (Public Contract)
 
@@ -13,7 +13,7 @@ In JSON-RPC docs, **phase 1** means the current public ZEVM RPC contract:
 
 - HTTP JSON-RPC transport only on `/`
 - mode-gated method surface (`trusted` vs `light`) with explicit unsupported behavior
-- light-mode readiness gating for proof-backed reads
+- light mode always-callable `zevm_lightSyncStatus` and `eth_chainId`, plus readiness-gated `eth_blockNumber` and proof-backed reads
 - phase 1 installation/distribution guarantee is source-build installation only
 - packaged binaries, installers, and distribution-channel guarantees are out of scope for phase 1
 
@@ -42,9 +42,9 @@ Canonical ZEVM-owned transport/parser shipping-path requirement:
 
 ## Normative Sources
 
-- Product requirements: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md)
-- JSON-RPC contract source: [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md)
-- Contract ownership and docs-first change flow: [Canonical Specs And Docs-First Process](../specs-and-process)
+- Current contract-source entry point: [Canonical Specs](../canonical-specs)
+- Docs-first change flow and release/versioning policy: [Canonical Specs And Docs-First Process](../specs-and-process)
+- When auditing a pinned build or published release, read `docs/specs/prd.md` and `docs/specs/json-rpc-contract.md` from that exact ZEVM checkout rather than repository `main`
 
 ## JSON-RPC Envelope Rules
 
@@ -85,8 +85,8 @@ Empty batch `[]` returns HTTP `200` with exactly:
 
 | Condition | Code |
 | --- | --- |
-| method unsupported in active mode | `-32010` |
-| light mode not ready for proof-backed reads | `-32011` |
+| method or selector unsupported in active mode | `-32010` |
+| light mode not ready for proof-backed reads or `eth_blockNumber` | `-32011` |
 | proof verification failed | `-32014` |
 | malformed data from upstream proof source | `-32015` |
 
@@ -121,7 +121,7 @@ Startup policy context:
 ### Shared error rules
 
 - malformed addresses, quantities, hex bytes, selectors, indexes, filters, tuple lengths, and invalid object field combinations return `-32602`
-- well-formed requests for supported methods unavailable in active mode return `-32010`
+- well-formed requests for supported methods or selectors unavailable in active mode return `-32010`
 - `-32012` and `-32013` remain startup-reserved and are not emitted after the HTTP listener is active
 - trusted block/tx/receipt lookup miss returns `null`
 - `eth_getLogs` with no matches returns `[]`
@@ -150,9 +150,13 @@ Startup policy context:
 | numeric quantity | block `0` or a retained numeric block in the verified-history window |
 | `pending` | unsupported (`-32010`) |
 
+Light numeric-selector note: while `ready = false`, readiness-gated calls fail with `-32011` before retained-history numeric-range validation; once `ready = true`, numeric selectors outside the retained set fail with `-32602`.
+
 ## Method Surface By Mode
 
 ### Trusted mode
+
+Family-level summary only. Canonical method inventories and alias sets live on the linked method pages to avoid drift.
 
 - Core reads: `eth_chainId`, `eth_blockNumber`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getTransactionCount`, `eth_accounts`, `eth_coinbase`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_blobBaseFee`, `eth_feeHistory`
 - Simulation: `eth_call`, `eth_estimateGas`
@@ -165,6 +169,8 @@ Startup policy context:
 Snapshot/revert boundary in trusted mode: `zevm_snapshot`/`zevm_revert` affect trusted local runtime state only, do not capture light-mode sync/checkpoint state, and do not mutate remote fork-source state.
 
 ### Light mode
+
+Canonical light-mode method tuples and selector/error order are maintained on [Verified Light-Mode Reads](./verified-light-mode-reads) to avoid drift.
 
 - Always callable: `zevm_lightSyncStatus`, `eth_chainId`
 - Readiness-gated: `eth_blockNumber`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getTransactionCount`
@@ -193,6 +199,7 @@ Response: no JSON-RPC body, HTTP `204`.
 - [Light-Mode Configuration](../configuration/light-mode)
 - [Canonical Specs And Docs-First Process](../specs-and-process)
 - [Core Reads](./core-reads)
+- [Managed Dev Wallet (Trusted Mode)](./managed-dev-wallet)
 - [Simulation](./simulation)
 - [Transactions And Mining](./transactions-and-mining)
 - [Blocks, Receipts, And Logs](./blocks-receipts-and-logs)

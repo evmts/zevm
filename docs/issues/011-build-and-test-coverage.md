@@ -1,9 +1,11 @@
 # Build And Test Coverage
 
-> **Archived / non-normative:** This issue is historical context only. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md).
+> **Archived / non-normative:** This issue is historical context only. Claims below are filing-time observations and may contradict current contract docs. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md); if anything differs, those normative docs win.
+>
+> **Resolved / superseded status:** This issue is closed as an active gap tracker and retained for archive history only. For current requirements and behavior, use [docs/specs/prd.md](../specs/prd.md), [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md), and [docs/specs/page-ownership.md](../specs/page-ownership.md).
 
 
-## Verified Gap
+## Historical Gap Snapshot At Filing Time
 
 - `zig build` and `zig build -j1` are still blocked by the sibling `blst` shell build step, which mutates shared in-tree outputs in place. Running `../voltaire/packages/voltaire-zig/lib/c-kzg-4844/blst/build.sh` manually succeeds, which points to an invocation/race issue rather than a permanently broken dependency.
 - After manually priming that dependency, `zig build test -j1` still fails on real ZEVM compile drift: `jsonrpc.envelope` no longer exists upstream, and `tx_processor` still calls the older 5-argument `evm.init(...)` signature.
@@ -20,7 +22,7 @@
 - `../voltaire/packages/voltaire-zig/lib/c-kzg-4844/blst/build.sh`
 - `../guillotine-mini/src/evm.zig`
 
-## Resolution Verification
+## Historical Resolution Criteria
 
 - `zig build` and `zig build test` pass from a clean checkout with no manual dependency repair.
 - Sibling build scripts are safe under Zig's dependency invocation model and free of shared-artifact races.

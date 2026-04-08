@@ -1,9 +1,11 @@
 # Snapshots And State Manipulation
 
-> **Archived / non-normative:** This issue is historical context only. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md).
+> **Archived / non-normative:** This issue is historical context only. Claims below are filing-time observations and may contradict current contract docs. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md); if anything differs, those normative docs win.
+>
+> **Resolved / superseded status:** This issue is closed as an active gap tracker and retained for archive history only. For current requirements and behavior, use [docs/specs/prd.md](../specs/prd.md), [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md), and [docs/specs/page-ownership.md](../specs/page-ownership.md).
 
 
-## Verified Gap
+## Historical Gap Snapshot At Filing Time
 
 - `dev_runtime.zig` and `dev_handlers.zig` are disconnected from `main`, and the live dispatcher rejects `evm_*` / `hardhat_*` methods outright.
 - `DevRuntime.revertSnapshot` calls `bc.revertToBlock(...)`, but the current sibling `Blockchain` API does not expose that method.
@@ -22,7 +24,7 @@
 - `src/node/runtime.zig`
 - `../voltaire/packages/voltaire-zig/src/blockchain/Blockchain.zig`
 
-## Resolution Verification
+## Historical Resolution Criteria
 
 - Snapshot/revert is exposed over RPC and restores the full node state model, not just `StateManager` contents.
 - Unknown snapshot IDs return `false` without corrupting runtime state.

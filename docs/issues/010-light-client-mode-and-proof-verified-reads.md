@@ -1,8 +1,8 @@
 # Light Client Mode And Proof-Verified Reads
 
-> **Archived / non-normative:** This issue is historical context only. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md).
+> **Archived / non-normative:** This issue is historical context only. Claims below are filing-time observations and may contradict current contract docs. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md); if anything differs, those normative docs win.
 >
-> **Resolved / superseded status:** The gaps recorded below were resolved in later product convergence work and are superseded by the normative docs above. Treat this file as historical evidence, not as a current open product gap list.
+> **Resolved / superseded status:** This issue is closed as an active gap tracker and retained for archive history only. The checkpoint persistence criteria in this file are historical and are not current phase-1 contract requirements. For current requirements and behavior, use [docs/specs/prd.md](../specs/prd.md), [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md), and [docs/specs/page-ownership.md](../specs/page-ownership.md).
 
 
 ## Historical Gap Snapshot At Filing Time (Resolved)
@@ -26,7 +26,9 @@
 - `src/consensus_verifier_test.zig`
 - `src/beacon_api_test.zig`
 
-## Resolution Verification
+## Historical Resolution Criteria (Superseded)
+
+These criteria are historical and do not define current phase-1 contract behavior, including runtime checkpoint persistence expectations.
 
 - A dedicated light-client mode boots from checkpoint, selects mainnet/sepolia/holesky, syncs, persists progress, and resumes cleanly.
 - Readiness/sync-status is exposed so clients can distinguish bootstrapping from verified-serving states.

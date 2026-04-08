@@ -1,9 +1,11 @@
 # Block State Root And Context Integrity
 
-> **Archived / non-normative:** This issue is historical context only. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md).
+> **Archived / non-normative:** This issue is historical context only. Claims below are filing-time observations and may contradict current contract docs. Current normative sources: [docs/specs/prd.md](../specs/prd.md) and [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md); if anything differs, those normative docs win.
+>
+> **Resolved / superseded status:** This issue is closed as an active gap tracker and retained for archive history only. For current requirements and behavior, use [docs/specs/prd.md](../specs/prd.md), [docs/specs/json-rpc-contract.md](../specs/json-rpc-contract.md), and [docs/specs/page-ownership.md](../specs/page-ownership.md).
 
 
-## Verified Gap
+## Historical Gap Snapshot At Filing Time
 
 - `initGenesis` funds dev accounts in `db.state` and stores a genesis block without flushing accounts into the trie or setting `header.state_root`, so the stored genesis header is already inconsistent with funded state.
 - `buildBlock` does not construct a header or compute/persist a block `stateRoot`; it only returns receipts, gas used, and block number.
@@ -23,7 +25,7 @@
 - `../guillotine-mini/src/evm.zig`
 - `../guillotine-mini/src/instructions/handlers_block.zig`
 
-## Resolution Verification
+## Historical Resolution Criteria
 
 - Every sealed block computes and persists a correct `stateRoot` from the post-state trie.
 - Storage writes update the account trie through a real storage-root pipeline.

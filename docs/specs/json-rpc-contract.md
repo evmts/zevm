@@ -86,24 +86,34 @@ It defines:
 | invalid params | `-32602` |
 | internal error | `-32603` |
 
-### 5.2 ZEVM runtime codes
+### 5.2 ZEVM method/startup codes
 
 | Condition | Code |
 | --- | --- |
-| method unsupported in active mode | `-32010` |
-| light mode not ready for proof-backed reads | `-32011` |
-| reserved: selected checkpoint too old under strict startup policy | `-32012` |
-| reserved: checkpoint input or persisted checkpoint is malformed/corrupt | `-32013` |
+| method or selector unsupported in active mode | `-32010` |
+| light mode not ready for proof-backed reads or `eth_blockNumber` | `-32011` |
+| reserved startup: selected checkpoint too old under strict startup policy | `-32012` |
+| reserved startup: malformed checkpoint CLI/config input or malformed readable persisted checkpoint file content | `-32013` |
 | proof verification failed | `-32014` |
 | malformed data from upstream proof source | `-32015` |
 
 ### 5.3 Shared error rules
 
 - malformed addresses, quantities, hex bytes, selectors, filters, tuple lengths, or invalid object field combinations -> `-32602`
-- well-formed requests for methods defined by this contract but unavailable in active mode -> `-32010`
+- well-formed requests for methods or selectors defined by this contract but unavailable in active mode -> `-32010`
 - well-formed requests that use deferred/out-of-contract JSON-RPC method names (section 14) -> `-32601`
 - trusted block/tx lookup miss -> `null`
 - `eth_getLogs` no matches -> `[]`
+- light-mode startup consensus-network handshake is mandatory before listening and is anchored to `GET <consensusRpcUrl>/eth/v1/beacon/genesis`
+- handshake requirements are exact:
+  1. call `GET <consensusRpcUrl>/eth/v1/beacon/genesis`
+  2. require HTTP `200`
+  3. parse `data.genesis_validators_root` as `Hash32`
+  4. require `data.genesis_validators_root` to match selected `network`:
+     - `mainnet` -> `0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95`
+     - `sepolia` -> `0xd8ea171f3c94aea21ebc42a1ed61052acf3f9209c00e4efbaaddac09ed9b8078`
+     - `holesky` -> `0x9143aa7c615a7f7115e2b6aac319c03529df8242ae705fba9df39b79c59fa8b1`
+  5. any request failure, non-`200`, malformed payload, missing/invalid `data.genesis_validators_root`, or root mismatch is startup failure before listening
 - selected light checkpoint is stale only when `age > maxCheckpointAgeSeconds`; `age == maxCheckpointAgeSeconds` is valid
 - `age` is ZEVM's startup-time freshness value for the selected startup checkpoint
 - `age` is evaluated once during startup, after checkpoint selection and before stale-policy decision
@@ -130,9 +140,10 @@ It defines:
 - startup checkpoint precedence fallthrough is absence-driven only; once a checkpoint source is selected, any validation/derivation failure for that selected source is startup failure before listening and must not trigger fallback to lower-precedence sources
 - if `${resolvedCheckpointDir}/checkpoint` exists but is unreadable, startup fails before listening
 - malformed initial checkpoint input or malformed readable persisted checkpoint file is startup failure before listening
+- `-32013` applies to malformed checkpoint startup input/content only; unreadable persisted checkpoint is still startup failure before listening and does not change this reserved code mapping
 - ZEVM does not auto-create `${resolvedCheckpointDir}` during startup
 - in phase 1, `${resolvedCheckpointDir}/checkpoint` is startup input only; ZEVM does not create, update, or delete this file after the HTTP listener has started
-- `-32012` and `-32013` remain reserved at runtime and are not emitted after the HTTP listener has started
+- `-32012` and `-32013` are startup-phase reserved checkpoint codes and are not emitted after the HTTP listener has started
 
 ## 6. Selector And Mode Semantics
 
@@ -283,11 +294,26 @@ Field rules:
 }
 ```
 
+Field contract:
+
+| Field | Required | Type | Nullability / rule |
+| --- | --- | --- | --- |
+| `type` | yes | `QuantityHex` | always `0x0` in phase 1 |
+| `hash` | yes | `Hash32` | non-null |
+| `nonce` | yes | `QuantityHex` | non-null |
+| `blockHash` | yes | `Hash32` | non-null for current phase-1 trusted query methods |
+| `blockNumber` | yes | `QuantityHex` | non-null for current phase-1 trusted query methods |
+| `transactionIndex` | yes | `QuantityHex` | non-null for current phase-1 trusted query methods |
+| `from` | yes | `Address` | non-null |
+| `to` | yes | `Address` or `null` | `null` only for create transactions |
+| `value` | yes | `QuantityHex` | non-null |
+| `gas` | yes | `QuantityHex` | non-null |
+| `input` | yes | `HexData` | non-null |
+
 Rules:
 
-- `type` is always `0x0` in phase 1
-- `to` may be `null` for create
-- for current phase-1 trusted query methods, `blockHash`, `blockNumber`, and `transactionIndex` are non-null because txpool-only pending entries are not surfaced by `eth_getTransactionByHash`
+- phase-1 transaction objects are closed-world: only the fields listed in the table above are allowed
+- txpool-only pending entries are not surfaced by `eth_getTransactionByHash` in phase 1, so `blockHash`, `blockNumber`, and `transactionIndex` are non-null for current phase-1 trusted query methods
 - transaction objects in this contract must not include a nonstandard `blockTimestamp` field
 
 ### 7.6 Block object
@@ -497,14 +523,15 @@ Field rules:
 - `network`: `mainnet`, `sepolia`, or `holesky`
 - `checkpointSource`: startup checkpoint-selection source and stable for process lifetime:
   - `explicit`: selected from user-provided checkpoint input (CLI `--checkpoint` or config `mode.light.checkpoint`)
-  - `persisted`: selected from `${resolvedCheckpointDir}/checkpoint` (section 5.3)
+  - `persisted`: selected from operator-managed `${resolvedCheckpointDir}/checkpoint` under the PRD startup checkpoint precedence and persisted-input contract
   - `default`: selected from ZEVM bundled release/build default checkpoint for the selected network (deterministic for that release/build artifact, may rotate across releases/builds, and is not a frozen API hash)
 - `lastCheckpoint`: `Hash32`, non-null after listener startup
 - `optimisticSlot`: `QuantityHex`, non-null
 - `safeSlot`: `QuantityHex`, non-null
 - `finalizedSlot`: `QuantityHex`, non-null
 - `finalizedSlot <= safeSlot <= optimisticSlot`
-- effective release/build defaults are auditable by startup with no explicit or persisted checkpoint override; in that case `checkpointSource = "default"` and `lastCheckpoint` is the selected default
+- effective release/build defaults are auditable during startup with no explicit or persisted checkpoint override; in that case `checkpointSource = "default"`, and if sampled immediately after startup before sync advances, `lastCheckpoint` equals the selected default
+- `checkpointSource = "default"` is startup-source evidence only: it does not report `releaseIdentifier` and does not by itself prove metadata-backed provenance
 - release metadata provenance policy for release/build default claims is defined in PRD section 3.4 (`docs/specs/prd.md`) and applies unchanged here
 
 Lifecycle contract by `status`:
@@ -776,7 +803,7 @@ Parameter token typing contract (applies to the `Exact params` column above):
 | --- | --- | --- |
 | `address`, `token`, `owner`, `spender` | `Address` | section 1 `Address` |
 | `block` | `TrustedBlockSelector` | section 1 `TrustedBlockSelector` |
-| `accountState` | `AccountState` | section 9.2 `AccountState` object |
+| `accountState` | `AccountState` | `docs/specs/json-rpc-contract.md#92-objects` `AccountState` object |
 | `stateBlob`, `code` | `HexData` | section 1 `HexData` |
 | `slot` | `Bytes32` | section 1 `Bytes32` |
 | `transactionHash` | `Hash32` | section 1 `Hash32` |

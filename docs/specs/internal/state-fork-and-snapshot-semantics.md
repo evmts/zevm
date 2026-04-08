@@ -62,7 +62,7 @@ Fork block-number typing boundary:
 
 - startup CLI/config uses decimal `u64` (`--fork-block-number`, `mode.trusted.fork.blockNumber`)
 - runtime `zevm_reset` params use `QuantityHex` for `forkConfig.blockNumber` (example: startup decimal `1000000` corresponds to JSON-RPC `"blockNumber": "0xf4240"`)
-- see `docs/specs/json-rpc-contract.md` section 9.2 (parameter token typing for `forkConfig`) and section 9.4 (`zevm_reset` semantics)
+- see `docs/specs/json-rpc-contract.md#92-objects` (parameter token typing for `forkConfig`) and `docs/specs/json-rpc-contract.md#94-zevm_reset-semantics`
 
 ## 5. Namespace And Alias Boundary
 
