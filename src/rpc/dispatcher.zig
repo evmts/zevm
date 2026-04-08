@@ -79,7 +79,9 @@ fn validateParamsForMethod(allocator: std.mem.Allocator, method_name: []const u8
         return;
     } else |_| {}
 
-    if (std.mem.eql(u8, method_name, "evm_mine") or
+    if (std.mem.eql(u8, method_name, "zevm_mine") or
+        std.mem.eql(u8, method_name, "anvil_mine") or
+        std.mem.eql(u8, method_name, "evm_mine") or
         std.mem.eql(u8, method_name, "hardhat_mine") or
         std.mem.eql(u8, method_name, "evm_increaseTime") or
         std.mem.eql(u8, method_name, "evm_setNextBlockTimestamp") or

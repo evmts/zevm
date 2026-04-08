@@ -1669,6 +1669,27 @@ test "NodeHandler hardhat_setPrevRandao updates runtime value" {
     try std.testing.expectEqual(@as(u256, 0x42), handler.node_runtime.prev_randao);
 }
 
+test "NodeHandler mine canonical and aliases return boolean true" {
+    const method_names = [_][]const u8{
+        "zevm_mine",
+        "anvil_mine",
+        "hardhat_mine",
+        "evm_mine",
+    };
+
+    for (method_names) |method_name| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var handler = try node_handler.NodeHandler.init(allocator, null);
+        defer handler.deinit(allocator);
+
+        const result = try callMethod(allocator, &handler, method_name, null);
+        try std.testing.expect(result.bool);
+        try std.testing.expectEqual(@as(u64, 1), handler.node_runtime.head_block_number);
+    }
+}
+
 test "NodeHandler hardhat_mine mines requested number of blocks" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -436,7 +436,11 @@ pub const NodeHandler = struct {
             self.node_runtime.prev_randao = value;
             return .{ .bool = true };
         }
-        if (std.mem.eql(u8, method_name, "evm_mine") or std.mem.eql(u8, method_name, "hardhat_mine")) {
+        if (std.mem.eql(u8, method_name, "zevm_mine") or
+            std.mem.eql(u8, method_name, "anvil_mine") or
+            std.mem.eql(u8, method_name, "evm_mine") or
+            std.mem.eql(u8, method_name, "hardhat_mine"))
+        {
             const count = parseOptionalFirstU64(params, 1) catch return error.InvalidParams;
             var i: u64 = 0;
             while (i < count) : (i += 1) {
@@ -460,7 +464,7 @@ pub const NodeHandler = struct {
                     );
                 }
             }
-            return .{ .string = try allocator.dupe(u8, "0x0") };
+            return .{ .bool = true };
         }
         if (std.mem.eql(u8, method_name, "eth_newFilter")) {
             const id = self.next_filter_id;

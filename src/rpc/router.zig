@@ -63,7 +63,9 @@ fn isKnownMethod(method_name: []const u8) bool {
                 _ = jsonrpc.evm.EvmMethod.fromMethodName(method_name) catch {
                     _ = jsonrpc.hardhat.HardhatMethod.fromMethodName(method_name) catch {
                         _ = jsonrpc.anvil.AnvilMethod.fromMethodName(method_name) catch {
-                            if (std.mem.eql(u8, method_name, "evm_mine") or
+                            if (std.mem.eql(u8, method_name, "zevm_mine") or
+                                std.mem.eql(u8, method_name, "anvil_mine") or
+                                std.mem.eql(u8, method_name, "evm_mine") or
                                 std.mem.eql(u8, method_name, "hardhat_mine") or
                                 std.mem.eql(u8, method_name, "evm_increaseTime") or
                                 std.mem.eql(u8, method_name, "evm_setNextBlockTimestamp") or
