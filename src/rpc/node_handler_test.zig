@@ -47,6 +47,74 @@ fn signLegacyRawTx(
     return primitives.Transaction.encodeLegacyForSigning(allocator, signed_tx, runtime.DEFAULT_CHAIN_ID);
 }
 
+fn sendLegacyRawTx(
+    allocator: std.mem.Allocator,
+    handler: *node_handler.NodeHandler,
+) ![]const u8 {
+    const raw_tx = try signLegacyRawTx(
+        allocator,
+        0,
+        runtime.DEFAULT_GAS_PRICE,
+        21_000,
+        runtime.DEFAULT_DEV_ACCOUNTS[1],
+        1000,
+    );
+
+    const raw_tx_hex = try primitives.Hex.bytesToHex(allocator, raw_tx);
+
+    var send_params = std.json.Array.init(allocator);
+    defer send_params.deinit();
+    try send_params.append(.{ .string = raw_tx_hex });
+
+    const send_result = try callMethod(allocator, handler, "eth_sendRawTransaction", .{ .array = send_params });
+    return switch (send_result) {
+        .string => |value| value,
+        else => error.ExpectedHashString,
+    };
+}
+
+fn appendLegacyBlockWithSingleTransaction(
+    allocator: std.mem.Allocator,
+    handler: *node_handler.NodeHandler,
+) ![32]u8 {
+    const parent_number = handler.node_runtime.head_block_number;
+    const parent_block = (try handler.node_runtime.blockchain.getBlockByNumber(parent_number)) orelse return error.ExpectedParentBlock;
+
+    const raw_tx = try signLegacyRawTx(
+        allocator,
+        0,
+        runtime.DEFAULT_GAS_PRICE,
+        21_000,
+        runtime.DEFAULT_DEV_ACCOUNTS[1],
+        1000,
+    );
+    const retained_raw_tx = try handler.node_runtime.retainBlockTransactionRaw(allocator, raw_tx);
+
+    const txs = try allocator.alloc(primitives.BlockBody.TransactionData, 1);
+    txs[0] = .{ .raw = retained_raw_tx };
+
+    var header = primitives.BlockHeader.BlockHeader{
+        .parent_hash = parent_block.hash,
+        .number = parent_block.header.number + 1,
+        .timestamp = parent_block.header.timestamp + 12,
+        .gas_limit = parent_block.header.gas_limit,
+        .base_fee_per_gas = parent_block.header.base_fee_per_gas,
+    };
+    const body = primitives.BlockBody.BlockBody{
+        .transactions = txs,
+        .ommers = &[_]primitives.BlockBody.UncleHeader{},
+        .withdrawals = null,
+    };
+    const block = try primitives.Block.from(&header, &body, allocator);
+
+    try handler.node_runtime.blockchain.putBlock(block);
+    try handler.node_runtime.blockchain.setCanonicalHead(block.hash);
+    handler.node_runtime.head_block_number = block.header.number;
+    handler.node_runtime.head_block_hash = block.hash;
+
+    return block.hash;
+}
+
 fn makeReceiptWithSingleLog(
     allocator: std.mem.Allocator,
     block_hash: [32]u8,
@@ -224,28 +292,7 @@ test "NodeHandler sendRawTransaction then getTransactionByHash returns transacti
     var handler = try node_handler.NodeHandler.init(allocator, null);
     defer handler.deinit(allocator);
 
-    const raw_tx = try signLegacyRawTx(
-        allocator,
-        0,
-        runtime.DEFAULT_GAS_PRICE,
-        21_000,
-        runtime.DEFAULT_DEV_ACCOUNTS[1],
-        1000,
-    );
-    defer allocator.free(raw_tx);
-    const raw_tx_hex = try primitives.Hex.bytesToHex(allocator, raw_tx);
-    defer allocator.free(raw_tx_hex);
-
-    var send_params = std.json.Array.init(allocator);
-    defer send_params.deinit();
-    try send_params.append(.{ .string = raw_tx_hex });
-
-    const send_result = try callMethod(allocator, &handler, "eth_sendRawTransaction", .{ .array = send_params });
-
-    const tx_hash = switch (send_result) {
-        .string => |s| s,
-        else => return error.ExpectedHashString,
-    };
+    const tx_hash = try sendLegacyRawTx(allocator, &handler);
 
     var get_params = std.json.Array.init(allocator);
     defer get_params.deinit();
@@ -259,6 +306,76 @@ test "NodeHandler sendRawTransaction then getTransactionByHash returns transacti
     };
     try std.testing.expect(tx_object.get("hash") != null);
     try std.testing.expect(tx_object.get("from") != null);
+    try std.testing.expect(tx_object.get("blockTimestamp") == null);
+}
+
+test "NodeHandler eth_getBlockByNumber hydrated transactions omit blockTimestamp" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    _ = try appendLegacyBlockWithSingleTransaction(allocator, &handler);
+
+    var get_block_params = std.json.Array.init(allocator);
+    defer get_block_params.deinit();
+    try get_block_params.append(.{ .string = "latest" });
+    try get_block_params.append(.{ .bool = true });
+
+    const get_block_result = try callMethod(allocator, &handler, "eth_getBlockByNumber", .{ .array = get_block_params });
+    const block_object = switch (get_block_result) {
+        .object => |obj| obj,
+        else => return error.ExpectedObject,
+    };
+
+    const transactions_value = block_object.get("transactions") orelse return error.ExpectedTransactions;
+    const transactions = switch (transactions_value) {
+        .array => |array| array.items,
+        else => return error.ExpectedArrayResult,
+    };
+    try std.testing.expect(transactions.len > 0);
+
+    const tx_object = switch (transactions[0]) {
+        .object => |obj| obj,
+        else => return error.ExpectedObject,
+    };
+    try std.testing.expect(tx_object.get("blockTimestamp") == null);
+}
+
+test "NodeHandler eth_getBlockByHash hydrated transactions omit blockTimestamp" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    const block_hash = try appendLegacyBlockWithSingleTransaction(allocator, &handler);
+    const head_block_hash_hex = try std.fmt.allocPrint(allocator, "0x{x}", .{block_hash});
+
+    var get_block_params = std.json.Array.init(allocator);
+    defer get_block_params.deinit();
+    try get_block_params.append(.{ .string = head_block_hash_hex });
+    try get_block_params.append(.{ .bool = true });
+
+    const get_block_result = try callMethod(allocator, &handler, "eth_getBlockByHash", .{ .array = get_block_params });
+    const block_object = switch (get_block_result) {
+        .object => |obj| obj,
+        else => return error.ExpectedObject,
+    };
+
+    const transactions_value = block_object.get("transactions") orelse return error.ExpectedTransactions;
+    const transactions = switch (transactions_value) {
+        .array => |array| array.items,
+        else => return error.ExpectedArrayResult,
+    };
+    try std.testing.expect(transactions.len > 0);
+
+    const tx_object = switch (transactions[0]) {
+        .object => |obj| obj,
+        else => return error.ExpectedObject,
+    };
+    try std.testing.expect(tx_object.get("blockTimestamp") == null);
 }
 
 test "NodeHandler hardhat impersonation allows eth_sendTransaction" {

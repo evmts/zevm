@@ -389,6 +389,7 @@ test "handleGetTransactionByHash: returns pending legacy transaction" {
             try std.testing.expectEqual(runtime.DEFAULT_DEV_ACCOUNTS[0].bytes, tx.metadata.from.bytes);
             try std.testing.expect(tx.metadata.block_hash == null);
             try std.testing.expect(tx.metadata.block_number == null);
+            try std.testing.expect(tx.metadata.block_timestamp == null);
             try std.testing.expectEqual(tx_hash, tx.metadata.hash.bytes);
         },
         else => return error.ExpectedLegacyTransaction,

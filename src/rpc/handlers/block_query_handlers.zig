@@ -148,7 +148,8 @@ pub fn handleGetTransactionByHash(
     const metadata = jsonrpc.types.TransactionResponse.Metadata{
         .block_hash = if (record.block_hash) |h| .{ .bytes = h } else null,
         .block_number = record.block_number,
-        .block_timestamp = record.block_timestamp,
+        // ZEVM JSON-RPC contract excludes nonstandard tx-level blockTimestamp.
+        .block_timestamp = null,
         .transaction_index = record.transaction_index,
         .from = .{ .bytes = record.sender.bytes },
         .hash = .{ .bytes = params.transaction_hash.bytes },
