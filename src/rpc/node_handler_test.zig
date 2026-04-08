@@ -217,12 +217,17 @@ test "NodeHandler eth_feeHistory includes reward matrix when percentiles provide
     try std.testing.expectEqual(@as(usize, 1), reward_array.len);
 }
 
-test "NodeHandler sendRawTransaction then getTransactionByHash returns transaction object" {
+test "NodeHandler eth_getTransactionByHash returns null for pending then object after mining" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
     var handler = try node_handler.NodeHandler.init(allocator, null);
     defer handler.deinit(allocator);
+
+    var disable_automine_params = std.json.Array.init(allocator);
+    defer disable_automine_params.deinit();
+    try disable_automine_params.append(.{ .bool = false });
+    _ = try callMethod(allocator, &handler, "hardhat_setAutomine", .{ .array = disable_automine_params });
 
     const raw_tx = try signLegacyRawTx(
         allocator,
@@ -251,6 +256,14 @@ test "NodeHandler sendRawTransaction then getTransactionByHash returns transacti
     defer get_params.deinit();
     try get_params.append(.{ .string = tx_hash });
 
+    const pending_result = try callMethod(allocator, &handler, "eth_getTransactionByHash", .{ .array = get_params });
+    switch (pending_result) {
+        .null => {},
+        else => return error.ExpectedNullResult,
+    }
+
+    _ = try callMethod(allocator, &handler, "evm_mine", null);
+
     const get_result = try callMethod(allocator, &handler, "eth_getTransactionByHash", .{ .array = get_params });
 
     const tx_object = switch (get_result) {
@@ -259,6 +272,7 @@ test "NodeHandler sendRawTransaction then getTransactionByHash returns transacti
     };
     try std.testing.expect(tx_object.get("hash") != null);
     try std.testing.expect(tx_object.get("from") != null);
+    try std.testing.expect(tx_object.get("blockHash") != null);
 }
 
 test "NodeHandler hardhat impersonation allows eth_sendTransaction" {

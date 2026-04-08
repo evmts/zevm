@@ -342,7 +342,7 @@ test "handleGetTransactionByHash: returns null for missing transaction hash" {
     try std.testing.expect(result.value == null);
 }
 
-test "handleGetTransactionByHash: returns pending legacy transaction" {
+test "handleGetTransactionByHash: returns null for pending transaction hash" {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -380,6 +380,51 @@ test "handleGetTransactionByHash: returns pending legacy transaction" {
         &ctx,
         .{ .transaction_hash = .{ .bytes = tx_hash } },
     );
+    try std.testing.expect(result.value == null);
+}
+
+test "handleGetTransactionByHash: returns mined legacy transaction" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var state = try setupCtx(allocator);
+    defer state.deinit(allocator);
+
+    const unsigned_tx = primitives.Transaction.LegacyTransaction{
+        .nonce = 0,
+        .gas_price = runtime.DEFAULT_GAS_PRICE,
+        .gas_limit = 21_000,
+        .to = runtime.DEFAULT_DEV_ACCOUNTS[1],
+        .value = 1000,
+        .data = &[_]u8{},
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+    const signed_tx = try primitives.Transaction.signLegacyTransaction(
+        allocator,
+        unsigned_tx,
+        runtime.DEFAULT_DEV_PRIVATE_KEYS[0],
+        runtime.DEFAULT_CHAIN_ID,
+    );
+    const raw_tx = try primitives.Transaction.encodeLegacyForSigning(allocator, signed_tx, runtime.DEFAULT_CHAIN_ID);
+    defer allocator.free(raw_tx);
+
+    var tx_hash: [32]u8 = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(raw_tx, &tx_hash, .{});
+    try state.rt.putTransactionRecord(allocator, tx_hash, runtime.DEFAULT_DEV_ACCOUNTS[0], raw_tx);
+
+    var mined_block_hash: [32]u8 = undefined;
+    @memset(&mined_block_hash, 0x44);
+    state.rt.markTransactionMined(tx_hash, mined_block_hash, 1, 1000, 0);
+
+    var ctx = state.getCtx();
+    const result = try block_query_handlers.handleGetTransactionByHash(
+        arena.allocator(),
+        &ctx,
+        .{ .transaction_hash = .{ .bytes = tx_hash } },
+    );
     try std.testing.expect(result.value != null);
 
     switch (result.value.?) {
@@ -387,8 +432,11 @@ test "handleGetTransactionByHash: returns pending legacy transaction" {
             try std.testing.expectEqual(@as(u64, 0), tx.nonce);
             try std.testing.expectEqual(@as(u64, 21_000), tx.gas);
             try std.testing.expectEqual(runtime.DEFAULT_DEV_ACCOUNTS[0].bytes, tx.metadata.from.bytes);
-            try std.testing.expect(tx.metadata.block_hash == null);
-            try std.testing.expect(tx.metadata.block_number == null);
+            try std.testing.expect(tx.metadata.block_hash != null);
+            try std.testing.expectEqual(mined_block_hash, tx.metadata.block_hash.?.bytes);
+            try std.testing.expectEqual(@as(u64, 1), tx.metadata.block_number);
+            try std.testing.expectEqual(@as(u64, 1000), tx.metadata.block_timestamp);
+            try std.testing.expectEqual(@as(u64, 0), tx.metadata.transaction_index);
             try std.testing.expectEqual(tx_hash, tx.metadata.hash.bytes);
         },
         else => return error.ExpectedLegacyTransaction,
