@@ -135,7 +135,10 @@ fn parseAddress(value: std.json.Value) ?primitives.Address.Address {
 fn parseU256(value: std.json.Value) ?u256 {
     const s = switch (value) {
         .string => |str| str,
-        .integer => |i| return @intCast(@as(u256, @bitCast(@as(i256, i)))),
+        .integer => |i| {
+            if (i < 0) return null;
+            return @intCast(i);
+        },
         else => return null,
     };
     return parseHexU256(s);
@@ -276,6 +279,22 @@ test "hardhat_setBalance updates account balance immediately" {
     try std.testing.expectEqual(@as(u256, 0x3e8), balance);
 }
 
+test "hardhat_setBalance rejects negative numeric quantity" {
+    const allocator = std.testing.allocator;
+    var state = try state_manager.StateManager.init(allocator, null);
+    defer state.deinit();
+
+    var arr = std.json.Array.init(allocator);
+    defer arr.deinit();
+    try arr.append(.{ .string = "0x0000000000000000000000000000000000000001" });
+    try arr.append(.{ .integer = -1 });
+
+    try std.testing.expectError(
+        error.InvalidParams,
+        handleHardhatSetBalance(&state, .{ .array = arr }),
+    );
+}
+
 test "hardhat_setCode updates account code immediately" {
     const allocator = std.testing.allocator;
     var state = try state_manager.StateManager.init(allocator, null);
@@ -330,6 +349,23 @@ test "hardhat_setStorageAt updates storage slot immediately" {
     try std.testing.expectEqual(@as(u256, 0xff), value);
 }
 
+test "hardhat_setStorageAt rejects negative numeric quantity" {
+    const allocator = std.testing.allocator;
+    var state = try state_manager.StateManager.init(allocator, null);
+    defer state.deinit();
+
+    var arr = std.json.Array.init(allocator);
+    defer arr.deinit();
+    try arr.append(.{ .string = "0x0000000000000000000000000000000000000001" });
+    try arr.append(.{ .string = "0x0" });
+    try arr.append(.{ .integer = -1 });
+
+    try std.testing.expectError(
+        error.InvalidParams,
+        handleHardhatSetStorageAt(&state, .{ .array = arr }),
+    );
+}
+
 test "hardhat_setCoinbase updates runtime coinbase" {
     const allocator = std.testing.allocator;
     var runtime = dev_runtime.DevRuntime.init();
@@ -354,6 +390,21 @@ test "hardhat_setNextBlockBaseFeePerGas updates next base fee" {
     const result = try handleHardhatSetNextBlockBaseFeePerGas(&runtime, .{ .array = arr });
     try std.testing.expect(result.bool);
     try std.testing.expectEqual(@as(u256, 1_000_000_000), runtime.config.next_block_base_fee_per_gas.?);
+}
+
+test "hardhat_setNextBlockBaseFeePerGas rejects negative numeric quantity" {
+    const allocator = std.testing.allocator;
+    var runtime = dev_runtime.DevRuntime.init();
+    defer runtime.deinit(allocator);
+
+    var arr = std.json.Array.init(allocator);
+    defer arr.deinit();
+    try arr.append(.{ .integer = -1 });
+
+    try std.testing.expectError(
+        error.InvalidParams,
+        handleHardhatSetNextBlockBaseFeePerGas(&runtime, .{ .array = arr }),
+    );
 }
 
 test "evm_setBlockGasLimit updates next block gas limit" {
