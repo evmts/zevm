@@ -19,6 +19,26 @@ fn callMethod(
     return node_handler.NodeHandler.onMethod(handler, allocator, method_name, params);
 }
 
+fn containsObjectKeyRecursive(value: std.json.Value, key: []const u8) bool {
+    switch (value) {
+        .object => |object| {
+            var it = object.iterator();
+            while (it.next()) |entry| {
+                if (std.mem.eql(u8, entry.key_ptr.*, key)) return true;
+                if (containsObjectKeyRecursive(entry.value_ptr.*, key)) return true;
+            }
+            return false;
+        },
+        .array => |array| {
+            for (array.items) |item| {
+                if (containsObjectKeyRecursive(item, key)) return true;
+            }
+            return false;
+        },
+        else => return false,
+    }
+}
+
 fn signLegacyRawTx(
     allocator: std.mem.Allocator,
     nonce: u64,
@@ -306,7 +326,7 @@ test "NodeHandler sendRawTransaction then getTransactionByHash returns transacti
     };
     try std.testing.expect(tx_object.get("hash") != null);
     try std.testing.expect(tx_object.get("from") != null);
-    try std.testing.expect(tx_object.get("blockTimestamp") == null);
+    try std.testing.expect(!containsObjectKeyRecursive(get_result, "blockTimestamp"));
 }
 
 test "NodeHandler eth_getBlockByNumber hydrated transactions omit blockTimestamp" {
@@ -340,7 +360,8 @@ test "NodeHandler eth_getBlockByNumber hydrated transactions omit blockTimestamp
         .object => |obj| obj,
         else => return error.ExpectedObject,
     };
-    try std.testing.expect(tx_object.get("blockTimestamp") == null);
+    try std.testing.expect(tx_object.get("hash") != null);
+    try std.testing.expect(!containsObjectKeyRecursive(get_block_result, "blockTimestamp"));
 }
 
 test "NodeHandler eth_getBlockByHash hydrated transactions omit blockTimestamp" {
@@ -375,7 +396,8 @@ test "NodeHandler eth_getBlockByHash hydrated transactions omit blockTimestamp" 
         .object => |obj| obj,
         else => return error.ExpectedObject,
     };
-    try std.testing.expect(tx_object.get("blockTimestamp") == null);
+    try std.testing.expect(tx_object.get("hash") != null);
+    try std.testing.expect(!containsObjectKeyRecursive(get_block_result, "blockTimestamp"));
 }
 
 test "NodeHandler hardhat impersonation allows eth_sendTransaction" {

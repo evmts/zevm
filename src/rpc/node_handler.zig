@@ -287,17 +287,13 @@ pub const NodeHandler = struct {
             const parsed = try parseParams(jsonrpc.eth.GetBlockByNumber.Params, temp_allocator, params);
             var block_query_context = makeBlockQueryContext(self);
             const result = try block_query_handlers.handleGetBlockByNumber(temp_allocator, &block_query_context, parsed);
-            var value = try toJsonValue(allocator, result);
-            stripNonstandardBlockTimestampField(&value);
-            return value;
+            return try toJsonValueWithoutNonstandardBlockTimestamp(allocator, result);
         }
         if (std.mem.eql(u8, method_name, "eth_getBlockByHash")) {
             const parsed = try parseParams(jsonrpc.eth.GetBlockByHash.Params, temp_allocator, params);
             var block_query_context = makeBlockQueryContext(self);
             const result = try block_query_handlers.handleGetBlockByHash(temp_allocator, &block_query_context, parsed);
-            var value = try toJsonValue(allocator, result);
-            stripNonstandardBlockTimestampField(&value);
-            return value;
+            return try toJsonValueWithoutNonstandardBlockTimestamp(allocator, result);
         }
         if (std.mem.eql(u8, method_name, "eth_getTransactionReceipt")) {
             const parsed = try parseParams(jsonrpc.eth.GetTransactionReceipt.Params, temp_allocator, params);
@@ -321,9 +317,7 @@ pub const NodeHandler = struct {
             const parsed = try parseParams(jsonrpc.eth.GetTransactionByHash.Params, temp_allocator, params);
             var block_query_context = makeBlockQueryContext(self);
             const result = try block_query_handlers.handleGetTransactionByHash(temp_allocator, &block_query_context, parsed);
-            var value = try toJsonValue(allocator, result);
-            stripNonstandardBlockTimestampField(&value);
-            return value;
+            return try toJsonValueWithoutNonstandardBlockTimestamp(allocator, result);
         }
         if (std.mem.eql(u8, method_name, "eth_call")) {
             const call_result = try self.executeEthCall(allocator, params);
@@ -1448,6 +1442,12 @@ fn toJsonValue(allocator: std.mem.Allocator, value: anytype) !std.json.Value {
     defer parsed.deinit();
 
     return try cloneJsonValue(allocator, parsed.value);
+}
+
+fn toJsonValueWithoutNonstandardBlockTimestamp(allocator: std.mem.Allocator, value: anytype) !std.json.Value {
+    var json_value = try toJsonValue(allocator, value);
+    stripNonstandardBlockTimestampField(&json_value);
+    return json_value;
 }
 
 fn stripNonstandardBlockTimestampField(value: *std.json.Value) void {
