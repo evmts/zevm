@@ -342,7 +342,7 @@ test "handleGetTransactionByHash: returns null for missing transaction hash" {
     try std.testing.expect(result.value == null);
 }
 
-test "handleGetTransactionByHash: returns null for pending transaction hash" {
+test "handleGetTransactionByHash: returns null before inclusion and object after mining" {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -373,14 +373,26 @@ test "handleGetTransactionByHash: returns null for pending transaction hash" {
     var tx_hash: [32]u8 = undefined;
     std.crypto.hash.sha3.Keccak256.hash(raw_tx, &tx_hash, .{});
     try state.rt.putTransactionRecord(allocator, tx_hash, runtime.DEFAULT_DEV_ACCOUNTS[0], raw_tx);
+    try state.rt.recordPendingTransaction(allocator, tx_hash);
 
     var ctx = state.getCtx();
-    const result = try block_query_handlers.handleGetTransactionByHash(
+    const pending_result = try block_query_handlers.handleGetTransactionByHash(
         arena.allocator(),
         &ctx,
         .{ .transaction_hash = .{ .bytes = tx_hash } },
     );
-    try std.testing.expect(result.value == null);
+    try std.testing.expect(pending_result.value == null);
+
+    var mined_block_hash: [32]u8 = undefined;
+    @memset(&mined_block_hash, 0x22);
+    state.rt.markTransactionMined(tx_hash, mined_block_hash, 1, 1000, 0);
+
+    const mined_result = try block_query_handlers.handleGetTransactionByHash(
+        arena.allocator(),
+        &ctx,
+        .{ .transaction_hash = .{ .bytes = tx_hash } },
+    );
+    try std.testing.expect(mined_result.value != null);
 }
 
 test "handleGetTransactionByHash: returns null when inclusion metadata is incomplete" {
