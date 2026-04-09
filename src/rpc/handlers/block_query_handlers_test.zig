@@ -3,12 +3,24 @@ const jsonrpc = @import("jsonrpc");
 const primitives = @import("primitives");
 const blockchain_mod = @import("blockchain");
 const block_query_handlers = @import("block_query_handlers.zig");
+const tx_submission = @import("tx_submission.zig");
 const receipt_index_mod = @import("../../receipt_index.zig");
 const log_index_mod = @import("../../log_index.zig");
 const runtime = @import("../../node/runtime.zig");
 
 fn makeBlockSpec(tag: []const u8) jsonrpc.types.BlockSpec {
     return .{ .value = .{ .string = tag } };
+}
+
+fn expectQuantityHexString(field: anytype, expected: []const u8) !void {
+    const quantity = field orelse return error.ExpectedQuantity;
+    switch (quantity.value) {
+        .string => |value| {
+            try std.testing.expect(std.mem.startsWith(u8, value, "0x"));
+            try std.testing.expectEqualStrings(expected, value);
+        },
+        else => return error.ExpectedQuantityString,
+    }
 }
 
 fn setupCtx(allocator: std.mem.Allocator) !struct {
@@ -136,6 +148,25 @@ test "handleGetBlockByNumber: returns genesis at earliest" {
     try std.testing.expect(result.block != null);
 }
 
+test "handleGetBlockByNumber: genesis includes required difficulty fields" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var state = try setupCtx(allocator);
+    defer state.deinit(allocator);
+
+    var ctx = state.getCtx();
+    const result = try block_query_handlers.handleGetBlockByNumber(
+        arena.allocator(),
+        &ctx,
+        .{ .block = makeBlockSpec("earliest"), .hydrated_transactions = false },
+    );
+    const rpc_block = result.block orelse return error.ExpectedBlock;
+    try expectQuantityHexString(rpc_block.difficulty, "0x0");
+    try expectQuantityHexString(rpc_block.totalDifficulty, "0x0");
+}
+
 test "handleGetBlockByNumber: returns block at latest" {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -233,6 +264,30 @@ test "handleGetBlockByHash: returns genesis by hash" {
         },
     );
     try std.testing.expect(result.block != null);
+}
+
+test "handleGetBlockByHash: mined block includes required difficulty fields" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var state = try setupCtx(allocator);
+    defer state.deinit(allocator);
+
+    const mined_hash = try tx_submission.mineEmptyBlock(allocator, &state.rt);
+
+    var ctx = state.getCtx();
+    const result = try block_query_handlers.handleGetBlockByHash(
+        arena.allocator(),
+        &ctx,
+        .{
+            .block_hash = .{ .bytes = mined_hash },
+            .hydrated_transactions = false,
+        },
+    );
+    const rpc_block = result.block orelse return error.ExpectedBlock;
+    try expectQuantityHexString(rpc_block.difficulty, "0x0");
+    try expectQuantityHexString(rpc_block.totalDifficulty, "0x0");
 }
 
 // ============================================================================
