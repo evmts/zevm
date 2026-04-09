@@ -151,11 +151,10 @@ fn parseU64(value: std.json.Value) ?u64 {
 }
 
 fn parseHexU256(s: []const u8) ?u256 {
-    var hex = s;
-    if (hex.len >= 2 and hex[0] == '0' and (hex[1] == 'x' or hex[1] == 'X')) {
-        hex = hex[2..];
-    }
-    if (hex.len == 0) return 0;
+    if (s.len < 3) return null;
+    if (s[0] != '0' or (s[1] != 'x' and s[1] != 'X')) return null;
+    const hex = s[2..];
+    if (hex.len > 1 and hex[0] == '0') return null;
     if (hex.len > 64) return null;
     var result: u256 = 0;
     for (hex) |c| {
@@ -295,6 +294,22 @@ test "hardhat_setBalance rejects negative numeric quantity" {
     );
 }
 
+test "hardhat_setBalance rejects non-quantity-hex string" {
+    const allocator = std.testing.allocator;
+    var state = try state_manager.StateManager.init(allocator, null);
+    defer state.deinit();
+
+    var arr = std.json.Array.init(allocator);
+    defer arr.deinit();
+    try arr.append(.{ .string = "0x0000000000000000000000000000000000000001" });
+    try arr.append(.{ .string = "1000" });
+
+    try std.testing.expectError(
+        error.InvalidParams,
+        handleHardhatSetBalance(&state, .{ .array = arr }),
+    );
+}
+
 test "hardhat_setCode updates account code immediately" {
     const allocator = std.testing.allocator;
     var state = try state_manager.StateManager.init(allocator, null);
@@ -366,6 +381,23 @@ test "hardhat_setStorageAt rejects negative numeric quantity" {
     );
 }
 
+test "hardhat_setStorageAt rejects non-minimal quantity hex" {
+    const allocator = std.testing.allocator;
+    var state = try state_manager.StateManager.init(allocator, null);
+    defer state.deinit();
+
+    var arr = std.json.Array.init(allocator);
+    defer arr.deinit();
+    try arr.append(.{ .string = "0x0000000000000000000000000000000000000001" });
+    try arr.append(.{ .string = "0x00" });
+    try arr.append(.{ .string = "0xff" });
+
+    try std.testing.expectError(
+        error.InvalidParams,
+        handleHardhatSetStorageAt(&state, .{ .array = arr }),
+    );
+}
+
 test "hardhat_setCoinbase updates runtime coinbase" {
     const allocator = std.testing.allocator;
     var runtime = dev_runtime.DevRuntime.init();
@@ -400,6 +432,21 @@ test "hardhat_setNextBlockBaseFeePerGas rejects negative numeric quantity" {
     var arr = std.json.Array.init(allocator);
     defer arr.deinit();
     try arr.append(.{ .integer = -1 });
+
+    try std.testing.expectError(
+        error.InvalidParams,
+        handleHardhatSetNextBlockBaseFeePerGas(&runtime, .{ .array = arr }),
+    );
+}
+
+test "hardhat_setNextBlockBaseFeePerGas rejects non-quantity-hex string" {
+    const allocator = std.testing.allocator;
+    var runtime = dev_runtime.DevRuntime.init();
+    defer runtime.deinit(allocator);
+
+    var arr = std.json.Array.init(allocator);
+    defer arr.deinit();
+    try arr.append(.{ .string = "1000000000" });
 
     try std.testing.expectError(
         error.InvalidParams,
