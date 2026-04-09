@@ -39,6 +39,17 @@ pub const MiningIndexes = struct {
     log_index: *log_index.LogIndex,
 };
 
+fn runAutomineForSubmission(
+    allocator: std.mem.Allocator,
+    rt: *runtime.NodeRuntime,
+    indexes: ?MiningIndexes,
+) TxSubmissionError!void {
+    automine(allocator, rt, indexes) catch |err| switch (err) {
+        error.OutOfMemory => return TxSubmissionError.OutOfMemory,
+        else => return TxSubmissionError.StateError,
+    };
+}
+
 pub fn handleSendRawTransaction(
     allocator: std.mem.Allocator,
     rt: *runtime.NodeRuntime,
@@ -116,7 +127,7 @@ pub fn handleSendRawTransactionWithIndexes(
 
     // Automine if in auto mode
     if (rt.mining_mode == .auto) {
-        automine(allocator, rt, indexes) catch {};
+        try runAutomineForSubmission(allocator, rt, indexes);
     }
 
     return .{ .value = .{ .bytes = tx_hash } };
@@ -445,7 +456,7 @@ pub fn handleSendTransactionWithIndexes(
 
     // Automine if in auto mode
     if (rt.mining_mode == .auto) {
-        automine(allocator, rt, indexes) catch {};
+        try runAutomineForSubmission(allocator, rt, indexes);
     }
 
     return .{ .value = .{ .bytes = tx_hash } };

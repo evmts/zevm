@@ -4,6 +4,8 @@ const crypto = @import("crypto");
 const runtime = @import("../../node/runtime.zig");
 const tx_submission = @import("tx_submission.zig");
 const jsonrpc = @import("jsonrpc");
+const receipt_index = @import("../../receipt_index.zig");
+const log_index = @import("../../log_index.zig");
 
 fn makeRuntime() !runtime.NodeRuntime {
     return runtime.NodeRuntime.init(std.testing.allocator, null);
@@ -215,6 +217,45 @@ test "automine persists canonical block body with mined transaction" {
     try std.testing.expect(!std.mem.eql(u8, &mined_block.?.header.transactions_root, &primitives.BlockHeader.EMPTY_TRANSACTIONS_ROOT));
     try std.testing.expect(!std.mem.eql(u8, &mined_block.?.header.receipts_root, &primitives.BlockHeader.EMPTY_RECEIPTS_ROOT));
     try std.testing.expect(!std.mem.eql(u8, &mined_block.?.header.state_root, &primitives.AccountState.EMPTY_TRIE_ROOT));
+}
+
+test "automine: auto mode returns runtime error when receipt indexing fails" {
+    var rt = try makeRuntime();
+    defer rt.deinit(std.testing.allocator);
+
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    var failing_receipt_index = receipt_index.ReceiptIndex.init(failing_allocator.allocator());
+    defer failing_receipt_index.deinit(std.testing.allocator);
+    var logs = log_index.LogIndex.init();
+    defer logs.deinit(std.testing.allocator);
+
+    const encoded = try signTestLegacyTx(
+        std.testing.allocator,
+        0,
+        runtime.DEFAULT_GAS_PRICE,
+        21_000,
+        runtime.DEFAULT_DEV_ACCOUNTS[1],
+        1000,
+        runtime.DEFAULT_CHAIN_ID,
+        runtime.DEFAULT_DEV_PRIVATE_KEYS[0],
+    );
+    defer std.testing.allocator.free(encoded);
+
+    const hex = try bytesToHexAlloc(std.testing.allocator, encoded);
+    defer std.testing.allocator.free(hex);
+
+    const result = tx_submission.handleSendRawTransactionWithIndexes(
+        std.testing.allocator,
+        &rt,
+        makeRawTxParams(hex),
+        .{
+            .receipt_index = &failing_receipt_index,
+            .log_index = &logs,
+        },
+    );
+    try std.testing.expectError(tx_submission.TxSubmissionError.OutOfMemory, result);
+    try std.testing.expectEqual(@as(u64, 0), rt.head_block_number);
+    try std.testing.expectEqual(@as(usize, 1), rt.pool.pendingCount());
 }
 
 test "automine: manual mode does not mine" {
