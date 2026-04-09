@@ -1,8 +1,10 @@
 const std = @import("std");
 const jsonrpc = @import("jsonrpc");
+const primitives = @import("primitives");
 const dispatcher = @import("dispatcher.zig");
 const server = @import("server.zig");
 const node_handler = @import("node_handler.zig");
+const runtime = @import("../node/runtime.zig");
 
 fn getObjectField(value: std.json.Value, key: []const u8) !std.json.Value {
     return switch (value) {
@@ -15,6 +17,76 @@ fn parseJson(body: []const u8) !std.json.Parsed(std.json.Value) {
     return std.json.parseFromSlice(std.json.Value, std.testing.allocator, body, .{
         .allocate = .alloc_always,
     });
+}
+
+fn signLegacyRawTx(
+    allocator: std.mem.Allocator,
+    nonce: u64,
+    gas_price: u256,
+    gas_limit: u64,
+    to: ?primitives.Address,
+    value: u256,
+) ![]u8 {
+    const unsigned_tx = primitives.Transaction.LegacyTransaction{
+        .nonce = nonce,
+        .gas_price = gas_price,
+        .gas_limit = gas_limit,
+        .to = to,
+        .value = value,
+        .data = &[_]u8{},
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+    const signed_tx = try primitives.Transaction.signLegacyTransaction(
+        allocator,
+        unsigned_tx,
+        runtime.DEFAULT_DEV_PRIVATE_KEYS[0],
+        runtime.DEFAULT_CHAIN_ID,
+    );
+    return primitives.Transaction.encodeLegacyForSigning(allocator, signed_tx, runtime.DEFAULT_CHAIN_ID);
+}
+
+fn appendLegacyBlockWithSingleTransaction(
+    allocator: std.mem.Allocator,
+    handler: *node_handler.NodeHandler,
+) ![32]u8 {
+    const parent_number = handler.node_runtime.head_block_number;
+    const parent_block = (try handler.node_runtime.blockchain.getBlockByNumber(parent_number)) orelse return error.ExpectedParentBlock;
+
+    const raw_tx = try signLegacyRawTx(
+        allocator,
+        0,
+        runtime.DEFAULT_GAS_PRICE,
+        21_000,
+        runtime.DEFAULT_DEV_ACCOUNTS[1],
+        1000,
+    );
+    const retained_raw_tx = try handler.node_runtime.retainBlockTransactionRaw(allocator, raw_tx);
+
+    const txs = try allocator.alloc(primitives.BlockBody.TransactionData, 1);
+    txs[0] = .{ .raw = retained_raw_tx };
+
+    var header = primitives.BlockHeader.BlockHeader{
+        .parent_hash = parent_block.hash,
+        .number = parent_block.header.number + 1,
+        .timestamp = parent_block.header.timestamp + 12,
+        .gas_limit = parent_block.header.gas_limit,
+        .base_fee_per_gas = parent_block.header.base_fee_per_gas,
+    };
+    const body = primitives.BlockBody.BlockBody{
+        .transactions = txs,
+        .ommers = &[_]primitives.BlockBody.UncleHeader{},
+        .withdrawals = null,
+    };
+    const block = try primitives.Block.from(&header, &body, allocator);
+
+    try handler.node_runtime.blockchain.putBlock(block);
+    try handler.node_runtime.blockchain.setCanonicalHead(block.hash);
+    handler.node_runtime.head_block_number = block.header.number;
+    handler.node_runtime.head_block_hash = block.hash;
+
+    return block.hash;
 }
 
 fn successHandler(allocator: std.mem.Allocator, method_name: []const u8, params: ?std.json.Value) anyerror!std.json.Value {
@@ -909,6 +981,172 @@ test "server with NodeHandler context handles eth_getBlockByNumber ownership saf
     try std.testing.expect(block_object.get("number") != null);
     try std.testing.expect(block_object.get("hash") != null);
     try std.testing.expect(block_object.get("transactions") != null);
+}
+
+test "server with NodeHandler context eth_getTransactionByHash omits blockTimestamp" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    const handlers = dispatcher.HandlerRegistry{
+        .context = &handler,
+        .on_method_with_context = &node_handler.NodeHandler.onMethod,
+    };
+
+    const raw_tx = try signLegacyRawTx(
+        allocator,
+        0,
+        runtime.DEFAULT_GAS_PRICE,
+        21_000,
+        runtime.DEFAULT_DEV_ACCOUNTS[1],
+        1000,
+    );
+    const raw_tx_hex = try primitives.Hex.bytesToHex(allocator, raw_tx);
+    const send_request = try std.fmt.allocPrint(
+        allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_sendRawTransaction\",\"params\":[\"{s}\"]}}",
+        .{raw_tx_hex},
+    );
+    defer allocator.free(send_request);
+
+    var send_response = try server.handleHttpRequestForTest(
+        allocator,
+        .POST,
+        send_request,
+        &handlers,
+    );
+    defer send_response.deinit(allocator);
+
+    const send_parsed = try parseJson(send_response.body.?);
+    defer send_parsed.deinit();
+    const tx_hash = (try getObjectField(send_parsed.value, "result")).string;
+
+    const get_request = try std.fmt.allocPrint(
+        allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_getTransactionByHash\",\"params\":[\"{s}\"]}}",
+        .{tx_hash},
+    );
+    defer allocator.free(get_request);
+
+    var get_response = try server.handleHttpRequestForTest(
+        allocator,
+        .POST,
+        get_request,
+        &handlers,
+    );
+    defer get_response.deinit(allocator);
+
+    const get_parsed = try parseJson(get_response.body.?);
+    defer get_parsed.deinit();
+    const tx_result = try getObjectField(get_parsed.value, "result");
+    const tx_object = switch (tx_result) {
+        .object => |obj| obj,
+        else => return error.ExpectedObject,
+    };
+
+    try std.testing.expect(tx_object.get("blockTimestamp") == null);
+}
+
+test "server with NodeHandler context eth_getBlockByNumber hydrated transactions omit blockTimestamp" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    const handlers = dispatcher.HandlerRegistry{
+        .context = &handler,
+        .on_method_with_context = &node_handler.NodeHandler.onMethod,
+    };
+
+    _ = try appendLegacyBlockWithSingleTransaction(allocator, &handler);
+
+    var block_response = try server.handleHttpRequestForTest(
+        allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_getBlockByNumber\",\"params\":[\"latest\",true]}",
+        &handlers,
+    );
+    defer block_response.deinit(allocator);
+
+    const parsed = try parseJson(block_response.body.?);
+    defer parsed.deinit();
+    const block_result = try getObjectField(parsed.value, "result");
+    const block_object = switch (block_result) {
+        .object => |obj| obj,
+        else => return error.ExpectedObject,
+    };
+
+    const transactions_value = block_object.get("transactions") orelse return error.ExpectedTransactions;
+    const transactions = switch (transactions_value) {
+        .array => |array| array.items,
+        else => return error.ExpectedArray,
+    };
+    try std.testing.expect(transactions.len > 0);
+
+    const tx_object = switch (transactions[0]) {
+        .object => |obj| obj,
+        else => return error.ExpectedObject,
+    };
+    try std.testing.expect(tx_object.get("blockTimestamp") == null);
+}
+
+test "server with NodeHandler context eth_getBlockByHash hydrated transactions omit blockTimestamp" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var handler = try node_handler.NodeHandler.init(allocator, null);
+    defer handler.deinit(allocator);
+
+    const handlers = dispatcher.HandlerRegistry{
+        .context = &handler,
+        .on_method_with_context = &node_handler.NodeHandler.onMethod,
+    };
+
+    const block_hash = try appendLegacyBlockWithSingleTransaction(allocator, &handler);
+    const block_hash_hex = try std.fmt.allocPrint(allocator, "0x{x}", .{block_hash});
+    defer allocator.free(block_hash_hex);
+
+    const by_hash_request = try std.fmt.allocPrint(
+        allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"eth_getBlockByHash\",\"params\":[\"{s}\",true]}}",
+        .{block_hash_hex},
+    );
+    defer allocator.free(by_hash_request);
+
+    var by_hash_response = try server.handleHttpRequestForTest(
+        allocator,
+        .POST,
+        by_hash_request,
+        &handlers,
+    );
+    defer by_hash_response.deinit(allocator);
+
+    const by_hash_parsed = try parseJson(by_hash_response.body.?);
+    defer by_hash_parsed.deinit();
+    const by_hash_result = try getObjectField(by_hash_parsed.value, "result");
+    const block_object = switch (by_hash_result) {
+        .object => |obj| obj,
+        else => return error.ExpectedObject,
+    };
+
+    const transactions_value = block_object.get("transactions") orelse return error.ExpectedTransactions;
+    const transactions = switch (transactions_value) {
+        .array => |array| array.items,
+        else => return error.ExpectedArray,
+    };
+    try std.testing.expect(transactions.len > 0);
+
+    const tx_object = switch (transactions[0]) {
+        .object => |obj| obj,
+        else => return error.ExpectedObject,
+    };
+    try std.testing.expect(tx_object.get("blockTimestamp") == null);
 }
 
 test "server with NodeHandler context exposes automined transaction receipt" {
