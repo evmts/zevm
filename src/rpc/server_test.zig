@@ -17,6 +17,17 @@ fn parseJson(body: []const u8) !std.json.Parsed(std.json.Value) {
     });
 }
 
+fn expectQuantityHexObjectField(object: std.json.ObjectMap, key: []const u8, expected: []const u8) !void {
+    const field = object.get(key) orelse return error.MissingField;
+    switch (field) {
+        .string => |value| {
+            try std.testing.expect(std.mem.startsWith(u8, value, "0x"));
+            try std.testing.expectEqualStrings(expected, value);
+        },
+        else => return error.InvalidJsonType,
+    }
+}
+
 fn successHandler(allocator: std.mem.Allocator, method_name: []const u8, params: ?std.json.Value) anyerror!std.json.Value {
     _ = allocator;
     _ = params;
@@ -909,6 +920,100 @@ test "server with NodeHandler context handles eth_getBlockByNumber ownership saf
     try std.testing.expect(block_object.get("number") != null);
     try std.testing.expect(block_object.get("hash") != null);
     try std.testing.expect(block_object.get("transactions") != null);
+}
+
+test "server with NodeHandler context serializes required difficulty fields for genesis block by number" {
+    var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
+    defer handler.deinit(std.testing.allocator);
+
+    const handlers = dispatcher.HandlerRegistry{
+        .context = &handler,
+        .on_method_with_context = &node_handler.NodeHandler.onMethod,
+    };
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getBlockByNumber\",\"params\":[\"earliest\",false]}",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(std.http.Status.ok, response.status);
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+    const result = try getObjectField(parsed.value, "result");
+    const block_object = switch (result) {
+        .object => |obj| obj,
+        else => return error.ExpectedObject,
+    };
+
+    try expectQuantityHexObjectField(block_object, "difficulty", "0x0");
+    try expectQuantityHexObjectField(block_object, "totalDifficulty", "0x0");
+}
+
+test "server with NodeHandler context serializes required difficulty fields for mined block by hash" {
+    var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
+    defer handler.deinit(std.testing.allocator);
+
+    const handlers = dispatcher.HandlerRegistry{
+        .context = &handler,
+        .on_method_with_context = &node_handler.NodeHandler.onMethod,
+    };
+
+    var mine_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"hardhat_mine\",\"params\":[\"0x1\"]}",
+        &handlers,
+    );
+    defer mine_response.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, mine_response.status);
+
+    var by_number_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_getBlockByNumber\",\"params\":[\"0x1\",false]}",
+        &handlers,
+    );
+    defer by_number_response.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, by_number_response.status);
+
+    const by_number_parsed = try parseJson(by_number_response.body.?);
+    defer by_number_parsed.deinit();
+    const by_number_result = try getObjectField(by_number_parsed.value, "result");
+    const by_number_block = switch (by_number_result) {
+        .object => |obj| obj,
+        else => return error.ExpectedObject,
+    };
+    const mined_hash = (by_number_block.get("hash") orelse return error.MissingField).string;
+
+    const by_hash_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"eth_getBlockByHash\",\"params\":[\"{s}\",false]}}",
+        .{mined_hash},
+    );
+    defer std.testing.allocator.free(by_hash_request);
+
+    var by_hash_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        by_hash_request,
+        &handlers,
+    );
+    defer by_hash_response.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, by_hash_response.status);
+
+    const by_hash_parsed = try parseJson(by_hash_response.body.?);
+    defer by_hash_parsed.deinit();
+    const by_hash_result = try getObjectField(by_hash_parsed.value, "result");
+    const block_object = switch (by_hash_result) {
+        .object => |obj| obj,
+        else => return error.ExpectedObject,
+    };
+
+    try expectQuantityHexObjectField(block_object, "difficulty", "0x0");
+    try expectQuantityHexObjectField(block_object, "totalDifficulty", "0x0");
 }
 
 test "server with NodeHandler context exposes automined transaction receipt" {
