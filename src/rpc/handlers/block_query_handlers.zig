@@ -351,7 +351,7 @@ fn internalBlockToRpc(
         .transactions = txs,
         .uncles = &.{},
         .difficulty = try quantityFromU256(allocator, resp.difficulty),
-        .totalDifficulty = try quantityFromU256(allocator, resp.totalDifficulty orelse 0),
+        .totalDifficulty = try quantityFromU256(allocator, resp.totalDifficulty),
         .baseFeePerGas = if (resp.baseFeePerGas) |bfpg| try quantityFromU256(allocator, bfpg) else null,
         .withdrawalsRoot = if (resp.withdrawalsRoot) |wr| hashToRpc(wr) else null,
         .blobGasUsed = if (resp.blobGasUsed) |bgu| try quantityFromU64(allocator, bgu) else null,

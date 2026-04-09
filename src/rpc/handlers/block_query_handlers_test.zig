@@ -167,6 +167,27 @@ test "handleGetBlockByNumber: genesis includes required difficulty fields" {
     try expectQuantityHexString(rpc_block.totalDifficulty, "0x0");
 }
 
+test "handleGetBlockByNumber: mined block includes required difficulty fields" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var state = try setupCtx(allocator);
+    defer state.deinit(allocator);
+
+    _ = try tx_submission.mineEmptyBlock(allocator, &state.rt);
+
+    var ctx = state.getCtx();
+    const result = try block_query_handlers.handleGetBlockByNumber(
+        arena.allocator(),
+        &ctx,
+        .{ .block = makeBlockSpec("0x1"), .hydrated_transactions = false },
+    );
+    const rpc_block = result.block orelse return error.ExpectedBlock;
+    try expectQuantityHexString(rpc_block.difficulty, "0x0");
+    try expectQuantityHexString(rpc_block.totalDifficulty, "0x0");
+}
+
 test "handleGetBlockByNumber: returns block at latest" {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -263,7 +284,9 @@ test "handleGetBlockByHash: returns genesis by hash" {
             .hydrated_transactions = false,
         },
     );
-    try std.testing.expect(result.block != null);
+    const rpc_block = result.block orelse return error.ExpectedBlock;
+    try expectQuantityHexString(rpc_block.difficulty, "0x0");
+    try expectQuantityHexString(rpc_block.totalDifficulty, "0x0");
 }
 
 test "handleGetBlockByHash: mined block includes required difficulty fields" {

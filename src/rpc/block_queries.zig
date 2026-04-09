@@ -35,7 +35,7 @@ pub const BlockResponse = struct {
     excessBlobGas: ?u64,
     parentBeaconBlockRoot: ?[32]u8,
     size: u64,
-    totalDifficulty: ?u256,
+    totalDifficulty: u256,
     transactions: TransactionList,
 };
 
@@ -276,7 +276,7 @@ fn blockToResponse(
         .excessBlobGas = block.header.excess_blob_gas,
         .parentBeaconBlockRoot = block.header.parent_beacon_block_root,
         .size = block.size,
-        .totalDifficulty = block.total_difficulty,
+        .totalDifficulty = block.total_difficulty orelse 0,
         .transactions = txs,
     };
 }
