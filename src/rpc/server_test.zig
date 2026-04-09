@@ -911,6 +911,281 @@ test "server with NodeHandler context handles eth_getBlockByNumber ownership saf
     try std.testing.expect(block_object.get("transactions") != null);
 }
 
+test "server with NodeHandler context handles eth_getBlockTransactionCountByHash" {
+    var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
+    defer handler.deinit(std.testing.allocator);
+
+    const handlers = dispatcher.HandlerRegistry{
+        .context = &handler,
+        .on_method_with_context = &node_handler.NodeHandler.onMethod,
+    };
+
+    var send_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_sendTransaction\",\"params\":[{\"from\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"to\":\"0x70997970C51812dc3A010C7d01b50e0d17dc79C8\",\"value\":\"0x1\",\"gas\":\"0x5208\"}]}",
+        &handlers,
+    );
+    defer send_response.deinit(std.testing.allocator);
+
+    const send_parsed = try parseJson(send_response.body.?);
+    defer send_parsed.deinit();
+    const tx_hash = (try getObjectField(send_parsed.value, "result")).string;
+
+    const receipt_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_getTransactionReceipt\",\"params\":[\"{s}\"]}}",
+        .{tx_hash},
+    );
+    defer std.testing.allocator.free(receipt_request);
+
+    var receipt_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        receipt_request,
+        &handlers,
+    );
+    defer receipt_response.deinit(std.testing.allocator);
+
+    const receipt_parsed = try parseJson(receipt_response.body.?);
+    defer receipt_parsed.deinit();
+    const receipt_result = try getObjectField(receipt_parsed.value, "result");
+    const receipt_object = switch (receipt_result) {
+        .object => |obj| obj,
+        else => return error.ExpectedObject,
+    };
+    const block_hash = (receipt_object.get("blockHash") orelse return error.MissingField).string;
+
+    const count_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"eth_getBlockTransactionCountByHash\",\"params\":[\"{s}\"]}}",
+        .{block_hash},
+    );
+    defer std.testing.allocator.free(count_request);
+
+    var count_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        count_request,
+        &handlers,
+    );
+    defer count_response.deinit(std.testing.allocator);
+
+    const count_parsed = try parseJson(count_response.body.?);
+    defer count_parsed.deinit();
+    switch (try getObjectField(count_parsed.value, "result")) {
+        .string => |value| try std.testing.expectEqualStrings("0x1", value),
+        else => return error.ExpectedStringResult,
+    }
+
+    var missing_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"eth_getBlockTransactionCountByHash\",\"params\":[\"0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"]}",
+        &handlers,
+    );
+    defer missing_response.deinit(std.testing.allocator);
+
+    const missing_parsed = try parseJson(missing_response.body.?);
+    defer missing_parsed.deinit();
+    try std.testing.expect((try getObjectField(missing_parsed.value, "result")) == .null);
+}
+
+test "server with NodeHandler context handles eth_getBlockTransactionCountByNumber" {
+    var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
+    defer handler.deinit(std.testing.allocator);
+
+    const handlers = dispatcher.HandlerRegistry{
+        .context = &handler,
+        .on_method_with_context = &node_handler.NodeHandler.onMethod,
+    };
+
+    var send_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_sendTransaction\",\"params\":[{\"from\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"to\":\"0x70997970C51812dc3A010C7d01b50e0d17dc79C8\",\"value\":\"0x1\",\"gas\":\"0x5208\"}]}",
+        &handlers,
+    );
+    defer send_response.deinit(std.testing.allocator);
+
+    var count_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_getBlockTransactionCountByNumber\",\"params\":[\"pending\"]}",
+        &handlers,
+    );
+    defer count_response.deinit(std.testing.allocator);
+
+    const count_parsed = try parseJson(count_response.body.?);
+    defer count_parsed.deinit();
+    switch (try getObjectField(count_parsed.value, "result")) {
+        .string => |value| try std.testing.expectEqualStrings("0x1", value),
+        else => return error.ExpectedStringResult,
+    }
+
+    var missing_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"eth_getBlockTransactionCountByNumber\",\"params\":[\"0x999\"]}",
+        &handlers,
+    );
+    defer missing_response.deinit(std.testing.allocator);
+
+    const missing_parsed = try parseJson(missing_response.body.?);
+    defer missing_parsed.deinit();
+    try std.testing.expect((try getObjectField(missing_parsed.value, "result")) == .null);
+}
+
+test "server with NodeHandler context handles eth_getTransactionByBlockHashAndIndex" {
+    var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
+    defer handler.deinit(std.testing.allocator);
+
+    const handlers = dispatcher.HandlerRegistry{
+        .context = &handler,
+        .on_method_with_context = &node_handler.NodeHandler.onMethod,
+    };
+
+    var send_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_sendTransaction\",\"params\":[{\"from\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"to\":\"0x70997970C51812dc3A010C7d01b50e0d17dc79C8\",\"value\":\"0x1\",\"gas\":\"0x5208\"}]}",
+        &handlers,
+    );
+    defer send_response.deinit(std.testing.allocator);
+    const send_parsed = try parseJson(send_response.body.?);
+    defer send_parsed.deinit();
+    const tx_hash = (try getObjectField(send_parsed.value, "result")).string;
+
+    const receipt_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_getTransactionReceipt\",\"params\":[\"{s}\"]}}",
+        .{tx_hash},
+    );
+    defer std.testing.allocator.free(receipt_request);
+
+    var receipt_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        receipt_request,
+        &handlers,
+    );
+    defer receipt_response.deinit(std.testing.allocator);
+
+    const receipt_parsed = try parseJson(receipt_response.body.?);
+    defer receipt_parsed.deinit();
+    const receipt_result = try getObjectField(receipt_parsed.value, "result");
+    const receipt_object = switch (receipt_result) {
+        .object => |obj| obj,
+        else => return error.ExpectedObject,
+    };
+    const block_hash = (receipt_object.get("blockHash") orelse return error.MissingField).string;
+
+    const tx_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"eth_getTransactionByBlockHashAndIndex\",\"params\":[\"{s}\",\"0x0\"]}}",
+        .{block_hash},
+    );
+    defer std.testing.allocator.free(tx_request);
+
+    var tx_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        tx_request,
+        &handlers,
+    );
+    defer tx_response.deinit(std.testing.allocator);
+
+    const tx_parsed = try parseJson(tx_response.body.?);
+    defer tx_parsed.deinit();
+    const tx_result = try getObjectField(tx_parsed.value, "result");
+    const tx_object = switch (tx_result) {
+        .object => |obj| obj,
+        else => return error.ExpectedObject,
+    };
+    try std.testing.expectEqualStrings(tx_hash, (tx_object.get("hash") orelse return error.MissingField).string);
+
+    const out_of_range_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"eth_getTransactionByBlockHashAndIndex\",\"params\":[\"{s}\",\"0x1\"]}}",
+        .{block_hash},
+    );
+    defer std.testing.allocator.free(out_of_range_request);
+
+    var out_of_range_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        out_of_range_request,
+        &handlers,
+    );
+    defer out_of_range_response.deinit(std.testing.allocator);
+
+    const out_of_range_parsed = try parseJson(out_of_range_response.body.?);
+    defer out_of_range_parsed.deinit();
+    try std.testing.expect((try getObjectField(out_of_range_parsed.value, "result")) == .null);
+}
+
+test "server with NodeHandler context handles eth_getTransactionByBlockNumberAndIndex" {
+    var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
+    defer handler.deinit(std.testing.allocator);
+
+    const handlers = dispatcher.HandlerRegistry{
+        .context = &handler,
+        .on_method_with_context = &node_handler.NodeHandler.onMethod,
+    };
+
+    var send_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_sendTransaction\",\"params\":[{\"from\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"to\":\"0x70997970C51812dc3A010C7d01b50e0d17dc79C8\",\"value\":\"0x1\",\"gas\":\"0x5208\"}]}",
+        &handlers,
+    );
+    defer send_response.deinit(std.testing.allocator);
+    const send_parsed = try parseJson(send_response.body.?);
+    defer send_parsed.deinit();
+    const tx_hash = (try getObjectField(send_parsed.value, "result")).string;
+
+    var tx_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_getTransactionByBlockNumberAndIndex\",\"params\":[\"pending\",\"0x0\"]}",
+        &handlers,
+    );
+    defer tx_response.deinit(std.testing.allocator);
+
+    const tx_parsed = try parseJson(tx_response.body.?);
+    defer tx_parsed.deinit();
+    const tx_result = try getObjectField(tx_parsed.value, "result");
+    const tx_object = switch (tx_result) {
+        .object => |obj| obj,
+        else => return error.ExpectedObject,
+    };
+    try std.testing.expectEqualStrings(tx_hash, (tx_object.get("hash") orelse return error.MissingField).string);
+
+    var out_of_range_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"eth_getTransactionByBlockNumberAndIndex\",\"params\":[\"pending\",\"0x1\"]}",
+        &handlers,
+    );
+    defer out_of_range_response.deinit(std.testing.allocator);
+
+    const out_of_range_parsed = try parseJson(out_of_range_response.body.?);
+    defer out_of_range_parsed.deinit();
+    try std.testing.expect((try getObjectField(out_of_range_parsed.value, "result")) == .null);
+
+    var missing_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"eth_getTransactionByBlockNumberAndIndex\",\"params\":[\"0x999\",\"0x0\"]}",
+        &handlers,
+    );
+    defer missing_response.deinit(std.testing.allocator);
+
+    const missing_parsed = try parseJson(missing_response.body.?);
+    defer missing_parsed.deinit();
+    try std.testing.expect((try getObjectField(missing_parsed.value, "result")) == .null);
+}
+
 test "server with NodeHandler context exposes automined transaction receipt" {
     var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
     defer handler.deinit(std.testing.allocator);

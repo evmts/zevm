@@ -295,6 +295,30 @@ pub const NodeHandler = struct {
             const result = try block_query_handlers.handleGetBlockByHash(temp_allocator, &block_query_context, parsed);
             return try toJsonValue(allocator, result);
         }
+        if (std.mem.eql(u8, method_name, "eth_getBlockTransactionCountByHash")) {
+            const parsed = try parseParams(block_query_handlers.GetBlockTransactionCountByHashParams, temp_allocator, params);
+            var block_query_context = makeBlockQueryContext(self);
+            const result = try block_query_handlers.handleGetBlockTransactionCountByHash(temp_allocator, &block_query_context, parsed);
+            return try toJsonValue(allocator, result);
+        }
+        if (std.mem.eql(u8, method_name, "eth_getBlockTransactionCountByNumber")) {
+            const parsed = try parseParams(block_query_handlers.GetBlockTransactionCountByNumberParams, temp_allocator, params);
+            var block_query_context = makeBlockQueryContext(self);
+            const result = try block_query_handlers.handleGetBlockTransactionCountByNumber(temp_allocator, &block_query_context, parsed);
+            return try toJsonValue(allocator, result);
+        }
+        if (std.mem.eql(u8, method_name, "eth_getTransactionByBlockHashAndIndex")) {
+            const parsed = try parseParams(block_query_handlers.GetTransactionByBlockHashAndIndexParams, temp_allocator, params);
+            var block_query_context = makeBlockQueryContext(self);
+            const result = try block_query_handlers.handleGetTransactionByBlockHashAndIndex(temp_allocator, &block_query_context, parsed);
+            return try toJsonValue(allocator, result);
+        }
+        if (std.mem.eql(u8, method_name, "eth_getTransactionByBlockNumberAndIndex")) {
+            const parsed = try parseParams(block_query_handlers.GetTransactionByBlockNumberAndIndexParams, temp_allocator, params);
+            var block_query_context = makeBlockQueryContext(self);
+            const result = try block_query_handlers.handleGetTransactionByBlockNumberAndIndex(temp_allocator, &block_query_context, parsed);
+            return try toJsonValue(allocator, result);
+        }
         if (std.mem.eql(u8, method_name, "eth_getTransactionReceipt")) {
             const parsed = try parseParams(jsonrpc.eth.GetTransactionReceipt.Params, temp_allocator, params);
             var block_query_context = makeBlockQueryContext(self);

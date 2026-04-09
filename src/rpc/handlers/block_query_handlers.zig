@@ -16,6 +16,110 @@ pub const BlockQueryContext = struct {
     log_index: *const log_index_mod.LogIndex,
 };
 
+pub const GetBlockTransactionCountByHashParams = struct {
+    block_hash: jsonrpc.types.Hash,
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !@This() {
+        if (source != .array) return error.UnexpectedToken;
+        if (source.array.items.len != 1) return error.InvalidParamCount;
+
+        return .{
+            .block_hash = try std.json.innerParseFromValue(jsonrpc.types.Hash, allocator, source.array.items[0], options),
+        };
+    }
+};
+
+pub const GetBlockTransactionCountByHashResult = struct {
+    value: ?jsonrpc.types.Quantity,
+
+    pub fn jsonStringify(self: @This(), jws: *std.json.Stringify) !void {
+        if (self.value) |quantity| {
+            try jws.write(quantity);
+        } else {
+            try jws.write(null);
+        }
+    }
+};
+
+pub const GetBlockTransactionCountByNumberParams = struct {
+    block: jsonrpc.types.BlockSpec,
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !@This() {
+        if (source != .array) return error.UnexpectedToken;
+        if (source.array.items.len != 1) return error.InvalidParamCount;
+
+        return .{
+            .block = try std.json.innerParseFromValue(jsonrpc.types.BlockSpec, allocator, source.array.items[0], options),
+        };
+    }
+};
+
+pub const GetBlockTransactionCountByNumberResult = struct {
+    value: ?jsonrpc.types.Quantity,
+
+    pub fn jsonStringify(self: @This(), jws: *std.json.Stringify) !void {
+        if (self.value) |quantity| {
+            try jws.write(quantity);
+        } else {
+            try jws.write(null);
+        }
+    }
+};
+
+pub const GetTransactionByBlockHashAndIndexParams = struct {
+    block_hash: jsonrpc.types.Hash,
+    transaction_index: jsonrpc.types.Quantity,
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !@This() {
+        if (source != .array) return error.UnexpectedToken;
+        if (source.array.items.len != 2) return error.InvalidParamCount;
+
+        return .{
+            .block_hash = try std.json.innerParseFromValue(jsonrpc.types.Hash, allocator, source.array.items[0], options),
+            .transaction_index = try std.json.innerParseFromValue(jsonrpc.types.Quantity, allocator, source.array.items[1], options),
+        };
+    }
+};
+
+pub const GetTransactionByBlockHashAndIndexResult = struct {
+    value: ?jsonrpc.types.TransactionResponse,
+
+    pub fn jsonStringify(self: @This(), jws: *std.json.Stringify) !void {
+        if (self.value) |tx| {
+            try tx.jsonStringify(jws);
+        } else {
+            try jws.write(null);
+        }
+    }
+};
+
+pub const GetTransactionByBlockNumberAndIndexParams = struct {
+    block: jsonrpc.types.BlockSpec,
+    transaction_index: jsonrpc.types.Quantity,
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !@This() {
+        if (source != .array) return error.UnexpectedToken;
+        if (source.array.items.len != 2) return error.InvalidParamCount;
+
+        return .{
+            .block = try std.json.innerParseFromValue(jsonrpc.types.BlockSpec, allocator, source.array.items[0], options),
+            .transaction_index = try std.json.innerParseFromValue(jsonrpc.types.Quantity, allocator, source.array.items[1], options),
+        };
+    }
+};
+
+pub const GetTransactionByBlockNumberAndIndexResult = struct {
+    value: ?jsonrpc.types.TransactionResponse,
+
+    pub fn jsonStringify(self: @This(), jws: *std.json.Stringify) !void {
+        if (self.value) |tx| {
+            try tx.jsonStringify(jws);
+        } else {
+            try jws.write(null);
+        }
+    }
+};
+
 // ============================================================================
 // eth_getBlockByNumber
 // ============================================================================
@@ -60,6 +164,96 @@ pub fn handleGetBlockByHash(
         return .{ .block = try internalBlockToRpc(allocator, internal) };
     }
     return .{ .block = null };
+}
+
+// ============================================================================
+// eth_getBlockTransactionCountByHash
+// ============================================================================
+
+pub fn handleGetBlockTransactionCountByHash(
+    allocator: std.mem.Allocator,
+    ctx: *const BlockQueryContext,
+    params: GetBlockTransactionCountByHashParams,
+) !GetBlockTransactionCountByHashResult {
+    const block = try ctx.rt.getBlockByHashWithFork(allocator, params.block_hash.bytes);
+    if (block) |resolved_block| {
+        return .{
+            .value = try quantityFromU64(allocator, @intCast(resolved_block.body.transactions.len)),
+        };
+    }
+    return .{ .value = null };
+}
+
+// ============================================================================
+// eth_getBlockTransactionCountByNumber
+// ============================================================================
+
+pub fn handleGetBlockTransactionCountByNumber(
+    allocator: std.mem.Allocator,
+    ctx: *const BlockQueryContext,
+    params: GetBlockTransactionCountByNumberParams,
+) !GetBlockTransactionCountByNumberResult {
+    const block_number = block_spec.resolveBlockNumber(ctx.rt, params.block) catch |err| switch (err) {
+        error.InvalidBlockSpec => return error.InvalidParams,
+        error.BlockOutOfRange => return .{ .value = null },
+    };
+    const block = try ctx.rt.getBlockByNumberWithFork(allocator, block_number);
+    if (block) |resolved_block| {
+        return .{
+            .value = try quantityFromU64(allocator, @intCast(resolved_block.body.transactions.len)),
+        };
+    }
+    return .{ .value = null };
+}
+
+// ============================================================================
+// eth_getTransactionByBlockHashAndIndex
+// ============================================================================
+
+pub fn handleGetTransactionByBlockHashAndIndex(
+    allocator: std.mem.Allocator,
+    ctx: *const BlockQueryContext,
+    params: GetTransactionByBlockHashAndIndexParams,
+) !GetTransactionByBlockHashAndIndexResult {
+    const tx_index = parseQuantityToU64(params.transaction_index) catch return error.InvalidParams;
+    const block = try ctx.rt.getBlockByHashWithFork(allocator, params.block_hash.bytes);
+    if (block) |resolved_block| {
+        const tx = try transactionByBlockAndIndexToRpc(
+            allocator,
+            ctx,
+            resolved_block,
+            tx_index,
+        );
+        return .{ .value = tx };
+    }
+    return .{ .value = null };
+}
+
+// ============================================================================
+// eth_getTransactionByBlockNumberAndIndex
+// ============================================================================
+
+pub fn handleGetTransactionByBlockNumberAndIndex(
+    allocator: std.mem.Allocator,
+    ctx: *const BlockQueryContext,
+    params: GetTransactionByBlockNumberAndIndexParams,
+) !GetTransactionByBlockNumberAndIndexResult {
+    const tx_index = parseQuantityToU64(params.transaction_index) catch return error.InvalidParams;
+    const block_number = block_spec.resolveBlockNumber(ctx.rt, params.block) catch |err| switch (err) {
+        error.InvalidBlockSpec => return error.InvalidParams,
+        error.BlockOutOfRange => return .{ .value = null },
+    };
+    const block = try ctx.rt.getBlockByNumberWithFork(allocator, block_number);
+    if (block) |resolved_block| {
+        const tx = try transactionByBlockAndIndexToRpc(
+            allocator,
+            ctx,
+            resolved_block,
+            tx_index,
+        );
+        return .{ .value = tx };
+    }
+    return .{ .value = null };
 }
 
 // ============================================================================
@@ -142,106 +336,20 @@ pub fn handleGetTransactionByHash(
     params: jsonrpc.eth.GetTransactionByHash.Params,
 ) !jsonrpc.eth.GetTransactionByHash.Result {
     const record = ctx.rt.getTransactionRecord(params.transaction_hash.bytes) orelse return .{ .value = null };
-    const decoded = try primitives.Transaction.decodeRawTransaction(allocator, record.raw);
-    defer primitives.Transaction.deinitDecodedTransaction(allocator, decoded);
-
-    const metadata = jsonrpc.types.TransactionResponse.Metadata{
-        .block_hash = if (record.block_hash) |h| .{ .bytes = h } else null,
-        .block_number = record.block_number,
-        .block_timestamp = record.block_timestamp,
-        .transaction_index = record.transaction_index,
-        .from = .{ .bytes = record.sender.bytes },
-        .hash = .{ .bytes = params.transaction_hash.bytes },
-    };
-
     return .{
-        .value = switch (decoded) {
-            .legacy => |tx| .{
-                .legacy = .{
-                    .metadata = metadata,
-                    .nonce = tx.nonce,
-                    .gas_price = tx.gas_price,
-                    .gas = tx.gas_limit,
-                    .to = if (tx.to) |to| .{ .bytes = to.bytes } else null,
-                    .value = tx.value,
-                    .input = try allocator.dupe(u8, tx.data),
-                    .v = tx.v,
-                    .r = tx.r,
-                    .s = tx.s,
-                    .chain_id = ctx.rt.chain_id,
-                },
+        .value = try rawTransactionToRpcResponse(
+            allocator,
+            record.raw,
+            ctx.rt.chain_id,
+            .{
+                .block_hash = record.block_hash,
+                .block_number = record.block_number,
+                .block_timestamp = record.block_timestamp,
+                .transaction_index = record.transaction_index,
+                .sender_override = record.sender,
+                .hash_override = params.transaction_hash.bytes,
             },
-            .eip2930 => |tx| .{
-                .eip2930 = .{
-                    .metadata = metadata,
-                    .chain_id = tx.chain_id,
-                    .nonce = tx.nonce,
-                    .gas_price = tx.gas_price,
-                    .gas = tx.gas_limit,
-                    .to = if (tx.to) |to| .{ .bytes = to.bytes } else null,
-                    .value = tx.value,
-                    .input = try allocator.dupe(u8, tx.data),
-                    .access_list = try toResponseAccessList(allocator, tx.access_list),
-                    .y_parity = tx.y_parity,
-                    .r = tx.r,
-                    .s = tx.s,
-                },
-            },
-            .eip1559 => |tx| .{
-                .eip1559 = .{
-                    .metadata = metadata,
-                    .chain_id = tx.chain_id,
-                    .nonce = tx.nonce,
-                    .max_priority_fee_per_gas = tx.max_priority_fee_per_gas,
-                    .max_fee_per_gas = tx.max_fee_per_gas,
-                    .gas = tx.gas_limit,
-                    .to = if (tx.to) |to| .{ .bytes = to.bytes } else null,
-                    .value = tx.value,
-                    .input = try allocator.dupe(u8, tx.data),
-                    .access_list = try toResponseAccessList(allocator, tx.access_list),
-                    .y_parity = tx.y_parity,
-                    .r = tx.r,
-                    .s = tx.s,
-                },
-            },
-            .eip4844 => |tx| .{
-                .eip4844 = .{
-                    .metadata = metadata,
-                    .chain_id = tx.chain_id,
-                    .nonce = tx.nonce,
-                    .max_priority_fee_per_gas = tx.max_priority_fee_per_gas,
-                    .max_fee_per_gas = tx.max_fee_per_gas,
-                    .gas = tx.gas_limit,
-                    .to = .{ .bytes = tx.to.bytes },
-                    .value = tx.value,
-                    .input = try allocator.dupe(u8, tx.data),
-                    .access_list = try toResponseAccessList(allocator, tx.access_list),
-                    .max_fee_per_blob_gas = tx.max_fee_per_blob_gas,
-                    .blob_versioned_hashes = try toBlobVersionedHashes(allocator, tx.blob_versioned_hashes),
-                    .y_parity = tx.y_parity,
-                    .r = tx.r,
-                    .s = tx.s,
-                },
-            },
-            .eip7702 => |tx| .{
-                .eip7702 = .{
-                    .metadata = metadata,
-                    .chain_id = tx.chain_id,
-                    .nonce = tx.nonce,
-                    .max_priority_fee_per_gas = tx.max_priority_fee_per_gas,
-                    .max_fee_per_gas = tx.max_fee_per_gas,
-                    .gas = tx.gas_limit,
-                    .to = if (tx.to) |to| .{ .bytes = to.bytes } else null,
-                    .value = tx.value,
-                    .input = try allocator.dupe(u8, tx.data),
-                    .access_list = try toResponseAccessList(allocator, tx.access_list),
-                    .authorization_list = try toResponseAuthorizationList(allocator, tx.authorization_list),
-                    .y_parity = tx.y_parity,
-                    .r = tx.r,
-                    .s = tx.s,
-                },
-            },
-        },
+        ),
     };
 }
 
@@ -507,6 +615,163 @@ fn parseQuantityToU64(q: jsonrpc.types.Quantity) !u64 {
         },
         else => return error.InvalidQuantity,
     }
+}
+
+const TransactionMetadataContext = struct {
+    block_hash: ?[32]u8 = null,
+    block_number: ?u64 = null,
+    block_timestamp: ?u64 = null,
+    transaction_index: ?u64 = null,
+    sender_override: ?primitives.Address = null,
+    hash_override: ?[32]u8 = null,
+};
+
+fn transactionByBlockAndIndexToRpc(
+    allocator: std.mem.Allocator,
+    ctx: *const BlockQueryContext,
+    block: primitives.Block.Block,
+    tx_index: u64,
+) !?jsonrpc.types.TransactionResponse {
+    const txs = block.body.transactions;
+    if (tx_index >= @as(u64, @intCast(txs.len))) {
+        return null;
+    }
+    const receipts = ctx.receipt_index.getByBlockHash(block.hash) orelse return null;
+    if (tx_index >= @as(u64, @intCast(receipts.len))) {
+        return null;
+    }
+    const tx_hash = receipts[@intCast(tx_index)].transaction_hash;
+    const record = ctx.rt.getTransactionRecord(tx_hash) orelse return null;
+
+    return try rawTransactionToRpcResponse(
+        allocator,
+        record.raw,
+        ctx.rt.chain_id,
+        .{
+            .block_hash = block.hash,
+            .block_number = block.header.number,
+            .block_timestamp = block.header.timestamp,
+            .transaction_index = tx_index,
+            .sender_override = record.sender,
+            .hash_override = tx_hash,
+        },
+    );
+}
+
+fn rawTransactionToRpcResponse(
+    allocator: std.mem.Allocator,
+    raw_tx: []const u8,
+    chain_id: u64,
+    metadata_context: TransactionMetadataContext,
+) !jsonrpc.types.TransactionResponse {
+    const decoded = try primitives.Transaction.decodeRawTransaction(allocator, raw_tx);
+    defer primitives.Transaction.deinitDecodedTransaction(allocator, decoded);
+
+    const recovered_sender = primitives.Transaction.recoverSender(allocator, decoded) catch primitives.Address.ZERO_ADDRESS;
+    const tx_hash = metadata_context.hash_override orelse hashRawTransaction(raw_tx);
+
+    const metadata = jsonrpc.types.TransactionResponse.Metadata{
+        .block_hash = if (metadata_context.block_hash) |h| .{ .bytes = h } else null,
+        .block_number = metadata_context.block_number,
+        .block_timestamp = metadata_context.block_timestamp,
+        .transaction_index = metadata_context.transaction_index,
+        .from = .{ .bytes = (metadata_context.sender_override orelse recovered_sender).bytes },
+        .hash = .{ .bytes = tx_hash },
+    };
+
+    return switch (decoded) {
+        .legacy => |tx| .{
+            .legacy = .{
+                .metadata = metadata,
+                .nonce = tx.nonce,
+                .gas_price = tx.gas_price,
+                .gas = tx.gas_limit,
+                .to = if (tx.to) |to| .{ .bytes = to.bytes } else null,
+                .value = tx.value,
+                .input = try allocator.dupe(u8, tx.data),
+                .v = tx.v,
+                .r = tx.r,
+                .s = tx.s,
+                .chain_id = chain_id,
+            },
+        },
+        .eip2930 => |tx| .{
+            .eip2930 = .{
+                .metadata = metadata,
+                .chain_id = tx.chain_id,
+                .nonce = tx.nonce,
+                .gas_price = tx.gas_price,
+                .gas = tx.gas_limit,
+                .to = if (tx.to) |to| .{ .bytes = to.bytes } else null,
+                .value = tx.value,
+                .input = try allocator.dupe(u8, tx.data),
+                .access_list = try toResponseAccessList(allocator, tx.access_list),
+                .y_parity = tx.y_parity,
+                .r = tx.r,
+                .s = tx.s,
+            },
+        },
+        .eip1559 => |tx| .{
+            .eip1559 = .{
+                .metadata = metadata,
+                .chain_id = tx.chain_id,
+                .nonce = tx.nonce,
+                .max_priority_fee_per_gas = tx.max_priority_fee_per_gas,
+                .max_fee_per_gas = tx.max_fee_per_gas,
+                .gas = tx.gas_limit,
+                .to = if (tx.to) |to| .{ .bytes = to.bytes } else null,
+                .value = tx.value,
+                .input = try allocator.dupe(u8, tx.data),
+                .access_list = try toResponseAccessList(allocator, tx.access_list),
+                .y_parity = tx.y_parity,
+                .r = tx.r,
+                .s = tx.s,
+            },
+        },
+        .eip4844 => |tx| .{
+            .eip4844 = .{
+                .metadata = metadata,
+                .chain_id = tx.chain_id,
+                .nonce = tx.nonce,
+                .max_priority_fee_per_gas = tx.max_priority_fee_per_gas,
+                .max_fee_per_gas = tx.max_fee_per_gas,
+                .gas = tx.gas_limit,
+                .to = .{ .bytes = tx.to.bytes },
+                .value = tx.value,
+                .input = try allocator.dupe(u8, tx.data),
+                .access_list = try toResponseAccessList(allocator, tx.access_list),
+                .max_fee_per_blob_gas = tx.max_fee_per_blob_gas,
+                .blob_versioned_hashes = try toBlobVersionedHashes(allocator, tx.blob_versioned_hashes),
+                .y_parity = tx.y_parity,
+                .r = tx.r,
+                .s = tx.s,
+            },
+        },
+        .eip7702 => |tx| .{
+            .eip7702 = .{
+                .metadata = metadata,
+                .chain_id = tx.chain_id,
+                .nonce = tx.nonce,
+                .max_priority_fee_per_gas = tx.max_priority_fee_per_gas,
+                .max_fee_per_gas = tx.max_fee_per_gas,
+                .gas = tx.gas_limit,
+                .to = if (tx.to) |to| .{ .bytes = to.bytes } else null,
+                .value = tx.value,
+                .input = try allocator.dupe(u8, tx.data),
+                .access_list = try toResponseAccessList(allocator, tx.access_list),
+                .authorization_list = try toResponseAuthorizationList(allocator, tx.authorization_list),
+                .y_parity = tx.y_parity,
+                .r = tx.r,
+                .s = tx.s,
+            },
+        },
+    };
+}
+
+fn hashRawTransaction(raw_tx: []const u8) [32]u8 {
+    var hash: [32]u8 = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(raw_tx, &hash, .{});
+    return hash;
 }
 
 fn toResponseAccessList(
