@@ -17,7 +17,7 @@ fn makeReceiptWithLogs(
             l.* = primitives.EventLog.EventLog{
                 .address = address,
                 .topics = topics,
-                .data = try allocator.dupe(u8, &[_]u8{ @intCast(i) }),
+                .data = try allocator.dupe(u8, &[_]u8{@intCast(i)}),
                 .block_number = null,
                 .transaction_hash = null,
                 .transaction_index = null,
@@ -28,7 +28,7 @@ fn makeReceiptWithLogs(
             l.* = primitives.EventLog.EventLog{
                 .address = address,
                 .topics = try allocator.alloc([32]u8, 0),
-                .data = try allocator.dupe(u8, &[_]u8{ @intCast(i) }),
+                .data = try allocator.dupe(u8, &[_]u8{@intCast(i)}),
                 .block_number = null,
                 .transaction_hash = null,
                 .transaction_index = null,
@@ -340,6 +340,56 @@ test "log_index: error on to_block > head_block" {
 
     const result = idx.query(allocator, .{ .from_block = 0, .to_block = 100 }, 10);
     try testing.expectError(error.InvalidFilter, result);
+}
+
+test "log_index: appendBlockLogs is failure-atomic on allocation errors" {
+    const backing_allocator = testing.allocator;
+
+    var idx_block_hash: [32]u8 = undefined;
+    @memset(&idx_block_hash, 0x7a);
+
+    var receipt = try makeReceiptWithLogs(backing_allocator, primitives.Address.ZERO_ADDRESS, null, 2);
+    defer receipt.deinit(backing_allocator);
+    const receipts = [_]primitives.Receipt.Receipt{receipt};
+
+    var saw_oom = false;
+    var fail_index: usize = 0;
+    while (true) : (fail_index += 1) {
+        try testing.expect(fail_index < 1024);
+
+        var failing_allocator_state = std.testing.FailingAllocator.init(backing_allocator, .{
+            .fail_index = fail_index,
+        });
+        const allocator = failing_allocator_state.allocator();
+
+        var idx = log_index.LogIndex.init();
+        defer idx.deinit(allocator);
+
+        if (idx.appendBlockLogs(allocator, 1, idx_block_hash, &receipts)) |_| {
+            try testing.expectEqual(@as(usize, 2), idx.logs.items.len);
+            const range = idx.block_range.get(1).?;
+            try testing.expectEqual(@as(usize, 0), range.start);
+            try testing.expectEqual(@as(usize, 2), range.end);
+
+            const in_range = try idx.query(backing_allocator, .{ .from_block = 1, .to_block = 1 }, 1);
+            defer backing_allocator.free(in_range);
+            try testing.expectEqual(@as(usize, 2), in_range.len);
+            break;
+        } else |err| switch (err) {
+            error.OutOfMemory => {
+                saw_oom = true;
+                try testing.expectEqual(@as(usize, 0), idx.logs.items.len);
+                try testing.expect(idx.block_range.get(1) == null);
+
+                const in_range = try idx.query(backing_allocator, .{ .from_block = 1, .to_block = 1 }, 1);
+                defer backing_allocator.free(in_range);
+                try testing.expectEqual(@as(usize, 0), in_range.len);
+            },
+            else => return err,
+        }
+    }
+
+    try testing.expect(saw_oom);
 }
 
 test "log_index: deinit frees all memory" {

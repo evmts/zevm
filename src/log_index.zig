@@ -29,8 +29,7 @@ pub const LogIndex = struct {
 
     pub fn deinit(self: *LogIndex, allocator: std.mem.Allocator) void {
         for (self.logs.items) |entry| {
-            allocator.free(entry.log.topics);
-            allocator.free(entry.log.data);
+            deinitOwnedLog(allocator, entry.log);
         }
         self.logs.deinit(allocator);
         self.block_range.deinit(allocator);
@@ -44,20 +43,36 @@ pub const LogIndex = struct {
         block_hash: [32]u8,
         receipts: []const primitives.Receipt.Receipt,
     ) !void {
-        const start = self.logs.items.len;
+        var staged = std.ArrayListUnmanaged(IndexedLog){};
+        errdefer {
+            for (staged.items) |entry| {
+                deinitOwnedLog(allocator, entry.log);
+            }
+            staged.deinit(allocator);
+        }
 
         for (receipts) |receipt| {
             for (receipt.logs) |log| {
                 const cloned = try primitives.EventLog.clone(allocator, log);
-                try self.logs.append(allocator, .{
+                errdefer deinitOwnedLog(allocator, cloned);
+                try staged.append(allocator, .{
                     .log = cloned,
                     .block_hash = block_hash,
                 });
             }
         }
 
+        try self.logs.ensureUnusedCapacity(allocator, staged.items.len);
+        try self.block_range.ensureUnusedCapacity(allocator, 1);
+
+        const start = self.logs.items.len;
+        for (staged.items) |entry| {
+            self.logs.appendAssumeCapacity(entry);
+        }
         const end = self.logs.items.len;
-        try self.block_range.put(allocator, block_number, .{ .start = start, .end = end });
+        self.block_range.putAssumeCapacity(block_number, .{ .start = start, .end = end });
+
+        staged.deinit(allocator);
     }
 
     /// Execute a filter query. Returns owned slice of matching logs (caller frees).
@@ -141,4 +156,9 @@ fn matchesFilter(entry: IndexedLog, filter: LogFilter) bool {
     }
 
     return true;
+}
+
+fn deinitOwnedLog(allocator: std.mem.Allocator, log: primitives.EventLog.EventLog) void {
+    allocator.free(log.topics);
+    allocator.free(log.data);
 }

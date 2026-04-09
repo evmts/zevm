@@ -34,15 +34,27 @@ pub const ReceiptIndex = struct {
         receipts: []const primitives.Receipt.Receipt,
     ) !void {
         const cloned = try allocator.alloc(primitives.Receipt.Receipt, receipts.len);
-        errdefer allocator.free(cloned);
+        var cloned_count: usize = 0;
+        errdefer {
+            for (cloned[0..cloned_count]) |receipt| {
+                receipt.deinit(allocator);
+            }
+            allocator.free(cloned);
+        }
 
         for (receipts, 0..) |receipt, i| {
             cloned[i] = try receipt.clone(allocator);
-            errdefer cloned[i].deinit(allocator);
-            try self.by_tx.put(cloned[i].transaction_hash, cloned[i]);
+            cloned_count += 1;
         }
 
-        try self.by_block.put(block_hash, cloned);
+        const receipt_count: u32 = std.math.cast(u32, receipts.len) orelse return error.OutOfMemory;
+        try self.by_tx.ensureUnusedCapacity(receipt_count);
+        try self.by_block.ensureUnusedCapacity(1);
+
+        for (cloned) |receipt| {
+            self.by_tx.putAssumeCapacity(receipt.transaction_hash, receipt);
+        }
+        self.by_block.putAssumeCapacity(block_hash, cloned);
     }
 
     /// Returns receipt for a tx hash, or null if not found.

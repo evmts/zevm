@@ -22,5 +22,7 @@ test {
     _ = @import("checkpoint_test.zig");
     _ = @import("mining_test.zig");
     _ = @import("node/runtime_test.zig");
+    _ = @import("receipt_index_test.zig");
+    _ = @import("log_index_test.zig");
     _ = @import("rpc/root.zig");
 }
