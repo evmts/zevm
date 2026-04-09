@@ -383,6 +383,52 @@ test "handleGetTransactionByHash: returns null for pending transaction hash" {
     try std.testing.expect(result.value == null);
 }
 
+test "handleGetTransactionByHash: returns null when inclusion metadata is incomplete" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var state = try setupCtx(allocator);
+    defer state.deinit(allocator);
+
+    const unsigned_tx = primitives.Transaction.LegacyTransaction{
+        .nonce = 0,
+        .gas_price = runtime.DEFAULT_GAS_PRICE,
+        .gas_limit = 21_000,
+        .to = runtime.DEFAULT_DEV_ACCOUNTS[1],
+        .value = 1000,
+        .data = &[_]u8{},
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+    const signed_tx = try primitives.Transaction.signLegacyTransaction(
+        allocator,
+        unsigned_tx,
+        runtime.DEFAULT_DEV_PRIVATE_KEYS[0],
+        runtime.DEFAULT_CHAIN_ID,
+    );
+    const raw_tx = try primitives.Transaction.encodeLegacyForSigning(allocator, signed_tx, runtime.DEFAULT_CHAIN_ID);
+    defer allocator.free(raw_tx);
+
+    var tx_hash: [32]u8 = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(raw_tx, &tx_hash, .{});
+    try state.rt.putTransactionRecord(allocator, tx_hash, runtime.DEFAULT_DEV_ACCOUNTS[0], raw_tx);
+
+    const record_ptr = state.rt.tx_index.getPtr(tx_hash) orelse return error.ExpectedTransactionRecord;
+    var synthetic_block_hash: [32]u8 = undefined;
+    @memset(&synthetic_block_hash, 0x33);
+    record_ptr.block_hash = synthetic_block_hash;
+
+    var ctx = state.getCtx();
+    const result = try block_query_handlers.handleGetTransactionByHash(
+        arena.allocator(),
+        &ctx,
+        .{ .transaction_hash = .{ .bytes = tx_hash } },
+    );
+    try std.testing.expect(result.value == null);
+}
+
 test "handleGetTransactionByHash: returns mined legacy transaction" {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);

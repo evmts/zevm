@@ -16,6 +16,13 @@ pub const BlockQueryContext = struct {
     log_index: *const log_index_mod.LogIndex,
 };
 
+const MinedInclusionMetadata = struct {
+    block_hash: [32]u8,
+    block_number: u64,
+    block_timestamp: u64,
+    transaction_index: u64,
+};
+
 // ============================================================================
 // eth_getBlockByNumber
 // ============================================================================
@@ -142,19 +149,16 @@ pub fn handleGetTransactionByHash(
     params: jsonrpc.eth.GetTransactionByHash.Params,
 ) !jsonrpc.eth.GetTransactionByHash.Result {
     const record = ctx.rt.getTransactionRecord(params.transaction_hash.bytes) orelse return .{ .value = null };
-    const block_hash = record.block_hash orelse return .{ .value = null };
-    const block_number = record.block_number orelse return .{ .value = null };
-    const block_timestamp = record.block_timestamp orelse return .{ .value = null };
-    const transaction_index = record.transaction_index orelse return .{ .value = null };
+    const mined = extractMinedInclusionMetadata(record) orelse return .{ .value = null };
 
     const decoded = try primitives.Transaction.decodeRawTransaction(allocator, record.raw);
     defer primitives.Transaction.deinitDecodedTransaction(allocator, decoded);
 
     const metadata = jsonrpc.types.TransactionResponse.Metadata{
-        .block_hash = .{ .bytes = block_hash },
-        .block_number = block_number,
-        .block_timestamp = block_timestamp,
-        .transaction_index = transaction_index,
+        .block_hash = .{ .bytes = mined.block_hash },
+        .block_number = mined.block_number,
+        .block_timestamp = mined.block_timestamp,
+        .transaction_index = mined.transaction_index,
         .from = .{ .bytes = record.sender.bytes },
         .hash = .{ .bytes = params.transaction_hash.bytes },
     };
@@ -247,6 +251,15 @@ pub fn handleGetTransactionByHash(
                 },
             },
         },
+    };
+}
+
+fn extractMinedInclusionMetadata(record: runtime.TransactionRecord) ?MinedInclusionMetadata {
+    return .{
+        .block_hash = record.block_hash orelse return null,
+        .block_number = record.block_number orelse return null,
+        .block_timestamp = record.block_timestamp orelse return null,
+        .transaction_index = record.transaction_index orelse return null,
     };
 }
 
