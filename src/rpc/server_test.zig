@@ -957,7 +957,7 @@ test "server with NodeHandler context exposes automined transaction receipt" {
     try std.testing.expectEqualStrings(tx_hash, (receipt_object.get("transactionHash") orelse return error.MissingField).string);
 }
 
-test "server with NodeHandler context returns empty block receipts after hardhat_mine" {
+test "server with NodeHandler context supports block receipts latest and hash selectors" {
     var handler = try node_handler.NodeHandler.init(std.testing.allocator, null);
     defer handler.deinit(std.testing.allocator);
 
@@ -974,22 +974,63 @@ test "server with NodeHandler context returns empty block receipts after hardhat
     );
     defer mine_response.deinit(std.testing.allocator);
 
-    var receipts_response = try server.handleHttpRequestForTest(
+    var latest_receipts_response = try server.handleHttpRequestForTest(
         std.testing.allocator,
         .POST,
-        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_getBlockReceipts\",\"params\":[\"0x1\"]}",
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_getBlockReceipts\",\"params\":[\"latest\"]}",
         &handlers,
     );
-    defer receipts_response.deinit(std.testing.allocator);
+    defer latest_receipts_response.deinit(std.testing.allocator);
 
-    const parsed = try parseJson(receipts_response.body.?);
-    defer parsed.deinit();
-    const result = try getObjectField(parsed.value, "result");
-    const receipts = switch (result) {
+    const latest_parsed = try parseJson(latest_receipts_response.body.?);
+    defer latest_parsed.deinit();
+    const latest_result = try getObjectField(latest_parsed.value, "result");
+    const latest_receipts = switch (latest_result) {
         .array => |array| array.items,
         else => return error.ExpectedArray,
     };
-    try std.testing.expectEqual(@as(usize, 0), receipts.len);
+    try std.testing.expectEqual(@as(usize, 0), latest_receipts.len);
+
+    var block_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"eth_getBlockByNumber\",\"params\":[\"latest\",false]}",
+        &handlers,
+    );
+    defer block_response.deinit(std.testing.allocator);
+
+    const block_parsed = try parseJson(block_response.body.?);
+    defer block_parsed.deinit();
+    const block_result = try getObjectField(block_parsed.value, "result");
+    const block_object = switch (block_result) {
+        .object => |obj| obj,
+        else => return error.ExpectedObject,
+    };
+    const block_hash = (block_object.get("hash") orelse return error.MissingField).string;
+
+    const hash_receipts_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"eth_getBlockReceipts\",\"params\":[\"{s}\"]}}",
+        .{block_hash},
+    );
+    defer std.testing.allocator.free(hash_receipts_request);
+
+    var hash_receipts_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        hash_receipts_request,
+        &handlers,
+    );
+    defer hash_receipts_response.deinit(std.testing.allocator);
+
+    const hash_parsed = try parseJson(hash_receipts_response.body.?);
+    defer hash_parsed.deinit();
+    const hash_result = try getObjectField(hash_parsed.value, "result");
+    const hash_receipts = switch (hash_result) {
+        .array => |array| array.items,
+        else => return error.ExpectedArray,
+    };
+    try std.testing.expectEqual(@as(usize, 0), hash_receipts.len);
 }
 
 test "server with NodeHandler context maps invalid sendRawTransaction to -32602" {

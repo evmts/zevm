@@ -87,11 +87,7 @@ pub fn handleGetBlockReceipts(
     ctx: *const BlockQueryContext,
     params: jsonrpc.eth.GetBlockReceipts.Params,
 ) !jsonrpc.eth.GetBlockReceipts.Result {
-    const block_number = block_spec.resolveBlockNumber(ctx.rt, params.block) catch |err| switch (err) {
-        error.InvalidBlockSpec => return error.InvalidParams,
-        error.BlockOutOfRange => return .{ .value = null },
-    };
-    const block = try ctx.rt.getBlockByNumberWithFork(allocator, block_number);
+    const block = try resolveReceiptSelectorBlock(allocator, ctx, params.block);
     if (block == null) return .{ .value = null };
 
     const receipts = ctx.receipt_index.getByBlockHash(block.?.hash) orelse return .{ .value = null };
@@ -106,6 +102,30 @@ pub fn handleGetBlockReceipts(
         rpc_receipts[i] = try internalReceiptToRpc(allocator, resp);
     }
     return .{ .value = rpc_receipts };
+}
+
+fn resolveReceiptSelectorBlock(
+    allocator: std.mem.Allocator,
+    ctx: *const BlockQueryContext,
+    selector: jsonrpc.types.BlockSpec,
+) !?primitives.Block.Block {
+    switch (selector.value) {
+        .string => |s| {
+            // `eth_getBlockReceipts` accepts a canonical block hash selector in addition to block tags.
+            if (s.len == 66 and s[0] == '0' and (s[1] == 'x' or s[1] == 'X')) {
+                var block_hash: [32]u8 = undefined;
+                _ = std.fmt.hexToBytes(&block_hash, s[2..]) catch return error.InvalidParams;
+                return try ctx.rt.getBlockByHashWithFork(allocator, block_hash);
+            }
+        },
+        else => {},
+    }
+
+    const block_number = block_spec.resolveBlockNumber(ctx.rt, selector) catch |err| switch (err) {
+        error.InvalidBlockSpec => return error.InvalidParams,
+        error.BlockOutOfRange => return null,
+    };
+    return try ctx.rt.getBlockByNumberWithFork(allocator, block_number);
 }
 
 // ============================================================================
