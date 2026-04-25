@@ -1,6 +1,7 @@
 {
   "name": "ZEVM",
-  "theme": "mint",
+  "theme": "quill",
+  "favicon": "favicon.svg",
   "colors": {
     "primary": "#0f766e",
     "light": "#99f6e4",
