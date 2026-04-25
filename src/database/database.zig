@@ -15,9 +15,9 @@ pub const Database = struct {
     contracts: @import("contracts.zig").Contracts,
     block_hashes: @import("block_hashes.zig").BlockHashes,
 
-    pub fn init(allocator: std.mem.Allocator) !Database {
+    pub fn init(allocator: std.mem.Allocator, fork_backend: ?*state_manager.ForkBackend) !Database {
         return .{
-            .state = try state_manager.StateManager.init(allocator, null),
+            .state = try state_manager.StateManager.init(allocator, fork_backend),
             .accounts = @import("accounts.zig").Accounts.init(allocator),
             .contracts = @import("contracts.zig").Contracts.init(),
             .block_hashes = @import("block_hashes.zig").BlockHashes.init(),

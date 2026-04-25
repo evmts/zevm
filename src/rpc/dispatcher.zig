@@ -52,5 +52,80 @@ fn validateParamsForMethod(allocator: std.mem.Allocator, method_name: []const u8
         return;
     } else |_| {}
 
+    if (isZevmResetMethod(method_name)) {
+        try validateResetParams(params);
+        return;
+    }
+
+    if (isZevmSetRpcUrlMethod(method_name)) {
+        try validateSetRpcUrlParams(params);
+        return;
+    }
+
     return error.UnknownMethod;
+}
+
+fn isZevmResetMethod(method_name: []const u8) bool {
+    return std.mem.eql(u8, method_name, "zevm_reset") or
+        std.mem.eql(u8, method_name, "anvil_reset") or
+        std.mem.eql(u8, method_name, "hardhat_reset");
+}
+
+fn isZevmSetRpcUrlMethod(method_name: []const u8) bool {
+    return std.mem.eql(u8, method_name, "zevm_setRpcUrl") or
+        std.mem.eql(u8, method_name, "anvil_setRpcUrl");
+}
+
+fn validateResetParams(params: ?std.json.Value) !void {
+    if (params == null) return;
+    const value = params.?;
+    const items = switch (value) {
+        .array => |array| array.items,
+        else => return error.InvalidParams,
+    };
+
+    if (items.len == 0) return;
+    if (items.len != 1) return error.InvalidParams;
+
+    switch (items[0]) {
+        .null => return,
+        .object => |obj| {
+            var has_url = false;
+            var it = obj.iterator();
+            while (it.next()) |entry| {
+                if (std.mem.eql(u8, entry.key_ptr.*, "url")) {
+                    has_url = true;
+                    if (entry.value_ptr.* != .string) return error.InvalidParams;
+                    continue;
+                }
+                if (std.mem.eql(u8, entry.key_ptr.*, "blockNumber")) {
+                    if (!isHexQuantity(entry.value_ptr.*)) return error.InvalidParams;
+                    continue;
+                }
+                return error.InvalidParams;
+            }
+            if (!has_url) return error.InvalidParams;
+            return;
+        },
+        else => return error.InvalidParams,
+    }
+}
+
+fn validateSetRpcUrlParams(params: ?std.json.Value) !void {
+    const value = params orelse return error.InvalidParams;
+    const items = switch (value) {
+        .array => |array| array.items,
+        else => return error.InvalidParams,
+    };
+    if (items.len != 1) return error.InvalidParams;
+    if (items[0] != .string) return error.InvalidParams;
+}
+
+fn isHexQuantity(value: std.json.Value) bool {
+    const text = switch (value) {
+        .string => |str| str,
+        else => return false,
+    };
+    if (text.len < 3) return false;
+    return text[0] == '0' and (text[1] == 'x' or text[1] == 'X');
 }

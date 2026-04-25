@@ -65,6 +65,7 @@ test "dispatch recognized eth/debug/engine method with no handler returns -32601
 
     {
         var params_array = std.json.Array.init(std.testing.allocator);
+        defer params_array.deinit();
         try params_array.append(.null);
 
         var request = jsonrpc.envelope.RequestEnvelope{
@@ -72,6 +73,20 @@ test "dispatch recognized eth/debug/engine method with no handler returns -32601
             .id = .{ .integer = 13 },
             .method = try std.testing.allocator.dupe(u8, "engine_exchangeCapabilities"),
             .params = .{ .array = params_array },
+        };
+        defer request.deinit(std.testing.allocator);
+
+        const response = try dispatcher.dispatch(std.testing.allocator, request, &handlers);
+        try std.testing.expect(response.error_value != null);
+        try std.testing.expectEqual(@as(i32, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND), response.error_value.?.code);
+    }
+
+    {
+        var request = jsonrpc.envelope.RequestEnvelope{
+            .jsonrpc = try std.testing.allocator.dupe(u8, "2.0"),
+            .id = .{ .integer = 14 },
+            .method = try std.testing.allocator.dupe(u8, "zevm_reset"),
+            .params = null,
         };
         defer request.deinit(std.testing.allocator);
 
@@ -95,6 +110,21 @@ test "dispatch invalid params shape returns -32602" {
     const handlers = dispatcher.HandlerRegistry{};
     const response = try dispatcher.dispatch(std.testing.allocator, request, &handlers);
 
+    try std.testing.expect(response.error_value != null);
+    try std.testing.expectEqual(@as(i32, jsonrpc.envelope.ErrorCode.INVALID_PARAMS), response.error_value.?.code);
+}
+
+test "dispatch validates zevm_setRpcUrl params" {
+    var request = jsonrpc.envelope.RequestEnvelope{
+        .jsonrpc = try std.testing.allocator.dupe(u8, "2.0"),
+        .id = .{ .integer = 22 },
+        .method = try std.testing.allocator.dupe(u8, "zevm_setRpcUrl"),
+        .params = .{ .array = std.json.Array.init(std.testing.allocator) },
+    };
+    defer request.deinit(std.testing.allocator);
+
+    const handlers = dispatcher.HandlerRegistry{};
+    const response = try dispatcher.dispatch(std.testing.allocator, request, &handlers);
     try std.testing.expect(response.error_value != null);
     try std.testing.expectEqual(@as(i32, jsonrpc.envelope.ErrorCode.INVALID_PARAMS), response.error_value.?.code);
 }

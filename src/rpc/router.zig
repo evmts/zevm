@@ -57,6 +57,15 @@ pub fn routeBatch(
 }
 
 fn isKnownMethod(method_name: []const u8) bool {
+    if (std.mem.eql(u8, method_name, "zevm_reset") or
+        std.mem.eql(u8, method_name, "anvil_reset") or
+        std.mem.eql(u8, method_name, "hardhat_reset") or
+        std.mem.eql(u8, method_name, "zevm_setRpcUrl") or
+        std.mem.eql(u8, method_name, "anvil_setRpcUrl"))
+    {
+        return true;
+    }
+
     _ = jsonrpc.eth.EthMethod.fromMethodName(method_name) catch {
         _ = jsonrpc.debug.DebugMethod.fromMethodName(method_name) catch {
             _ = jsonrpc.engine.EngineMethod.fromMethodName(method_name) catch {

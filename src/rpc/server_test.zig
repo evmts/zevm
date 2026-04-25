@@ -185,6 +185,8 @@ test "parseConfig defaults to 127.0.0.1:8545" {
 
     try std.testing.expectEqualStrings("127.0.0.1", config.host);
     try std.testing.expectEqual(@as(u16, 8545), config.port);
+    try std.testing.expect(config.fork_url == null);
+    try std.testing.expect(config.fork_block_number == null);
 }
 
 test "parseConfig parses --host and --port" {
@@ -195,4 +197,32 @@ test "parseConfig parses --host and --port" {
 
     try std.testing.expectEqualStrings("0.0.0.0", config.host);
     try std.testing.expectEqual(@as(u16, 9555), config.port);
+}
+
+test "parseConfig parses trusted fork flags" {
+    const config = try server.parseConfig(
+        std.testing.allocator,
+        &[_][]const u8{
+            "--fork-url",
+            "https://rpc.example.org",
+            "--fork-block-number",
+            "12345",
+        },
+    );
+
+    try std.testing.expectEqualStrings("https://rpc.example.org", config.fork_url.?);
+    try std.testing.expectEqual(@as(u64, 12345), config.fork_block_number.?);
+}
+
+test "parseConfig rejects fork block without fork url" {
+    try std.testing.expectError(
+        error.ForkBlockNumberRequiresForkUrl,
+        server.parseConfig(
+            std.testing.allocator,
+            &[_][]const u8{
+                "--fork-block-number",
+                "99",
+            },
+        ),
+    );
 }

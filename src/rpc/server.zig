@@ -5,6 +5,8 @@ const dispatcher = @import("dispatcher.zig");
 pub const ServerConfig = struct {
     host: []const u8 = "127.0.0.1",
     port: u16 = 8545,
+    fork_url: ?[]const u8 = null,
+    fork_block_number: ?u64 = null,
 };
 
 pub const TestHttpResponse = struct {
@@ -50,7 +52,31 @@ pub fn parseConfig(allocator: std.mem.Allocator, args: []const []const u8) !Serv
             continue;
         }
 
+        if (std.mem.eql(u8, args[index], "--fork-url")) {
+            index += 1;
+            if (index >= args.len) {
+                return error.MissingForkUrlValue;
+            }
+            config.fork_url = args[index];
+            continue;
+        }
+
+        if (std.mem.eql(u8, args[index], "--fork-block-number")) {
+            index += 1;
+            if (index >= args.len) {
+                return error.MissingForkBlockNumberValue;
+            }
+            config.fork_block_number = std.fmt.parseInt(u64, args[index], 10) catch {
+                return error.InvalidForkBlockNumber;
+            };
+            continue;
+        }
+
         return error.UnknownArgument;
+    }
+
+    if (config.fork_block_number != null and config.fork_url == null) {
+        return error.ForkBlockNumberRequiresForkUrl;
     }
 
     return config;
@@ -164,7 +190,7 @@ fn handlePost(
     };
     defer request_batch.deinit(allocator);
 
-    return switch (request_batch) {
+    return switch (request_batch.kind) {
         .single => |request| handleSingleRequest(allocator, request, handlers),
         .batch => |batch| handleBatch(allocator, batch, handlers),
     };

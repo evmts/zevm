@@ -136,8 +136,7 @@ pub fn processTransaction(
     // and precompile dispatch internally.
     var result = blk: {
         const EvmType = guillotine_mini.Evm(.{});
-        var evm: EvmType = undefined;
-        evm.init(allocator, host_iface, null, block_ctx, null) catch {
+        var evm = EvmType.init(allocator, host_iface, null, block_ctx, null) catch {
             sm.revert();
             return TxError.EvmInitError;
         };

@@ -1,16 +1,17 @@
 const std = @import("std");
 const primitives = @import("primitives");
+const state_manager = @import("state-manager");
 const database = @import("database.zig");
 
 test "init produces null state root (empty trie)" {
-    var db = try database.Database.init(std.testing.allocator);
+    var db = try database.Database.init(std.testing.allocator, null);
     defer db.deinit(std.testing.allocator);
 
     try std.testing.expect(db.accounts.stateRoot() == null);
 }
 
 test "put and get account" {
-    var db = try database.Database.init(std.testing.allocator);
+    var db = try database.Database.init(std.testing.allocator, null);
     defer db.deinit(std.testing.allocator);
 
     const addr = try primitives.Address.fromHex("0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266");
@@ -28,7 +29,7 @@ test "put and get account" {
 }
 
 test "get nonexistent account returns null" {
-    var db = try database.Database.init(std.testing.allocator);
+    var db = try database.Database.init(std.testing.allocator, null);
     defer db.deinit(std.testing.allocator);
 
     const addr = try primitives.Address.fromHex("0x0000000000000000000000000000000000000001");
@@ -37,7 +38,7 @@ test "get nonexistent account returns null" {
 }
 
 test "put account produces non-null state root" {
-    var db = try database.Database.init(std.testing.allocator);
+    var db = try database.Database.init(std.testing.allocator, null);
     defer db.deinit(std.testing.allocator);
 
     const addr = try primitives.Address.fromHex("0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266");
@@ -49,7 +50,7 @@ test "put account produces non-null state root" {
 }
 
 test "update existing account" {
-    var db = try database.Database.init(std.testing.allocator);
+    var db = try database.Database.init(std.testing.allocator, null);
     defer db.deinit(std.testing.allocator);
 
     const addr = try primitives.Address.fromHex("0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266");
@@ -66,7 +67,7 @@ test "update existing account" {
 }
 
 test "remove account" {
-    var db = try database.Database.init(std.testing.allocator);
+    var db = try database.Database.init(std.testing.allocator, null);
     defer db.deinit(std.testing.allocator);
 
     const addr = try primitives.Address.fromHex("0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266");
@@ -80,7 +81,7 @@ test "remove account" {
 }
 
 test "multiple accounts have independent state" {
-    var db = try database.Database.init(std.testing.allocator);
+    var db = try database.Database.init(std.testing.allocator, null);
     defer db.deinit(std.testing.allocator);
 
     const addr1 = try primitives.Address.fromHex("0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266");
@@ -102,7 +103,7 @@ test "multiple accounts have independent state" {
 }
 
 test "state root changes on mutation" {
-    var db = try database.Database.init(std.testing.allocator);
+    var db = try database.Database.init(std.testing.allocator, null);
     defer db.deinit(std.testing.allocator);
 
     const addr = try primitives.Address.fromHex("0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266");
@@ -120,9 +121,9 @@ test "state root changes on mutation" {
 }
 
 test "same state produces same root (deterministic)" {
-    var db1 = try database.Database.init(std.testing.allocator);
+    var db1 = try database.Database.init(std.testing.allocator, null);
     defer db1.deinit(std.testing.allocator);
-    var db2 = try database.Database.init(std.testing.allocator);
+    var db2 = try database.Database.init(std.testing.allocator, null);
     defer db2.deinit(std.testing.allocator);
 
     const addr = try primitives.Address.fromHex("0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266");
@@ -138,7 +139,7 @@ test "same state produces same root (deterministic)" {
 }
 
 test "contract account with custom code hash" {
-    var db = try database.Database.init(std.testing.allocator);
+    var db = try database.Database.init(std.testing.allocator, null);
     defer db.deinit(std.testing.allocator);
 
     var code_hash: primitives.Hash.Hash = undefined;
@@ -159,7 +160,7 @@ test "contract account with custom code hash" {
 }
 
 test "remove nonexistent account is safe" {
-    var db = try database.Database.init(std.testing.allocator);
+    var db = try database.Database.init(std.testing.allocator, null);
     defer db.deinit(std.testing.allocator);
 
     const addr = try primitives.Address.fromHex("0x0000000000000000000000000000000000000001");
@@ -167,9 +168,9 @@ test "remove nonexistent account is safe" {
 }
 
 test "deterministic root with multiple accounts inserted in different order" {
-    var db1 = try database.Database.init(std.testing.allocator);
+    var db1 = try database.Database.init(std.testing.allocator, null);
     defer db1.deinit(std.testing.allocator);
-    var db2 = try database.Database.init(std.testing.allocator);
+    var db2 = try database.Database.init(std.testing.allocator, null);
     defer db2.deinit(std.testing.allocator);
 
     const addr_a = try primitives.Address.fromHex("0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266");
@@ -187,4 +188,17 @@ test "deterministic root with multiple accounts inserted in different order" {
     const root2 = db2.accounts.stateRoot().?;
 
     try std.testing.expectEqualSlices(u8, &root1, &root2);
+}
+
+test "init accepts fork backend and preserves local writes" {
+    var fork_backend = try state_manager.ForkBackend.init(std.testing.allocator, "latest", .{});
+    defer fork_backend.deinit();
+
+    var db = try database.Database.init(std.testing.allocator, &fork_backend);
+    defer db.deinit(std.testing.allocator);
+
+    const addr = try primitives.Address.fromHex("0x0000000000000000000000000000000000000001");
+    try db.state.initAccount(addr, 1234);
+    const balance = try db.state.getBalance(addr);
+    try std.testing.expectEqual(@as(u256, 1234), balance);
 }
