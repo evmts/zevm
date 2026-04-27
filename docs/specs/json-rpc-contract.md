@@ -1,7 +1,5 @@
 # ZEVM JSON-RPC Contract
 
-Last updated: 2026-03-30
-
 This file is the exact ZEVM JSON-RPC API contract.
 
 It defines:

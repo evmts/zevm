@@ -16,6 +16,7 @@ pub const TxError = error{
     InsufficientBalance,
     NonceMismatch,
     IntrinsicGasExceedsLimit,
+    GasPriceBelowBaseFee,
     StateError,
     EvmInitError,
     OutOfMemory,
@@ -31,6 +32,14 @@ pub fn intrinsicGas(data: []const u8, is_create: bool) u64 {
         gas += if (byte == 0) CALLDATA_ZERO_BYTE_GAS else CALLDATA_NONZERO_BYTE_GAS;
     }
     return gas;
+}
+
+/// Pin the EVM hardfork from block context. Defaults to CANCUN when no
+/// chain-specific mapping is wired in. Once we add full mainnet activation
+/// tables, branch on chain_id + block_number/timestamp here.
+pub fn resolveHardfork(block_ctx: guillotine_mini.BlockContext) guillotine_mini.Hardfork {
+    _ = block_ctx;
+    return .CANCUN;
 }
 
 fn allocateEventLogs(
@@ -108,35 +117,38 @@ pub fn processTransaction(
     tx: primitives.Transaction.LegacyTransaction,
     block_ctx: guillotine_mini.BlockContext,
 ) TxError!primitives.Receipt.Receipt {
-    // Validate nonce
     const current_nonce = sm.getNonce(caller) catch return TxError.StateError;
     if (current_nonce != tx.nonce) return TxError.NonceMismatch;
 
-    // Calculate intrinsic gas
     const intrinsic = intrinsicGas(tx.data, tx.to == null);
     if (intrinsic > tx.gas_limit) return TxError.IntrinsicGasExceedsLimit;
 
-    // Validate balance covers value + gas cost
-    const max_gas_cost = tx.gas_price * @as(u256, tx.gas_limit);
+    // EIP-1559 base-fee floor: legacy tx must pay at least the block base fee.
+    const base_fee: u256 = block_ctx.block_base_fee;
+    if (tx.gas_price < base_fee) return TxError.GasPriceBelowBaseFee;
+
+    const effective_gas_price: u256 = tx.gas_price;
+    const max_gas_cost = effective_gas_price * @as(u256, tx.gas_limit);
     const total_cost = tx.value + max_gas_cost;
     const balance = sm.getBalance(caller) catch return TxError.StateError;
     if (balance < total_cost) return TxError.InsufficientBalance;
 
-    // Deduct gas cost upfront and increment nonce — these persist on revert
     sm.setBalance(caller, balance - max_gas_cost) catch return TxError.StateError;
     sm.setNonce(caller, current_nonce + 1) catch return TxError.StateError;
 
-    // Checkpoint AFTER gas/nonce so revert only undoes EVM state changes
     sm.checkpoint() catch return TxError.StateError;
 
-    // Calculate execution gas (gas available after intrinsic costs)
     const execution_gas = tx.gas_limit - intrinsic;
 
-    // Always route through EVM — it handles value transfers, EOA calls,
-    // and precompile dispatch internally.
     var result = blk: {
         const EvmType = guillotine_mini.Evm(.{});
-        var evm = EvmType.init(allocator, host_iface, null, block_ctx, null) catch {
+        var evm = EvmType.init(
+            allocator,
+            host_iface,
+            resolveHardfork(block_ctx),
+            block_ctx,
+            null,
+        ) catch {
             sm.revert();
             return TxError.EvmInitError;
         };
@@ -145,6 +157,22 @@ pub fn processTransaction(
             sm.revert();
             return TxError.EvmInitError;
         };
+
+        // Wire transaction-level context that the EVM exposes through
+        // ORIGIN/GASPRICE opcodes and intrinsic pre-warming.
+        evm.origin = caller;
+        evm.gas_price = effective_gas_price;
+
+        // The EVM's call() reads code from `pending_bytecode` for CALLs and
+        // ignores it for CREATEs (init_code is in CallParams). For CALLs to a
+        // contract, we must hand the EVM the deployed code; for CREATEs we
+        // also seed it with the init code so the top-level frame can execute.
+        if (tx.to) |to| {
+            const code = sm.getCode(to) catch return TxError.StateError;
+            evm.setBytecode(code);
+        } else {
+            evm.setBytecode(tx.data);
+        }
 
         const call_params: EvmType.CallParams = if (tx.to) |to|
             .{ .call = .{
@@ -166,30 +194,33 @@ pub fn processTransaction(
     };
     defer result.deinit(allocator);
 
-    // Commit or revert EVM state changes (gas/nonce already applied above checkpoint)
     if (result.success) {
         sm.commit();
     } else {
         sm.revert();
     }
 
-    // Gas accounting — applied on top of final state
-    const gas_consumed = execution_gas - result.gas_left;
+    const gas_consumed = if (result.gas_left > execution_gas) 0 else execution_gas - result.gas_left;
     const total_gas_used = intrinsic + gas_consumed;
     const max_refund = total_gas_used / 5;
     const refund = @min(result.refund_counter, max_refund);
     const effective_gas_used = total_gas_used - refund;
     const effective_gas_used_u256: u256 = @as(u256, effective_gas_used);
 
-    // Refund unused gas to caller
-    const gas_refund_wei = tx.gas_price * @as(u256, tx.gas_limit - effective_gas_used);
+    const gas_refund_wei = effective_gas_price * @as(u256, tx.gas_limit - effective_gas_used);
     const caller_balance = sm.getBalance(caller) catch return TxError.StateError;
     sm.setBalance(caller, caller_balance + gas_refund_wei) catch return TxError.StateError;
 
-    // Pay coinbase
-    const coinbase_payment = tx.gas_price * @as(u256, effective_gas_used);
-    const coinbase_balance = sm.getBalance(block_ctx.block_coinbase) catch return TxError.StateError;
-    sm.setBalance(block_ctx.block_coinbase, coinbase_balance + coinbase_payment) catch return TxError.StateError;
+    // EIP-1559 settlement: coinbase only earns the priority tip
+    // (effective_gas_price - base_fee). Base fee is burned (not credited to
+    // anyone). When base_fee == 0 (pre-London or test contexts) this collapses
+    // to the legacy "all of gas_price goes to the miner" behavior.
+    const priority_per_gas: u256 = effective_gas_price - base_fee;
+    if (priority_per_gas > 0) {
+        const coinbase_payment = priority_per_gas * effective_gas_used_u256;
+        const coinbase_balance = sm.getBalance(block_ctx.block_coinbase) catch return TxError.StateError;
+        sm.setBalance(block_ctx.block_coinbase, coinbase_balance + coinbase_payment) catch return TxError.StateError;
+    }
 
     var logs_bloom: [256]u8 = undefined;
     @memset(&logs_bloom, 0);
@@ -210,7 +241,7 @@ pub fn processTransaction(
         .logs_bloom = logs_bloom,
         .status = primitives.Receipt.TransactionStatus{ .success = result.success, .gas_used = effective_gas_used_u256 },
         .root = null,
-        .effective_gas_price = tx.gas_price,
+        .effective_gas_price = effective_gas_price,
         .type = primitives.Receipt.TransactionType.legacy,
         .blob_gas_used = null,
         .blob_gas_price = null,

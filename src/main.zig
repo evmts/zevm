@@ -15,8 +15,7 @@ pub fn main() !void {
     });
     defer runtime.deinit();
 
-    _ = &runtime;
-
     var handlers = zevm.rpc.dispatcher.HandlerRegistry{};
+    zevm.rpc.dispatch_wiring.install(&handlers, &runtime);
     try zevm.rpc.server.run(std.heap.page_allocator, config, &handlers);
 }

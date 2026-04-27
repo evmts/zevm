@@ -19,8 +19,16 @@ pub fn dispatch(allocator: std.mem.Allocator, request: jsonrpc.envelope.RequestE
         return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND, "Method not found");
     }
 
-    const result = handlers.on_method.?(allocator, request.method, request.params) catch {
-        return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.INTERNAL_ERROR, "Internal error");
+    const result = handlers.on_method.?(allocator, request.method, request.params) catch |err| switch (err) {
+        error.MethodNotFound => {
+            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND, "Method not found");
+        },
+        error.InvalidParams => {
+            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.INVALID_PARAMS, "Invalid params");
+        },
+        else => {
+            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.INTERNAL_ERROR, "Internal error");
+        },
     };
 
     return jsonrpc.envelope.ResponseEnvelope.makeSuccess(request.id, result);
@@ -62,6 +70,10 @@ fn validateParamsForMethod(allocator: std.mem.Allocator, method_name: []const u8
         return;
     }
 
+    if (isLocallyHandledMethod(method_name)) {
+        return;
+    }
+
     return error.UnknownMethod;
 }
 
@@ -74,6 +86,40 @@ fn isZevmResetMethod(method_name: []const u8) bool {
 fn isZevmSetRpcUrlMethod(method_name: []const u8) bool {
     return std.mem.eql(u8, method_name, "zevm_setRpcUrl") or
         std.mem.eql(u8, method_name, "anvil_setRpcUrl");
+}
+
+fn isLocallyHandledMethod(method_name: []const u8) bool {
+    return std.mem.eql(u8, method_name, "web3_clientVersion") or
+        std.mem.eql(u8, method_name, "web3_sha3") or
+        std.mem.eql(u8, method_name, "net_version") or
+        std.mem.eql(u8, method_name, "net_listening") or
+        std.mem.eql(u8, method_name, "net_peerCount") or
+        std.mem.eql(u8, method_name, "eth_mining") or
+        std.mem.eql(u8, method_name, "eth_protocolVersion") or
+        std.mem.eql(u8, method_name, "zevm_setBalance") or
+        std.mem.eql(u8, method_name, "anvil_setBalance") or
+        std.mem.eql(u8, method_name, "hardhat_setBalance") or
+        std.mem.eql(u8, method_name, "zevm_setNonce") or
+        std.mem.eql(u8, method_name, "anvil_setNonce") or
+        std.mem.eql(u8, method_name, "hardhat_setNonce") or
+        std.mem.eql(u8, method_name, "zevm_setCode") or
+        std.mem.eql(u8, method_name, "anvil_setCode") or
+        std.mem.eql(u8, method_name, "hardhat_setCode") or
+        std.mem.eql(u8, method_name, "zevm_setStorageAt") or
+        std.mem.eql(u8, method_name, "anvil_setStorageAt") or
+        std.mem.eql(u8, method_name, "hardhat_setStorageAt") or
+        std.mem.eql(u8, method_name, "zevm_setCoinbase") or
+        std.mem.eql(u8, method_name, "anvil_setCoinbase") or
+        std.mem.eql(u8, method_name, "hardhat_setCoinbase") or
+        std.mem.eql(u8, method_name, "zevm_setNextBlockBaseFeePerGas") or
+        std.mem.eql(u8, method_name, "anvil_setNextBlockBaseFeePerGas") or
+        std.mem.eql(u8, method_name, "hardhat_setNextBlockBaseFeePerGas") or
+        std.mem.eql(u8, method_name, "zevm_snapshot") or
+        std.mem.eql(u8, method_name, "anvil_snapshot") or
+        std.mem.eql(u8, method_name, "evm_snapshot") or
+        std.mem.eql(u8, method_name, "zevm_revert") or
+        std.mem.eql(u8, method_name, "anvil_revert") or
+        std.mem.eql(u8, method_name, "evm_revert");
 }
 
 fn validateResetParams(params: ?std.json.Value) !void {

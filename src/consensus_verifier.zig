@@ -18,6 +18,21 @@ pub const ConsensusVerifierError = error{
 
 const SYNC_COMMITTEE_DOMAIN_TYPE: [4]u8 = .{ 7, 0, 0, 0 };
 const ZERO_CHUNK: [32]u8 = [_]u8{0} ** 32;
+const UPDATE_TIMEOUT: u64 = primitives.ConsensusSpec.SLOTS_PER_SYNC_COMMITTEE_PERIOD;
+const CURRENT_SYNC_COMMITTEE_GINDEX: u64 = 54;
+const NEXT_SYNC_COMMITTEE_GINDEX: u64 = 55;
+const FINALIZED_ROOT_GINDEX: u64 = 105;
+const CURRENT_SYNC_COMMITTEE_GINDEX_ELECTRA: u64 = 86;
+const NEXT_SYNC_COMMITTEE_GINDEX_ELECTRA: u64 = 87;
+const FINALIZED_ROOT_GINDEX_ELECTRA: u64 = 169;
+const MAX_NORMALIZED_BRANCH_DEPTH: usize = 7;
+
+const ExecutionPayloadHeaderFork = enum {
+    bellatrix,
+    capella,
+    deneb,
+    electra,
+};
 
 pub fn computeDomain(domain_type: [4]u8, fork_data_root: [32]u8) [32]u8 {
     var domain: [32]u8 = [_]u8{0} ** 32;
@@ -79,10 +94,9 @@ pub fn verifyBootstrap(
     genesis_validators_root: [32]u8,
     allocator: std.mem.Allocator,
 ) !void {
-    _ = fork_config;
     _ = genesis_validators_root;
 
-    if (!try isHeaderExecutionPayloadProofValid(bootstrap.header, allocator)) {
+    if (!try isHeaderExecutionPayloadProofValid(bootstrap.header, fork_config, allocator)) {
         return ConsensusVerifierError.InvalidExecutionPayloadProof;
     }
 
@@ -92,10 +106,12 @@ pub fn verifyBootstrap(
         allocator,
     );
 
-    if (!primitives.consensus.isCurrentCommitteeProofValid(
+    if (!isCurrentCommitteeProofValid(
         bootstrap.header.beacon.state_root,
         committee_root,
-        bootstrap.current_sync_committee_branch[0..],
+        bootstrap.currentSyncCommitteeBranch(),
+        bootstrap.header.beacon.slot,
+        fork_config,
     )) {
         return ConsensusVerifierError.InvalidCurrentSyncCommitteeProof;
     }
@@ -119,7 +135,7 @@ pub fn verifyUpdate(
         return ConsensusVerifierError.InsufficientParticipation;
     }
 
-    if (!try isHeaderExecutionPayloadProofValid(update.attested_header, allocator)) {
+    if (!try isHeaderExecutionPayloadProofValid(update.attested_header, fork_config, allocator)) {
         return ConsensusVerifierError.InvalidExecutionPayloadProof;
     }
 
@@ -154,18 +170,22 @@ pub fn verifyUpdate(
     }
 
     if (update.finalized_header) |finalized_header| {
-        const finality_branch = update.finality_branch orelse return ConsensusVerifierError.InvalidFinalityProof;
+        if (finalized_header.beacon.slot != 0) {
+            const finality_branch = update.finality_branch orelse return ConsensusVerifierError.InvalidFinalityProof;
 
-        if (!try isHeaderExecutionPayloadProofValid(finalized_header, allocator)) {
-            return ConsensusVerifierError.InvalidExecutionPayloadProof;
-        }
+            if (!try isHeaderExecutionPayloadProofValid(finalized_header, fork_config, allocator)) {
+                return ConsensusVerifierError.InvalidExecutionPayloadProof;
+            }
 
-        if (!primitives.consensus.isFinalityProofValid(
-            update.attested_header.beacon.state_root,
-            beaconHeaderRoot(finalized_header.beacon),
-            finality_branch,
-        )) {
-            return ConsensusVerifierError.InvalidFinalityProof;
+            if (!isFinalityProofValid(
+                update.attested_header.beacon.state_root,
+                beaconHeaderRoot(finalized_header.beacon),
+                finality_branch,
+                update.attested_header.beacon.slot,
+                fork_config,
+            )) {
+                return ConsensusVerifierError.InvalidFinalityProof;
+            }
         }
     } else if (update.finality_branch != null) {
         return ConsensusVerifierError.InvalidFinalityProof;
@@ -181,10 +201,28 @@ pub fn verifyUpdate(
             allocator,
         );
 
-        if (!primitives.consensus.isNextCommitteeProofValid(
+        if (update_attested_period == store_period) {
+            if (store.next_sync_committee_pubkeys) |known_next_sync_committee_pubkeys| {
+                if (!std.mem.eql(u8, std.mem.asBytes(&known_next_sync_committee_pubkeys), std.mem.asBytes(&next_sync_committee_pubkeys))) {
+                    return ConsensusVerifierError.InvalidNextSyncCommitteeProof;
+                }
+
+                if (store.next_sync_committee_aggregate_pubkey) |known_next_sync_committee_aggregate_pubkey| {
+                    if (!std.mem.eql(u8, known_next_sync_committee_aggregate_pubkey[0..], next_sync_committee_aggregate_pubkey[0..])) {
+                        return ConsensusVerifierError.InvalidNextSyncCommitteeProof;
+                    }
+                } else {
+                    return ConsensusVerifierError.InvalidNextSyncCommitteeProof;
+                }
+            }
+        }
+
+        if (!isNextCommitteeProofValid(
             update.attested_header.beacon.state_root,
             next_committee_root,
             next_sync_committee_branch,
+            update.attested_header.beacon.slot,
+            fork_config,
         )) {
             return ConsensusVerifierError.InvalidNextSyncCommitteeProof;
         }
@@ -258,6 +296,7 @@ pub fn applyBootstrap(
     store.current_sync_committee_aggregate_pubkey = bootstrap.current_sync_committee_aggregate_pubkey;
     store.next_sync_committee_pubkeys = null;
     store.next_sync_committee_aggregate_pubkey = null;
+    store.best_valid_update = null;
     store.optimistic_header = bootstrap.header;
     store.previous_max_active_participants = 0;
     store.current_max_active_participants = 0;
@@ -268,6 +307,14 @@ pub fn applyUpdate(
     update: primitives.LightClientUpdate.GenericUpdate,
 ) ?[32]u8 {
     const active_participants = participantCount(update.sync_committee_bits);
+
+    const should_replace_best_update = if (store.best_valid_update) |*best_valid_update|
+        isBetterUpdate(update, best_valid_update.toGeneric())
+    else
+        true;
+    if (should_replace_best_update) {
+        store.best_valid_update = primitives.LightClientUpdate.StoredGenericUpdate.fromGeneric(update) catch null;
+    }
 
     store.current_max_active_participants = @max(
         store.current_max_active_participants,
@@ -300,7 +347,9 @@ pub fn applyUpdate(
         return null;
     }
 
-    return applyUpdateNoQuorumCheck(store, update);
+    const checkpoint = applyUpdateNoQuorumCheck(store, update);
+    store.best_valid_update = null;
+    return checkpoint;
 }
 
 pub fn safetyThreshold(store: primitives.LightClientUpdate.LightClientStore) u64 {
@@ -308,6 +357,86 @@ pub fn safetyThreshold(store: primitives.LightClientUpdate.LightClientStore) u64
         store.current_max_active_participants,
         store.previous_max_active_participants,
     ) / 2;
+}
+
+pub fn isBetterUpdate(
+    new_update: primitives.LightClientUpdate.GenericUpdate,
+    old_update: primitives.LightClientUpdate.GenericUpdate,
+) bool {
+    const new_active_participants = participantCount(new_update.sync_committee_bits);
+    const old_active_participants = participantCount(old_update.sync_committee_bits);
+    const new_has_supermajority = new_active_participants * 3 >= primitives.ConsensusSpec.SYNC_COMMITTEE_SIZE * 2;
+    const old_has_supermajority = old_active_participants * 3 >= primitives.ConsensusSpec.SYNC_COMMITTEE_SIZE * 2;
+    if (new_has_supermajority != old_has_supermajority) {
+        return new_has_supermajority;
+    }
+    if (!new_has_supermajority and new_active_participants != old_active_participants) {
+        return new_active_participants > old_active_participants;
+    }
+
+    const new_has_relevant_sync_committee = hasSyncUpdate(new_update) and
+        primitives.consensus.calcSyncPeriod(new_update.attested_header.beacon.slot) ==
+            primitives.consensus.calcSyncPeriod(new_update.signature_slot);
+    const old_has_relevant_sync_committee = hasSyncUpdate(old_update) and
+        primitives.consensus.calcSyncPeriod(old_update.attested_header.beacon.slot) ==
+            primitives.consensus.calcSyncPeriod(old_update.signature_slot);
+    if (new_has_relevant_sync_committee != old_has_relevant_sync_committee) {
+        return new_has_relevant_sync_committee;
+    }
+
+    const new_has_finality = hasFinalityUpdate(new_update);
+    const old_has_finality = hasFinalityUpdate(old_update);
+    if (new_has_finality != old_has_finality) {
+        return new_has_finality;
+    }
+
+    if (new_has_finality) {
+        const new_finalized_slot = new_update.finalized_header.?.beacon.slot;
+        const old_finalized_slot = old_update.finalized_header.?.beacon.slot;
+        const new_has_sync_committee_finality = primitives.consensus.calcSyncPeriod(new_finalized_slot) ==
+            primitives.consensus.calcSyncPeriod(new_update.attested_header.beacon.slot);
+        const old_has_sync_committee_finality = primitives.consensus.calcSyncPeriod(old_finalized_slot) ==
+            primitives.consensus.calcSyncPeriod(old_update.attested_header.beacon.slot);
+        if (new_has_sync_committee_finality != old_has_sync_committee_finality) {
+            return new_has_sync_committee_finality;
+        }
+    }
+
+    if (new_active_participants != old_active_participants) {
+        return new_active_participants > old_active_participants;
+    }
+
+    if (new_update.attested_header.beacon.slot != old_update.attested_header.beacon.slot) {
+        return new_update.attested_header.beacon.slot < old_update.attested_header.beacon.slot;
+    }
+
+    return new_update.signature_slot < old_update.signature_slot;
+}
+
+pub fn processLightClientStoreForceUpdate(
+    store: *primitives.LightClientUpdate.LightClientStore,
+    current_slot: u64,
+) ?[32]u8 {
+    if (current_slot <= store.finalized_header.beacon.slot + UPDATE_TIMEOUT or store.best_valid_update == null) {
+        return null;
+    }
+
+    if (store.best_valid_update) |*best_valid_update| {
+        const best_finalized_slot = if (best_valid_update.finalized_header) |finalized_header|
+            finalized_header.beacon.slot
+        else
+            0;
+
+        if (best_finalized_slot <= store.finalized_header.beacon.slot) {
+            best_valid_update.finalized_header = best_valid_update.attested_header;
+        }
+
+        const checkpoint = applyUpdateNoQuorumCheck(store, best_valid_update.toGeneric());
+        store.best_valid_update = null;
+        return checkpoint;
+    }
+
+    return null;
 }
 
 fn applyUpdateNoQuorumCheck(
@@ -436,6 +565,42 @@ fn fixedBytesRoot(bytes: []const u8) [32]u8 {
     var root: [32]u8 = [_]u8{0} ** 32;
     @memcpy(root[0..bytes.len], bytes);
     return root;
+}
+
+fn isCurrentCommitteeProofValid(
+    attested_state_root: [32]u8,
+    committee_root: [32]u8,
+    branch: []const [32]u8,
+    slot: u64,
+    fork_config: primitives.ForkConfig.ForkConfig,
+) bool {
+    _ = slot;
+    _ = fork_config;
+    return primitives.consensus.isCurrentCommitteeProofValid(attested_state_root, committee_root, branch);
+}
+
+fn isNextCommitteeProofValid(
+    attested_state_root: [32]u8,
+    committee_root: [32]u8,
+    branch: []const [32]u8,
+    slot: u64,
+    fork_config: primitives.ForkConfig.ForkConfig,
+) bool {
+    _ = slot;
+    _ = fork_config;
+    return primitives.consensus.isNextCommitteeProofValid(attested_state_root, committee_root, branch);
+}
+
+fn isFinalityProofValid(
+    attested_state_root: [32]u8,
+    finality_root: [32]u8,
+    branch: []const [32]u8,
+    slot: u64,
+    fork_config: primitives.ForkConfig.ForkConfig,
+) bool {
+    _ = slot;
+    _ = fork_config;
+    return primitives.consensus.isFinalityProofValid(attested_state_root, finality_root, branch);
 }
 
 pub fn beaconHeaderRoot(beacon_header: primitives.LightClientHeader.LightClientHeader.BeaconBlockHeader) [32]u8 {

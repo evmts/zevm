@@ -1,7 +1,5 @@
 # ZEVM Documentation Process
 
-Last updated: 2026-03-30
-
 ZEVM documentation is contract-first.
 
 ## Purpose
@@ -16,10 +14,6 @@ Normative product-definition sources are:
 2. `docs/specs/json-rpc-contract.md`
 
 Support summaries live under `docs/specs/internal/*` and help explain the normative contract, but they do not override it.
-
-Historical planning/audit artifacts under `docs/specs/*` and `docs/issues/*` that are marked archival are non-normative.
-
-`docs/context/*` and `docs/plans/*` are historical implementation artifacts and are non-normative unless a file is explicitly marked otherwise.
 
 ## Documentation Standard
 

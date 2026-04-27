@@ -95,7 +95,7 @@ test "buildBlock enforces block gas limit" {
     try std.testing.expectEqual(gas_used_u64, result.total_gas_used);
 }
 
-test "buildBlock drops invalid tx and keeps valid order" {
+test "buildBlock rejects invalid included tx and reverts block state" {
     var sm = try state_manager.StateManager.init(std.testing.allocator, null);
     defer sm.deinit();
 
@@ -117,7 +117,7 @@ test "buildBlock drops invalid tx and keeps valid order" {
                 .data = &[_]u8{},
                 .gas_limit = 21_000,
                 .gas_price = 1,
-                .nonce = 1, // invalid (nonce mismatch)
+                .nonce = 0,
             }),
         },
         .{
@@ -128,21 +128,188 @@ test "buildBlock drops invalid tx and keeps valid order" {
                 .data = &[_]u8{},
                 .gas_limit = 21_000,
                 .gas_price = 1,
-                .nonce = 0,
+                .nonce = 3,
             }),
         },
     };
 
-    var result = try block_builder.buildBlock(
+    try std.testing.expectError(error.InvalidIncludedTransaction, block_builder.buildBlock(
         std.testing.allocator,
         &sm,
         host,
         &txs,
         blockContextWithGasLimit(30_000_000),
-    );
-    defer result.deinit(std.testing.allocator);
+    ));
 
-    try std.testing.expectEqual(@as(usize, 1), result.receipts.len);
-    try std.testing.expectEqual(@as(u32, 0), result.receipts[0].transaction_index);
-    try std.testing.expectEqual(sender, result.receipts[0].sender);
+    try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(sender));
+    try std.testing.expectEqual(@as(u256, 0), try sm.getBalance(recipient));
+}
+
+fn parentHeader() primitives.BlockHeader.BlockHeader {
+    return .{
+        .ommers_hash = primitives.BlockHeader.EMPTY_OMMERS_HASH,
+        .transactions_root = primitives.BlockHeader.EMPTY_TRANSACTIONS_ROOT,
+        .receipts_root = primitives.BlockHeader.EMPTY_RECEIPTS_ROOT,
+        .difficulty = 0,
+        .number = 10,
+        .gas_limit = 30_000_000,
+        .gas_used = 15_000_000,
+        .timestamp = 1000,
+        .base_fee_per_gas = 1_000_000_000,
+    };
+}
+
+fn childHeader(parent: primitives.BlockHeader.BlockHeader) primitives.BlockHeader.BlockHeader {
+    return .{
+        .ommers_hash = primitives.BlockHeader.EMPTY_OMMERS_HASH,
+        .transactions_root = primitives.BlockHeader.EMPTY_TRANSACTIONS_ROOT,
+        .receipts_root = primitives.BlockHeader.EMPTY_RECEIPTS_ROOT,
+        .difficulty = 0,
+        .number = parent.number + 1,
+        .gas_limit = parent.gas_limit,
+        .gas_used = 0,
+        .timestamp = parent.timestamp + 1,
+        .base_fee_per_gas = 1_000_000_000,
+    };
+}
+
+fn makeReceipt(params: struct {
+    gas_used: u256 = 21_000,
+    cumulative_gas_used: u256 = 21_000,
+    logs_bloom: [256]u8 = [_]u8{0} ** 256,
+    tx_type: primitives.Receipt.TransactionType = .legacy,
+    blob_gas_used: ?u256 = null,
+}) primitives.Receipt.Receipt {
+    return .{
+        .transaction_hash = [_]u8{0x11} ** 32,
+        .transaction_index = 0,
+        .block_hash = primitives.Hash.ZERO,
+        .block_number = 1,
+        .sender = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 },
+        .to = primitives.Address{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 19 },
+        .cumulative_gas_used = params.cumulative_gas_used,
+        .gas_used = params.gas_used,
+        .contract_address = null,
+        .logs = &[_]primitives.EventLog.EventLog{},
+        .logs_bloom = params.logs_bloom,
+        .status = primitives.Receipt.TransactionStatus{ .success = true, .gas_used = params.gas_used },
+        .root = null,
+        .effective_gas_price = 1,
+        .type = params.tx_type,
+        .blob_gas_used = params.blob_gas_used,
+        .blob_gas_price = null,
+    };
+}
+
+test "validateHeader enforces V(H) post-Paris and London base fee" {
+    var parent = parentHeader();
+    var header = childHeader(parent);
+
+    try block_builder.validateHeader(&header, &parent, .paris);
+
+    header.gas_used = header.gas_limit + 1;
+    try std.testing.expectError(error.HeaderGasUsedExceedsLimit, block_builder.validateHeader(&header, &parent, .paris));
+
+    header = childHeader(parent);
+    header.timestamp = parent.timestamp;
+    try std.testing.expectError(error.InvalidTimestamp, block_builder.validateHeader(&header, &parent, .paris));
+
+    header = childHeader(parent);
+    header.difficulty = 1;
+    try std.testing.expectError(error.InvalidPostParisDifficulty, block_builder.validateHeader(&header, &parent, .paris));
+
+    header = childHeader(parent);
+    header.base_fee_per_gas = 2;
+    try std.testing.expectError(error.InvalidBaseFeePerGas, block_builder.validateHeader(&header, &parent, .paris));
+}
+
+test "withdrawals credit gwei amounts and produce empty root" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+
+    const recipient = primitives.Address{ .bytes = [_]u8{0x77} ++ [_]u8{0} ** 19 };
+    const withdrawals = [_]primitives.BlockBody.Withdrawal{
+        .{
+            .index = 1,
+            .validator_index = 2,
+            .address = recipient,
+            .amount = 3,
+        },
+    };
+
+    try block_builder.applyWithdrawals(&sm, &withdrawals);
+    try std.testing.expectEqual(@as(u256, 3_000_000_000), try sm.getBalance(recipient));
+
+    const empty_root = try block_builder.computeWithdrawalsRoot(std.testing.allocator, &[_]primitives.BlockBody.Withdrawal{});
+    try std.testing.expectEqualSlices(u8, &primitives.BlockHeader.EMPTY_WITHDRAWALS_ROOT, &empty_root);
+}
+
+test "beacon roots system storage writes timestamp and root" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+
+    const timestamp: u64 = 8193;
+    const root = [_]u8{0x42} ** 32;
+    try block_builder.applyBeaconRootsSystemCall(&sm, timestamp, root);
+
+    const slot = timestamp % 8191;
+    try std.testing.expectEqual(@as(u256, timestamp), try sm.getStorage(block_builder.BEACON_ROOTS_ADDRESS, slot));
+    try std.testing.expectEqual(std.mem.readInt(u256, &root, .big), try sm.getStorage(block_builder.BEACON_ROOTS_ADDRESS, slot + 8191));
+}
+
+test "validateBlock checks roots blooms withdrawals and blob gas" {
+    const tx_raw = [_]u8{ 0x01, 0xc0 };
+    const txs = [_]primitives.BlockBody.TransactionData{.{ .raw = &tx_raw }};
+    var bloom: [256]u8 = [_]u8{0} ** 256;
+    bloom[10] = 0xaa;
+    const receipts = [_]primitives.Receipt.Receipt{makeReceipt(.{
+        .logs_bloom = bloom,
+        .tx_type = .eip2930,
+        .blob_gas_used = 131_072,
+    })};
+    const withdrawals = [_]primitives.BlockBody.Withdrawal{};
+
+    var parent = parentHeader();
+    parent.withdrawals_root = primitives.BlockHeader.EMPTY_WITHDRAWALS_ROOT;
+    parent.blob_gas_used = 0;
+    parent.excess_blob_gas = 0;
+    parent.parent_beacon_block_root = primitives.Hash.ZERO;
+
+    var header = childHeader(parent);
+    header.transactions_root = try block_builder.computeRawTransactionsRoot(std.testing.allocator, &txs);
+    header.receipts_root = try block_builder.computeReceiptsRoot(std.testing.allocator, &receipts);
+    header.logs_bloom = block_builder.aggregateLogsBloom(&receipts);
+    header.gas_used = 21_000;
+    header.withdrawals_root = try block_builder.computeWithdrawalsRoot(std.testing.allocator, &withdrawals);
+    header.blob_gas_used = 131_072;
+    header.excess_blob_gas = 0;
+    header.parent_beacon_block_root = primitives.Hash.ZERO;
+
+    _ = try block_builder.validateBlock(std.testing.allocator, .{
+        .header = &header,
+        .parent_header = &parent,
+        .fork = .cancun,
+        .transaction_envelopes = &txs,
+        .receipts = &receipts,
+        .withdrawals = &withdrawals,
+    });
+
+    header.blob_gas_used = 0;
+    try std.testing.expectError(error.InvalidBlobGasUsed, block_builder.validateBlock(std.testing.allocator, .{
+        .header = &header,
+        .parent_header = &parent,
+        .fork = .cancun,
+        .transaction_envelopes = &txs,
+        .receipts = &receipts,
+        .withdrawals = &withdrawals,
+    }));
+}
+
+test "requests hash skips empty request types" {
+    const hash_a = block_builder.computeRequestsHash(.{ .deposits = "a", .consolidations = "c" });
+    const hash_b = block_builder.computeRequestsHash(.{ .deposits = "a", .withdrawals = "", .consolidations = "c" });
+    const hash_c = block_builder.computeRequestsHash(.{ .deposits = "a", .withdrawals = "b", .consolidations = "c" });
+
+    try std.testing.expectEqualSlices(u8, &hash_a, &hash_b);
+    try std.testing.expect(!std.mem.eql(u8, &hash_a, &hash_c));
 }

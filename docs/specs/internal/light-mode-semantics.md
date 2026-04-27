@@ -1,7 +1,5 @@
 # ZEVM Internal Support: Light Mode Semantics
 
-Last updated: 2026-03-30
-
 This page supports the normative light-mode contract in:
 
 - `docs/specs/prd.md`

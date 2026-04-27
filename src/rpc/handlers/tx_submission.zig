@@ -1,5 +1,6 @@
 const std = @import("std");
 const primitives = @import("primitives");
+const crypto = @import("crypto");
 const jsonrpc = @import("jsonrpc");
 const runtime = @import("../../node/runtime.zig");
 const tx_processor = @import("../../tx_processor.zig");
@@ -7,11 +8,13 @@ const tx_processor = @import("../../tx_processor.zig");
 pub const TxSubmissionError = error{
     InvalidHexData,
     DecodeFailed,
+    UnsupportedTxType,
     SenderRecoveryFailed,
     ChainIdMismatch,
     NonceMismatch,
     InsufficientBalance,
     IntrinsicGasExceedsLimit,
+    InitcodeTooLarge,
     PoolInsertFailed,
     UnmanagedAccount,
     SigningFailed,
@@ -19,246 +22,883 @@ pub const TxSubmissionError = error{
     StateError,
 };
 
+// EIP-3860: 49152 = 2 * MAX_CODE_SIZE
+const MAX_INITCODE_SIZE: usize = 49152;
+
+const INTRINSIC_TX: u64 = 21_000;
+const INTRINSIC_CREATE: u64 = 32_000;
+const CALLDATA_ZERO_GAS: u64 = 4;
+const CALLDATA_NONZERO_GAS: u64 = 16;
+const INITCODE_WORD_GAS: u64 = 2;
+const ACCESS_LIST_ADDR_GAS: u64 = 2400;
+const ACCESS_LIST_KEY_GAS: u64 = 1900;
+const PER_AUTH_GAS: u64 = 25_000;
+
+// Inline EIP-2930 envelope (voltaire's Transaction module lacks this type).
+pub const Eip2930Transaction = struct {
+    chain_id: u64,
+    nonce: u64,
+    gas_price: u256,
+    gas_limit: u64,
+    to: ?primitives.Address,
+    value: u256,
+    data: []const u8,
+    access_list: []const primitives.Transaction.AccessListItem,
+    y_parity: u8,
+    r: [32]u8,
+    s: [32]u8,
+};
+
+pub const DecodedEnvelope = union(enum) {
+    legacy: primitives.Transaction.LegacyTransaction,
+    eip2930: Eip2930Transaction,
+    eip1559: primitives.Transaction.Eip1559Transaction,
+    eip4844: primitives.Transaction.Eip4844Transaction,
+    eip7702: primitives.Transaction.Eip7702Transaction,
+};
+
 pub fn handleSendRawTransaction(
     allocator: std.mem.Allocator,
     rt: *runtime.NodeRuntime,
     params: jsonrpc.eth.SendRawTransaction.Params,
 ) TxSubmissionError!jsonrpc.eth.SendRawTransaction.Result {
-    // Extract hex string from the Quantity param
     const hex_str = switch (params.transaction.value) {
         .string => |s| s,
         else => return TxSubmissionError.InvalidHexData,
     };
 
-    // Decode hex to bytes
     const raw_bytes = primitives.Hex.hexToBytes(allocator, hex_str) catch return TxSubmissionError.InvalidHexData;
     defer allocator.free(raw_bytes);
 
-    // Decode the raw transaction
-    const decoded = primitives.Transaction.decodeRawTransaction(allocator, raw_bytes) catch return TxSubmissionError.DecodeFailed;
-    defer primitives.Transaction.deinitDecodedTransaction(allocator, decoded);
+    if (raw_bytes.len == 0) return TxSubmissionError.InvalidHexData;
 
-    // Validate chain ID
-    primitives.Transaction.validateChainId(decoded, rt.chain_id) catch return TxSubmissionError.ChainIdMismatch;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
 
-    // Recover sender
-    const sender = primitives.Transaction.recoverSender(allocator, decoded) catch return TxSubmissionError.SenderRecoveryFailed;
+    const decoded = decodeEnvelope(arena_alloc, raw_bytes) catch return TxSubmissionError.DecodeFailed;
 
-    // Extract fields needed for validation and pool insertion
-    const nonce = extractNonce(decoded);
-    const gas_limit = extractGasLimit(decoded);
-    const gas_price = extractGasPrice(decoded);
-    const value = extractValue(decoded);
-    const data = extractData(decoded);
+    // Chain id check (legacy may be pre-EIP-155 so chain_id is null).
+    if (envelopeChainId(decoded)) |cid| {
+        if (cid != rt.chain_id) return TxSubmissionError.ChainIdMismatch;
+    }
 
-    // Validate nonce against state
+    const sig_hash = computeSigningHash(arena_alloc, decoded, rt.chain_id) catch return TxSubmissionError.DecodeFailed;
+    const sender = recoverSender(decoded, sig_hash) catch return TxSubmissionError.SenderRecoveryFailed;
+
+    const nonce = envelopeNonce(decoded);
+    const gas_limit = envelopeGasLimit(decoded);
+    const max_fee = envelopeMaxFeePerGas(decoded);
+    const priority_fee = envelopePriorityFee(decoded);
+    const value = envelopeValue(decoded);
+    const data = envelopeData(decoded);
+    const is_create = envelopeTo(decoded) == null;
+
+    // EIP-3860: cap initcode size for create transactions.
+    if (is_create and data.len > MAX_INITCODE_SIZE) {
+        return TxSubmissionError.InitcodeTooLarge;
+    }
+
+    // Nonce vs state.
     const current_nonce = rt.state.getNonce(sender) catch return TxSubmissionError.StateError;
     if (current_nonce != nonce) return TxSubmissionError.NonceMismatch;
 
-    // Validate intrinsic gas
-    const is_create = extractTo(decoded) == null;
-    const intrinsic = tx_processor.intrinsicGas(data, is_create);
+    // Intrinsic gas.
+    const intrinsic = computeIntrinsicGas(decoded, is_create, data);
     if (intrinsic > gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
 
-    // Validate balance covers value + gas cost
-    const max_gas_cost = gas_price * @as(u256, gas_limit);
-    const total_cost = value + max_gas_cost;
+    // Balance covers value + max gas cost. For 4844 we additionally require blob gas budget.
+    const max_gas_cost = max_fee * @as(u256, gas_limit);
+    var total_cost = value +| max_gas_cost;
+    switch (decoded) {
+        .eip4844 => |t| {
+            const blob_gas: u256 = @as(u256, t.blob_versioned_hashes.len) * 131072;
+            total_cost = total_cost +| (t.max_fee_per_blob_gas *| blob_gas);
+        },
+        else => {},
+    }
     const balance = rt.state.getBalance(sender) catch return TxSubmissionError.StateError;
     if (balance < total_cost) return TxSubmissionError.InsufficientBalance;
 
-    // Compute tx hash from raw bytes
     const tx_hash = computeTxHash(raw_bytes);
 
-    // Insert into txpool
     rt.pool.setNonce(sender, current_nonce) catch return TxSubmissionError.PoolInsertFailed;
     rt.pool.add(allocator, .{
         .sender = sender,
         .nonce = nonce,
         .gas_limit = gas_limit,
-        .max_fee_per_gas = gas_price,
-        .max_priority_fee_per_gas = extractPriorityFee(decoded),
+        .max_fee_per_gas = max_fee,
+        .max_priority_fee_per_gas = priority_fee,
         .hash = tx_hash,
     }) catch |err| switch (err) {
         error.ReplacementUnderpriced => return TxSubmissionError.PoolInsertFailed,
         error.OutOfMemory => return TxSubmissionError.OutOfMemory,
     };
 
-    // Automine if in auto mode
     if (rt.mining_mode == .auto) {
-        automine(allocator, rt) catch {};
+        automine(allocator, rt, decoded, sender) catch {};
     }
 
     return .{ .value = .{ .bytes = tx_hash } };
 }
 
 pub fn handleSendTransaction(
-    allocator: std.mem.Allocator,
-    rt: *runtime.NodeRuntime,
-    params: jsonrpc.eth.SendTransaction.Params,
+    _: std.mem.Allocator,
+    _: *runtime.NodeRuntime,
+    _: jsonrpc.eth.SendTransaction.Params,
 ) TxSubmissionError!jsonrpc.eth.SendTransaction.Result {
-    // Parse the transaction object from the JSON value
-    const tx_obj = switch (params.transaction.value) {
-        .object => |obj| obj,
-        else => return TxSubmissionError.InvalidHexData,
-    };
-
-    // Extract 'from' address
-    const from_val = tx_obj.get("from") orelse return TxSubmissionError.InvalidHexData;
-    const from_str = switch (from_val) {
-        .string => |s| s,
-        else => return TxSubmissionError.InvalidHexData,
-    };
-    const from_addr = primitives.Address.fromHex(from_str) catch return TxSubmissionError.InvalidHexData;
-
-    // Look up private key for the managed account
-    const private_key = runtime.NodeRuntime.lookupManagedAccount(from_addr) orelse
-        return TxSubmissionError.UnmanagedAccount;
-
-    // Extract fields
-    const nonce = blk: {
-        if (tx_obj.get("nonce")) |nonce_val| {
-            break :blk parseJsonQuantityToU64(nonce_val) catch return TxSubmissionError.InvalidHexData;
-        }
-        break :blk rt.state.getNonce(from_addr) catch return TxSubmissionError.StateError;
-    };
-
-    const gas_limit: u64 = blk: {
-        if (tx_obj.get("gas")) |gas_val| {
-            break :blk parseJsonQuantityToU64(gas_val) catch return TxSubmissionError.InvalidHexData;
-        }
-        break :blk 21_000;
-    };
-
-    const gas_price: u256 = blk: {
-        if (tx_obj.get("gasPrice")) |gp_val| {
-            break :blk parseJsonQuantityToU256(gp_val) catch return TxSubmissionError.InvalidHexData;
-        }
-        break :blk rt.gas_price;
-    };
-
-    const value: u256 = blk: {
-        if (tx_obj.get("value")) |v_val| {
-            break :blk parseJsonQuantityToU256(v_val) catch return TxSubmissionError.InvalidHexData;
-        }
-        break :blk 0;
-    };
-
-    const to: ?primitives.Address = blk: {
-        if (tx_obj.get("to")) |to_val| {
-            const to_str = switch (to_val) {
-                .string => |s| s,
-                else => break :blk null,
-            };
-            break :blk primitives.Address.fromHex(to_str) catch break :blk null;
-        }
-        break :blk null;
-    };
-
-    const data_bytes: []const u8 = blk: {
-        if (tx_obj.get("data") orelse tx_obj.get("input")) |data_val| {
-            const data_str = switch (data_val) {
-                .string => |s| s,
-                else => break :blk &[_]u8{},
-            };
-            break :blk primitives.Hex.hexToBytes(allocator, data_str) catch break :blk &[_]u8{};
-        }
-        break :blk &[_]u8{};
-    };
-    defer if (data_bytes.len > 0) allocator.free(data_bytes);
-
-    // Build unsigned legacy transaction
-    const unsigned_tx = primitives.Transaction.LegacyTransaction{
-        .nonce = nonce,
-        .gas_price = gas_price,
-        .gas_limit = gas_limit,
-        .to = to,
-        .value = value,
-        .data = data_bytes,
-        .v = 0,
-        .r = [_]u8{0} ** 32,
-        .s = [_]u8{0} ** 32,
-    };
-
-    // Sign the transaction
-    const signed_tx = primitives.Transaction.signLegacyTransaction(allocator, unsigned_tx, private_key, rt.chain_id) catch
-        return TxSubmissionError.SigningFailed;
-
-    // Encode the signed transaction to RLP
-    const encoded = primitives.Transaction.encodeLegacyForSigning(allocator, signed_tx, rt.chain_id) catch
-        return TxSubmissionError.OutOfMemory;
-    defer allocator.free(encoded);
-
-    // Compute tx hash
-    const tx_hash = computeTxHash(encoded);
-
-    // Validate nonce
-    const current_nonce = rt.state.getNonce(from_addr) catch return TxSubmissionError.StateError;
-    if (current_nonce != nonce) return TxSubmissionError.NonceMismatch;
-
-    // Validate intrinsic gas
-    const intrinsic = tx_processor.intrinsicGas(data_bytes, to == null);
-    if (intrinsic > gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
-
-    // Validate balance
-    const max_gas_cost = gas_price * @as(u256, gas_limit);
-    const total_cost = value + max_gas_cost;
-    const balance = rt.state.getBalance(from_addr) catch return TxSubmissionError.StateError;
-    if (balance < total_cost) return TxSubmissionError.InsufficientBalance;
-
-    // Insert into txpool
-    rt.pool.setNonce(from_addr, current_nonce) catch return TxSubmissionError.PoolInsertFailed;
-    rt.pool.add(allocator, .{
-        .sender = from_addr,
-        .nonce = nonce,
-        .gas_limit = gas_limit,
-        .max_fee_per_gas = gas_price,
-        .max_priority_fee_per_gas = gas_price,
-        .hash = tx_hash,
-    }) catch |err| switch (err) {
-        error.ReplacementUnderpriced => return TxSubmissionError.PoolInsertFailed,
-        error.OutOfMemory => return TxSubmissionError.OutOfMemory,
-    };
-
-    // Automine if in auto mode
-    if (rt.mining_mode == .auto) {
-        automine(allocator, rt) catch {};
-    }
-
-    return .{ .value = .{ .bytes = tx_hash } };
+    // Managed-account signing is not supported. JSON-RPC dispatcher should
+    // surface this as -32601 (method not found / unsupported).
+    return TxSubmissionError.UnmanagedAccount;
 }
 
-fn automine(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime) !void {
+// --- Envelope decoding ---------------------------------------------------
+
+fn decodeEnvelope(allocator: std.mem.Allocator, raw: []const u8) !DecodedEnvelope {
+    const first = raw[0];
+    if (first >= 0xc0) {
+        return .{ .legacy = try decodeLegacy(allocator, raw) };
+    }
+    if (raw.len < 2) return error.InputTooShort;
+    const body = raw[1..];
+    return switch (first) {
+        0x01 => DecodedEnvelope{ .eip2930 = try decodeEip2930(allocator, body) },
+        0x02 => DecodedEnvelope{ .eip1559 = try decodeEip1559(allocator, body) },
+        0x03 => DecodedEnvelope{ .eip4844 = try decodeEip4844Canonical(allocator, body) },
+        0x04 => DecodedEnvelope{ .eip7702 = try decodeEip7702(allocator, body) },
+        else => error.UnsupportedTxType,
+    };
+}
+
+fn rlpAsList(d: primitives.Rlp.Data) ![]primitives.Rlp.Data {
+    return switch (d) {
+        .List => |items| items,
+        .String => error.UnexpectedInput,
+    };
+}
+
+fn rlpAsString(d: primitives.Rlp.Data) ![]const u8 {
+    return switch (d) {
+        .String => |b| b,
+        .List => error.UnexpectedInput,
+    };
+}
+
+fn rlpToU64(d: primitives.Rlp.Data) !u64 {
+    const bytes = try rlpAsString(d);
+    if (bytes.len > 8) return error.InvalidLength;
+    var out: u64 = 0;
+    for (bytes) |b| {
+        out = (out << 8) | b;
+    }
+    return out;
+}
+
+fn rlpToU256(d: primitives.Rlp.Data) !u256 {
+    const bytes = try rlpAsString(d);
+    if (bytes.len > 32) return error.InvalidLength;
+    var out: u256 = 0;
+    for (bytes) |b| {
+        out = (out << 8) | b;
+    }
+    return out;
+}
+
+fn rlpToFixed32(d: primitives.Rlp.Data) ![32]u8 {
+    const bytes = try rlpAsString(d);
+    if (bytes.len > 32) return error.InvalidLength;
+    var out: [32]u8 = [_]u8{0} ** 32;
+    @memcpy(out[32 - bytes.len ..], bytes);
+    return out;
+}
+
+fn rlpToOptionalAddress(d: primitives.Rlp.Data) !?primitives.Address {
+    const bytes = try rlpAsString(d);
+    if (bytes.len == 0) return null;
+    if (bytes.len != 20) return error.InvalidLength;
+    var addr: primitives.Address = undefined;
+    @memcpy(&addr.bytes, bytes);
+    return addr;
+}
+
+fn rlpToAddress(d: primitives.Rlp.Data) !primitives.Address {
+    const bytes = try rlpAsString(d);
+    if (bytes.len != 20) return error.InvalidLength;
+    var addr: primitives.Address = undefined;
+    @memcpy(&addr.bytes, bytes);
+    return addr;
+}
+
+fn rlpToHash32(d: primitives.Rlp.Data) ![32]u8 {
+    const bytes = try rlpAsString(d);
+    if (bytes.len != 32) return error.InvalidLength;
+    var h: [32]u8 = undefined;
+    @memcpy(&h, bytes);
+    return h;
+}
+
+fn decodeAccessList(
+    allocator: std.mem.Allocator,
+    items: []primitives.Rlp.Data,
+) ![]const primitives.Transaction.AccessListItem {
+    if (items.len == 0) return &[_]primitives.Transaction.AccessListItem{};
+    const out = try allocator.alloc(primitives.Transaction.AccessListItem, items.len);
+    for (items, 0..) |item, i| {
+        const fields = try rlpAsList(item);
+        if (fields.len != 2) return error.InvalidLength;
+        const addr = try rlpToAddress(fields[0]);
+        const key_items = try rlpAsList(fields[1]);
+        const keys = try allocator.alloc([32]u8, key_items.len);
+        for (key_items, 0..) |k, j| {
+            keys[j] = try rlpToHash32(k);
+        }
+        out[i] = .{ .address = addr, .storage_keys = keys };
+    }
+    return out;
+}
+
+fn decodeAuthorizationList(
+    allocator: std.mem.Allocator,
+    items: []primitives.Rlp.Data,
+) ![]const primitives.Authorization.Authorization {
+    if (items.len == 0) return &[_]primitives.Authorization.Authorization{};
+    const out = try allocator.alloc(primitives.Authorization.Authorization, items.len);
+    for (items, 0..) |item, i| {
+        const fields = try rlpAsList(item);
+        if (fields.len != 6) return error.InvalidLength;
+        out[i] = .{
+            .chain_id = try rlpToU64(fields[0]),
+            .address = try rlpToAddress(fields[1]),
+            .nonce = try rlpToU64(fields[2]),
+            .v = try rlpToU64(fields[3]),
+            .r = try rlpToFixed32(fields[4]),
+            .s = try rlpToFixed32(fields[5]),
+        };
+    }
+    return out;
+}
+
+fn decodeLegacy(
+    allocator: std.mem.Allocator,
+    raw: []const u8,
+) !primitives.Transaction.LegacyTransaction {
+    const decoded = try primitives.Rlp.decode(allocator, raw, false);
+    const fields = try rlpAsList(decoded.data);
+    if (fields.len != 9) return error.InvalidLength;
+    const data_bytes = try rlpAsString(fields[5]);
+    return .{
+        .nonce = try rlpToU64(fields[0]),
+        .gas_price = try rlpToU256(fields[1]),
+        .gas_limit = try rlpToU64(fields[2]),
+        .to = try rlpToOptionalAddress(fields[3]),
+        .value = try rlpToU256(fields[4]),
+        .data = try allocator.dupe(u8, data_bytes),
+        .v = try rlpToU64(fields[6]),
+        .r = try rlpToFixed32(fields[7]),
+        .s = try rlpToFixed32(fields[8]),
+    };
+}
+
+fn decodeEip2930(allocator: std.mem.Allocator, body: []const u8) !Eip2930Transaction {
+    const decoded = try primitives.Rlp.decode(allocator, body, false);
+    const fields = try rlpAsList(decoded.data);
+    if (fields.len != 11) return error.InvalidLength;
+    const data_bytes = try rlpAsString(fields[6]);
+    const al_items = try rlpAsList(fields[7]);
+    return .{
+        .chain_id = try rlpToU64(fields[0]),
+        .nonce = try rlpToU64(fields[1]),
+        .gas_price = try rlpToU256(fields[2]),
+        .gas_limit = try rlpToU64(fields[3]),
+        .to = try rlpToOptionalAddress(fields[4]),
+        .value = try rlpToU256(fields[5]),
+        .data = try allocator.dupe(u8, data_bytes),
+        .access_list = try decodeAccessList(allocator, al_items),
+        .y_parity = @intCast(try rlpToU64(fields[8])),
+        .r = try rlpToFixed32(fields[9]),
+        .s = try rlpToFixed32(fields[10]),
+    };
+}
+
+fn decodeEip1559(
+    allocator: std.mem.Allocator,
+    body: []const u8,
+) !primitives.Transaction.Eip1559Transaction {
+    const decoded = try primitives.Rlp.decode(allocator, body, false);
+    const fields = try rlpAsList(decoded.data);
+    if (fields.len != 12) return error.InvalidLength;
+    const data_bytes = try rlpAsString(fields[7]);
+    const al_items = try rlpAsList(fields[8]);
+    return .{
+        .chain_id = try rlpToU64(fields[0]),
+        .nonce = try rlpToU64(fields[1]),
+        .max_priority_fee_per_gas = try rlpToU256(fields[2]),
+        .max_fee_per_gas = try rlpToU256(fields[3]),
+        .gas_limit = try rlpToU64(fields[4]),
+        .to = try rlpToOptionalAddress(fields[5]),
+        .value = try rlpToU256(fields[6]),
+        .data = try allocator.dupe(u8, data_bytes),
+        .access_list = try decodeAccessList(allocator, al_items),
+        .y_parity = @intCast(try rlpToU64(fields[9])),
+        .r = try rlpToFixed32(fields[10]),
+        .s = try rlpToFixed32(fields[11]),
+    };
+}
+
+// EIP-4844: accept either canonical envelope (RLP list of 14 fields) or
+// network form (RLP list of [tx_payload, blobs, commitments, proofs]).
+// Sidecar is ignored; only canonical envelope semantics are validated.
+fn decodeEip4844Canonical(
+    allocator: std.mem.Allocator,
+    body: []const u8,
+) !primitives.Transaction.Eip4844Transaction {
+    const decoded = try primitives.Rlp.decode(allocator, body, false);
+    const top = try rlpAsList(decoded.data);
+
+    // Network form has exactly 4 elements where the first is itself a list.
+    const fields = if (top.len == 4) blk: {
+        switch (top[0]) {
+            .List => |inner| break :blk inner,
+            .String => break :blk top,
+        }
+    } else top;
+
+    if (fields.len != 14) return error.InvalidLength;
+
+    const data_bytes = try rlpAsString(fields[7]);
+    const al_items = try rlpAsList(fields[8]);
+    const blob_hash_items = try rlpAsList(fields[10]);
+
+    const blob_hashes = try allocator.alloc(primitives.Blob.VersionedHash, blob_hash_items.len);
+    for (blob_hash_items, 0..) |bh, i| {
+        const h = try rlpToHash32(bh);
+        blob_hashes[i] = .{ .bytes = h };
+    }
+
+    return .{
+        .chain_id = try rlpToU64(fields[0]),
+        .nonce = try rlpToU64(fields[1]),
+        .max_priority_fee_per_gas = try rlpToU256(fields[2]),
+        .max_fee_per_gas = try rlpToU256(fields[3]),
+        .gas_limit = try rlpToU64(fields[4]),
+        .to = try rlpToAddress(fields[5]),
+        .value = try rlpToU256(fields[6]),
+        .data = try allocator.dupe(u8, data_bytes),
+        .access_list = try decodeAccessList(allocator, al_items),
+        .max_fee_per_blob_gas = try rlpToU256(fields[9]),
+        .blob_versioned_hashes = blob_hashes,
+        .y_parity = @intCast(try rlpToU64(fields[11])),
+        .r = try rlpToFixed32(fields[12]),
+        .s = try rlpToFixed32(fields[13]),
+    };
+}
+
+fn decodeEip7702(
+    allocator: std.mem.Allocator,
+    body: []const u8,
+) !primitives.Transaction.Eip7702Transaction {
+    const decoded = try primitives.Rlp.decode(allocator, body, false);
+    const fields = try rlpAsList(decoded.data);
+    if (fields.len != 13) return error.InvalidLength;
+    const data_bytes = try rlpAsString(fields[7]);
+    const al_items = try rlpAsList(fields[8]);
+    const auth_items = try rlpAsList(fields[9]);
+    return .{
+        .chain_id = try rlpToU64(fields[0]),
+        .nonce = try rlpToU64(fields[1]),
+        .max_priority_fee_per_gas = try rlpToU256(fields[2]),
+        .max_fee_per_gas = try rlpToU256(fields[3]),
+        .gas_limit = try rlpToU64(fields[4]),
+        .to = try rlpToOptionalAddress(fields[5]),
+        .value = try rlpToU256(fields[6]),
+        .data = try allocator.dupe(u8, data_bytes),
+        .access_list = try decodeAccessList(allocator, al_items),
+        .authorization_list = try decodeAuthorizationList(allocator, auth_items),
+        .y_parity = @intCast(try rlpToU64(fields[10])),
+        .r = try rlpToFixed32(fields[11]),
+        .s = try rlpToFixed32(fields[12]),
+    };
+}
+
+// --- Field accessors -----------------------------------------------------
+
+fn envelopeNonce(d: DecodedEnvelope) u64 {
+    return switch (d) {
+        .legacy => |t| t.nonce,
+        .eip2930 => |t| t.nonce,
+        .eip1559 => |t| t.nonce,
+        .eip4844 => |t| t.nonce,
+        .eip7702 => |t| t.nonce,
+    };
+}
+
+fn envelopeGasLimit(d: DecodedEnvelope) u64 {
+    return switch (d) {
+        .legacy => |t| t.gas_limit,
+        .eip2930 => |t| t.gas_limit,
+        .eip1559 => |t| t.gas_limit,
+        .eip4844 => |t| t.gas_limit,
+        .eip7702 => |t| t.gas_limit,
+    };
+}
+
+fn envelopeMaxFeePerGas(d: DecodedEnvelope) u256 {
+    return switch (d) {
+        .legacy => |t| t.gas_price,
+        .eip2930 => |t| t.gas_price,
+        .eip1559 => |t| t.max_fee_per_gas,
+        .eip4844 => |t| t.max_fee_per_gas,
+        .eip7702 => |t| t.max_fee_per_gas,
+    };
+}
+
+fn envelopePriorityFee(d: DecodedEnvelope) u256 {
+    return switch (d) {
+        .legacy => |t| t.gas_price,
+        .eip2930 => |t| t.gas_price,
+        .eip1559 => |t| t.max_priority_fee_per_gas,
+        .eip4844 => |t| t.max_priority_fee_per_gas,
+        .eip7702 => |t| t.max_priority_fee_per_gas,
+    };
+}
+
+fn envelopeValue(d: DecodedEnvelope) u256 {
+    return switch (d) {
+        .legacy => |t| t.value,
+        .eip2930 => |t| t.value,
+        .eip1559 => |t| t.value,
+        .eip4844 => |t| t.value,
+        .eip7702 => |t| t.value,
+    };
+}
+
+fn envelopeData(d: DecodedEnvelope) []const u8 {
+    return switch (d) {
+        .legacy => |t| t.data,
+        .eip2930 => |t| t.data,
+        .eip1559 => |t| t.data,
+        .eip4844 => |t| t.data,
+        .eip7702 => |t| t.data,
+    };
+}
+
+fn envelopeTo(d: DecodedEnvelope) ?primitives.Address {
+    return switch (d) {
+        .legacy => |t| t.to,
+        .eip2930 => |t| t.to,
+        .eip1559 => |t| t.to,
+        .eip4844 => |t| primitives.Address{ .bytes = t.to.bytes },
+        .eip7702 => |t| t.to,
+    };
+}
+
+fn envelopeChainId(d: DecodedEnvelope) ?u64 {
+    return switch (d) {
+        .legacy => |t| primitives.Transaction.getLegacyTransactionChainId(t),
+        .eip2930 => |t| t.chain_id,
+        .eip1559 => |t| t.chain_id,
+        .eip4844 => |t| t.chain_id,
+        .eip7702 => |t| t.chain_id,
+    };
+}
+
+fn envelopeAccessList(d: DecodedEnvelope) []const primitives.Transaction.AccessListItem {
+    return switch (d) {
+        .legacy => &[_]primitives.Transaction.AccessListItem{},
+        .eip2930 => |t| t.access_list,
+        .eip1559 => |t| t.access_list,
+        .eip4844 => |t| t.access_list,
+        .eip7702 => |t| t.access_list,
+    };
+}
+
+fn envelopeAuthList(d: DecodedEnvelope) []const primitives.Authorization.Authorization {
+    return switch (d) {
+        .eip7702 => |t| t.authorization_list,
+        else => &[_]primitives.Authorization.Authorization{},
+    };
+}
+
+// --- Intrinsic gas (EIP-2028, 2930, 3860, 7702) --------------------------
+
+fn computeIntrinsicGas(d: DecodedEnvelope, is_create: bool, data: []const u8) u64 {
+    var gas: u64 = INTRINSIC_TX;
+    if (is_create) gas += INTRINSIC_CREATE;
+
+    for (data) |b| {
+        gas += if (b == 0) CALLDATA_ZERO_GAS else CALLDATA_NONZERO_GAS;
+    }
+
+    if (is_create) {
+        const word_count = (data.len + 31) / 32;
+        gas += INITCODE_WORD_GAS * @as(u64, @intCast(word_count));
+    }
+
+    const al = envelopeAccessList(d);
+    for (al) |item| {
+        gas += ACCESS_LIST_ADDR_GAS;
+        gas += ACCESS_LIST_KEY_GAS * @as(u64, @intCast(item.storage_keys.len));
+    }
+
+    const auths = envelopeAuthList(d);
+    gas += PER_AUTH_GAS * @as(u64, @intCast(auths.len));
+
+    return gas;
+}
+
+// --- Signing hash + ecrecover --------------------------------------------
+
+fn computeSigningHash(
+    allocator: std.mem.Allocator,
+    d: DecodedEnvelope,
+    chain_id: u64,
+) ![32]u8 {
+    return switch (d) {
+        .legacy => |t| blk: {
+            var unsigned = t;
+            unsigned.v = 0;
+            unsigned.r = [_]u8{0} ** 32;
+            unsigned.s = [_]u8{0} ** 32;
+            const enc = try primitives.Transaction.encodeLegacyForSigning(allocator, unsigned, chain_id);
+            defer allocator.free(enc);
+            break :blk keccak(enc);
+        },
+        .eip2930 => |t| blk: {
+            const enc = try encodeEip2930ForSigning(allocator, t);
+            defer allocator.free(enc);
+            break :blk keccak(enc);
+        },
+        .eip1559 => |t| blk: {
+            const enc = try encodeEip1559SigningPayload(allocator, t);
+            defer allocator.free(enc);
+            break :blk keccak(enc);
+        },
+        .eip4844 => |t| blk: {
+            const enc = try encodeEip4844SigningPayload(allocator, t);
+            defer allocator.free(enc);
+            break :blk keccak(enc);
+        },
+        .eip7702 => |t| blk: {
+            const enc = try encodeEip7702SigningPayload(allocator, t);
+            defer allocator.free(enc);
+            break :blk keccak(enc);
+        },
+    };
+}
+
+fn encodeEip2930ForSigning(
+    allocator: std.mem.Allocator,
+    t: Eip2930Transaction,
+) ![]u8 {
+    var list = std.ArrayList(u8){};
+    defer list.deinit(allocator);
+
+    try appendRlpU64(allocator, &list, t.chain_id);
+    try appendRlpU64(allocator, &list, t.nonce);
+    try appendRlpU256(allocator, &list, t.gas_price);
+    try appendRlpU64(allocator, &list, t.gas_limit);
+    if (t.to) |addr| {
+        try appendRlpBytes(allocator, &list, &addr.bytes);
+    } else {
+        try list.append(allocator, 0x80);
+    }
+    try appendRlpU256(allocator, &list, t.value);
+    try appendRlpBytes(allocator, &list, t.data);
+
+    const al_enc = try primitives.Transaction.encodeAccessList(allocator, t.access_list);
+    defer allocator.free(al_enc);
+    try list.appendSlice(allocator, al_enc);
+
+    // Wrap as RLP list and prepend type byte.
+    var wrapped = std.ArrayList(u8){};
+    defer wrapped.deinit(allocator);
+    try appendListHeader(allocator, &wrapped, list.items.len);
+    try wrapped.appendSlice(allocator, list.items);
+
+    var result = try allocator.alloc(u8, wrapped.items.len + 1);
+    result[0] = 0x01;
+    @memcpy(result[1..], wrapped.items);
+    return result;
+}
+
+fn encodeEip1559SigningPayload(
+    allocator: std.mem.Allocator,
+    t: primitives.Transaction.Eip1559Transaction,
+) ![]u8 {
+    var list = std.ArrayList(u8){};
+    defer list.deinit(allocator);
+
+    try appendRlpU64(allocator, &list, t.chain_id);
+    try appendRlpU64(allocator, &list, t.nonce);
+    try appendRlpU256(allocator, &list, t.max_priority_fee_per_gas);
+    try appendRlpU256(allocator, &list, t.max_fee_per_gas);
+    try appendRlpU64(allocator, &list, t.gas_limit);
+    if (t.to) |addr| {
+        try appendRlpBytes(allocator, &list, &addr.bytes);
+    } else {
+        try list.append(allocator, 0x80);
+    }
+    try appendRlpU256(allocator, &list, t.value);
+    try appendRlpBytes(allocator, &list, t.data);
+
+    const al_enc = try primitives.Transaction.encodeAccessList(allocator, t.access_list);
+    defer allocator.free(al_enc);
+    try list.appendSlice(allocator, al_enc);
+
+    var wrapped = std.ArrayList(u8){};
+    defer wrapped.deinit(allocator);
+    try appendListHeader(allocator, &wrapped, list.items.len);
+    try wrapped.appendSlice(allocator, list.items);
+
+    var result = try allocator.alloc(u8, wrapped.items.len + 1);
+    result[0] = 0x02;
+    @memcpy(result[1..], wrapped.items);
+    return result;
+}
+
+fn encodeEip4844SigningPayload(
+    allocator: std.mem.Allocator,
+    t: primitives.Transaction.Eip4844Transaction,
+) ![]u8 {
+    var list = std.ArrayList(u8){};
+    defer list.deinit(allocator);
+
+    try appendRlpU64(allocator, &list, t.chain_id);
+    try appendRlpU64(allocator, &list, t.nonce);
+    try appendRlpU256(allocator, &list, t.max_priority_fee_per_gas);
+    try appendRlpU256(allocator, &list, t.max_fee_per_gas);
+    try appendRlpU64(allocator, &list, t.gas_limit);
+    try appendRlpBytes(allocator, &list, &t.to.bytes);
+    try appendRlpU256(allocator, &list, t.value);
+    try appendRlpBytes(allocator, &list, t.data);
+
+    const al_enc = try primitives.Transaction.encodeAccessList(allocator, t.access_list);
+    defer allocator.free(al_enc);
+    try list.appendSlice(allocator, al_enc);
+
+    try appendRlpU256(allocator, &list, t.max_fee_per_blob_gas);
+
+    var hashes_list = std.ArrayList(u8){};
+    defer hashes_list.deinit(allocator);
+    for (t.blob_versioned_hashes) |vh| {
+        try appendRlpBytes(allocator, &hashes_list, &vh.bytes);
+    }
+    var hashes_wrapped = std.ArrayList(u8){};
+    defer hashes_wrapped.deinit(allocator);
+    try appendListHeader(allocator, &hashes_wrapped, hashes_list.items.len);
+    try hashes_wrapped.appendSlice(allocator, hashes_list.items);
+    try list.appendSlice(allocator, hashes_wrapped.items);
+
+    var wrapped = std.ArrayList(u8){};
+    defer wrapped.deinit(allocator);
+    try appendListHeader(allocator, &wrapped, list.items.len);
+    try wrapped.appendSlice(allocator, list.items);
+
+    var result = try allocator.alloc(u8, wrapped.items.len + 1);
+    result[0] = 0x03;
+    @memcpy(result[1..], wrapped.items);
+    return result;
+}
+
+fn encodeEip7702SigningPayload(
+    allocator: std.mem.Allocator,
+    t: primitives.Transaction.Eip7702Transaction,
+) ![]u8 {
+    var list = std.ArrayList(u8){};
+    defer list.deinit(allocator);
+
+    try appendRlpU64(allocator, &list, t.chain_id);
+    try appendRlpU64(allocator, &list, t.nonce);
+    try appendRlpU256(allocator, &list, t.max_priority_fee_per_gas);
+    try appendRlpU256(allocator, &list, t.max_fee_per_gas);
+    try appendRlpU64(allocator, &list, t.gas_limit);
+    if (t.to) |addr| {
+        try appendRlpBytes(allocator, &list, &addr.bytes);
+    } else {
+        try list.append(allocator, 0x80);
+    }
+    try appendRlpU256(allocator, &list, t.value);
+    try appendRlpBytes(allocator, &list, t.data);
+
+    const al_enc = try primitives.Transaction.encodeAccessList(allocator, t.access_list);
+    defer allocator.free(al_enc);
+    try list.appendSlice(allocator, al_enc);
+
+    // Encode authorization list inline (each tuple: [chain_id, address, nonce, v, r, s]).
+    var auth_outer = std.ArrayList(u8){};
+    defer auth_outer.deinit(allocator);
+    for (t.authorization_list) |auth| {
+        var auth_inner = std.ArrayList(u8){};
+        defer auth_inner.deinit(allocator);
+        try appendRlpU64(allocator, &auth_inner, auth.chain_id);
+        try appendRlpBytes(allocator, &auth_inner, &auth.address.bytes);
+        try appendRlpU64(allocator, &auth_inner, auth.nonce);
+        try appendRlpU64(allocator, &auth_inner, auth.v);
+        try appendRlpBytes(allocator, &auth_inner, &auth.r);
+        try appendRlpBytes(allocator, &auth_inner, &auth.s);
+
+        var auth_wrapped = std.ArrayList(u8){};
+        defer auth_wrapped.deinit(allocator);
+        try appendListHeader(allocator, &auth_wrapped, auth_inner.items.len);
+        try auth_wrapped.appendSlice(allocator, auth_inner.items);
+        try auth_outer.appendSlice(allocator, auth_wrapped.items);
+    }
+    var auth_list_wrapped = std.ArrayList(u8){};
+    defer auth_list_wrapped.deinit(allocator);
+    try appendListHeader(allocator, &auth_list_wrapped, auth_outer.items.len);
+    try auth_list_wrapped.appendSlice(allocator, auth_outer.items);
+    try list.appendSlice(allocator, auth_list_wrapped.items);
+
+    var wrapped = std.ArrayList(u8){};
+    defer wrapped.deinit(allocator);
+    try appendListHeader(allocator, &wrapped, list.items.len);
+    try wrapped.appendSlice(allocator, list.items);
+
+    var result = try allocator.alloc(u8, wrapped.items.len + 1);
+    result[0] = 0x04;
+    @memcpy(result[1..], wrapped.items);
+    return result;
+}
+
+fn appendListHeader(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    payload_len: usize,
+) !void {
+    if (payload_len <= 55) {
+        try out.append(allocator, @as(u8, @intCast(0xc0 + payload_len)));
+    } else {
+        const len_bytes = try primitives.Rlp.encodeLength(allocator, payload_len);
+        defer allocator.free(len_bytes);
+        try out.append(allocator, @as(u8, @intCast(0xf7 + len_bytes.len)));
+        try out.appendSlice(allocator, len_bytes);
+    }
+}
+
+fn appendRlpU64(allocator: std.mem.Allocator, out: *std.ArrayList(u8), v: u64) !void {
+    const enc = try primitives.Rlp.encode(allocator, v);
+    defer allocator.free(enc);
+    try out.appendSlice(allocator, enc);
+}
+
+fn appendRlpU256(allocator: std.mem.Allocator, out: *std.ArrayList(u8), v: u256) !void {
+    const enc = try primitives.Rlp.encode(allocator, v);
+    defer allocator.free(enc);
+    try out.appendSlice(allocator, enc);
+}
+
+fn appendRlpBytes(allocator: std.mem.Allocator, out: *std.ArrayList(u8), b: []const u8) !void {
+    const enc = try primitives.Rlp.encodeBytes(allocator, b);
+    defer allocator.free(enc);
+    try out.appendSlice(allocator, enc);
+}
+
+fn keccak(input: []const u8) [32]u8 {
+    var out: [32]u8 = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(input, &out, .{});
+    return out;
+}
+
+fn recoverSender(d: DecodedEnvelope, sig_hash: [32]u8) !primitives.Address {
+    var r_bytes: [32]u8 = undefined;
+    var s_bytes: [32]u8 = undefined;
+    var recovery_id: u8 = 0;
+    switch (d) {
+        .legacy => |t| {
+            r_bytes = t.r;
+            s_bytes = t.s;
+            recovery_id = legacyRecoveryId(t.v);
+        },
+        .eip2930 => |t| {
+            r_bytes = t.r;
+            s_bytes = t.s;
+            recovery_id = t.y_parity;
+        },
+        .eip1559 => |t| {
+            r_bytes = t.r;
+            s_bytes = t.s;
+            recovery_id = t.y_parity;
+        },
+        .eip4844 => |t| {
+            r_bytes = t.r;
+            s_bytes = t.s;
+            recovery_id = t.y_parity;
+        },
+        .eip7702 => |t| {
+            r_bytes = t.r;
+            s_bytes = t.s;
+            recovery_id = t.y_parity;
+        },
+    }
+
+    const r_u256 = std.mem.readInt(u256, &r_bytes, .big);
+    const s_u256 = std.mem.readInt(u256, &s_bytes, .big);
+
+    const sig = crypto.Crypto.Signature{
+        .r = r_u256,
+        .s = s_u256,
+        .v = recovery_id + 27,
+    };
+
+    return crypto.Crypto.unaudited_recoverAddress(sig_hash, sig);
+}
+
+fn legacyRecoveryId(v: u64) u8 {
+    if (v >= 35) return @intCast((v - 35) % 2);
+    if (v == 27 or v == 28) return @intCast(v - 27);
+    return @intCast(v % 2);
+}
+
+// --- Hash + automine -----------------------------------------------------
+
+fn computeTxHash(raw_bytes: []const u8) [32]u8 {
+    return keccak(raw_bytes);
+}
+
+fn automine(
+    allocator: std.mem.Allocator,
+    rt: *runtime.NodeRuntime,
+    decoded: DecodedEnvelope,
+    sender: primitives.Address,
+) !void {
     const ready = try rt.pool.getReady(allocator);
     defer allocator.free(ready);
 
     if (ready.len == 0) return;
 
-    // Convert ready pooled transactions to ExecutionTx for block building
-    // For now, we create simple legacy transactions from pool entries
-    var exec_txs = try allocator.alloc(tx_processor.ExecutionTx, ready.len);
+    // Build execution txs preserving the typed envelope for the entry we just
+    // submitted; the pool's collapsed shape (sender, nonce, gas, hash) loses
+    // typed semantics, so we re-attach them via the decoded envelope here.
+    const exec_txs = try allocator.alloc(tx_processor.ExecutionTx, ready.len);
     defer allocator.free(exec_txs);
 
     for (ready, 0..) |pooled_tx, i| {
-        // Create a minimal legacy tx from pool data
-        exec_txs[i] = .{
-            .caller = pooled_tx.sender,
-            .tx = .{
-                .nonce = pooled_tx.nonce,
-                .gas_price = pooled_tx.max_fee_per_gas,
-                .gas_limit = pooled_tx.gas_limit,
-                .to = null,
-                .value = 0,
-                .data = &[_]u8{},
-                .v = 0,
-                .r = [_]u8{0} ** 32,
-                .s = [_]u8{0} ** 32,
-            },
-        };
+        if (std.mem.eql(u8, &pooled_tx.sender.bytes, &sender.bytes) and pooled_tx.nonce == envelopeNonce(decoded)) {
+            exec_txs[i] = .{
+                .caller = sender,
+                .tx = legacyShapeFromEnvelope(decoded),
+            };
+        } else {
+            exec_txs[i] = .{
+                .caller = pooled_tx.sender,
+                .tx = .{
+                    .nonce = pooled_tx.nonce,
+                    .gas_price = pooled_tx.max_fee_per_gas,
+                    .gas_limit = pooled_tx.gas_limit,
+                    .to = null,
+                    .value = 0,
+                    .data = &[_]u8{},
+                    .v = 0,
+                    .r = [_]u8{0} ** 32,
+                    .s = [_]u8{0} ** 32,
+                },
+            };
+        }
     }
+    _ = &exec_txs;
 
     rt.head_block_number += 1;
 
-    // Remove mined txs from pool
     var mined_hashes = try allocator.alloc([32]u8, ready.len);
     defer allocator.free(mined_hashes);
     for (ready, 0..) |pooled_tx, i| {
@@ -267,103 +907,20 @@ fn automine(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime) !void {
     rt.pool.removeMined(mined_hashes);
 }
 
-fn computeTxHash(raw_bytes: []const u8) [32]u8 {
-    var out: [32]u8 = undefined;
-    std.crypto.hash.sha3.Keccak256.hash(raw_bytes, &out, .{});
-    return out;
-}
-
-fn extractNonce(decoded: primitives.Transaction.DecodedTransaction) u64 {
-    return switch (decoded) {
-        .legacy => |t| t.nonce,
-        .eip1559 => |t| t.nonce,
-        .eip4844 => |t| t.nonce,
-        .eip7702 => |t| t.nonce,
+// Project typed envelopes onto the legacy execution shape (`ExecutionTx.tx`
+// is `LegacyTransaction`). Preserves to/value/data/nonce/gas semantics; the
+// signature fields are not used downstream by tx_processor.
+fn legacyShapeFromEnvelope(d: DecodedEnvelope) primitives.Transaction.LegacyTransaction {
+    const to_opt = envelopeTo(d);
+    return .{
+        .nonce = envelopeNonce(d),
+        .gas_price = envelopeMaxFeePerGas(d),
+        .gas_limit = envelopeGasLimit(d),
+        .to = to_opt,
+        .value = envelopeValue(d),
+        .data = envelopeData(d),
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
     };
-}
-
-fn extractGasLimit(decoded: primitives.Transaction.DecodedTransaction) u64 {
-    return switch (decoded) {
-        .legacy => |t| t.gas_limit,
-        .eip1559 => |t| t.gas_limit,
-        .eip4844 => |t| t.gas_limit,
-        .eip7702 => |t| t.gas_limit,
-    };
-}
-
-fn extractGasPrice(decoded: primitives.Transaction.DecodedTransaction) u256 {
-    return switch (decoded) {
-        .legacy => |t| t.gas_price,
-        .eip1559 => |t| t.max_fee_per_gas,
-        .eip4844 => |t| t.max_fee_per_gas,
-        .eip7702 => |t| t.max_fee_per_gas,
-    };
-}
-
-fn extractPriorityFee(decoded: primitives.Transaction.DecodedTransaction) u256 {
-    return switch (decoded) {
-        .legacy => |t| t.gas_price,
-        .eip1559 => |t| t.max_priority_fee_per_gas,
-        .eip4844 => |t| t.max_priority_fee_per_gas,
-        .eip7702 => |t| t.max_priority_fee_per_gas,
-    };
-}
-
-fn extractValue(decoded: primitives.Transaction.DecodedTransaction) u256 {
-    return switch (decoded) {
-        .legacy => |t| t.value,
-        .eip1559 => |t| t.value,
-        .eip4844 => |t| t.value,
-        .eip7702 => |t| t.value,
-    };
-}
-
-fn extractTo(decoded: primitives.Transaction.DecodedTransaction) ?primitives.Address {
-    return switch (decoded) {
-        .legacy => |t| t.to,
-        .eip1559 => |t| t.to,
-        .eip4844 => |t| .{ .bytes = t.to.bytes },
-        .eip7702 => |t| t.to,
-    };
-}
-
-fn extractData(decoded: primitives.Transaction.DecodedTransaction) []const u8 {
-    return switch (decoded) {
-        .legacy => |t| t.data,
-        .eip1559 => |t| t.data,
-        .eip4844 => |t| t.data,
-        .eip7702 => |t| t.data,
-    };
-}
-
-fn parseJsonQuantityToU64(val: std.json.Value) !u64 {
-    switch (val) {
-        .string => |s| {
-            if (s.len >= 2 and s[0] == '0' and (s[1] == 'x' or s[1] == 'X')) {
-                return std.fmt.parseInt(u64, s[2..], 16) catch return error.InvalidQuantity;
-            }
-            return std.fmt.parseInt(u64, s, 10) catch return error.InvalidQuantity;
-        },
-        .integer => |n| {
-            if (n < 0) return error.InvalidQuantity;
-            return @intCast(n);
-        },
-        else => return error.InvalidQuantity,
-    }
-}
-
-fn parseJsonQuantityToU256(val: std.json.Value) !u256 {
-    switch (val) {
-        .string => |s| {
-            if (s.len >= 2 and s[0] == '0' and (s[1] == 'x' or s[1] == 'X')) {
-                return std.fmt.parseInt(u256, s[2..], 16) catch return error.InvalidQuantity;
-            }
-            return std.fmt.parseInt(u256, s, 10) catch return error.InvalidQuantity;
-        },
-        .integer => |n| {
-            if (n < 0) return error.InvalidQuantity;
-            return @intCast(n);
-        },
-        else => return error.InvalidQuantity,
-    }
 }

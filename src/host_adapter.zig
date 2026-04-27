@@ -1,25 +1,40 @@
-const std = @import("std");
 const primitives = @import("primitives");
 const state_manager = @import("state-manager");
 const guillotine_mini = @import("guillotine_mini");
 
-/// Adapts voltaire's StateManager to guillotine-mini's HostInterface vtable.
-///
-/// StateManager methods return errors (!T) but the HostInterface vtable
-/// expects plain values (T). On error, sensible defaults are returned
-/// (0 for balances/nonces/storage, empty slice for code).
 pub const HostAdapter = struct {
     state: *state_manager.StateManager,
+    host_error: ?HostError = null,
+
+    pub const HostError = enum {
+        state_read_failed,
+        state_write_failed,
+        missing_key,
+        out_of_memory,
+        rpc_pending,
+        invalid_response,
+        invalid_request,
+    };
+
+    pub const Error = error{
+        StateReadFailed,
+        StateWriteFailed,
+        MissingKey,
+        OutOfMemory,
+        RpcPending,
+        InvalidResponse,
+        InvalidRequest,
+    };
 
     const vtable = guillotine_mini.HostInterface.VTable{
-        .getBalance = getBalance,
-        .setBalance = setBalance,
-        .getCode = getCode,
-        .setCode = setCode,
-        .getStorage = getStorage,
-        .setStorage = setStorage,
-        .getNonce = getNonce,
-        .setNonce = setNonce,
+        .getBalance = getBalanceVTable,
+        .setBalance = setBalanceVTable,
+        .getCode = getCodeVTable,
+        .setCode = setCodeVTable,
+        .getStorage = getStorageVTable,
+        .setStorage = setStorageVTable,
+        .getNonce = getNonceVTable,
+        .setNonce = setNonceVTable,
     };
 
     pub fn hostInterface(self: *HostAdapter) guillotine_mini.HostInterface {
@@ -29,59 +44,168 @@ pub const HostAdapter = struct {
         };
     }
 
-    fn getBalance(ptr: *anyopaque, address: primitives.Address) u256 {
+    pub fn getHostError(self: *const HostAdapter) ?HostError {
+        return self.host_error;
+    }
+
+    pub fn clearHostError(self: *HostAdapter) void {
+        self.host_error = null;
+    }
+
+    pub fn takeHostError(self: *HostAdapter) ?HostError {
+        const host_error = self.host_error;
+        self.host_error = null;
+        return host_error;
+    }
+
+    pub fn getBalance(self: *HostAdapter, address: primitives.Address) Error!u256 {
+        return self.state.getBalance(address) catch |err| return hostErrorToError(mapStateReadError(err));
+    }
+
+    pub fn setBalance(self: *HostAdapter, address: primitives.Address, balance: u256) Error!void {
+        self.state.setBalance(address, balance) catch |err| return hostErrorToError(mapStateWriteError(err));
+    }
+
+    pub fn getCode(self: *HostAdapter, address: primitives.Address) Error![]const u8 {
+        return self.state.getCode(address) catch |err| return hostErrorToError(mapStateReadError(err));
+    }
+
+    pub fn setCode(self: *HostAdapter, address: primitives.Address, code: []const u8) Error!void {
+        self.state.setCode(address, code) catch |err| return hostErrorToError(mapStateWriteError(err));
+    }
+
+    pub fn getStorage(self: *HostAdapter, address: primitives.Address, slot: u256) Error!u256 {
+        return self.state.getStorage(address, slot) catch |err| return hostErrorToError(mapStateReadError(err));
+    }
+
+    pub fn setStorage(self: *HostAdapter, address: primitives.Address, slot: u256, value: u256) Error!void {
+        self.state.setStorage(address, slot, value) catch |err| return hostErrorToError(mapStateWriteError(err));
+    }
+
+    pub fn getNonce(self: *HostAdapter, address: primitives.Address) Error!u64 {
+        return self.state.getNonce(address) catch |err| return hostErrorToError(mapStateReadError(err));
+    }
+
+    pub fn setNonce(self: *HostAdapter, address: primitives.Address, nonce: u64) Error!void {
+        self.state.setNonce(address, nonce) catch |err| return hostErrorToError(mapStateWriteError(err));
+    }
+
+    pub fn accountExists(self: *HostAdapter, address: primitives.Address) Error!bool {
+        if (self.state.journaled_state.account_cache.has(address)) return true;
+        if (self.state.journaled_state.contract_cache.has(address)) return true;
+        if (self.state.journaled_state.storage_cache.cache.contains(address)) return true;
+
+        if (self.state.journaled_state.fork_backend != null) {
+            _ = self.state.journaled_state.getAccount(address) catch |err| return hostErrorToError(mapStateReadError(err));
+            return self.state.journaled_state.account_cache.has(address);
+        }
+
+        return false;
+    }
+
+    pub fn accountIsEmpty(self: *HostAdapter, address: primitives.Address) Error!bool {
+        const account = self.state.journaled_state.getAccount(address) catch |err| return hostErrorToError(mapStateReadError(err));
+        const code = self.state.getCode(address) catch |err| return hostErrorToError(mapStateReadError(err));
+        return account.balance == 0 and account.nonce == 0 and code.len == 0;
+    }
+
+    fn getBalanceVTable(ptr: *anyopaque, address: primitives.Address) u256 {
         const self: *HostAdapter = @ptrCast(@alignCast(ptr));
         return self.state.getBalance(address) catch |err| {
-            std.debug.panic("StateManager.getBalance failed: {}", .{err});
+            self.recordError(mapStateReadError(err));
+            return 0;
         };
     }
 
-    fn setBalance(ptr: *anyopaque, address: primitives.Address, balance: u256) void {
+    fn setBalanceVTable(ptr: *anyopaque, address: primitives.Address, balance: u256) void {
         const self: *HostAdapter = @ptrCast(@alignCast(ptr));
         self.state.setBalance(address, balance) catch |err| {
-            std.debug.panic("StateManager.setBalance failed: {}", .{err});
+            self.recordError(mapStateWriteError(err));
         };
     }
 
-    fn getCode(ptr: *anyopaque, address: primitives.Address) []const u8 {
+    fn getCodeVTable(ptr: *anyopaque, address: primitives.Address) []const u8 {
         const self: *HostAdapter = @ptrCast(@alignCast(ptr));
         return self.state.getCode(address) catch |err| {
-            std.debug.panic("StateManager.getCode failed: {}", .{err});
+            self.recordError(mapStateReadError(err));
+            return &[_]u8{};
         };
     }
 
-    fn setCode(ptr: *anyopaque, address: primitives.Address, code: []const u8) void {
+    fn setCodeVTable(ptr: *anyopaque, address: primitives.Address, code: []const u8) void {
         const self: *HostAdapter = @ptrCast(@alignCast(ptr));
         self.state.setCode(address, code) catch |err| {
-            std.debug.panic("StateManager.setCode failed: {}", .{err});
+            self.recordError(mapStateWriteError(err));
         };
     }
 
-    fn getStorage(ptr: *anyopaque, address: primitives.Address, slot: u256) u256 {
+    fn getStorageVTable(ptr: *anyopaque, address: primitives.Address, slot: u256) u256 {
         const self: *HostAdapter = @ptrCast(@alignCast(ptr));
         return self.state.getStorage(address, slot) catch |err| {
-            std.debug.panic("StateManager.getStorage failed: {}", .{err});
+            self.recordError(mapStateReadError(err));
+            return 0;
         };
     }
 
-    fn setStorage(ptr: *anyopaque, address: primitives.Address, slot: u256, value: u256) void {
+    fn setStorageVTable(ptr: *anyopaque, address: primitives.Address, slot: u256, value: u256) void {
         const self: *HostAdapter = @ptrCast(@alignCast(ptr));
         self.state.setStorage(address, slot, value) catch |err| {
-            std.debug.panic("StateManager.setStorage failed: {}", .{err});
+            self.recordError(mapStateWriteError(err));
         };
     }
 
-    fn getNonce(ptr: *anyopaque, address: primitives.Address) u64 {
+    fn getNonceVTable(ptr: *anyopaque, address: primitives.Address) u64 {
         const self: *HostAdapter = @ptrCast(@alignCast(ptr));
         return self.state.getNonce(address) catch |err| {
-            std.debug.panic("StateManager.getNonce failed: {}", .{err});
+            self.recordError(mapStateReadError(err));
+            return 0;
         };
     }
 
-    fn setNonce(ptr: *anyopaque, address: primitives.Address, nonce: u64) void {
+    fn setNonceVTable(ptr: *anyopaque, address: primitives.Address, nonce: u64) void {
         const self: *HostAdapter = @ptrCast(@alignCast(ptr));
         self.state.setNonce(address, nonce) catch |err| {
-            std.debug.panic("StateManager.setNonce failed: {}", .{err});
+            self.recordError(mapStateWriteError(err));
+        };
+    }
+
+    fn recordError(self: *HostAdapter, host_error: HostError) void {
+        if (self.host_error == null) {
+            self.host_error = host_error;
+        }
+    }
+
+    fn mapStateReadError(err: anyerror) HostError {
+        return switch (err) {
+            error.OutOfMemory => .out_of_memory,
+            error.RpcPending => .rpc_pending,
+            error.InvalidResponse => .invalid_response,
+            error.InvalidRequest => .invalid_request,
+            error.FileNotFound, error.KeyNotFound, error.MissingKey, error.NoEntry, error.NotFound => .missing_key,
+            else => .state_read_failed,
+        };
+    }
+
+    fn mapStateWriteError(err: anyerror) HostError {
+        return switch (err) {
+            error.OutOfMemory => .out_of_memory,
+            error.RpcPending => .rpc_pending,
+            error.InvalidResponse => .invalid_response,
+            error.InvalidRequest => .invalid_request,
+            error.FileNotFound, error.KeyNotFound, error.MissingKey, error.NoEntry, error.NotFound => .missing_key,
+            else => .state_write_failed,
+        };
+    }
+
+    fn hostErrorToError(host_error: HostError) Error {
+        return switch (host_error) {
+            .state_read_failed => error.StateReadFailed,
+            .state_write_failed => error.StateWriteFailed,
+            .missing_key => error.MissingKey,
+            .out_of_memory => error.OutOfMemory,
+            .rpc_pending => error.RpcPending,
+            .invalid_response => error.InvalidResponse,
+            .invalid_request => error.InvalidRequest,
         };
     }
 };

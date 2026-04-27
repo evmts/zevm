@@ -40,17 +40,43 @@ pub const BlockResponse = struct {
 };
 
 pub const TxResponse = struct {
+    hash: [32]u8,
     blockHash: ?[32]u8,
     blockNumber: ?u64,
-    from: primitives.Address.Address,
-    gas: u64,
-    hash: [32]u8,
-    input: []const u8,
-    nonce: u64,
-    to: ?primitives.Address.Address,
     transactionIndex: ?u32,
+    from: primitives.Address.Address,
+    to: ?primitives.Address.Address,
+    nonce: u64,
+    gas: u64,
     value: u256,
+    input: []const u8,
     type_field: u8,
+    chain_id: ?u64,
+    gas_price: ?u256,
+    max_fee_per_gas: ?u256,
+    max_priority_fee_per_gas: ?u256,
+    max_fee_per_blob_gas: ?u256,
+    blob_versioned_hashes: ?[]const [32]u8,
+    access_list: ?[]const TxAccessListEntry,
+    authorization_list: ?[]const TxAuthorizationEntry,
+    v: ?u256,
+    r: ?u256,
+    s: ?u256,
+    y_parity: ?u8,
+};
+
+pub const TxAccessListEntry = struct {
+    address: primitives.Address.Address,
+    storage_keys: []const [32]u8,
+};
+
+pub const TxAuthorizationEntry = struct {
+    chain_id: u256,
+    address: primitives.Address.Address,
+    nonce: u64,
+    y_parity: u8,
+    r: u256,
+    s: u256,
 };
 
 pub const LogResponse = struct {
@@ -141,7 +167,7 @@ pub fn getBlockTxCountByNumber(
 ) !?u64 {
     const number = resolveBlockTag(bc, tag) orelse return null;
     const block = (try bc.getBlockByNumber(number)) orelse return null;
-    return block.body.transactions.len;
+    return @intCast(block.body.transactions.len);
 }
 
 pub fn getBlockTxCountByHash(
@@ -149,7 +175,25 @@ pub fn getBlockTxCountByHash(
     hash: [32]u8,
 ) !?u64 {
     const block = (try bc.getBlockByHash(hash)) orelse return null;
-    return block.body.transactions.len;
+    return @intCast(block.body.transactions.len);
+}
+
+/// Post-Merge: always 0 uncles. Returns null only when the block is missing.
+pub fn getUncleCountByNumber(
+    bc: *blockchain_mod.Blockchain,
+    tag: []const u8,
+) !?u64 {
+    const number = resolveBlockTag(bc, tag) orelse return null;
+    const block = (try bc.getBlockByNumber(number)) orelse return null;
+    return @intCast(block.body.ommers.len);
+}
+
+pub fn getUncleCountByHash(
+    bc: *blockchain_mod.Blockchain,
+    hash: [32]u8,
+) !?u64 {
+    const block = (try bc.getBlockByHash(hash)) orelse return null;
+    return @intCast(block.body.ommers.len);
 }
 
 // ============================================================================
@@ -173,7 +217,25 @@ pub fn getBlockReceipts(
 ) !?[]ReceiptResponse {
     const number = resolveBlockTag(bc, tag) orelse return null;
     const block = (try bc.getBlockByNumber(number)) orelse return null;
-    const receipts = ri.getByBlockHash(block.hash) orelse return null;
+    return try receiptsForBlockHash(allocator, ri, block.hash);
+}
+
+pub fn getBlockReceiptsByHash(
+    allocator: std.mem.Allocator,
+    bc: *blockchain_mod.Blockchain,
+    ri: *const receipt_index_mod.ReceiptIndex,
+    hash: [32]u8,
+) !?[]ReceiptResponse {
+    const block = (try bc.getBlockByHash(hash)) orelse return null;
+    return try receiptsForBlockHash(allocator, ri, block.hash);
+}
+
+fn receiptsForBlockHash(
+    allocator: std.mem.Allocator,
+    ri: *const receipt_index_mod.ReceiptIndex,
+    block_hash: [32]u8,
+) !?[]ReceiptResponse {
+    const receipts = ri.getByBlockHash(block_hash) orelse return null;
 
     const responses = try allocator.alloc(ReceiptResponse, receipts.len);
     errdefer allocator.free(responses);
@@ -183,6 +245,30 @@ pub fn getBlockReceipts(
     }
 
     return responses;
+}
+
+// ============================================================================
+// Transaction Queries
+// ============================================================================
+
+/// Look up a transaction by hash. We don't carry a structured tx index; instead,
+/// the receipt index tracks each mined tx. We use the receipt to locate the
+/// containing block + index, then synthesize a TxResponse using receipt-derived
+/// fields. Fields that require RLP-decoding the raw tx bytes (nonce, value,
+/// input, gasPrice, signature components, chain id, access list, etc.) cannot
+/// be recovered without a transaction decoder; those are returned as 0/empty.
+pub fn getTransactionByHash(
+    allocator: std.mem.Allocator,
+    bc: *blockchain_mod.Blockchain,
+    ri: *const receipt_index_mod.ReceiptIndex,
+    tx_hash: [32]u8,
+) !?TxResponse {
+    const receipt = ri.getByTxHash(tx_hash) orelse return null;
+    const block = (try bc.getBlockByHash(receipt.block_hash)) orelse {
+        // Receipt without block — degrade gracefully.
+        return txResponseFromReceipt(allocator, receipt, null);
+    };
+    return txResponseFromReceipt(allocator, receipt, block);
 }
 
 // ============================================================================
@@ -229,26 +315,13 @@ fn blockToResponse(
     const txs: TransactionList = if (full_txs) blk: {
         const full = try allocator.alloc(TxResponse, block.body.transactions.len);
         for (block.body.transactions, 0..) |tx_data, i| {
-            _ = tx_data;
-            full[i] = .{
-                .blockHash = block.hash,
-                .blockNumber = block.header.number,
-                .from = primitives.Address.ZERO_ADDRESS,
-                .gas = 0,
-                .hash = [_]u8{0} ** 32,
-                .input = &.{},
-                .nonce = 0,
-                .to = null,
-                .transactionIndex = @intCast(i),
-                .value = 0,
-                .type_field = 0,
-            };
+            full[i] = txResponseFromRaw(tx_data.raw, block.hash, block.header.number, @intCast(i));
         }
         break :blk .{ .full = full };
     } else blk: {
         const hashes = try allocator.alloc([32]u8, block.body.transactions.len);
-        for (block.body.transactions, 0..) |_, i| {
-            hashes[i] = [_]u8{0} ** 32;
+        for (block.body.transactions, 0..) |tx_data, i| {
+            hashes[i] = computeTxHash(tx_data.raw);
         }
         break :blk .{ .hashes = hashes };
     };
@@ -278,6 +351,102 @@ fn blockToResponse(
         .totalDifficulty = block.total_difficulty,
         .transactions = txs,
     };
+}
+
+fn txResponseFromRaw(
+    raw: []const u8,
+    block_hash: [32]u8,
+    block_number: u64,
+    index: u32,
+) TxResponse {
+    return .{
+        .hash = computeTxHash(raw),
+        .blockHash = block_hash,
+        .blockNumber = block_number,
+        .transactionIndex = index,
+        .from = primitives.Address.ZERO_ADDRESS,
+        .to = null,
+        .nonce = 0,
+        .gas = 0,
+        .value = 0,
+        .input = &.{},
+        .type_field = detectTxTypeField(raw),
+        .chain_id = null,
+        .gas_price = null,
+        .max_fee_per_gas = null,
+        .max_priority_fee_per_gas = null,
+        .max_fee_per_blob_gas = null,
+        .blob_versioned_hashes = null,
+        .access_list = null,
+        .authorization_list = null,
+        .v = null,
+        .r = null,
+        .s = null,
+        .y_parity = null,
+    };
+}
+
+fn txResponseFromReceipt(
+    allocator: std.mem.Allocator,
+    receipt: primitives.Receipt.Receipt,
+    block: ?primitives.Block.Block,
+) !TxResponse {
+    var input_bytes: []const u8 = &.{};
+    if (block) |b| {
+        const idx: usize = @intCast(receipt.transaction_index);
+        if (idx < b.body.transactions.len) {
+            // Best-effort: expose the raw envelope as input. A future tx
+            // decoder can split this into nonce/value/input/signature.
+            const raw = b.body.transactions[idx].raw;
+            input_bytes = try allocator.dupe(u8, raw);
+        }
+    }
+
+    const type_field = txTypeToU8(receipt.type);
+    const tx_response = TxResponse{
+        .hash = receipt.transaction_hash,
+        .blockHash = receipt.block_hash,
+        .blockNumber = receipt.block_number,
+        .transactionIndex = receipt.transaction_index,
+        .from = receipt.sender,
+        .to = receipt.to,
+        .nonce = 0,
+        .gas = @intCast(@min(receipt.gas_used, @as(u256, std.math.maxInt(u64)))),
+        .value = 0,
+        .input = input_bytes,
+        .type_field = type_field,
+        .chain_id = null,
+        .gas_price = if (type_field == 0 or type_field == 1) receipt.effective_gas_price else null,
+        .max_fee_per_gas = if (type_field >= 2) receipt.effective_gas_price else null,
+        .max_priority_fee_per_gas = null,
+        .max_fee_per_blob_gas = if (type_field == 3) receipt.blob_gas_price else null,
+        .blob_versioned_hashes = null,
+        .access_list = null,
+        .authorization_list = null,
+        .v = null,
+        .r = null,
+        .s = null,
+        .y_parity = null,
+    };
+    return tx_response;
+}
+
+fn detectTxTypeField(raw: []const u8) u8 {
+    if (raw.len == 0) return 0;
+    const first = raw[0];
+    return switch (first) {
+        0x01 => 1,
+        0x02 => 2,
+        0x03 => 3,
+        0x04 => 4,
+        else => 0, // legacy (RLP list prefix >= 0xc0)
+    };
+}
+
+fn computeTxHash(raw: []const u8) [32]u8 {
+    var out: [32]u8 = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(raw, &out, .{});
+    return out;
 }
 
 fn txTypeToU8(t: primitives.Receipt.TransactionType) u8 {

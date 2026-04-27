@@ -5,12 +5,43 @@ const blockchain_mod = @import("blockchain");
 const database = @import("database/root.zig");
 
 pub const CHAIN_ID: u64 = 31337;
+pub const MAINNET_CHAIN_ID: u64 = 1;
+pub const DEVNET_CHAIN_ID: u64 = CHAIN_ID;
 pub const DEV_BALANCE: u256 = 10_000 * 1_000_000_000_000_000_000;
 pub const DEFAULT_GAS_LIMIT: u64 = 30_000_000;
 pub const DEFAULT_BASE_FEE: u256 = 1_000_000_000;
 pub const NUM_ACCOUNTS: usize = 10;
 pub const MNEMONIC = "test test test test test test test test test test test junk";
 pub const DERIVATION_PATH = "m/44'/60'/0'/0/";
+pub const DEFAULT_MAINNET_ALLOC_JSON_PATH = "../guillotine-mini/execution-specs/src/ethereum/assets/mainnet.json";
+
+pub const MAINNET_STATE_ROOT: primitives.Hash.Hash = .{
+    0xd7, 0xf8, 0x97, 0x4f, 0xb5, 0xac, 0x78, 0xd9,
+    0xac, 0x09, 0x9b, 0x9a, 0xd5, 0x01, 0x8b, 0xed,
+    0xc2, 0xce, 0x0a, 0x72, 0xda, 0xd1, 0x82, 0x7a,
+    0x17, 0x09, 0xda, 0x30, 0x58, 0x0f, 0x05, 0x44,
+};
+
+pub const MAINNET_EXTRA_DATA: [32]u8 = .{
+    0x11, 0xbb, 0xe8, 0xdb, 0x4e, 0x34, 0x7b, 0x4e,
+    0x8c, 0x93, 0x7c, 0x1c, 0x83, 0x70, 0xe4, 0xb5,
+    0xed, 0x33, 0xad, 0xb3, 0xdb, 0x69, 0xcb, 0xdb,
+    0x7a, 0x38, 0xe1, 0xe5, 0x0b, 0x1b, 0x82, 0xfa,
+};
+
+pub const MAINNET_NONCE: [8]u8 = .{ 0, 0, 0, 0, 0, 0, 0, 0x42 };
+
+pub const MAINNET_GENESIS_HASH: primitives.Hash.Hash = .{
+    0xd4, 0xe5, 0x67, 0x40, 0xf8, 0x76, 0xae, 0xf8,
+    0xc0, 0x10, 0xb8, 0x6a, 0x40, 0xd5, 0xf5, 0x67,
+    0x45, 0xa1, 0x18, 0xd0, 0x90, 0x6a, 0x34, 0xe6,
+    0x9a, 0xec, 0x8c, 0x0d, 0xb1, 0xcb, 0x8f, 0xa3,
+};
+
+pub const GenesisProfile = enum {
+    mainnet,
+    devnet,
+};
 
 pub const DevAccount = struct {
     address: primitives.Address.Address,
@@ -72,41 +103,149 @@ pub const DEV_ACCOUNTS: [10]DevAccount = .{
 
 pub const GenesisResult = struct {
     chain_id: u64,
+    profile: GenesisProfile,
     genesis_hash: primitives.Hash.Hash,
+    state_root: primitives.Hash.Hash,
     coinbase: primitives.Address.Address,
     managed_accounts: []const DevAccount,
 };
 
-pub fn createGenesisBlock(allocator: std.mem.Allocator) !primitives.Block.Block {
-    const header = primitives.BlockHeader.BlockHeader{
-        .number = 0,
-        .gas_limit = DEFAULT_GAS_LIMIT,
-        .base_fee_per_gas = DEFAULT_BASE_FEE,
-        .timestamp = @intCast(std.time.timestamp()),
-        .beneficiary = DEV_ACCOUNTS[0].address,
-        .difficulty = 0,
-        .ommers_hash = primitives.BlockHeader.EMPTY_OMMERS_HASH,
-        .transactions_root = primitives.BlockHeader.EMPTY_TRANSACTIONS_ROOT,
-        .receipts_root = primitives.BlockHeader.EMPTY_RECEIPTS_ROOT,
+pub const PremineAccount = struct {
+    address: primitives.Address.Address,
+    balance: u256,
+    nonce: u64 = 0,
+};
+
+const NO_MANAGED_ACCOUNTS: [0]DevAccount = .{};
+
+const GenesisTrieEntry = struct {
+    nibbles: [64]u8,
+    value: []const u8,
+};
+
+const GenesisTrieNode = union(enum) {
+    leaf: struct {
+        path: []const u8,
+        value: []const u8,
+    },
+    extension: struct {
+        path: []const u8,
+        child: *GenesisTrieNode,
+    },
+    branch: struct {
+        children: [16]?*GenesisTrieNode,
+        value: ?[]const u8,
+    },
+};
+
+pub fn profileForChainId(chain_id: u64) !GenesisProfile {
+    return switch (chain_id) {
+        MAINNET_CHAIN_ID => .mainnet,
+        DEVNET_CHAIN_ID => .devnet,
+        else => error.UnsupportedGenesisChainId,
+    };
+}
+
+pub fn createGenesisBlock(allocator: std.mem.Allocator, chain_id: u64) !primitives.Block.Block {
+    const profile = try profileForChainId(chain_id);
+    const state_root = switch (profile) {
+        .mainnet => MAINNET_STATE_ROOT,
+        .devnet => try computeDevnetStateRoot(allocator),
+    };
+    return try createGenesisBlockWithProfile(allocator, profile, chain_id, state_root);
+}
+
+pub fn createGenesisBlockWithProfile(
+    allocator: std.mem.Allocator,
+    profile: GenesisProfile,
+    chain_id: u64,
+    state_root: primitives.Hash.Hash,
+) !primitives.Block.Block {
+    try validateProfileChainId(profile, chain_id);
+
+    if (profile == .mainnet and !primitives.Hash.equals(&state_root, &MAINNET_STATE_ROOT)) {
+        return error.GenesisStateRootMismatch;
+    }
+
+    const header = switch (profile) {
+        .mainnet => primitives.BlockHeader.BlockHeader{
+            .parent_hash = primitives.Hash.ZERO,
+            .ommers_hash = primitives.BlockHeader.EMPTY_OMMERS_HASH,
+            .beneficiary = primitives.Address.ZERO_ADDRESS,
+            .state_root = state_root,
+            .transactions_root = primitives.BlockHeader.EMPTY_TRANSACTIONS_ROOT,
+            .receipts_root = primitives.BlockHeader.EMPTY_RECEIPTS_ROOT,
+            .logs_bloom = [_]u8{0} ** primitives.BlockHeader.BLOOM_SIZE,
+            .difficulty = 0x400000000,
+            .number = 0,
+            .gas_limit = 0x1388,
+            .gas_used = 0,
+            .timestamp = 0,
+            .extra_data = &MAINNET_EXTRA_DATA,
+            .mix_hash = primitives.Hash.ZERO,
+            .nonce = MAINNET_NONCE,
+        },
+        .devnet => primitives.BlockHeader.BlockHeader{
+            .number = 0,
+            .gas_limit = DEFAULT_GAS_LIMIT,
+            .base_fee_per_gas = DEFAULT_BASE_FEE,
+            .timestamp = @intCast(std.time.timestamp()),
+            .beneficiary = DEV_ACCOUNTS[0].address,
+            .state_root = state_root,
+            .difficulty = 0,
+            .ommers_hash = primitives.BlockHeader.EMPTY_OMMERS_HASH,
+            .transactions_root = primitives.BlockHeader.EMPTY_TRANSACTIONS_ROOT,
+            .receipts_root = primitives.BlockHeader.EMPTY_RECEIPTS_ROOT,
+        },
     };
     const body = primitives.BlockBody.init();
     return primitives.Block.from(&header, &body, allocator);
 }
 
-pub fn initGenesisState(state: *state_manager.StateManager) !void {
-    for (&DEV_ACCOUNTS) |*account| {
-        try state.setBalance(account.address, DEV_BALANCE);
-    }
+pub fn initGenesisState(
+    allocator: std.mem.Allocator,
+    db: *database.Database,
+    profile: GenesisProfile,
+    mainnet_alloc_path: ?[]const u8,
+) !primitives.Hash.Hash {
+    return switch (profile) {
+        .mainnet => blk: {
+            const allocation = try loadMainnetAllocation(allocator, mainnet_alloc_path orelse DEFAULT_MAINNET_ALLOC_JSON_PATH);
+            defer allocator.free(allocation);
+
+            const state_root = try applyPremineAllocation(allocator, db, allocation);
+            if (!primitives.Hash.equals(&state_root, &MAINNET_STATE_ROOT)) {
+                return error.GenesisStateRootMismatch;
+            }
+            break :blk state_root;
+        },
+        .devnet => try applyDevnetPremine(allocator, db),
+    };
 }
 
 pub fn initGenesis(
     allocator: std.mem.Allocator,
     db: *database.Database,
     chain: *blockchain_mod.Blockchain,
+    chain_id: u64,
+    mainnet_alloc_path: ?[]const u8,
 ) !GenesisResult {
-    try initGenesisState(&db.state);
+    const profile = try profileForChainId(chain_id);
+    return try initGenesisWithProfile(allocator, db, chain, profile, chain_id, mainnet_alloc_path);
+}
 
-    const genesis_block = try createGenesisBlock(allocator);
+pub fn initGenesisWithProfile(
+    allocator: std.mem.Allocator,
+    db: *database.Database,
+    chain: *blockchain_mod.Blockchain,
+    profile: GenesisProfile,
+    chain_id: u64,
+    mainnet_alloc_path: ?[]const u8,
+) !GenesisResult {
+    try validateProfileChainId(profile, chain_id);
+
+    const state_root = try initGenesisState(allocator, db, profile, mainnet_alloc_path);
+    const genesis_block = try createGenesisBlockWithProfile(allocator, profile, chain_id, state_root);
 
     try chain.putBlock(genesis_block);
     try chain.setCanonicalHead(genesis_block.hash);
@@ -114,10 +253,342 @@ pub fn initGenesis(
     try db.block_hashes.put(allocator, 0, genesis_block.hash);
 
     return .{
-        .chain_id = CHAIN_ID,
+        .chain_id = chain_id,
+        .profile = profile,
         .genesis_hash = genesis_block.hash,
-        .coinbase = DEV_ACCOUNTS[0].address,
-        .managed_accounts = &DEV_ACCOUNTS,
+        .state_root = state_root,
+        .coinbase = if (profile == .devnet) DEV_ACCOUNTS[0].address else primitives.Address.ZERO_ADDRESS,
+        .managed_accounts = if (profile == .devnet) &DEV_ACCOUNTS else &NO_MANAGED_ACCOUNTS,
+    };
+}
+
+pub fn applyPremineAllocation(
+    allocator: std.mem.Allocator,
+    db: *database.Database,
+    allocation: []const PremineAccount,
+) !primitives.Hash.Hash {
+    for (allocation) |account| {
+        try db.state.initAccount(account.address, account.balance);
+        if (account.nonce != 0) {
+            try db.state.setNonce(account.address, account.nonce);
+        }
+        try db.syncAccountToTrie(allocator, account.address);
+    }
+
+    return try computeStateRootFromPremine(allocator, allocation);
+}
+
+pub fn computeStateRootFromPremine(
+    allocator: std.mem.Allocator,
+    allocation: []const PremineAccount,
+) !primitives.Hash.Hash {
+    if (allocation.len == 0) {
+        return primitives.State.EMPTY_TRIE_ROOT;
+    }
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    const entries = try arena_allocator.alloc(GenesisTrieEntry, allocation.len);
+    for (allocation, 0..) |account, index| {
+        var hashed_key: [32]u8 = undefined;
+        std.crypto.hash.sha3.Keccak256.hash(&account.address.bytes, &hashed_key, .{});
+        entries[index].nibbles = keyToNibbles(hashed_key);
+
+        const account_state = primitives.AccountState.AccountState.from(.{
+            .nonce = account.nonce,
+            .balance = account.balance,
+        });
+        entries[index].value = try account_state.rlpEncode(arena_allocator);
+    }
+
+    std.mem.sort(GenesisTrieEntry, entries, {}, struct {
+        fn lessThan(_: void, a: GenesisTrieEntry, b: GenesisTrieEntry) bool {
+            return std.mem.order(u8, &a.nibbles, &b.nibbles) == .lt;
+        }
+    }.lessThan);
+
+    const root = try buildGenesisTrie(arena_allocator, entries, 0);
+    const encoded = try encodeGenesisTrieNode(arena_allocator, root);
+
+    var state_root: primitives.Hash.Hash = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(encoded, &state_root, .{});
+    return state_root;
+}
+
+pub fn loadMainnetAllocation(allocator: std.mem.Allocator, path: []const u8) ![]PremineAccount {
+    const json_bytes = try std.fs.cwd().readFileAlloc(allocator, path, 8 * 1024 * 1024);
+    defer allocator.free(json_bytes);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_bytes, .{
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+
+    const root_object = switch (parsed.value) {
+        .object => |object| object,
+        else => return error.InvalidGenesisAlloc,
+    };
+    const alloc_value = root_object.get("alloc") orelse return error.InvalidGenesisAlloc;
+    const alloc_object = switch (alloc_value) {
+        .object => |object| object,
+        else => return error.InvalidGenesisAlloc,
+    };
+
+    var allocation = std.ArrayList(PremineAccount){};
+    errdefer allocation.deinit(allocator);
+
+    var iterator = alloc_object.iterator();
+    while (iterator.next()) |entry| {
+        const account_object = switch (entry.value_ptr.*) {
+            .object => |object| object,
+            else => return error.InvalidGenesisAlloc,
+        };
+        const balance_value = account_object.get("balance") orelse return error.InvalidGenesisAlloc;
+        const balance_text = switch (balance_value) {
+            .string => |text| text,
+            else => return error.InvalidGenesisAlloc,
+        };
+
+        try allocation.append(allocator, .{
+            .address = try parseHexAddress(entry.key_ptr.*),
+            .balance = try parseHexU256(balance_text),
+        });
+    }
+
+    return try allocation.toOwnedSlice(allocator);
+}
+
+fn validateProfileChainId(profile: GenesisProfile, chain_id: u64) !void {
+    const expected = try profileForChainId(chain_id);
+    if (profile != expected) {
+        return error.ProfileChainIdMismatch;
+    }
+}
+
+fn computeDevnetStateRoot(allocator: std.mem.Allocator) !primitives.Hash.Hash {
+    var allocation: [DEV_ACCOUNTS.len]PremineAccount = undefined;
+    fillDevnetPremine(&allocation);
+    return try computeStateRootFromPremine(allocator, &allocation);
+}
+
+fn applyDevnetPremine(allocator: std.mem.Allocator, db: *database.Database) !primitives.Hash.Hash {
+    var allocation: [DEV_ACCOUNTS.len]PremineAccount = undefined;
+    fillDevnetPremine(&allocation);
+    return try applyPremineAllocation(allocator, db, &allocation);
+}
+
+fn fillDevnetPremine(allocation: []PremineAccount) void {
+    for (&DEV_ACCOUNTS, 0..) |*account, index| {
+        allocation[index] = .{
+            .address = account.address,
+            .balance = DEV_BALANCE,
+        };
+    }
+}
+
+fn buildGenesisTrie(
+    allocator: std.mem.Allocator,
+    entries: []const GenesisTrieEntry,
+    depth: usize,
+) !*GenesisTrieNode {
+    const node = try allocator.create(GenesisTrieNode);
+
+    if (entries.len == 1) {
+        node.* = .{ .leaf = .{
+            .path = entries[0].nibbles[depth..],
+            .value = entries[0].value,
+        } };
+        return node;
+    }
+
+    const common = commonPrefixLen(entries, depth);
+    if (common > 0) {
+        node.* = .{ .extension = .{
+            .path = entries[0].nibbles[depth .. depth + common],
+            .child = try buildGenesisTrie(allocator, entries, depth + common),
+        } };
+        return node;
+    }
+
+    var children = [_]?*GenesisTrieNode{null} ** 16;
+    var value: ?[]const u8 = null;
+    var start: usize = 0;
+    while (start < entries.len) {
+        if (depth == 64) {
+            value = entries[start].value;
+            start += 1;
+            continue;
+        }
+
+        const nibble = entries[start].nibbles[depth];
+        var end = start + 1;
+        while (end < entries.len and entries[end].nibbles[depth] == nibble) : (end += 1) {}
+
+        children[nibble] = try buildGenesisTrie(allocator, entries[start..end], depth + 1);
+        start = end;
+    }
+
+    node.* = .{ .branch = .{
+        .children = children,
+        .value = value,
+    } };
+    return node;
+}
+
+fn commonPrefixLen(entries: []const GenesisTrieEntry, depth: usize) usize {
+    var len: usize = 0;
+    while (depth + len < 64) : (len += 1) {
+        const nibble = entries[0].nibbles[depth + len];
+        for (entries[1..]) |entry| {
+            if (entry.nibbles[depth + len] != nibble) {
+                return len;
+            }
+        }
+    }
+    return len;
+}
+
+fn encodeGenesisTrieNode(allocator: std.mem.Allocator, node: *const GenesisTrieNode) ![]u8 {
+    return switch (node.*) {
+        .leaf => |leaf| blk: {
+            var fields = std.ArrayList([]const u8){};
+            try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, try encodeHexPrefix(allocator, leaf.path, true)));
+            try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, leaf.value));
+            break :blk try encodeRlpListFromEncoded(allocator, fields.items);
+        },
+        .extension => |extension| blk: {
+            var fields = std.ArrayList([]const u8){};
+            try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, try encodeHexPrefix(allocator, extension.path, false)));
+            try fields.append(allocator, try encodeChildReference(allocator, extension.child));
+            break :blk try encodeRlpListFromEncoded(allocator, fields.items);
+        },
+        .branch => |branch| blk: {
+            var fields = std.ArrayList([]const u8){};
+            for (branch.children) |child| {
+                if (child) |present| {
+                    try fields.append(allocator, try encodeChildReference(allocator, present));
+                } else {
+                    try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, &.{}));
+                }
+            }
+            if (branch.value) |value| {
+                try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, value));
+            } else {
+                try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, &.{}));
+            }
+            break :blk try encodeRlpListFromEncoded(allocator, fields.items);
+        },
+    };
+}
+
+fn encodeChildReference(allocator: std.mem.Allocator, node: *const GenesisTrieNode) ![]const u8 {
+    const encoded = try encodeGenesisTrieNode(allocator, node);
+    if (encoded.len < 32) {
+        return encoded;
+    }
+
+    var hash: primitives.Hash.Hash = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(encoded, &hash, .{});
+    return try primitives.Rlp.encodeBytes(allocator, &hash);
+}
+
+fn encodeHexPrefix(allocator: std.mem.Allocator, path: []const u8, is_leaf: bool) ![]u8 {
+    const odd = path.len % 2 == 1;
+    const flags: u8 = (if (is_leaf) @as(u8, 2) else 0) + (if (odd) @as(u8, 1) else 0);
+    const out_len = if (odd) 1 + ((path.len - 1) / 2) else 1 + (path.len / 2);
+    const out = try allocator.alloc(u8, out_len);
+
+    var path_index: usize = 0;
+    if (odd) {
+        out[0] = (flags << 4) | path[0];
+        path_index = 1;
+    } else {
+        out[0] = flags << 4;
+    }
+
+    var out_index: usize = 1;
+    while (path_index < path.len) : ({
+        path_index += 2;
+        out_index += 1;
+    }) {
+        out[out_index] = (path[path_index] << 4) | path[path_index + 1];
+    }
+
+    return out;
+}
+
+fn encodeRlpListFromEncoded(allocator: std.mem.Allocator, fields: []const []const u8) ![]u8 {
+    var total_len: usize = 0;
+    for (fields) |field| {
+        total_len += field.len;
+    }
+
+    var result = std.ArrayList(u8){};
+    errdefer result.deinit(allocator);
+
+    if (total_len < 56) {
+        try result.append(allocator, 0xc0 + @as(u8, @intCast(total_len)));
+    } else {
+        const len_bytes = try primitives.Rlp.encodeLength(allocator, total_len);
+        try result.append(allocator, 0xf7 + @as(u8, @intCast(len_bytes.len)));
+        try result.appendSlice(allocator, len_bytes);
+    }
+
+    for (fields) |field| {
+        try result.appendSlice(allocator, field);
+    }
+
+    return try result.toOwnedSlice(allocator);
+}
+
+fn keyToNibbles(key: [32]u8) [64]u8 {
+    var nibbles: [64]u8 = undefined;
+    for (key, 0..) |byte, index| {
+        nibbles[index * 2] = byte >> 4;
+        nibbles[index * 2 + 1] = byte & 0x0f;
+    }
+    return nibbles;
+}
+
+fn parseHexAddress(text: []const u8) !primitives.Address.Address {
+    const hex = stripHexPrefix(text);
+    if (hex.len != 40) {
+        return error.InvalidHex;
+    }
+    var address: primitives.Address.Address = undefined;
+    _ = std.fmt.hexToBytes(&address.bytes, hex) catch return error.InvalidHex;
+    return address;
+}
+
+fn parseHexU256(text: []const u8) !u256 {
+    const hex = stripHexPrefix(text);
+    if (hex.len == 0) {
+        return 0;
+    }
+    return std.fmt.parseInt(u256, hex, 16) catch error.InvalidHex;
+}
+
+fn stripHexPrefix(text: []const u8) []const u8 {
+    if (text.len >= 2 and text[0] == '0' and (text[1] == 'x' or text[1] == 'X')) {
+        return text[2..];
+    }
+    return text;
+}
+
+pub fn devnetHeaderForTests(state_root: primitives.Hash.Hash) primitives.BlockHeader.BlockHeader {
+    return .{
+        .number = 0,
+        .gas_limit = DEFAULT_GAS_LIMIT,
+        .base_fee_per_gas = DEFAULT_BASE_FEE,
+        .timestamp = @intCast(std.time.timestamp()),
+        .beneficiary = DEV_ACCOUNTS[0].address,
+        .state_root = state_root,
+        .difficulty = 0,
+        .ommers_hash = primitives.BlockHeader.EMPTY_OMMERS_HASH,
+        .transactions_root = primitives.BlockHeader.EMPTY_TRANSACTIONS_ROOT,
+        .receipts_root = primitives.BlockHeader.EMPTY_RECEIPTS_ROOT,
     };
 }
 

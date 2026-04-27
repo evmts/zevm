@@ -124,7 +124,7 @@ Ignore src, tests, build state, and implementation artifacts unless the human ex
 Focus on the docs corpus:
 - docs/specs/prd.md
 - relevant docs under docs/
-- public docs under mintlify/
+- public docs under docs/
 
 Use subagents heavily and intelligently.
 Prefer explorer passes before editing.
@@ -154,7 +154,7 @@ function createSmokeAgent(kind: "implementation" | "review" | "fix") {
             filesChanged: [
               "docs/specs/prd.md",
               "docs/specs/internal/runtime-modes-and-boundaries.md",
-              "mintlify/docs/index.mdx",
+              "docs/index.mdx",
             ],
             productDecisionsNeeded: [],
           },
@@ -168,7 +168,7 @@ function createSmokeAgent(kind: "implementation" | "review" | "fix") {
             summary: "Smoke fix pass applied the cold-review findings.",
             filesChanged: [
               "docs/specs/prd.md",
-              "mintlify/docs/index.mdx",
+              "docs/index.mdx",
             ],
             productDecisionsNeeded: [],
           },

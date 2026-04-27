@@ -6,11 +6,220 @@ const tx_processor = @import("tx_processor.zig");
 const block_builder = @import("block_builder.zig");
 const host_adapter = @import("host_adapter.zig");
 
+pub const INITIAL_BASE_FEE: u256 = 1_000_000_000;
+pub const BASE_FEE_MAX_CHANGE_DENOMINATOR: u64 = 8;
+pub const ELASTICITY_MULTIPLIER: u64 = 2;
+pub const GAS_PER_BLOB: u64 = 131_072;
+pub const CANCUN_TARGET_BLOB_GAS_PER_BLOCK: u64 = 393_216;
+pub const CANCUN_MAX_BLOB_GAS_PER_BLOCK: u64 = 786_432;
+pub const PRAGUE_TARGET_BLOB_GAS_PER_BLOCK: u64 = 786_432;
+pub const PRAGUE_MAX_BLOB_GAS_PER_BLOCK: u64 = 1_179_648;
+pub const MIN_BASE_FEE_PER_BLOB_GAS: u256 = 1;
+pub const CANCUN_BLOB_BASE_FEE_UPDATE_FRACTION: u64 = 3_338_477;
+pub const PRAGUE_BLOB_BASE_FEE_UPDATE_FRACTION: u64 = 5_007_716;
+
+pub const MAINNET_CHAIN_CONFIG = ChainConfig{};
+
+pub const ChainConfig = struct {
+    homestead_block: u64 = 1_150_000,
+    dao_block: u64 = 1_920_000,
+    tangerine_whistle_block: u64 = 2_463_000,
+    spurious_dragon_block: u64 = 2_675_000,
+    byzantium_block: u64 = 4_370_000,
+    petersburg_block: u64 = 7_280_000,
+    istanbul_block: u64 = 9_069_000,
+    muir_glacier_block: u64 = 9_200_000,
+    berlin_block: u64 = 12_244_000,
+    london_block: u64 = 12_965_000,
+    arrow_glacier_block: u64 = 13_773_000,
+    gray_glacier_block: u64 = 15_050_000,
+    merge_block: u64 = 15_537_394,
+    shanghai_timestamp: u64 = 1_681_338_455,
+    cancun_timestamp: u64 = 1_710_338_135,
+    prague_timestamp: u64 = 1_746_612_311,
+    osaka_timestamp: u64 = 1_764_798_551,
+    seconds_per_slot: u64 = 12,
+};
+
+pub const HeaderValidationError = error{
+    MissingBaseFee,
+    InvalidBaseFee,
+    UnexpectedBaseFee,
+    MissingBlobGas,
+    InvalidExcessBlobGas,
+    UnexpectedBlobGas,
+    BlobGasLimitExceeded,
+};
+
 pub const MiningMode = enum {
     auto,
     manual,
     interval,
 };
+
+pub const MiningBlockOptions = struct {
+    prevrandao: u256 = 0,
+    blob_gas_used: u64 = 0,
+};
+
+pub fn resolveHardfork(block_number: u64, timestamp: u64) primitives.Hardfork {
+    return resolveHardforkWithConfig(MAINNET_CHAIN_CONFIG, block_number, timestamp);
+}
+
+pub fn resolveHardforkWithConfig(config: ChainConfig, block_number: u64, timestamp: u64) primitives.Hardfork {
+    if (timestamp >= config.osaka_timestamp) return .OSAKA;
+    if (timestamp >= config.prague_timestamp) return .PRAGUE;
+    if (timestamp >= config.cancun_timestamp) return .CANCUN;
+    if (timestamp >= config.shanghai_timestamp) return .SHANGHAI;
+    if (block_number >= config.merge_block) return .MERGE;
+    if (block_number >= config.gray_glacier_block) return .GRAY_GLACIER;
+    if (block_number >= config.arrow_glacier_block) return .ARROW_GLACIER;
+    if (block_number >= config.london_block) return .LONDON;
+    if (block_number >= config.berlin_block) return .BERLIN;
+    if (block_number >= config.muir_glacier_block) return .MUIR_GLACIER;
+    if (block_number >= config.istanbul_block) return .ISTANBUL;
+    if (block_number >= config.petersburg_block) return .PETERSBURG;
+    if (block_number >= config.byzantium_block) return .BYZANTIUM;
+    if (block_number >= config.spurious_dragon_block) return .SPURIOUS_DRAGON;
+    if (block_number >= config.tangerine_whistle_block) return .TANGERINE_WHISTLE;
+    if (block_number >= config.dao_block) return .DAO;
+    if (block_number >= config.homestead_block) return .HOMESTEAD;
+    return .FRONTIER;
+}
+
+pub fn calculateNextBaseFee(parent_base_fee: u256, parent_gas_used: u64, parent_gas_limit: u64) u256 {
+    const target_gas = parent_gas_limit / ELASTICITY_MULTIPLIER;
+    if (target_gas == 0 or parent_gas_used == target_gas) return parent_base_fee;
+
+    if (parent_gas_used > target_gas) {
+        const gas_delta = parent_gas_used - target_gas;
+        const product = @as(u512, parent_base_fee) * @as(u512, gas_delta);
+        const delta_raw = product / @as(u512, target_gas) / @as(u512, BASE_FEE_MAX_CHANGE_DENOMINATOR);
+        const delta = @max(@as(u256, 1), clampU512ToU256(delta_raw));
+        return std.math.add(u256, parent_base_fee, delta) catch std.math.maxInt(u256);
+    }
+
+    const gas_delta = target_gas - parent_gas_used;
+    const product = @as(u512, parent_base_fee) * @as(u512, gas_delta);
+    const delta = clampU512ToU256(product / @as(u512, target_gas) / @as(u512, BASE_FEE_MAX_CHANGE_DENOMINATOR));
+    return if (delta > parent_base_fee) 0 else parent_base_fee - delta;
+}
+
+pub fn nextBaseFee(
+    parent_header: primitives.BlockHeader.BlockHeader,
+    child_block_number: u64,
+    child_timestamp: u64,
+) HeaderValidationError!?u256 {
+    const child_hardfork = resolveHardfork(child_block_number, child_timestamp);
+    if (child_hardfork.isBefore(.LONDON)) return null;
+
+    const parent_hardfork = resolveHardfork(parent_header.number, parent_header.timestamp);
+    if (parent_hardfork.isBefore(.LONDON)) return INITIAL_BASE_FEE;
+
+    const parent_base_fee = parent_header.base_fee_per_gas orelse return HeaderValidationError.MissingBaseFee;
+    return calculateNextBaseFee(parent_base_fee, parent_header.gas_used, parent_header.gas_limit);
+}
+
+pub fn validateBaseFee(
+    parent_header: primitives.BlockHeader.BlockHeader,
+    child_header: primitives.BlockHeader.BlockHeader,
+) HeaderValidationError!void {
+    const expected = try nextBaseFee(parent_header, child_header.number, child_header.timestamp);
+    if (expected) |base_fee| {
+        const actual = child_header.base_fee_per_gas orelse return HeaderValidationError.MissingBaseFee;
+        if (actual != base_fee) return HeaderValidationError.InvalidBaseFee;
+        return;
+    }
+
+    if (child_header.base_fee_per_gas) |base_fee| {
+        if (base_fee != 0) return HeaderValidationError.UnexpectedBaseFee;
+    }
+}
+
+pub fn blobTargetGasPerBlock(hardfork: primitives.Hardfork) u64 {
+    return if (hardfork.isAtLeast(.PRAGUE)) PRAGUE_TARGET_BLOB_GAS_PER_BLOCK else CANCUN_TARGET_BLOB_GAS_PER_BLOCK;
+}
+
+pub fn maxBlobGasPerBlock(hardfork: primitives.Hardfork) u64 {
+    return if (hardfork.isAtLeast(.PRAGUE)) PRAGUE_MAX_BLOB_GAS_PER_BLOCK else CANCUN_MAX_BLOB_GAS_PER_BLOCK;
+}
+
+pub fn calculateNextExcessBlobGas(parent_excess_blob_gas: u64, parent_blob_gas_used: u64, target_blob_gas: u64) u64 {
+    const parent_blob_gas = std.math.add(u64, parent_excess_blob_gas, parent_blob_gas_used) catch std.math.maxInt(u64);
+    return if (parent_blob_gas < target_blob_gas) 0 else parent_blob_gas - target_blob_gas;
+}
+
+pub fn nextExcessBlobGas(parent_header: primitives.BlockHeader.BlockHeader) u64 {
+    return nextExcessBlobGasForChild(
+        parent_header,
+        parent_header.number + 1,
+        parent_header.timestamp + MAINNET_CHAIN_CONFIG.seconds_per_slot,
+    );
+}
+
+pub fn nextExcessBlobGasForChild(
+    parent_header: primitives.BlockHeader.BlockHeader,
+    child_block_number: u64,
+    child_timestamp: u64,
+) u64 {
+    const child_hardfork = resolveHardfork(child_block_number, child_timestamp);
+    if (child_hardfork.isBefore(.CANCUN)) return 0;
+
+    const parent_hardfork = resolveHardfork(parent_header.number, parent_header.timestamp);
+    const parent_excess_blob_gas = if (parent_hardfork.isAtLeast(.CANCUN)) parent_header.excess_blob_gas orelse 0 else 0;
+    const parent_blob_gas_used = if (parent_hardfork.isAtLeast(.CANCUN)) parent_header.blob_gas_used orelse 0 else 0;
+
+    return calculateNextExcessBlobGas(parent_excess_blob_gas, parent_blob_gas_used, blobTargetGasPerBlock(child_hardfork));
+}
+
+pub fn nextBlobBaseFee(excess_blob_gas: u64, hardfork: primitives.Hardfork) u256 {
+    if (hardfork.isBefore(.CANCUN)) return 0;
+    const denominator = if (hardfork.isAtLeast(.PRAGUE))
+        PRAGUE_BLOB_BASE_FEE_UPDATE_FRACTION
+    else
+        CANCUN_BLOB_BASE_FEE_UPDATE_FRACTION;
+    return fakeExponential(MIN_BASE_FEE_PER_BLOB_GAS, excess_blob_gas, denominator);
+}
+
+pub fn fakeExponential(factor: u256, numerator: u64, denominator: u64) u256 {
+    if (denominator == 0) return std.math.maxInt(u256);
+
+    var i: u512 = 1;
+    var output: u512 = 0;
+    var numerator_accumulated = @as(u512, factor) * @as(u512, denominator);
+    while (numerator_accumulated > 0) {
+        output = std.math.add(u512, output, numerator_accumulated) catch std.math.maxInt(u512);
+        const product = std.math.mul(u512, numerator_accumulated, @as(u512, numerator)) catch std.math.maxInt(u512);
+        numerator_accumulated = product / (@as(u512, denominator) * i);
+        i += 1;
+    }
+
+    return clampU512ToU256(output / @as(u512, denominator));
+}
+
+pub fn validateBlobGas(
+    parent_header: primitives.BlockHeader.BlockHeader,
+    child_header: primitives.BlockHeader.BlockHeader,
+) HeaderValidationError!void {
+    const child_hardfork = resolveHardfork(child_header.number, child_header.timestamp);
+    if (child_hardfork.isBefore(.CANCUN)) {
+        if ((child_header.blob_gas_used orelse 0) != 0) return HeaderValidationError.UnexpectedBlobGas;
+        if ((child_header.excess_blob_gas orelse 0) != 0) return HeaderValidationError.UnexpectedBlobGas;
+        return;
+    }
+
+    const blob_gas_used = child_header.blob_gas_used orelse return HeaderValidationError.MissingBlobGas;
+    if (blob_gas_used > maxBlobGasPerBlock(child_hardfork)) return HeaderValidationError.BlobGasLimitExceeded;
+
+    const expected_excess_blob_gas = nextExcessBlobGasForChild(parent_header, child_header.number, child_header.timestamp);
+    const actual_excess_blob_gas = child_header.excess_blob_gas orelse return HeaderValidationError.MissingBlobGas;
+    if (actual_excess_blob_gas != expected_excess_blob_gas) return HeaderValidationError.InvalidExcessBlobGas;
+}
+
+fn clampU512ToU256(value: u512) u256 {
+    const max_u256 = @as(u512, std.math.maxInt(u256));
+    return if (value > max_u256) std.math.maxInt(u256) else @intCast(value);
+}
 
 pub const MiningCoordinator = struct {
     pending_txs: std.ArrayList(tx_processor.ExecutionTx),
@@ -21,6 +230,10 @@ pub const MiningCoordinator = struct {
     block_gas_limit: u64,
     chain_id: u256,
     coinbase: primitives.Address,
+    current_base_fee_per_gas: ?u256,
+    current_excess_blob_gas: u64,
+    current_blob_gas_used: u64,
+    next_prevrandao: u256,
     mined_blocks: std.ArrayList(block_builder.BlockResult),
 
     pub fn init() MiningCoordinator {
@@ -33,6 +246,10 @@ pub const MiningCoordinator = struct {
             .block_gas_limit = 30_000_000,
             .chain_id = 1,
             .coinbase = primitives.Address{ .bytes = [_]u8{0xCB} ++ [_]u8{0} ** 19 },
+            .current_base_fee_per_gas = null,
+            .current_excess_blob_gas = 0,
+            .current_blob_gas_used = 0,
+            .next_prevrandao = 0,
             .mined_blocks = .{},
         };
     }
@@ -50,6 +267,28 @@ pub const MiningCoordinator = struct {
             self.interval_seconds = 0;
         }
         self.mode = mode;
+    }
+
+    pub fn setNextPrevrandao(self: *MiningCoordinator, prevrandao: u256) void {
+        self.next_prevrandao = prevrandao;
+    }
+
+    pub fn blockContext(self: *const MiningCoordinator, options: MiningBlockOptions) guillotine_mini.BlockContext {
+        const active_hardfork = resolveHardfork(self.current_block_number, self.current_timestamp);
+        const block_base_fee = currentBlockBaseFee(self.current_base_fee_per_gas, active_hardfork);
+        const excess_blob_gas = if (active_hardfork.isAtLeast(.CANCUN)) self.current_excess_blob_gas else 0;
+
+        return guillotine_mini.BlockContext{
+            .chain_id = self.chain_id,
+            .block_number = self.current_block_number,
+            .block_timestamp = self.current_timestamp,
+            .block_difficulty = 0,
+            .block_prevrandao = if (active_hardfork.isAtLeast(.MERGE)) options.prevrandao else 0,
+            .block_coinbase = self.coinbase,
+            .block_gas_limit = self.block_gas_limit,
+            .block_base_fee = block_base_fee,
+            .blob_base_fee = nextBlobBaseFee(excess_blob_gas, active_hardfork),
+        };
     }
 
     pub fn submitTx(
@@ -71,17 +310,33 @@ pub const MiningCoordinator = struct {
         sm: *state_manager.StateManager,
         host_iface: guillotine_mini.HostInterface,
     ) !block_builder.BlockResult {
-        const block_ctx = guillotine_mini.BlockContext{
-            .chain_id = self.chain_id,
-            .block_number = self.current_block_number,
-            .block_timestamp = self.current_timestamp,
-            .block_difficulty = 0,
-            .block_prevrandao = 0,
-            .block_coinbase = self.coinbase,
-            .block_gas_limit = self.block_gas_limit,
-            .block_base_fee = 0,
-            .blob_base_fee = 0,
-        };
+        return self.mineBlockWithOptions(allocator, sm, host_iface, .{
+            .prevrandao = self.next_prevrandao,
+        });
+    }
+
+    pub fn mineBlockWithPrevrandao(
+        self: *MiningCoordinator,
+        allocator: std.mem.Allocator,
+        sm: *state_manager.StateManager,
+        host_iface: guillotine_mini.HostInterface,
+        prevrandao: u256,
+    ) !block_builder.BlockResult {
+        return self.mineBlockWithOptions(allocator, sm, host_iface, .{
+            .prevrandao = prevrandao,
+        });
+    }
+
+    pub fn mineBlockWithOptions(
+        self: *MiningCoordinator,
+        allocator: std.mem.Allocator,
+        sm: *state_manager.StateManager,
+        host_iface: guillotine_mini.HostInterface,
+        options: MiningBlockOptions,
+    ) !block_builder.BlockResult {
+        const active_hardfork = resolveHardfork(self.current_block_number, self.current_timestamp);
+        const block_base_fee = currentBlockBaseFee(self.current_base_fee_per_gas, active_hardfork);
+        const block_ctx = self.blockContext(options);
 
         const result = try block_builder.buildBlock(
             allocator,
@@ -92,6 +347,7 @@ pub const MiningCoordinator = struct {
         );
 
         self.pending_txs.clearRetainingCapacity();
+        self.advanceFeeState(active_hardfork, block_base_fee, result.total_gas_used, options.blob_gas_used);
         self.current_block_number += 1;
         self.current_timestamp += 1;
 
@@ -127,7 +383,44 @@ pub const MiningCoordinator = struct {
             self.mode = .interval;
         }
     }
+
+    fn advanceFeeState(
+        self: *MiningCoordinator,
+        active_hardfork: primitives.Hardfork,
+        block_base_fee: u256,
+        gas_used: u64,
+        blob_gas_used: u64,
+    ) void {
+        const next_hardfork = resolveHardfork(self.current_block_number + 1, self.current_timestamp + 1);
+        if (next_hardfork.isBefore(.LONDON)) {
+            self.current_base_fee_per_gas = null;
+        } else if (active_hardfork.isBefore(.LONDON)) {
+            self.current_base_fee_per_gas = INITIAL_BASE_FEE;
+        } else {
+            self.current_base_fee_per_gas = calculateNextBaseFee(block_base_fee, gas_used, self.block_gas_limit);
+        }
+
+        if (next_hardfork.isBefore(.CANCUN)) {
+            self.current_excess_blob_gas = 0;
+            self.current_blob_gas_used = 0;
+            return;
+        }
+
+        const parent_excess_blob_gas = if (active_hardfork.isAtLeast(.CANCUN)) self.current_excess_blob_gas else 0;
+        const parent_blob_gas_used = if (active_hardfork.isAtLeast(.CANCUN)) blob_gas_used else 0;
+        self.current_excess_blob_gas = calculateNextExcessBlobGas(
+            parent_excess_blob_gas,
+            parent_blob_gas_used,
+            blobTargetGasPerBlock(next_hardfork),
+        );
+        self.current_blob_gas_used = 0;
+    }
 };
+
+fn currentBlockBaseFee(current_base_fee_per_gas: ?u256, hardfork: primitives.Hardfork) u256 {
+    if (hardfork.isBefore(.LONDON)) return 0;
+    return current_base_fee_per_gas orelse INITIAL_BASE_FEE;
+}
 
 // ---------------------------------------------------------------------------
 // Tests

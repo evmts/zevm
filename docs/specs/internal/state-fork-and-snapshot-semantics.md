@@ -1,7 +1,5 @@
 # ZEVM Internal Support: State Fork And Snapshot Semantics
 
-Last updated: 2026-03-30
-
 This page is non-normative support for:
 
 - `docs/specs/prd.md`

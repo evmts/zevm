@@ -1,7 +1,5 @@
 # ZEVM Internal Support: Startup And Configuration
 
-Last updated: 2026-03-30
-
 This page supports `docs/specs/prd.md` and `docs/specs/json-rpc-contract.md`.
 
 ## 1. Startup Model

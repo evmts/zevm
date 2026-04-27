@@ -1,6 +1,8 @@
 const std = @import("std");
 const primitives = @import("primitives");
 
+const MAX_EXTRA_DATA_BYTES: usize = 32;
+
 pub const BeaconApi = struct {
     endpoint_url: []const u8,
 
@@ -12,10 +14,10 @@ pub const BeaconApi = struct {
         const url = try self.buildBootstrapUrl(allocator, checkpoint);
         defer allocator.free(url);
 
-        const response_body = try self.httpGet(allocator, url);
-        defer allocator.free(response_body);
+        const response = try self.httpGet(allocator, url);
+        defer allocator.free(response.body);
 
-        return try parseBootstrapResponse(allocator, response_body);
+        return try parseBootstrapResponseWithFork(allocator, response.body, response.fork);
     }
 
     pub fn getUpdates(
@@ -27,10 +29,10 @@ pub const BeaconApi = struct {
         const url = try self.buildUpdatesUrl(allocator, start_period, count);
         defer allocator.free(url);
 
-        const response_body = try self.httpGet(allocator, url);
-        defer allocator.free(response_body);
+        const response = try self.httpGet(allocator, url);
+        defer allocator.free(response.body);
 
-        return try parseUpdatesResponse(allocator, response_body);
+        return try parseUpdatesResponseWithFork(allocator, response.body, response.fork);
     }
 
     pub fn getFinalityUpdate(
@@ -40,10 +42,10 @@ pub const BeaconApi = struct {
         const url = try self.buildFinalityUpdateUrl(allocator);
         defer allocator.free(url);
 
-        const response_body = try self.httpGet(allocator, url);
-        defer allocator.free(response_body);
+        const response = try self.httpGet(allocator, url);
+        defer allocator.free(response.body);
 
-        return try parseFinalityUpdateResponse(allocator, response_body);
+        return try parseFinalityUpdateResponseWithFork(allocator, response.body, response.fork);
     }
 
     pub fn getOptimisticUpdate(
@@ -53,10 +55,10 @@ pub const BeaconApi = struct {
         const url = try self.buildOptimisticUpdateUrl(allocator);
         defer allocator.free(url);
 
-        const response_body = try self.httpGet(allocator, url);
-        defer allocator.free(response_body);
+        const response = try self.httpGet(allocator, url);
+        defer allocator.free(response.body);
 
-        return try parseOptimisticUpdateResponse(allocator, response_body);
+        return try parseOptimisticUpdateResponseWithFork(allocator, response.body, response.fork);
     }
 
     pub fn buildBootstrapUrl(
@@ -127,11 +129,16 @@ pub const BeaconApi = struct {
         );
     }
 
+    const HttpResponse = struct {
+        body: []u8,
+        fork: ?primitives.LightClientHeader.Fork,
+    };
+
     fn httpGet(
         self: BeaconApi,
         allocator: std.mem.Allocator,
         url: []const u8,
-    ) ![]u8 {
+    ) !HttpResponse {
         _ = self;
 
         var client: std.http.Client = .{ .allocator = allocator };
@@ -140,48 +147,136 @@ pub const BeaconApi = struct {
         var response_writer = std.Io.Writer.Allocating.init(allocator);
         defer response_writer.deinit();
 
-        const response = try client.fetch(.{
-            .location = .{ .url = url },
-            .method = .GET,
-            .response_writer = &response_writer.writer,
-        });
+        const uri = try std.Uri.parse(url);
+        var request = try client.request(.GET, uri, .{});
+        defer request.deinit();
 
-        if (response.status != .ok) {
+        try request.sendBodiless();
+
+        var redirect_buffer: [8 * 1024]u8 = undefined;
+        var response = try request.receiveHead(redirect_buffer[0..]);
+        const fork = consensusForkFromHeaders(response.head);
+
+        if (response.head.status != .ok) {
             return error.UnexpectedHttpStatus;
         }
 
-        return try allocator.dupe(u8, response_writer.written());
+        const decompress_buffer: []u8 = switch (response.head.content_encoding) {
+            .identity => &.{},
+            .zstd => try allocator.alloc(u8, std.compress.zstd.default_window_len),
+            .deflate, .gzip => try allocator.alloc(u8, std.compress.flate.max_window_len),
+            .compress => return error.UnsupportedCompressionMethod,
+        };
+        defer if (response.head.content_encoding != .identity) allocator.free(decompress_buffer);
+
+        var transfer_buffer: [64]u8 = undefined;
+        var decompress: std.http.Decompress = undefined;
+        const reader = response.readerDecompressing(&transfer_buffer, &decompress, decompress_buffer);
+
+        _ = reader.streamRemaining(&response_writer.writer) catch |err| switch (err) {
+            error.ReadFailed => return response.bodyErr().?,
+            else => |e| return e,
+        };
+
+        return .{
+            .body = try allocator.dupe(u8, response_writer.written()),
+            .fork = fork,
+        };
     }
 };
+
+fn consensusForkFromHeaders(head: std.http.Client.Response.Head) ?primitives.LightClientHeader.Fork {
+    var headers = head.iterateHeaders();
+    while (headers.next()) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, "eth-consensus-version") or
+            std.ascii.eqlIgnoreCase(header.name, "consensus_version"))
+        {
+            return parseFork(header.value) catch null;
+        }
+    }
+    return null;
+}
+
+fn parseFork(name: []const u8) !primitives.LightClientHeader.Fork {
+    if (std.ascii.eqlIgnoreCase(name, "bellatrix")) return .bellatrix;
+    if (std.ascii.eqlIgnoreCase(name, "capella")) return .capella;
+    if (std.ascii.eqlIgnoreCase(name, "deneb")) return .deneb;
+    if (std.ascii.eqlIgnoreCase(name, "electra")) return .electra;
+    return error.UnknownFork;
+}
+
+const VersionedJson = struct {
+    data: std.json.Value,
+    fork: ?primitives.LightClientHeader.Fork,
+};
+
+fn getVersionedData(value: std.json.Value, hint_fork: ?primitives.LightClientHeader.Fork) !VersionedJson {
+    var fork = hint_fork;
+    if (value == .object) {
+        if (value.object.get("version")) |v| {
+            if (v == .string) {
+                fork = parseFork(v.string) catch fork;
+            }
+        }
+        if (value.object.get("data")) |data| {
+            return .{ .data = data, .fork = fork };
+        }
+    }
+    return .{ .data = value, .fork = fork };
+}
+
+fn getVersionedArray(value: std.json.Value, hint_fork: ?primitives.LightClientHeader.Fork) !VersionedJson {
+    return getVersionedData(value, hint_fork);
+}
 
 pub fn parseBootstrapResponse(
     allocator: std.mem.Allocator,
     json_response: []const u8,
+) !primitives.LightClientUpdate.LightClientBootstrap {
+    return parseBootstrapResponseWithFork(allocator, json_response, null);
+}
+
+pub fn parseBootstrapResponseWithFork(
+    allocator: std.mem.Allocator,
+    json_response: []const u8,
+    consensus_fork: ?primitives.LightClientHeader.Fork,
 ) !primitives.LightClientUpdate.LightClientBootstrap {
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_response, .{
         .allocate = .alloc_always,
     });
     defer parsed.deinit();
 
-    const data = try getDataField(parsed.value);
-    return try parseBootstrap(data);
+    const response = try getVersionedData(parsed.value, consensus_fork);
+    _ = response.fork;
+    return try parseBootstrap(response.data);
 }
 
 pub fn parseUpdatesResponse(
     allocator: std.mem.Allocator,
     json_response: []const u8,
 ) ![]primitives.LightClientUpdate.LightClientUpdate {
+    return parseUpdatesResponseWithFork(allocator, json_response, null);
+}
+
+pub fn parseUpdatesResponseWithFork(
+    allocator: std.mem.Allocator,
+    json_response: []const u8,
+    consensus_fork: ?primitives.LightClientHeader.Fork,
+) ![]primitives.LightClientUpdate.LightClientUpdate {
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_response, .{
         .allocate = .alloc_always,
     });
     defer parsed.deinit();
 
-    const items = try expectArray(parsed.value);
+    const response = try getVersionedArray(parsed.value, consensus_fork);
+    const items = try expectArray(response.data);
     const updates = try allocator.alloc(primitives.LightClientUpdate.LightClientUpdate, items.len);
     errdefer allocator.free(updates);
 
     for (items, 0..) |item, index| {
-        updates[index] = try parseUpdate(try getDataField(item));
+        const item_response = try getVersionedData(item, response.fork);
+        _ = item_response.fork;
+        updates[index] = try parseUpdate(item_response.data);
     }
 
     return updates;
@@ -191,26 +286,44 @@ pub fn parseFinalityUpdateResponse(
     allocator: std.mem.Allocator,
     json_response: []const u8,
 ) !primitives.LightClientUpdate.LightClientFinalityUpdate {
+    return parseFinalityUpdateResponseWithFork(allocator, json_response, null);
+}
+
+pub fn parseFinalityUpdateResponseWithFork(
+    allocator: std.mem.Allocator,
+    json_response: []const u8,
+    consensus_fork: ?primitives.LightClientHeader.Fork,
+) !primitives.LightClientUpdate.LightClientFinalityUpdate {
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_response, .{
         .allocate = .alloc_always,
     });
     defer parsed.deinit();
 
-    const data = try getDataField(parsed.value);
-    return try parseFinalityUpdate(data);
+    const response = try getVersionedData(parsed.value, consensus_fork);
+    _ = response.fork;
+    return try parseFinalityUpdate(response.data);
 }
 
 pub fn parseOptimisticUpdateResponse(
     allocator: std.mem.Allocator,
     json_response: []const u8,
 ) !primitives.LightClientUpdate.LightClientOptimisticUpdate {
+    return parseOptimisticUpdateResponseWithFork(allocator, json_response, null);
+}
+
+pub fn parseOptimisticUpdateResponseWithFork(
+    allocator: std.mem.Allocator,
+    json_response: []const u8,
+    consensus_fork: ?primitives.LightClientHeader.Fork,
+) !primitives.LightClientUpdate.LightClientOptimisticUpdate {
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_response, .{
         .allocate = .alloc_always,
     });
     defer parsed.deinit();
 
-    const data = try getDataField(parsed.value);
-    return try parseOptimisticUpdate(data);
+    const response = try getVersionedData(parsed.value, consensus_fork);
+    _ = response.fork;
+    return try parseOptimisticUpdate(response.data);
 }
 
 pub fn hexToBytes(comptime N: usize, input: []const u8) ![N]u8 {
