@@ -34,24 +34,9 @@ const ACCESS_LIST_ADDR_GAS: u64 = 2400;
 const ACCESS_LIST_KEY_GAS: u64 = 1900;
 const PER_AUTH_GAS: u64 = 25_000;
 
-// Inline EIP-2930 envelope (voltaire's Transaction module lacks this type).
-pub const Eip2930Transaction = struct {
-    chain_id: u64,
-    nonce: u64,
-    gas_price: u256,
-    gas_limit: u64,
-    to: ?primitives.Address,
-    value: u256,
-    data: []const u8,
-    access_list: []const primitives.Transaction.AccessListItem,
-    y_parity: u8,
-    r: [32]u8,
-    s: [32]u8,
-};
-
 pub const DecodedEnvelope = union(enum) {
     legacy: primitives.Transaction.LegacyTransaction,
-    eip2930: Eip2930Transaction,
+    eip2930: primitives.Transaction.Eip2930Transaction,
     eip1559: primitives.Transaction.Eip1559Transaction,
     eip4844: primitives.Transaction.Eip4844Transaction,
     eip7702: primitives.Transaction.Eip7702Transaction,
@@ -299,7 +284,7 @@ fn decodeLegacy(
     };
 }
 
-fn decodeEip2930(allocator: std.mem.Allocator, body: []const u8) !Eip2930Transaction {
+fn decodeEip2930(allocator: std.mem.Allocator, body: []const u8) !primitives.Transaction.Eip2930Transaction {
     const decoded = try primitives.Rlp.decode(allocator, body, false);
     const fields = try rlpAsList(decoded.data);
     if (fields.len != 11) return error.InvalidLength;
@@ -564,234 +549,44 @@ fn computeSigningHash(
             break :blk keccak(enc);
         },
         .eip2930 => |t| blk: {
-            const enc = try encodeEip2930ForSigning(allocator, t);
+            var unsigned = t;
+            unsigned.y_parity = 0;
+            unsigned.r = [_]u8{0} ** 32;
+            unsigned.s = [_]u8{0} ** 32;
+            const enc = try primitives.Transaction.encodeEip2930ForSigning(allocator, unsigned);
             defer allocator.free(enc);
             break :blk keccak(enc);
         },
         .eip1559 => |t| blk: {
-            const enc = try encodeEip1559SigningPayload(allocator, t);
+            var unsigned = t;
+            unsigned.y_parity = 0;
+            unsigned.r = [_]u8{0} ** 32;
+            unsigned.s = [_]u8{0} ** 32;
+            const enc = try primitives.Transaction.encodeEip1559ForSigning(allocator, unsigned);
             defer allocator.free(enc);
             break :blk keccak(enc);
         },
         .eip4844 => |t| blk: {
-            const enc = try encodeEip4844SigningPayload(allocator, t);
+            var unsigned = t;
+            unsigned.y_parity = 0;
+            unsigned.r = [_]u8{0} ** 32;
+            unsigned.s = [_]u8{0} ** 32;
+            const enc = try primitives.Transaction.encodeEip4844ForSigning(allocator, unsigned);
             defer allocator.free(enc);
             break :blk keccak(enc);
         },
         .eip7702 => |t| blk: {
-            const enc = try encodeEip7702SigningPayload(allocator, t);
+            var unsigned = t;
+            unsigned.y_parity = 0;
+            unsigned.r = [_]u8{0} ** 32;
+            unsigned.s = [_]u8{0} ** 32;
+            const enc = try primitives.Transaction.encodeEip7702ForSigning(allocator, unsigned);
             defer allocator.free(enc);
             break :blk keccak(enc);
         },
     };
 }
 
-fn encodeEip2930ForSigning(
-    allocator: std.mem.Allocator,
-    t: Eip2930Transaction,
-) ![]u8 {
-    var list = std.ArrayList(u8){};
-    defer list.deinit(allocator);
-
-    try appendRlpU64(allocator, &list, t.chain_id);
-    try appendRlpU64(allocator, &list, t.nonce);
-    try appendRlpU256(allocator, &list, t.gas_price);
-    try appendRlpU64(allocator, &list, t.gas_limit);
-    if (t.to) |addr| {
-        try appendRlpBytes(allocator, &list, &addr.bytes);
-    } else {
-        try list.append(allocator, 0x80);
-    }
-    try appendRlpU256(allocator, &list, t.value);
-    try appendRlpBytes(allocator, &list, t.data);
-
-    const al_enc = try primitives.Transaction.encodeAccessList(allocator, t.access_list);
-    defer allocator.free(al_enc);
-    try list.appendSlice(allocator, al_enc);
-
-    // Wrap as RLP list and prepend type byte.
-    var wrapped = std.ArrayList(u8){};
-    defer wrapped.deinit(allocator);
-    try appendListHeader(allocator, &wrapped, list.items.len);
-    try wrapped.appendSlice(allocator, list.items);
-
-    var result = try allocator.alloc(u8, wrapped.items.len + 1);
-    result[0] = 0x01;
-    @memcpy(result[1..], wrapped.items);
-    return result;
-}
-
-fn encodeEip1559SigningPayload(
-    allocator: std.mem.Allocator,
-    t: primitives.Transaction.Eip1559Transaction,
-) ![]u8 {
-    var list = std.ArrayList(u8){};
-    defer list.deinit(allocator);
-
-    try appendRlpU64(allocator, &list, t.chain_id);
-    try appendRlpU64(allocator, &list, t.nonce);
-    try appendRlpU256(allocator, &list, t.max_priority_fee_per_gas);
-    try appendRlpU256(allocator, &list, t.max_fee_per_gas);
-    try appendRlpU64(allocator, &list, t.gas_limit);
-    if (t.to) |addr| {
-        try appendRlpBytes(allocator, &list, &addr.bytes);
-    } else {
-        try list.append(allocator, 0x80);
-    }
-    try appendRlpU256(allocator, &list, t.value);
-    try appendRlpBytes(allocator, &list, t.data);
-
-    const al_enc = try primitives.Transaction.encodeAccessList(allocator, t.access_list);
-    defer allocator.free(al_enc);
-    try list.appendSlice(allocator, al_enc);
-
-    var wrapped = std.ArrayList(u8){};
-    defer wrapped.deinit(allocator);
-    try appendListHeader(allocator, &wrapped, list.items.len);
-    try wrapped.appendSlice(allocator, list.items);
-
-    var result = try allocator.alloc(u8, wrapped.items.len + 1);
-    result[0] = 0x02;
-    @memcpy(result[1..], wrapped.items);
-    return result;
-}
-
-fn encodeEip4844SigningPayload(
-    allocator: std.mem.Allocator,
-    t: primitives.Transaction.Eip4844Transaction,
-) ![]u8 {
-    var list = std.ArrayList(u8){};
-    defer list.deinit(allocator);
-
-    try appendRlpU64(allocator, &list, t.chain_id);
-    try appendRlpU64(allocator, &list, t.nonce);
-    try appendRlpU256(allocator, &list, t.max_priority_fee_per_gas);
-    try appendRlpU256(allocator, &list, t.max_fee_per_gas);
-    try appendRlpU64(allocator, &list, t.gas_limit);
-    try appendRlpBytes(allocator, &list, &t.to.bytes);
-    try appendRlpU256(allocator, &list, t.value);
-    try appendRlpBytes(allocator, &list, t.data);
-
-    const al_enc = try primitives.Transaction.encodeAccessList(allocator, t.access_list);
-    defer allocator.free(al_enc);
-    try list.appendSlice(allocator, al_enc);
-
-    try appendRlpU256(allocator, &list, t.max_fee_per_blob_gas);
-
-    var hashes_list = std.ArrayList(u8){};
-    defer hashes_list.deinit(allocator);
-    for (t.blob_versioned_hashes) |vh| {
-        try appendRlpBytes(allocator, &hashes_list, &vh.bytes);
-    }
-    var hashes_wrapped = std.ArrayList(u8){};
-    defer hashes_wrapped.deinit(allocator);
-    try appendListHeader(allocator, &hashes_wrapped, hashes_list.items.len);
-    try hashes_wrapped.appendSlice(allocator, hashes_list.items);
-    try list.appendSlice(allocator, hashes_wrapped.items);
-
-    var wrapped = std.ArrayList(u8){};
-    defer wrapped.deinit(allocator);
-    try appendListHeader(allocator, &wrapped, list.items.len);
-    try wrapped.appendSlice(allocator, list.items);
-
-    var result = try allocator.alloc(u8, wrapped.items.len + 1);
-    result[0] = 0x03;
-    @memcpy(result[1..], wrapped.items);
-    return result;
-}
-
-fn encodeEip7702SigningPayload(
-    allocator: std.mem.Allocator,
-    t: primitives.Transaction.Eip7702Transaction,
-) ![]u8 {
-    var list = std.ArrayList(u8){};
-    defer list.deinit(allocator);
-
-    try appendRlpU64(allocator, &list, t.chain_id);
-    try appendRlpU64(allocator, &list, t.nonce);
-    try appendRlpU256(allocator, &list, t.max_priority_fee_per_gas);
-    try appendRlpU256(allocator, &list, t.max_fee_per_gas);
-    try appendRlpU64(allocator, &list, t.gas_limit);
-    if (t.to) |addr| {
-        try appendRlpBytes(allocator, &list, &addr.bytes);
-    } else {
-        try list.append(allocator, 0x80);
-    }
-    try appendRlpU256(allocator, &list, t.value);
-    try appendRlpBytes(allocator, &list, t.data);
-
-    const al_enc = try primitives.Transaction.encodeAccessList(allocator, t.access_list);
-    defer allocator.free(al_enc);
-    try list.appendSlice(allocator, al_enc);
-
-    // Encode authorization list inline (each tuple: [chain_id, address, nonce, v, r, s]).
-    var auth_outer = std.ArrayList(u8){};
-    defer auth_outer.deinit(allocator);
-    for (t.authorization_list) |auth| {
-        var auth_inner = std.ArrayList(u8){};
-        defer auth_inner.deinit(allocator);
-        try appendRlpU64(allocator, &auth_inner, auth.chain_id);
-        try appendRlpBytes(allocator, &auth_inner, &auth.address.bytes);
-        try appendRlpU64(allocator, &auth_inner, auth.nonce);
-        try appendRlpU64(allocator, &auth_inner, auth.v);
-        try appendRlpBytes(allocator, &auth_inner, &auth.r);
-        try appendRlpBytes(allocator, &auth_inner, &auth.s);
-
-        var auth_wrapped = std.ArrayList(u8){};
-        defer auth_wrapped.deinit(allocator);
-        try appendListHeader(allocator, &auth_wrapped, auth_inner.items.len);
-        try auth_wrapped.appendSlice(allocator, auth_inner.items);
-        try auth_outer.appendSlice(allocator, auth_wrapped.items);
-    }
-    var auth_list_wrapped = std.ArrayList(u8){};
-    defer auth_list_wrapped.deinit(allocator);
-    try appendListHeader(allocator, &auth_list_wrapped, auth_outer.items.len);
-    try auth_list_wrapped.appendSlice(allocator, auth_outer.items);
-    try list.appendSlice(allocator, auth_list_wrapped.items);
-
-    var wrapped = std.ArrayList(u8){};
-    defer wrapped.deinit(allocator);
-    try appendListHeader(allocator, &wrapped, list.items.len);
-    try wrapped.appendSlice(allocator, list.items);
-
-    var result = try allocator.alloc(u8, wrapped.items.len + 1);
-    result[0] = 0x04;
-    @memcpy(result[1..], wrapped.items);
-    return result;
-}
-
-fn appendListHeader(
-    allocator: std.mem.Allocator,
-    out: *std.ArrayList(u8),
-    payload_len: usize,
-) !void {
-    if (payload_len <= 55) {
-        try out.append(allocator, @as(u8, @intCast(0xc0 + payload_len)));
-    } else {
-        const len_bytes = try primitives.Rlp.encodeLength(allocator, payload_len);
-        defer allocator.free(len_bytes);
-        try out.append(allocator, @as(u8, @intCast(0xf7 + len_bytes.len)));
-        try out.appendSlice(allocator, len_bytes);
-    }
-}
-
-fn appendRlpU64(allocator: std.mem.Allocator, out: *std.ArrayList(u8), v: u64) !void {
-    const enc = try primitives.Rlp.encode(allocator, v);
-    defer allocator.free(enc);
-    try out.appendSlice(allocator, enc);
-}
-
-fn appendRlpU256(allocator: std.mem.Allocator, out: *std.ArrayList(u8), v: u256) !void {
-    const enc = try primitives.Rlp.encode(allocator, v);
-    defer allocator.free(enc);
-    try out.appendSlice(allocator, enc);
-}
-
-fn appendRlpBytes(allocator: std.mem.Allocator, out: *std.ArrayList(u8), b: []const u8) !void {
-    const enc = try primitives.Rlp.encodeBytes(allocator, b);
-    defer allocator.free(enc);
-    try out.appendSlice(allocator, enc);
-}
 
 fn keccak(input: []const u8) [32]u8 {
     var out: [32]u8 = undefined;
