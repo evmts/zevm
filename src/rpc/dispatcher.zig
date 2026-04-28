@@ -146,6 +146,12 @@ fn isLocallyHandledMethod(method_name: []const u8) bool {
         std.mem.eql(u8, method_name, "zevm_setStorageAt") or
         std.mem.eql(u8, method_name, "anvil_setStorageAt") or
         std.mem.eql(u8, method_name, "hardhat_setStorageAt") or
+        std.mem.eql(u8, method_name, "zevm_setERC20Balance") or
+        std.mem.eql(u8, method_name, "anvil_setERC20Balance") or
+        std.mem.eql(u8, method_name, "hardhat_setERC20Balance") or
+        std.mem.eql(u8, method_name, "zevm_setERC20Allowance") or
+        std.mem.eql(u8, method_name, "anvil_setERC20Allowance") or
+        std.mem.eql(u8, method_name, "hardhat_setERC20Allowance") or
         std.mem.eql(u8, method_name, "zevm_setCoinbase") or
         std.mem.eql(u8, method_name, "anvil_setCoinbase") or
         std.mem.eql(u8, method_name, "hardhat_setCoinbase") or

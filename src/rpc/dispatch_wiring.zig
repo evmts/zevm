@@ -11,6 +11,7 @@ const simulation = @import("handlers/simulation.zig");
 const trusted_fork_handlers = @import("trusted_fork_handlers.zig");
 const tx_submission = @import("handlers/tx_submission.zig");
 const txpool_handlers = @import("handlers/txpool.zig");
+const dev_erc20_handlers = @import("handlers/dev_erc20.zig");
 
 var runtime_ptr: ?*runtime_mod.NodeRuntime = null;
 
@@ -312,6 +313,12 @@ fn dispatchMethod(
         const args = try parseSetStorageArgs(params);
         try rt.setStorage(args.address, args.slot, args.value);
         return .{ .bool = true };
+    }
+    if (methodIs(method_name, &.{ "zevm_setERC20Balance", "anvil_setERC20Balance", "hardhat_setERC20Balance" })) {
+        return dev_erc20_handlers.handleSetERC20Balance(rt, params);
+    }
+    if (methodIs(method_name, &.{ "zevm_setERC20Allowance", "anvil_setERC20Allowance", "hardhat_setERC20Allowance" })) {
+        return dev_erc20_handlers.handleSetERC20Allowance(rt, params);
     }
     if (methodIs(method_name, &.{ "zevm_setCoinbase", "anvil_setCoinbase", "hardhat_setCoinbase" })) {
         const items = try paramsArrayItems(params);

@@ -5,6 +5,7 @@ pub const eth_handler = @import("eth_handler.zig");
 pub const trusted_fork_handlers = @import("trusted_fork_handlers.zig");
 pub const simulation = @import("handlers/simulation.zig");
 pub const txpool = @import("handlers/txpool.zig");
+pub const dev_erc20_handlers = @import("handlers/dev_erc20.zig");
 
 test {
     _ = @import("dispatcher_test.zig");
@@ -14,4 +15,5 @@ test {
     _ = @import("trusted_fork_handlers.zig");
     _ = @import("handlers/simulation_test.zig");
     _ = @import("handlers/txpool_test.zig");
+    _ = @import("handlers/dev_erc20_test.zig");
 }
