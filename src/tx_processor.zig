@@ -142,11 +142,14 @@ pub fn processTransaction(
 
     var result = blk: {
         const EvmType = guillotine_mini.Evm(.{});
-        var evm = EvmType.init(
+        var evm: EvmType = undefined;
+        evm.init(
             allocator,
             host_iface,
             resolveHardfork(block_ctx),
             block_ctx,
+            caller,
+            effective_gas_price,
             null,
         ) catch {
             sm.revert();
@@ -157,11 +160,6 @@ pub fn processTransaction(
             sm.revert();
             return TxError.EvmInitError;
         };
-
-        // Wire transaction-level context that the EVM exposes through
-        // ORIGIN/GASPRICE opcodes and intrinsic pre-warming.
-        evm.origin = caller;
-        evm.gas_price = effective_gas_price;
 
         // The EVM's call() reads code from `pending_bytecode` for CALLs and
         // ignores it for CREATEs (init_code is in CallParams). For CALLs to a
