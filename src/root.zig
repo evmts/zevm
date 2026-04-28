@@ -1,5 +1,8 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const log_mod = @import("log.zig");
+
+pub const is_test = builtin.is_test;
 
 pub const std_options: std.Options = .{
     .log_level = .debug,
@@ -16,6 +19,8 @@ pub const beacon_api = @import("beacon_api.zig");
 pub const consensus_sync = @import("consensus_sync.zig");
 pub const checkpoint = @import("checkpoint.zig");
 pub const mining = @import("mining.zig");
+pub const cli = @import("cli.zig");
+pub const config = @import("config.zig");
 pub const node_runtime = @import("node/runtime.zig");
 pub const rpc = @import("rpc/root.zig");
 pub const release_metadata = @import("release_metadata.zig");
@@ -32,6 +37,8 @@ test {
     _ = @import("consensus_sync_test.zig");
     _ = @import("checkpoint_test.zig");
     _ = @import("mining_test.zig");
+    _ = @import("cli_test.zig");
+    _ = @import("main_test.zig");
     _ = @import("node/runtime_test.zig");
     _ = @import("rpc/root.zig");
     _ = @import("release_metadata.zig");

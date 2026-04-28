@@ -1,14 +1,10 @@
 const std = @import("std");
 const jsonrpc = @import("jsonrpc");
+const app_config = @import("../config.zig");
 const dispatcher = @import("dispatcher.zig");
 const log = @import("../log.zig");
 
-pub const ServerConfig = struct {
-    host: []const u8 = "127.0.0.1",
-    port: u16 = 8545,
-    fork_url: ?[]const u8 = null,
-    fork_block_number: ?u64 = null,
-};
+pub const ServerConfig = app_config.RpcConfig;
 
 pub const TestHttpResponse = struct {
     status: std.http.Status,
@@ -27,68 +23,12 @@ const json_content_type_header = std.http.Header{
     .value = "application/json",
 };
 
-pub fn parseConfig(allocator: std.mem.Allocator, args: []const []const u8) !ServerConfig {
-    _ = allocator;
-
-    var config = ServerConfig{};
-    var index: usize = 0;
-    while (index < args.len) : (index += 1) {
-        if (std.mem.eql(u8, args[index], "--host")) {
-            index += 1;
-            if (index >= args.len) {
-                return error.MissingHostValue;
-            }
-            config.host = args[index];
-            continue;
-        }
-
-        if (std.mem.eql(u8, args[index], "--port")) {
-            index += 1;
-            if (index >= args.len) {
-                return error.MissingPortValue;
-            }
-            config.port = std.fmt.parseInt(u16, args[index], 10) catch {
-                return error.InvalidPort;
-            };
-            continue;
-        }
-
-        if (std.mem.eql(u8, args[index], "--fork-url")) {
-            index += 1;
-            if (index >= args.len) {
-                return error.MissingForkUrlValue;
-            }
-            config.fork_url = args[index];
-            continue;
-        }
-
-        if (std.mem.eql(u8, args[index], "--fork-block-number")) {
-            index += 1;
-            if (index >= args.len) {
-                return error.MissingForkBlockNumberValue;
-            }
-            config.fork_block_number = std.fmt.parseInt(u64, args[index], 10) catch {
-                return error.InvalidForkBlockNumber;
-            };
-            continue;
-        }
-
-        return error.UnknownArgument;
-    }
-
-    if (config.fork_block_number != null and config.fork_url == null) {
-        return error.ForkBlockNumberRequiresForkUrl;
-    }
-
-    return config;
-}
-
-pub fn run(allocator: std.mem.Allocator, config: ServerConfig, handlers: *const dispatcher.HandlerRegistry) !void {
-    const address = try std.net.Address.parseIp(config.host, config.port);
+pub fn run(allocator: std.mem.Allocator, server_config: ServerConfig, handlers: *const dispatcher.HandlerRegistry) !void {
+    const address = try std.net.Address.parseIp(server_config.host, server_config.port);
     var tcp_server = try address.listen(.{ .reuse_address = true });
     defer tcp_server.deinit();
 
-    log.info(.rpc, "listener bound host={s} port={}", .{ config.host, config.port });
+    log.info(.rpc, "listener bound host={s} port={}", .{ server_config.host, server_config.port });
 
     while (true) {
         const connection = try tcp_server.accept();

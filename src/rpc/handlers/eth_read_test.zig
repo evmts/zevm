@@ -171,6 +171,17 @@ test "eth_blobBaseFee returns default" {
     try expectQuantityStr(result.value, "0x1");
 }
 
+test "eth_blobBaseFee returns dev override" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    rt.dev_runtime.config.blob_base_fee = 7;
+    const result = try eth_read.handleEthBlobBaseFee(arena.allocator(), &rt, .{});
+    try expectQuantityStr(result.value, "0x7");
+}
+
 // --- AC: eth_feeHistory returns correctly shaped object ---
 
 test "eth_feeHistory returns correct shape" {

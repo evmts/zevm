@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const jsonrpc = @import("jsonrpc");
 const log = @import("../log.zig");
 
@@ -47,12 +48,21 @@ pub fn dispatch(allocator: std.mem.Allocator, request: jsonrpc.envelope.RequestE
             return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.PROOF_VERIFY_FAILED, "Proof verification failed");
         },
         else => {
-            log.err(.rpc, "rpc internal error method={s} error={s}", .{ request.method, @errorName(err) });
+            if (builtin.mode == .Debug or isTestBuild()) {
+                log.warn(.rpc, "rpc internal error method={s} error={s}", .{ request.method, @errorName(err) });
+            } else {
+                log.err(.rpc, "rpc internal error method={s} error={s}", .{ request.method, @errorName(err) });
+            }
             return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.INTERNAL_ERROR, "Internal error");
         },
     };
 
     return jsonrpc.envelope.ResponseEnvelope.makeSuccess(request.id, result);
+}
+
+fn isTestBuild() bool {
+    const root = @import("root");
+    return if (@hasDecl(root, "is_test")) root.is_test else false;
 }
 
 fn validateParamsForMethod(allocator: std.mem.Allocator, method_name: []const u8, params: ?std.json.Value) !void {

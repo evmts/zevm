@@ -15,6 +15,21 @@ fn makeRequest(method: []const u8, params: ?std.json.Value) !jsonrpc.envelope.Re
     };
 }
 
+fn dispatchQuantityRequest(
+    handlers: *const dispatcher.HandlerRegistry,
+    method: []const u8,
+    quantity: []const u8,
+) !jsonrpc.envelope.ResponseEnvelope {
+    var params = std.json.Array.init(std.testing.allocator);
+    defer params.deinit();
+    try params.append(.{ .string = quantity });
+
+    var request = try makeRequest(method, .{ .array = params });
+    defer request.deinit(std.testing.allocator);
+
+    return dispatcher.dispatch(std.testing.allocator, request, handlers);
+}
+
 fn getObjectField(value: std.json.Value, key: []const u8) !std.json.Value {
     return switch (value) {
         .object => |object| object.get(key) orelse error.MissingField,
@@ -248,6 +263,45 @@ test "installed dispatch wiring reaches time-control aliases" {
     try std.testing.expectEqual(@as(?u64, 12346), rt.next_block_timestamp);
 }
 
+test "installed dispatch wiring stores block environment override aliases" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    var gas_response = try dispatchQuantityRequest(&handlers, "anvil_setBlockGasLimit", "0x5208");
+    defer gas_response.deinit(std.testing.allocator);
+    try std.testing.expect(gas_response.error_value == null);
+    try std.testing.expect(gas_response.result.?.bool);
+    try std.testing.expectEqual(@as(u64, 21_000), rt.dev_runtime.config.block_gas_limit);
+
+    var base_fee_response = try dispatchQuantityRequest(&handlers, "hardhat_setNextBlockBaseFeePerGas", "0x2");
+    defer base_fee_response.deinit(std.testing.allocator);
+    try std.testing.expect(base_fee_response.error_value == null);
+    try std.testing.expect(base_fee_response.result.?.bool);
+    try std.testing.expectEqual(@as(u256, 2), rt.dev_runtime.config.next_block_base_fee_per_gas.?);
+
+    var timestamp_response = try dispatchQuantityRequest(&handlers, "hardhat_setNextBlockTimestamp", "0x4d2");
+    defer timestamp_response.deinit(std.testing.allocator);
+    try std.testing.expect(timestamp_response.error_value == null);
+    try std.testing.expect(timestamp_response.result.?.bool);
+    try std.testing.expectEqual(@as(u64, 1234), rt.dev_runtime.config.next_block_timestamp.?);
+
+    var blob_fee_response = try dispatchQuantityRequest(&handlers, "anvil_setBlobBaseFee", "0x7");
+    defer blob_fee_response.deinit(std.testing.allocator);
+    try std.testing.expect(blob_fee_response.error_value == null);
+    try std.testing.expect(blob_fee_response.result.?.bool);
+    try std.testing.expectEqual(@as(u256, 7), rt.dev_runtime.config.blob_base_fee.?);
+
+    var blob_read = try makeRequest("eth_blobBaseFee", null);
+    defer blob_read.deinit(std.testing.allocator);
+    var blob_read_response = try dispatcher.dispatch(std.testing.allocator, blob_read, &handlers);
+    defer blob_read_response.deinit(std.testing.allocator);
+    try std.testing.expect(blob_read_response.error_value == null);
+    try std.testing.expectEqualStrings("0x7", blob_read_response.result.?.string);
+}
+
 test "installed dispatch wiring maps unsupported methods to method not found" {
     var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();
@@ -263,6 +317,177 @@ test "installed dispatch wiring maps unsupported methods to method not found" {
 
     try std.testing.expect(response.error_value != null);
     try std.testing.expectEqual(@as(i32, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND), response.error_value.?.code);
+}
+
+fn testCheckpoint(byte: u8) [32]u8 {
+    return [_]u8{byte} ** 32;
+}
+
+fn initLightRuntime(proof_state: runtime_mod.LightProofReadState) !runtime_mod.NodeRuntime {
+    return runtime_mod.NodeRuntime.init(std.testing.allocator, .{
+        .mode = .light,
+        .light = .{
+            .network = .mainnet,
+            .consensus_rpc_url = "http://localhost:5052",
+            .checkpoint = testCheckpoint(0xaa),
+            .checkpoint_source = .explicit,
+            .proof_read_state = proof_state,
+        },
+    });
+}
+
+fn dispatchForTest(rt: *runtime_mod.NodeRuntime, method: []const u8, params: ?std.json.Value) !jsonrpc.envelope.ResponseEnvelope {
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, rt);
+
+    var request = try makeRequest(method, params);
+    defer request.deinit(std.testing.allocator);
+
+    return dispatcher.dispatch(std.testing.allocator, request, &handlers);
+}
+
+fn objectField(obj: *const std.json.ObjectMap, key: []const u8) !std.json.Value {
+    return obj.get(key) orelse error.MissingField;
+}
+
+fn expectErrorCode(rt: *runtime_mod.NodeRuntime, method: []const u8, params: ?std.json.Value, code: i32) !void {
+    var response = try dispatchForTest(rt, method, params);
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expect(response.error_value != null);
+    try std.testing.expectEqual(code, response.error_value.?.code);
+}
+
+fn validAddress() std.json.Value {
+    return .{ .string = "0x0000000000000000000000000000000000000042" };
+}
+
+test "light sync status returns canonical payload while not ready" {
+    var rt = try initLightRuntime(.verify_failure);
+    defer rt.deinit();
+
+    var response = try dispatchForTest(&rt, "zevm_lightSyncStatus", null);
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expect(response.error_value == null);
+    const result = response.result.?;
+    try std.testing.expect(result == .object);
+
+    try std.testing.expectEqualStrings("syncing", (try objectField(&result.object, "status")).string);
+    try std.testing.expect(!(try objectField(&result.object, "ready")).bool);
+    try std.testing.expectEqualStrings("mainnet", (try objectField(&result.object, "network")).string);
+    try std.testing.expectEqualStrings("explicit", (try objectField(&result.object, "checkpointSource")).string);
+    try std.testing.expectEqualStrings("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", (try objectField(&result.object, "lastCheckpoint")).string);
+    try std.testing.expectEqualStrings("0x0", (try objectField(&result.object, "optimisticSlot")).string);
+    try std.testing.expectEqualStrings("0x0", (try objectField(&result.object, "safeSlot")).string);
+    try std.testing.expectEqualStrings("0x0", (try objectField(&result.object, "finalizedSlot")).string);
+}
+
+test "zevm_lightSyncStatus is mode unsupported in trusted mode after param validation" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    try expectErrorCode(&rt, "zevm_lightSyncStatus", null, dispatcher.RuntimeErrorCode.MODE_UNSUPPORTED);
+
+    var params = std.json.Array.init(std.testing.allocator);
+    defer params.deinit();
+    try params.append(.null);
+    try expectErrorCode(&rt, "zevm_lightSyncStatus", .{ .array = params }, jsonrpc.envelope.ErrorCode.INVALID_PARAMS);
+}
+
+test "light mode malformed proof read params fail before readiness" {
+    var rt = try initLightRuntime(.verify_failure);
+    defer rt.deinit();
+
+    var params = std.json.Array.init(std.testing.allocator);
+    defer params.deinit();
+
+    try expectErrorCode(&rt, "eth_getBalance", .{ .array = params }, jsonrpc.envelope.ErrorCode.INVALID_PARAMS);
+}
+
+test "light mode pending selector is mode unsupported before readiness" {
+    var rt = try initLightRuntime(.verify_failure);
+    defer rt.deinit();
+
+    var params = std.json.Array.init(std.testing.allocator);
+    defer params.deinit();
+    try params.append(validAddress());
+    try params.append(.{ .string = "pending" });
+
+    try expectErrorCode(&rt, "eth_getBalance", .{ .array = params }, dispatcher.RuntimeErrorCode.MODE_UNSUPPORTED);
+}
+
+test "light mode unsupported methods return mode unsupported after validation" {
+    var rt = try initLightRuntime(.verify_failure);
+    defer rt.deinit();
+
+    var tx = std.json.ObjectMap.init(std.testing.allocator);
+    defer tx.deinit();
+    try tx.put("to", validAddress());
+
+    var params = std.json.Array.init(std.testing.allocator);
+    defer params.deinit();
+    try params.append(.{ .object = tx });
+    try params.append(.{ .string = "latest" });
+
+    try expectErrorCode(&rt, "eth_call", .{ .array = params }, dispatcher.RuntimeErrorCode.MODE_UNSUPPORTED);
+}
+
+test "light mode proof reads and block number return not-ready after validation" {
+    var rt = try initLightRuntime(.verify_failure);
+    defer rt.deinit();
+
+    var params = std.json.Array.init(std.testing.allocator);
+    defer params.deinit();
+    try params.append(validAddress());
+    try params.append(.{ .string = "latest" });
+
+    try expectErrorCode(&rt, "eth_getBalance", .{ .array = params }, dispatcher.RuntimeErrorCode.LIGHT_NOT_READY);
+    try expectErrorCode(&rt, "eth_blockNumber", null, dispatcher.RuntimeErrorCode.LIGHT_NOT_READY);
+
+    var block_params = std.json.Array.init(std.testing.allocator);
+    defer block_params.deinit();
+    try block_params.append(.null);
+    try expectErrorCode(&rt, "eth_blockNumber", .{ .array = block_params }, jsonrpc.envelope.ErrorCode.INVALID_PARAMS);
+}
+
+test "light mode retained window check runs after readiness" {
+    var rt = try initLightRuntime(.verify_failure);
+    defer rt.deinit();
+    try rt.setLightSyncProgress(.synced, 12, 11, 10, 10_000);
+
+    var params = std.json.Array.init(std.testing.allocator);
+    defer params.deinit();
+    try params.append(validAddress());
+    try params.append(.{ .string = "0x2" });
+
+    try expectErrorCode(&rt, "eth_getBalance", .{ .array = params }, jsonrpc.envelope.ErrorCode.INVALID_PARAMS);
+}
+
+test "light mode malformed proof payload maps to -32015" {
+    var rt = try initLightRuntime(.malformed_payload);
+    defer rt.deinit();
+    try rt.setLightSyncProgress(.synced, 12, 11, 10, 10_000);
+
+    var params = std.json.Array.init(std.testing.allocator);
+    defer params.deinit();
+    try params.append(validAddress());
+    try params.append(.{ .string = "latest" });
+
+    try expectErrorCode(&rt, "eth_getBalance", .{ .array = params }, dispatcher.RuntimeErrorCode.MALFORMED_PROOF);
+}
+
+test "light mode proof verification failure maps to -32014" {
+    var rt = try initLightRuntime(.verify_failure);
+    defer rt.deinit();
+    try rt.setLightSyncProgress(.synced, 12, 11, 10, 10_000);
+
+    var params = std.json.Array.init(std.testing.allocator);
+    defer params.deinit();
+    try params.append(validAddress());
+    try params.append(.{ .string = "latest" });
+
+    try expectErrorCode(&rt, "eth_getBalance", .{ .array = params }, dispatcher.RuntimeErrorCode.PROOF_VERIFY_FAILED);
 }
 
 test "installed dispatch wiring handles automine aliases" {

@@ -11,7 +11,7 @@ const SSTORE_THEN_RETURN_42 = [_]u8{ 0x60, 0x01, 0x60, 0x00, 0x55, 0x60, 0x2a, 0
 const TARGET = "0x1000000000000000000000000000000000000001";
 const EXPECTED_32_BYTE_42 = "0x000000000000000000000000000000000000000000000000000000000000002a";
 
-test "simulation exports mode unsupported error tuple" {
+test "simulation exposes mode unsupported error tuple" {
     try std.testing.expectEqual(@as(i32, -32010), simulation.MODE_UNSUPPORTED_ERROR_CODE);
     try std.testing.expectEqualStrings("mode-unsupported", simulation.MODE_UNSUPPORTED_MESSAGE);
 }
@@ -104,6 +104,34 @@ test "dispatch wiring reaches simulation handlers" {
     try std.testing.expect(response.error_value == null);
     try std.testing.expect(response.result != null);
     try std.testing.expectEqualStrings(EXPECTED_32_BYTE_42, response.result.?.string);
+}
+
+test "light mode estimateGas is mode unsupported for well-formed tx-only tuple" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, .{
+        .mode = .light,
+        .light = .{
+            .consensus_rpc_url = "http://localhost",
+            .checkpoint = [_]u8{0x11} ** 32,
+        },
+    });
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    var parsed = try parseJson(
+        \\[{"from":"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"}]
+    );
+    defer parsed.deinit();
+
+    var request = try makeRequest("eth_estimateGas", parsed.value);
+    defer request.deinit(std.testing.allocator);
+
+    var response = try dispatcher.dispatch(std.testing.allocator, request, &handlers);
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expect(response.error_value != null);
+    try std.testing.expectEqual(@as(i32, -32010), response.error_value.?.code);
 }
 
 fn parseJson(bytes: []const u8) !std.json.Parsed(std.json.Value) {

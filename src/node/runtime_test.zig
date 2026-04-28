@@ -392,6 +392,30 @@ test "snapshot and revert restore local overlays and fork URL state" {
     try std.testing.expectEqual(@as(u256, 11), try rt.getBalance(addr));
 }
 
+test "snapshot and revert restore block environment overrides" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    rt.dev_runtime.config.block_gas_limit = 21_000;
+    rt.dev_runtime.config.next_block_base_fee_per_gas = 2;
+    rt.setNextBlockTimestamp(1234);
+    rt.dev_runtime.config.blob_base_fee = 7;
+
+    const snap = try rt.snapshot();
+
+    rt.dev_runtime.config.block_gas_limit = 42_000;
+    rt.dev_runtime.config.next_block_base_fee_per_gas = 3;
+    rt.setNextBlockTimestamp(5678);
+    rt.dev_runtime.config.blob_base_fee = 9;
+
+    const reverted = try rt.revertToSnapshot(snap);
+    try std.testing.expect(reverted);
+    try std.testing.expectEqual(@as(u64, 21_000), rt.dev_runtime.config.block_gas_limit);
+    try std.testing.expectEqual(@as(u256, 2), rt.dev_runtime.config.next_block_base_fee_per_gas.?);
+    try std.testing.expectEqual(@as(u64, 1234), rt.dev_runtime.config.next_block_timestamp.?);
+    try std.testing.expectEqual(@as(u256, 7), rt.dev_runtime.config.blob_base_fee.?);
+}
+
 test "reset keep/disable/replace follows fork semantics without changing chain id" {
     var resolver = MockForkResolver{
         .url_a = "https://rpc-a.example",

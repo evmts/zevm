@@ -76,11 +76,10 @@ pub const DevRuntime = struct {
         bc: *blockchain.Blockchain,
         snapshot_id: u64,
     ) !bool {
+        _ = bc;
         const entry = self.snapshots.get(snapshot_id) orelse return false;
 
         state.revertToSnapshot(entry.state_snapshot_id) catch return false;
-
-        try bc.revertToBlock(entry.block_number);
 
         self.config = entry.config;
 

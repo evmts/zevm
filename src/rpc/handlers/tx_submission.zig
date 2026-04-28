@@ -3,7 +3,6 @@ const primitives = @import("primitives");
 const crypto = @import("crypto");
 const jsonrpc = @import("jsonrpc");
 const runtime = @import("../../node/runtime.zig");
-const tx_processor = @import("../../tx_processor.zig");
 
 pub const TxSubmissionError = error{
     InvalidHexData,
@@ -92,22 +91,30 @@ pub fn handleSendRawTransaction(
     const intrinsic = computeIntrinsicGas(decoded, is_create, data);
     if (intrinsic > gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
 
-    // Balance covers value + max gas cost. For 4844 we additionally require blob gas budget.
+    // Balance covers value + max gas cost. Phase 1 only accepts legacy raw
+    // transactions, so blob gas accounting is not reachable here.
     const max_gas_cost = max_fee * @as(u256, gas_limit);
-    var total_cost = value +| max_gas_cost;
-    switch (decoded) {
-        .eip4844 => |t| {
-            const blob_gas: u256 = @as(u256, t.blob_versioned_hashes.len) * 131072;
-            total_cost = total_cost +| (t.max_fee_per_blob_gas *| blob_gas);
-        },
-        else => {},
-    }
+    const total_cost = value +| max_gas_cost;
     const balance = rt.state.getBalance(sender) catch return TxSubmissionError.StateError;
     if (balance < total_cost) return TxSubmissionError.InsufficientBalance;
 
     const tx_hash = computeTxHash(raw_bytes);
 
-    _ = priority_fee;
+    rt.pool.setNonce(sender, current_nonce) catch return TxSubmissionError.PoolInsertFailed;
+    rt.pool.add(allocator, .{
+        .sender = sender,
+        .nonce = nonce,
+        .gas_limit = gas_limit,
+        .max_fee_per_gas = max_fee,
+        .max_priority_fee_per_gas = priority_fee,
+        .hash = tx_hash,
+        .to = envelopeTo(decoded),
+        .value = value,
+        .input = data,
+    }) catch |err| switch (err) {
+        error.ReplacementUnderpriced => return TxSubmissionError.PoolInsertFailed,
+        error.OutOfMemory => return TxSubmissionError.OutOfMemory,
+    };
 
     switch (rt.mining_config) {
         .auto => automine(allocator, rt, decoded, sender) catch {},
@@ -160,15 +167,7 @@ fn decodeEnvelope(allocator: std.mem.Allocator, raw: []const u8) !DecodedEnvelop
     if (first >= 0xc0) {
         return .{ .legacy = try decodeLegacy(allocator, raw) };
     }
-    if (raw.len < 2) return error.InputTooShort;
-    const body = raw[1..];
-    return switch (first) {
-        0x01 => DecodedEnvelope{ .eip2930 = try decodeEip2930(allocator, body) },
-        0x02 => DecodedEnvelope{ .eip1559 = try decodeEip1559(allocator, body) },
-        0x03 => DecodedEnvelope{ .eip4844 = try decodeEip4844Canonical(allocator, body) },
-        0x04 => DecodedEnvelope{ .eip7702 = try decodeEip7702(allocator, body) },
-        else => error.UnsupportedTxType,
-    };
+    return error.UnsupportedTxType;
 }
 
 fn rlpAsList(d: primitives.Rlp.Data) ![]primitives.Rlp.Data {
@@ -564,45 +563,9 @@ fn computeSigningHash(
             defer allocator.free(enc);
             break :blk keccak(enc);
         },
-        .eip2930 => |t| blk: {
-            var unsigned = t;
-            unsigned.y_parity = 0;
-            unsigned.r = [_]u8{0} ** 32;
-            unsigned.s = [_]u8{0} ** 32;
-            const enc = try primitives.Transaction.encodeEip2930ForSigning(allocator, unsigned);
-            defer allocator.free(enc);
-            break :blk keccak(enc);
-        },
-        .eip1559 => |t| blk: {
-            var unsigned = t;
-            unsigned.y_parity = 0;
-            unsigned.r = [_]u8{0} ** 32;
-            unsigned.s = [_]u8{0} ** 32;
-            const enc = try primitives.Transaction.encodeEip1559ForSigning(allocator, unsigned);
-            defer allocator.free(enc);
-            break :blk keccak(enc);
-        },
-        .eip4844 => |t| blk: {
-            var unsigned = t;
-            unsigned.y_parity = 0;
-            unsigned.r = [_]u8{0} ** 32;
-            unsigned.s = [_]u8{0} ** 32;
-            const enc = try primitives.Transaction.encodeEip4844ForSigning(allocator, unsigned);
-            defer allocator.free(enc);
-            break :blk keccak(enc);
-        },
-        .eip7702 => |t| blk: {
-            var unsigned = t;
-            unsigned.y_parity = 0;
-            unsigned.r = [_]u8{0} ** 32;
-            unsigned.s = [_]u8{0} ** 32;
-            const enc = try primitives.Transaction.encodeEip7702ForSigning(allocator, unsigned);
-            defer allocator.free(enc);
-            break :blk keccak(enc);
-        },
+        .eip2930, .eip1559, .eip4844, .eip7702 => error.UnsupportedTxType,
     };
 }
-
 
 fn keccak(input: []const u8) [32]u8 {
     var out: [32]u8 = undefined;
@@ -669,17 +632,22 @@ fn computeTxHash(raw_bytes: []const u8) [32]u8 {
 fn automine(
     allocator: std.mem.Allocator,
     rt: *runtime.NodeRuntime,
-    decoded: DecodedEnvelope,
-    sender: primitives.Address,
+    _: DecodedEnvelope,
+    _: primitives.Address,
 ) !void {
-    _ = allocator;
-    const exec_tx = tx_processor.ExecutionTx{
-        .caller = sender,
-        .tx = legacyShapeFromEnvelope(decoded),
-    };
-    _ = exec_tx;
+    const ready = try rt.pool.getReady(allocator);
+    defer allocator.free(ready);
+
+    if (ready.len == 0) return;
 
     rt.head_block_number += 1;
+
+    var mined_hashes = try allocator.alloc([32]u8, ready.len);
+    defer allocator.free(mined_hashes);
+    for (ready, 0..) |pooled_tx, i| {
+        mined_hashes[i] = pooled_tx.hash;
+    }
+    rt.pool.removeMined(mined_hashes);
 }
 
 // Project typed envelopes onto the legacy execution shape (`ExecutionTx.tx`

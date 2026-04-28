@@ -58,8 +58,8 @@ pub fn handleEthCall(
     rt: *runtime.NodeRuntime,
     params: ?std.json.Value,
 ) !std.json.Value {
-    // TODO: When NodeRuntime grows an explicit trusted/light mode field, reject
-    // light mode here with JSON-RPC -32010 (MODE_UNSUPPORTED_ERROR_CODE).
+    // NodeRuntime mode gating lives in dispatch_wiring so light mode can return
+    // JSON-RPC -32010 before the trusted simulation path is entered.
     var parsed = try parseCallParams(allocator, params);
     defer parsed.deinit(allocator);
 
@@ -83,8 +83,8 @@ pub fn handleEthEstimateGas(
     rt: *runtime.NodeRuntime,
     params: ?std.json.Value,
 ) !std.json.Value {
-    // TODO: When NodeRuntime grows an explicit trusted/light mode field, reject
-    // light mode here with JSON-RPC -32010 (MODE_UNSUPPORTED_ERROR_CODE).
+    // NodeRuntime mode gating lives in dispatch_wiring so light mode can return
+    // JSON-RPC -32010 before the trusted simulation path is entered.
     var parsed = try parseEstimateParams(allocator, params);
     defer parsed.deinit(allocator);
 

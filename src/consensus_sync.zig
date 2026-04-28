@@ -256,19 +256,19 @@ pub const ConsensusSyncEngine = struct {
         return slot * primitives.ConsensusSpec.SECONDS_PER_SLOT + self.config.genesis_time;
     }
 
-    pub fn lastCheckpoint(self: *ConsensusSyncEngine) ?[32]u8 {
+    pub fn lastCheckpoint(self: *const ConsensusSyncEngine) ?[32]u8 {
         return self.last_checkpoint;
     }
 
-    pub fn finalizedSlot(self: *ConsensusSyncEngine) u64 {
+    pub fn finalizedSlot(self: *const ConsensusSyncEngine) u64 {
         return self.store.finalized_header.beacon.slot;
     }
 
-    pub fn safeSlot(self: *ConsensusSyncEngine) u64 {
+    pub fn safeSlot(self: *const ConsensusSyncEngine) u64 {
         return self.finalizedSlot();
     }
 
-    pub fn optimisticSlot(self: *ConsensusSyncEngine) u64 {
+    pub fn optimisticSlot(self: *const ConsensusSyncEngine) u64 {
         return self.store.optimistic_header.beacon.slot;
     }
 

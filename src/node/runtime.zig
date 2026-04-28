@@ -669,9 +669,10 @@ pub const NodeRuntime = struct {
 
         for (to_remove.items) |id| {
             if (self.snapshots.fetchRemove(id)) |removed| {
-                freeForkConfig(self.allocator, removed.value.fork_config);
-                removed.value.pool.deinit();
-                removed.value.impersonated_accounts.deinit();
+                var removed_value = removed.value;
+                freeForkConfig(self.allocator, removed_value.fork_config);
+                removed_value.pool.deinit();
+                removed_value.impersonated_accounts.deinit();
             }
         }
 

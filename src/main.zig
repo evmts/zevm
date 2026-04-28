@@ -12,27 +12,46 @@ pub fn main() !void {
 
     zevm.log.init(.info);
 
-    const config = try zevm.rpc.server.parseConfig(std.heap.page_allocator, args[1..]);
-    zevm.log.info(.startup, "mode selected mode=trusted", .{});
-    if (config.fork_url) |fork_url| {
-        if (config.fork_block_number) |fork_block_number| {
-            zevm.log.info(.startup, "fork url url={s} block_number={}", .{ fork_url, fork_block_number });
-        } else {
-            zevm.log.info(.startup, "fork url url={s} block_number=latest", .{fork_url});
-        }
-    } else {
-        zevm.log.info(.startup, "fork url url=null", .{});
+    var app_config = try zevm.config.load(std.heap.page_allocator, args[1..]);
+    defer app_config.deinit(std.heap.page_allocator);
+
+    switch (app_config.mode) {
+        .trusted => |trusted_config| {
+            zevm.log.info(.startup, "mode selected mode=trusted", .{});
+            if (trusted_config.fork) |fork| {
+                if (fork.block_number) |fork_block_number| {
+                    zevm.log.info(.startup, "fork url url={s} block_number={}", .{ fork.url, fork_block_number });
+                } else {
+                    zevm.log.info(.startup, "fork url url={s} block_number=latest", .{fork.url});
+                }
+            } else {
+                zevm.log.info(.startup, "fork url url=null", .{});
+            }
+
+            // Runtime initialization validates startup config before the listener opens.
+            var runtime = try zevm.node_runtime.NodeRuntime.init(
+                std.heap.page_allocator,
+                trusted_config.toNodeConfig(),
+            );
+            defer runtime.deinit();
+
+            var handlers = zevm.rpc.dispatcher.HandlerRegistry{};
+            zevm.rpc.dispatch_wiring.install(&handlers, &runtime);
+            try zevm.rpc.server.run(std.heap.page_allocator, app_config.rpc, &handlers);
+        },
+        .light => |light_config| {
+            zevm.log.info(.startup, "mode selected mode=light", .{});
+            zevm.log.info(.startup, "light network network={s}", .{zevm.cli.networkName(light_config.network)});
+
+            var runtime = try zevm.node_runtime.NodeRuntime.init(
+                std.heap.page_allocator,
+                light_config.toNodeConfig(),
+            );
+            defer runtime.deinit();
+
+            var handlers = zevm.rpc.dispatcher.HandlerRegistry{};
+            zevm.rpc.dispatch_wiring.install(&handlers, &runtime);
+            try zevm.rpc.server.run(std.heap.page_allocator, app_config.rpc, &handlers);
+        },
     }
-
-    // Bootstrap trusted runtime so startup configuration (including fork config)
-    // is validated and initialized before opening the RPC listener.
-    var runtime = try zevm.node_runtime.NodeRuntime.init(std.heap.page_allocator, .{
-        .fork_url = config.fork_url,
-        .fork_block_number = config.fork_block_number,
-    });
-    defer runtime.deinit();
-
-    var handlers = zevm.rpc.dispatcher.HandlerRegistry{};
-    zevm.rpc.dispatch_wiring.install(&handlers, &runtime);
-    try zevm.rpc.server.run(std.heap.page_allocator, config, &handlers);
 }

@@ -5,6 +5,7 @@ const guillotine_mini = @import("guillotine_mini");
 const block_builder = @import("block_builder.zig");
 const tx_processor = @import("tx_processor.zig");
 const host_adapter = @import("host_adapter.zig");
+const dev_runtime = @import("rpc/dev_runtime.zig");
 
 fn makeLegacyTx(params: struct {
     to: ?primitives.Address,
@@ -143,6 +144,94 @@ test "buildBlock rejects invalid included tx and reverts block state" {
 
     try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(sender));
     try std.testing.expectEqual(@as(u256, 0), try sm.getBalance(recipient));
+}
+
+test "buildBlockWithOptions consumes dev block environment overrides once" {
+    var runtime = dev_runtime.DevRuntime.init();
+    defer runtime.deinit(std.testing.allocator);
+    runtime.config.block_gas_limit = 21_000;
+    runtime.config.next_block_base_fee_per_gas = 2;
+    runtime.config.next_block_timestamp = 8193;
+    runtime.config.blob_base_fee = 7;
+
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    const host = adapter.hostInterface();
+
+    const sender = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
+    const recipient = primitives.Address{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 19 };
+
+    try sm.setBalance(sender, 1_000_000);
+    try sm.setNonce(sender, 0);
+
+    const txs = [_]tx_processor.ExecutionTx{
+        .{
+            .caller = sender,
+            .tx = makeLegacyTx(.{
+                .to = recipient,
+                .value = 0,
+                .data = &[_]u8{},
+                .gas_limit = 21_000,
+                .gas_price = 2,
+                .nonce = 0,
+            }),
+        },
+        .{
+            .caller = sender,
+            .tx = makeLegacyTx(.{
+                .to = recipient,
+                .value = 0,
+                .data = &[_]u8{},
+                .gas_limit = 21_000,
+                .gas_price = 2,
+                .nonce = 1,
+            }),
+        },
+    };
+
+    var block_ctx = blockContextWithGasLimit(42_000);
+    block_ctx.block_base_fee = 3;
+    block_ctx.blob_base_fee = 1;
+
+    const withdrawals = [_]primitives.BlockBody.Withdrawal{};
+    const parent_beacon_root = [_]u8{0x42} ** 32;
+    var result = try block_builder.buildBlockWithOptions(
+        std.testing.allocator,
+        &sm,
+        host,
+        &txs,
+        block_ctx,
+        .{
+            .fork = .cancun,
+            .withdrawals = &withdrawals,
+            .parent_beacon_block_root = parent_beacon_root,
+            .dev_runtime = &runtime,
+        },
+    );
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.receipts.len);
+    try std.testing.expectEqual(@as(u64, 21_000), result.total_gas_used);
+    try std.testing.expectEqual(@as(u256, 8193), try sm.getStorage(block_builder.BEACON_ROOTS_ADDRESS, 8193 % 8191));
+    try std.testing.expect(runtime.config.next_block_base_fee_per_gas == null);
+    try std.testing.expect(runtime.config.next_block_timestamp == null);
+    try std.testing.expectEqual(@as(u64, 21_000), runtime.config.block_gas_limit);
+    try std.testing.expectEqual(@as(u256, 7), runtime.config.blob_base_fee.?);
+}
+
+test "blockContextWithEnvironmentOverrides applies persistent blob base fee" {
+    var runtime = dev_runtime.DevRuntime.init();
+    defer runtime.deinit(std.testing.allocator);
+    runtime.config.blob_base_fee = 9;
+
+    var block_ctx = blockContextWithGasLimit(30_000_000);
+    block_ctx.blob_base_fee = 1;
+
+    const effective = block_builder.blockContextWithEnvironmentOverrides(&runtime, block_ctx);
+    try std.testing.expectEqual(@as(u256, 9), effective.blob_base_fee);
+    try std.testing.expectEqual(@as(u256, 9), runtime.config.blob_base_fee.?);
 }
 
 fn parentHeader() primitives.BlockHeader.BlockHeader {

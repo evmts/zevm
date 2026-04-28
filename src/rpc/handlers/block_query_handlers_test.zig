@@ -30,11 +30,11 @@ fn setupCtx(allocator: std.mem.Allocator) !struct {
         self.li.deinit(alloc);
         self.ri.deinit(alloc);
         self.bc.deinit();
-        self.rt.deinit(alloc);
+        self.rt.deinit();
     }
 } {
     var rt = try runtime.NodeRuntime.init(allocator, null);
-    errdefer rt.deinit(allocator);
+    errdefer rt.deinit();
 
     var bc = try blockchain_mod.Blockchain.init(allocator, null);
     errdefer bc.deinit();

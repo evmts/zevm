@@ -73,7 +73,7 @@ fn appendContentTx(
     var sender_buf: [42]u8 = undefined;
     const sender_key = addressHex(&sender_buf, tx.sender);
     const account = try getOrCreateAccount(allocator, section, sender_key);
-    try putOwnedJson(account, allocator, try decimalKey(allocator, tx.nonce), try transactionObject(allocator, tx));
+    try putJsonOwnedKey(account, allocator, try decimalKey(allocator, tx.nonce), try transactionObject(allocator, tx));
 }
 
 fn appendInspectTx(
@@ -84,7 +84,7 @@ fn appendInspectTx(
     var sender_buf: [42]u8 = undefined;
     const sender_key = addressHex(&sender_buf, tx.sender);
     const account = try getOrCreateAccount(allocator, section, sender_key);
-    try putOwnedJson(account, allocator, try decimalKey(allocator, tx.nonce), .{
+    try putJsonOwnedKey(account, allocator, try decimalKey(allocator, tx.nonce), .{
         .string = try inspectSummary(allocator, tx),
     });
 }
@@ -172,6 +172,16 @@ fn putOwnedJson(
     try obj.put(owned_key, value);
 }
 
+fn putJsonOwnedKey(
+    obj: *std.json.ObjectMap,
+    allocator: std.mem.Allocator,
+    key: []const u8,
+    value: std.json.Value,
+) !void {
+    errdefer allocator.free(key);
+    try obj.put(key, value);
+}
+
 fn decimalKey(allocator: std.mem.Allocator, nonce: u64) ![]u8 {
     return std.fmt.allocPrint(allocator, "{d}", .{nonce});
 }
@@ -191,7 +201,15 @@ fn hashString(allocator: std.mem.Allocator, hash: [32]u8) ![]u8 {
 }
 
 fn bytesHex(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
-    return std.fmt.allocPrint(allocator, "0x{s}", .{std.fmt.fmtSliceHexLower(bytes)});
+    const out = try allocator.alloc(u8, 2 + bytes.len * 2);
+    out[0] = '0';
+    out[1] = 'x';
+    const alphabet = "0123456789abcdef";
+    for (bytes, 0..) |byte, index| {
+        out[2 + index * 2] = alphabet[byte >> 4];
+        out[3 + index * 2] = alphabet[byte & 0x0f];
+    }
+    return out;
 }
 
 fn addressHex(buf: *[42]u8, address: primitives.Address) []const u8 {

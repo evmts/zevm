@@ -266,9 +266,9 @@ pub fn getTransactionByHash(
     const receipt = ri.getByTxHash(tx_hash) orelse return null;
     const block = (try bc.getBlockByHash(receipt.block_hash)) orelse {
         // Receipt without block — degrade gracefully.
-        return txResponseFromReceipt(allocator, receipt, null);
+        return @as(?TxResponse, try txResponseFromReceipt(allocator, receipt, null));
     };
-    return txResponseFromReceipt(allocator, receipt, block);
+    return @as(?TxResponse, try txResponseFromReceipt(allocator, receipt, block));
 }
 
 pub fn getTransactionByBlockHashAndIndex(
