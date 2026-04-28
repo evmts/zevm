@@ -3,8 +3,11 @@
 const std = @import("std");
 const primitives = @import("primitives");
 const dispatcher_mod = @import("dispatcher.zig");
+const eth_read = @import("handlers/eth_read.zig");
 const runtime_mod = @import("../node/runtime.zig");
+const simulation = @import("handlers/simulation.zig");
 const trusted_fork_handlers = @import("trusted_fork_handlers.zig");
+const txpool_handlers = @import("handlers/txpool.zig");
 
 var runtime_ptr: ?*runtime_mod.NodeRuntime = null;
 
@@ -19,6 +22,14 @@ fn dispatchMethod(
     params: ?std.json.Value,
 ) anyerror!std.json.Value {
     const rt = runtime_ptr orelse return error.MethodNotFound;
+
+    if (rt.mode == .light) {
+        return dispatchLightMethod(allocator, rt, method_name, params);
+    }
+    if (std.mem.eql(u8, method_name, "zevm_lightSyncStatus")) {
+        try validateNoParams(params);
+        return error.ModeUnsupported;
+    }
 
     if (std.mem.eql(u8, method_name, "web3_clientVersion")) {
         return .{ .string = try allocator.dupe(u8, "zevm/0.1.0") };
@@ -59,7 +70,12 @@ fn dispatchMethod(
         return hexU256(allocator, rt.max_priority_fee);
     }
     if (std.mem.eql(u8, method_name, "eth_blobBaseFee")) {
-        return hexU256(allocator, rt.blob_base_fee);
+        return hexU256(allocator, currentBlobBaseFee(rt));
+    }
+    if (std.mem.eql(u8, method_name, "eth_feeHistory")) {
+        const fee_history_params = try eth_read.parseEthFeeHistoryParams(allocator, params);
+        defer eth_read.deinitEthFeeHistoryParams(allocator, fee_history_params);
+        return eth_read.handleEthFeeHistoryValue(allocator, rt, fee_history_params);
     }
     if (std.mem.eql(u8, method_name, "eth_coinbase")) {
         return addressString(allocator, rt.coinbase);
@@ -96,6 +112,21 @@ fn dispatchMethod(
         const value = try rt.getStorage(args.address, args.slot);
         return hexU256(allocator, value);
     }
+    if (std.mem.eql(u8, method_name, "txpool_content")) {
+        return txpool_handlers.handleContent(allocator, rt, params);
+    }
+    if (std.mem.eql(u8, method_name, "txpool_status")) {
+        return txpool_handlers.handleStatus(allocator, rt, params);
+    }
+    if (std.mem.eql(u8, method_name, "txpool_inspect")) {
+        return txpool_handlers.handleInspect(allocator, rt, params);
+    }
+    if (std.mem.eql(u8, method_name, "eth_call")) {
+        return simulation.handleEthCall(allocator, rt, params);
+    }
+    if (std.mem.eql(u8, method_name, "eth_estimateGas")) {
+        return simulation.handleEthEstimateGas(allocator, rt, params);
+    }
 
     if (methodIs(method_name, &.{ "zevm_reset", "anvil_reset", "hardhat_reset" })) {
         return trusted_fork_handlers.handleZevmReset(rt, params);
@@ -128,12 +159,67 @@ fn dispatchMethod(
         const items = try paramsArrayItems(params);
         if (items.len != 1) return error.InvalidParams;
         rt.coinbase = try parseAddressJson(items[0]);
+        rt.dev_runtime.config.coinbase = rt.coinbase;
+        return .{ .bool = true };
+    }
+    if (methodIs(method_name, &.{ "zevm_setBlockGasLimit", "anvil_setBlockGasLimit", "hardhat_setBlockGasLimit", "evm_setBlockGasLimit" })) {
+        const items = try paramsArrayItems(params);
+        if (items.len != 1) return error.InvalidParams;
+        rt.dev_runtime.config.block_gas_limit = try parseU64Json(items[0]);
         return .{ .bool = true };
     }
     if (methodIs(method_name, &.{ "zevm_setNextBlockBaseFeePerGas", "anvil_setNextBlockBaseFeePerGas", "hardhat_setNextBlockBaseFeePerGas" })) {
         const items = try paramsArrayItems(params);
         if (items.len != 1) return error.InvalidParams;
-        rt.base_fee = try parseU256Json(items[0]);
+        rt.dev_runtime.config.next_block_base_fee_per_gas = try parseU256Json(items[0]);
+        return .{ .bool = true };
+    }
+    if (methodIs(method_name, &.{ "zevm_setNextBlockTimestamp", "anvil_setNextBlockTimestamp", "hardhat_setNextBlockTimestamp", "evm_setNextBlockTimestamp" })) {
+        const items = try paramsArrayItems(params);
+        if (items.len != 1) return error.InvalidParams;
+        rt.setNextBlockTimestamp(try parseU64Json(items[0]));
+        return .{ .bool = true };
+    }
+    if (methodIs(method_name, &.{ "zevm_setBlobBaseFee", "anvil_setBlobBaseFee", "hardhat_setBlobBaseFee" })) {
+        const items = try paramsArrayItems(params);
+        if (items.len != 1) return error.InvalidParams;
+        const blob_base_fee = try parseU256Json(items[0]);
+        rt.dev_runtime.config.blob_base_fee = blob_base_fee;
+        rt.blob_base_fee = blob_base_fee;
+        return .{ .bool = true };
+    }
+    if (methodIs(method_name, &.{ "zevm_impersonateAccount", "anvil_impersonateAccount", "hardhat_impersonateAccount" })) {
+        const address = try parseSingleAddressArg(params);
+        try rt.impersonateAccount(address);
+        return .{ .bool = true };
+    }
+    if (methodIs(method_name, &.{ "zevm_stopImpersonatingAccount", "anvil_stopImpersonatingAccount", "hardhat_stopImpersonatingAccount" })) {
+        const address = try parseSingleAddressArg(params);
+        rt.stopImpersonatingAccount(address);
+        return .{ .bool = true };
+    }
+    if (methodIs(method_name, &.{
+        "zevm_setAutoImpersonateAccount",
+        "anvil_setAutoImpersonateAccount",
+        "hardhat_setAutoImpersonateAccount",
+        "zevm_autoImpersonateAccount",
+        "anvil_autoImpersonateAccount",
+    })) {
+        const enabled = try parseSingleBoolArg(params);
+        rt.setAutoImpersonateAccount(enabled);
+        return .{ .bool = true };
+    }
+    if (methodIs(method_name, &.{ "zevm_increaseTime", "anvil_increaseTime", "evm_increaseTime" })) {
+        const seconds = try parseTimeControlQuantity(params);
+        return hexQuantity(allocator, try rt.increaseTime(seconds));
+    }
+    if (methodIs(method_name, &.{ "zevm_setTime", "anvil_setTime", "evm_setTime" })) {
+        const timestamp = try parseTimeControlQuantity(params);
+        return hexQuantity(allocator, try rt.setTime(timestamp));
+    }
+    if (methodIs(method_name, &.{ "zevm_setNextBlockTimestamp", "anvil_setNextBlockTimestamp", "evm_setNextBlockTimestamp", "hardhat_setNextBlockTimestamp" })) {
+        const timestamp = try parseTimeControlQuantity(params);
+        rt.setNextBlockTimestamp(timestamp);
         return .{ .bool = true };
     }
     if (methodIs(method_name, &.{ "zevm_snapshot", "anvil_snapshot", "evm_snapshot" })) {
@@ -142,6 +228,21 @@ fn dispatchMethod(
     if (methodIs(method_name, &.{ "zevm_revert", "anvil_revert", "evm_revert" })) {
         const snapshot_id = try parseSnapshotId(params);
         return .{ .bool = try rt.revertToSnapshot(snapshot_id) };
+    }
+    if (methodIs(method_name, &.{ "zevm_mine", "anvil_mine", "evm_mine", "hardhat_mine" })) {
+        const args = try parseMineArgs(params);
+        try rt.mineBlocks(args.count, args.interval_seconds);
+        return .{ .bool = true };
+    }
+    if (methodIs(method_name, &.{ "zevm_setAutomine", "anvil_setAutomine", "evm_setAutomine" })) {
+        const enabled = try parseSetAutomineArgs(params);
+        rt.setAutomine(enabled);
+        return .{ .bool = true };
+    }
+    if (methodIs(method_name, &.{ "zevm_setIntervalMining", "anvil_setIntervalMining", "evm_setIntervalMining" })) {
+        const seconds = try parseSetIntervalMiningArgs(params);
+        rt.setIntervalMining(seconds);
+        return .{ .bool = true };
     }
 
     return error.MethodNotFound;
@@ -175,6 +276,11 @@ const StorageSetArgs = struct {
     address: primitives.Address,
     slot: u256,
     value: u256,
+};
+
+const MineArgs = struct {
+    count: u64,
+    interval_seconds: u64,
 };
 
 fn paramsArrayItems(params: ?std.json.Value) ![]const std.json.Value {
@@ -249,6 +355,58 @@ fn parseSnapshotId(params: ?std.json.Value) !u64 {
     return parseU64Json(items[0]);
 }
 
+fn parseSingleAddressArg(params: ?std.json.Value) !primitives.Address {
+    const items = try paramsArrayItems(params);
+    if (items.len != 1) return error.InvalidParams;
+    return parseAddressJson(items[0]);
+}
+
+fn parseSingleBoolArg(params: ?std.json.Value) !bool {
+    const items = try paramsArrayItems(params);
+    if (items.len != 1) return error.InvalidParams;
+    return switch (items[0]) {
+        .bool => |enabled| enabled,
+        else => error.InvalidParams,
+    };
+}
+
+fn parseMineArgs(params: ?std.json.Value) !MineArgs {
+    const items = try paramsArrayItems(params);
+    if (items.len > 2) return error.InvalidParams;
+    if (items.len == 0) {
+        return .{
+            .count = 1,
+            .interval_seconds = 0,
+        };
+    }
+
+    return .{
+        .count = try parseQuantityU64Json(items[0]),
+        .interval_seconds = if (items.len == 2) try parseQuantityU64Json(items[1]) else 0,
+    };
+}
+
+fn parseSetAutomineArgs(params: ?std.json.Value) !bool {
+    const items = try paramsArrayItems(params);
+    if (items.len != 1) return error.InvalidParams;
+    return switch (items[0]) {
+        .bool => |enabled| enabled,
+        else => error.InvalidParams,
+    };
+}
+
+fn parseSetIntervalMiningArgs(params: ?std.json.Value) !u64 {
+    const items = try paramsArrayItems(params);
+    if (items.len != 1) return error.InvalidParams;
+    return parseQuantityU64Json(items[0]);
+}
+
+fn parseTimeControlQuantity(params: ?std.json.Value) !u64 {
+    const items = try paramsArrayItems(params);
+    if (items.len != 1) return error.InvalidParams;
+    return parseQuantityU64Json(items[0]);
+}
+
 fn validateBlockSpecJson(value: std.json.Value) !void {
     switch (value) {
         .string => {},
@@ -276,6 +434,13 @@ fn parseAddressString(text: []const u8) !primitives.Address {
 fn parseU64Json(value: std.json.Value) !u64 {
     return switch (value) {
         .integer => |n| if (n < 0) error.InvalidParams else @intCast(n),
+        .string => |s| parseU64String(s),
+        else => error.InvalidParams,
+    };
+}
+
+fn parseQuantityU64Json(value: std.json.Value) !u64 {
+    return switch (value) {
         .string => |s| parseU64String(s),
         else => error.InvalidParams,
     };
@@ -369,6 +534,10 @@ fn accountsResponse(allocator: std.mem.Allocator) !std.json.Value {
         try array.append(try addressString(allocator, addr));
     }
     return .{ .array = array };
+}
+
+fn currentBlobBaseFee(rt: *const runtime_mod.NodeRuntime) u256 {
+    return rt.dev_runtime.config.blob_base_fee orelse rt.blob_base_fee;
 }
 
 fn deinitJsonValue(allocator: std.mem.Allocator, value: *std.json.Value) void {

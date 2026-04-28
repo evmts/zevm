@@ -3,6 +3,7 @@ const primitives = @import("primitives");
 const state_manager = @import("state-manager");
 const guillotine_mini = @import("guillotine_mini");
 const tx_processor = @import("tx_processor.zig");
+const dev_runtime = @import("rpc/dev_runtime.zig");
 
 const INITIAL_BASE_FEE_PER_GAS: u256 = 1_000_000_000;
 const BASE_FEE_CHANGE_DENOMINATOR: u256 = 8;
@@ -51,6 +52,7 @@ pub const BuildBlockOptions = struct {
     parent_beacon_block_root: ?[32]u8 = null,
     requests: RequestsByType = .{},
     state_root: ?[32]u8 = null,
+    dev_runtime: ?*dev_runtime.DevRuntime = null,
 };
 
 pub const BlockCommitments = struct {
@@ -114,13 +116,15 @@ pub fn buildBlockWithOptions(
     block_ctx: guillotine_mini.BlockContext,
     options: BuildBlockOptions,
 ) !BlockResult {
+    const effective_block_ctx = blockContextWithEnvironmentOverrides(options.dev_runtime, block_ctx);
+
     try sm.checkpoint();
     var block_committed = false;
     errdefer if (!block_committed) sm.revert();
 
     if (options.parent_beacon_block_root) |root| {
         if (!atLeast(options.fork, .cancun)) return error.BeaconRootBeforeCancun;
-        try applyBeaconRootsSystemCall(sm, block_ctx.block_timestamp, root);
+        try applyBeaconRootsSystemCall(sm, effective_block_ctx.block_timestamp, root);
     }
 
     var receipts = std.array_list.Managed(primitives.Receipt.Receipt).init(allocator);
@@ -133,11 +137,11 @@ pub fn buildBlockWithOptions(
     var total_blob_gas_used: u64 = 0;
 
     for (transactions) |item| {
-        if (total_gas_used >= block_ctx.block_gas_limit) {
+        if (total_gas_used >= effective_block_ctx.block_gas_limit) {
             break;
         }
 
-        const remaining = block_ctx.block_gas_limit - total_gas_used;
+        const remaining = effective_block_ctx.block_gas_limit - total_gas_used;
         if (item.tx.gas_limit > remaining) {
             continue;
         }
@@ -148,7 +152,7 @@ pub fn buildBlockWithOptions(
             host_iface,
             item.caller,
             item.tx,
-            block_ctx,
+            effective_block_ctx,
         ) catch |err| switch (err) {
             tx_processor.TxError.NonceMismatch,
             tx_processor.TxError.IntrinsicGasExceedsLimit,
@@ -191,10 +195,14 @@ pub fn buildBlockWithOptions(
     sm.commit();
     block_committed = true;
 
+    if (options.dev_runtime) |runtime| {
+        runtime.clearNextBlockOverrides();
+    }
+
     return BlockResult{
         .receipts = try receipts.toOwnedSlice(),
         .total_gas_used = total_gas_used,
-        .block_number = block_ctx.block_number,
+        .block_number = effective_block_ctx.block_number,
         .transactions_root = transactions_root,
         .receipts_root = receipts_root,
         .withdrawals_root = withdrawals_root,
@@ -203,6 +211,25 @@ pub fn buildBlockWithOptions(
         .blob_gas_used = total_blob_gas_used,
         .requests_hash = requests_hash,
     };
+}
+
+pub fn blockContextWithEnvironmentOverrides(
+    runtime: ?*const dev_runtime.DevRuntime,
+    block_ctx: guillotine_mini.BlockContext,
+) guillotine_mini.BlockContext {
+    const rt = runtime orelse return block_ctx;
+    var effective = block_ctx;
+    effective.block_gas_limit = rt.config.block_gas_limit;
+    if (rt.config.next_block_base_fee_per_gas) |base_fee| {
+        effective.block_base_fee = base_fee;
+    }
+    if (rt.config.next_block_timestamp) |timestamp| {
+        effective.block_timestamp = timestamp;
+    }
+    if (rt.config.blob_base_fee) |blob_base_fee| {
+        effective.blob_base_fee = blob_base_fee;
+    }
+    return effective;
 }
 
 pub fn validateBlock(allocator: std.mem.Allocator, input: BlockValidationInput) !BlockCommitments {

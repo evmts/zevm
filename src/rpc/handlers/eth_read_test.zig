@@ -194,6 +194,80 @@ test "eth_feeHistory returns correct shape" {
     try std.testing.expectEqual(@as(f64, 0.0), result.gas_used_ratio[0]);
 }
 
+test "eth_feeHistory truncates large count and genesis range" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+    rt.head_block_number = 3;
+
+    const result = try eth_read.handleEthFeeHistory(
+        arena.allocator(),
+        &rt,
+        .{
+            .block_count = .{ .value = .{ .string = "0x800" } },
+            .newest_block = makeBlockSpec("latest"),
+        },
+    );
+
+    try expectQuantityStr(result.oldest_block, "0x0");
+    try std.testing.expectEqual(@as(usize, 5), result.base_fee_per_gas.len);
+    try std.testing.expectEqual(@as(usize, 4), result.gas_used_ratio.len);
+}
+
+test "eth_feeHistory includes reward when empty percentiles are provided" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+    rt.head_block_number = 2;
+
+    const percentiles = [_]f64{};
+    const result = try eth_read.handleEthFeeHistory(
+        arena.allocator(),
+        &rt,
+        .{
+            .block_count = .{ .value = .{ .string = "0x2" } },
+            .newest_block = makeBlockSpec("latest"),
+            .reward_percentiles = &percentiles,
+        },
+    );
+
+    const reward = result.reward orelse return error.ExpectedReward;
+    try std.testing.expectEqual(@as(usize, 2), reward.len);
+    try std.testing.expectEqual(@as(usize, 0), reward[0].len);
+    try std.testing.expectEqual(@as(usize, 0), reward[1].len);
+}
+
+test "eth_feeHistory validates reward percentiles" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    const descending = [_]f64{ 50.0, 10.0 };
+    try std.testing.expectError(error.InvalidParams, eth_read.handleEthFeeHistory(
+        arena.allocator(),
+        &rt,
+        .{
+            .block_count = .{ .value = .{ .string = "0x1" } },
+            .newest_block = makeBlockSpec("latest"),
+            .reward_percentiles = &descending,
+        },
+    ));
+
+    const too_many = [_]f64{0.0} ** (eth_read.MAX_REWARD_PERCENTILES + 1);
+    try std.testing.expectError(error.InvalidParams, eth_read.handleEthFeeHistory(
+        arena.allocator(),
+        &rt,
+        .{
+            .block_count = .{ .value = .{ .string = "0x1" } },
+            .newest_block = makeBlockSpec("latest"),
+            .reward_percentiles = &too_many,
+        },
+    ));
+}
+
 // --- Helper ---
 
 fn expectQuantityStr(q: jsonrpc.types.Quantity, expected: []const u8) !void {

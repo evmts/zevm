@@ -3,6 +3,8 @@ pub const dispatch_wiring = @import("dispatch_wiring.zig");
 pub const server = @import("server.zig");
 pub const eth_handler = @import("eth_handler.zig");
 pub const trusted_fork_handlers = @import("trusted_fork_handlers.zig");
+pub const simulation = @import("handlers/simulation.zig");
+pub const txpool = @import("handlers/txpool.zig");
 
 test {
     _ = @import("dispatcher_test.zig");
@@ -10,4 +12,6 @@ test {
     _ = @import("server_test.zig");
     _ = @import("eth_handler_test.zig");
     _ = @import("trusted_fork_handlers.zig");
+    _ = @import("handlers/simulation_test.zig");
+    _ = @import("handlers/txpool_test.zig");
 }

@@ -1,12 +1,13 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const jsonrpc = @import("jsonrpc");
-const primitives = @import("primitives");
 const runtime = @import("../../node/runtime.zig");
 const block_spec = @import("block_spec.zig");
 
 pub const PRUNED_HISTORY_ERROR_CODE: i32 = 4444;
 pub const ETH_GET_PROOF_UNSUPPORTED_MESSAGE = "TODO: eth_getProof requires an MPT proof API; StateManager does not expose account/storage proofs";
+pub const MAX_FEE_HISTORY_BLOCK_COUNT: u64 = 1024;
+pub const MAX_REWARD_PERCENTILES: usize = 100;
 
 pub const FeeHistoryParams = struct {
     block_count: jsonrpc.types.Quantity,
@@ -166,45 +167,72 @@ pub fn handleEthFeeHistory(
     rt: *const runtime.NodeRuntime,
     params: FeeHistoryParams,
 ) !FeeHistoryResult {
-    const requested_count = parseQuantityToU64(params.block_count) catch return error.InvalidParams;
-    if (requested_count == 0 or requested_count > 1024) return error.InvalidParams;
-    if (params.reward_percentiles) |percentiles| {
-        try validateRewardPercentiles(percentiles);
-    }
+    const range = try resolveFeeHistoryRange(rt, params);
 
-    const newest = try resolveBlockParam(rt, params.newest_block);
-    const available = if (newest == std.math.maxInt(u64)) std.math.maxInt(u64) else newest + 1;
-    const actual_count = @min(requested_count, available);
-    const count: usize = @intCast(actual_count);
-    const oldest = newest - actual_count + 1;
-
-    const base_fees = try allocator.alloc(jsonrpc.types.Quantity, count + 1);
+    const base_fees = try allocator.alloc(jsonrpc.types.Quantity, range.count + 1);
     for (base_fees) |*fee| {
         fee.* = try quantityHexU256(allocator, rt.base_fee);
     }
-    const gas_ratios = try allocator.alloc(f64, count);
+    const gas_ratios = try allocator.alloc(f64, range.count);
     @memset(gas_ratios, 0.0);
 
-    const blob_fees = try allocator.alloc(jsonrpc.types.Quantity, count + 1);
-    for (blob_fees) |*fee| {
-        fee.* = try quantityHexU256(allocator, currentBlobBaseFee(rt));
-    }
-    const blob_ratios = try allocator.alloc(f64, count);
-    @memset(blob_ratios, 0.0);
-
     const rewards = if (params.reward_percentiles) |percentiles|
-        try zeroRewards(allocator, count, percentiles.len)
+        try zeroRewards(allocator, range.count, percentiles.len)
     else
         null;
 
     return .{
-        .oldest_block = try quantityHexU64(allocator, oldest),
+        .oldest_block = try quantityHexU64(allocator, range.oldest),
         .base_fee_per_gas = base_fees,
         .gas_used_ratio = gas_ratios,
         .reward = rewards,
-        .base_fee_per_blob_gas = blob_fees,
-        .blob_gas_used_ratio = blob_ratios,
     };
+}
+
+pub fn parseEthFeeHistoryParams(
+    allocator: std.mem.Allocator,
+    params: ?std.json.Value,
+) !FeeHistoryParams {
+    const items = try paramsArrayItems(params);
+    if (items.len != 2 and items.len != 3) return error.InvalidParams;
+
+    return .{
+        .block_count = .{ .value = items[0] },
+        .newest_block = .{ .value = items[1] },
+        .reward_percentiles = if (items.len == 3)
+            try parseRewardPercentiles(allocator, items[2])
+        else
+            null,
+    };
+}
+
+pub fn deinitEthFeeHistoryParams(allocator: std.mem.Allocator, params: FeeHistoryParams) void {
+    if (params.reward_percentiles) |percentiles| {
+        allocator.free(percentiles);
+    }
+}
+
+pub fn handleEthFeeHistoryValue(
+    allocator: std.mem.Allocator,
+    rt: *const runtime.NodeRuntime,
+    params: FeeHistoryParams,
+) !std.json.Value {
+    const range = try resolveFeeHistoryRange(rt, params);
+
+    var obj = std.json.ObjectMap.init(allocator);
+    errdefer {
+        var cleanup = std.json.Value{ .object = obj };
+        deinitJsonValue(allocator, &cleanup);
+    }
+
+    try putOwnedJsonValue(&obj, allocator, "oldestBlock", try quantityValueHexU64(allocator, range.oldest));
+    try putOwnedJsonValue(&obj, allocator, "baseFeePerGas", try repeatedQuantityValueArray(allocator, range.count + 1, rt.base_fee));
+    try putOwnedJsonValue(&obj, allocator, "gasUsedRatio", try zeroRatioValueArray(allocator, range.count));
+    if (params.reward_percentiles) |percentiles| {
+        try putOwnedJsonValue(&obj, allocator, "reward", try zeroRewardsValue(allocator, range.count, percentiles.len));
+    }
+
+    return .{ .object = obj };
 }
 
 pub fn handleEthSyncing(
@@ -256,6 +284,37 @@ pub fn handleEthGetProof(
         _ = parseQuantityToU256(key) catch return error.InvalidParams;
     }
     return error.MethodNotFound;
+}
+
+const FeeHistoryRange = struct {
+    oldest: u64,
+    count: usize,
+};
+
+fn resolveFeeHistoryRange(rt: *const runtime.NodeRuntime, params: FeeHistoryParams) !FeeHistoryRange {
+    const requested_count = parseQuantityToU64(params.block_count) catch return error.InvalidParams;
+    if (requested_count == 0) return error.InvalidParams;
+    if (params.reward_percentiles) |percentiles| {
+        try validateRewardPercentiles(percentiles);
+    }
+
+    const effective_count = @min(requested_count, MAX_FEE_HISTORY_BLOCK_COUNT);
+    const newest = try resolveBlockParam(rt, params.newest_block);
+    const available = if (newest == std.math.maxInt(u64)) std.math.maxInt(u64) else newest + 1;
+    const returned_count = @min(effective_count, available);
+
+    return .{
+        .oldest = newest - returned_count + 1,
+        .count = @intCast(returned_count),
+    };
+}
+
+fn paramsArrayItems(params: ?std.json.Value) ![]const std.json.Value {
+    const value = params orelse return error.InvalidParams;
+    return switch (value) {
+        .array => |array| array.items,
+        else => error.InvalidParams,
+    };
 }
 
 fn parseQuantityToU64(q: jsonrpc.types.Quantity) !u64 {
@@ -323,7 +382,35 @@ fn writeHexLower(out: []u8, bytes: []const u8) void {
     }
 }
 
+fn parseRewardPercentiles(allocator: std.mem.Allocator, value: std.json.Value) ![]f64 {
+    const items = switch (value) {
+        .array => |array| array.items,
+        else => return error.InvalidParams,
+    };
+    if (items.len > MAX_REWARD_PERCENTILES) return error.InvalidParams;
+
+    const percentiles = try allocator.alloc(f64, items.len);
+    errdefer allocator.free(percentiles);
+    for (items, 0..) |item, i| {
+        percentiles[i] = try parseRewardPercentile(item);
+    }
+    try validateRewardPercentiles(percentiles);
+    return percentiles;
+}
+
+fn parseRewardPercentile(value: std.json.Value) !f64 {
+    return switch (value) {
+        .integer => |n| blk: {
+            if (n < 0) return error.InvalidParams;
+            break :blk @floatFromInt(n);
+        },
+        .float => |n| n,
+        else => error.InvalidParams,
+    };
+}
+
 fn validateRewardPercentiles(percentiles: []const f64) !void {
+    if (percentiles.len > MAX_REWARD_PERCENTILES) return error.InvalidParams;
     var previous: f64 = 0.0;
     for (percentiles, 0..) |percentile, i| {
         if (!(percentile >= 0.0) or !(percentile <= 100.0)) return error.InvalidParams;
@@ -348,18 +435,83 @@ fn zeroRewards(
 }
 
 fn currentBlobBaseFee(rt: *const runtime.NodeRuntime) u256 {
-    return @as(u256, primitives.Blob.calculateBlobGasPrice(currentExcessBlobGas(rt)));
+    return rt.dev_runtime.config.blob_base_fee orelse rt.blob_base_fee;
 }
 
-fn currentExcessBlobGas(rt: *const runtime.NodeRuntime) u64 {
-    if (@hasField(runtime.NodeRuntime, "excess_blob_gas")) {
-        return rt.excess_blob_gas;
+fn quantityValueHexU64(allocator: std.mem.Allocator, value: u64) !std.json.Value {
+    return .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{value}) };
+}
+
+fn quantityValueHexU256(allocator: std.mem.Allocator, value: u256) !std.json.Value {
+    return .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{value}) };
+}
+
+fn repeatedQuantityValueArray(
+    allocator: std.mem.Allocator,
+    count: usize,
+    value: u256,
+) !std.json.Value {
+    var array = std.json.Array.init(allocator);
+    errdefer {
+        for (array.items) |*item| {
+            deinitJsonValue(allocator, item);
+        }
+        array.deinit();
     }
-    if (@hasField(runtime.NodeRuntime, "head_excess_blob_gas")) {
-        return rt.head_excess_blob_gas;
+
+    for (0..count) |_| {
+        try array.append(try quantityValueHexU256(allocator, value));
     }
-    _ = rt;
-    return 0;
+    return .{ .array = array };
+}
+
+fn zeroRatioValueArray(allocator: std.mem.Allocator, count: usize) !std.json.Value {
+    var array = std.json.Array.init(allocator);
+    errdefer {
+        for (array.items) |*item| {
+            deinitJsonValue(allocator, item);
+        }
+        array.deinit();
+    }
+
+    for (0..count) |_| {
+        try array.append(.{ .number_string = try allocator.dupe(u8, "0.0") });
+    }
+    return .{ .array = array };
+}
+
+fn zeroRewardsValue(
+    allocator: std.mem.Allocator,
+    block_count: usize,
+    percentile_count: usize,
+) !std.json.Value {
+    var outer = std.json.Array.init(allocator);
+    errdefer {
+        for (outer.items) |*item| {
+            deinitJsonValue(allocator, item);
+        }
+        outer.deinit();
+    }
+
+    for (0..block_count) |_| {
+        try outer.append(try zeroRewardRowValue(allocator, percentile_count));
+    }
+    return .{ .array = outer };
+}
+
+fn zeroRewardRowValue(allocator: std.mem.Allocator, percentile_count: usize) !std.json.Value {
+    var inner = std.json.Array.init(allocator);
+    errdefer {
+        for (inner.items) |*item| {
+            deinitJsonValue(allocator, item);
+        }
+        inner.deinit();
+    }
+
+    for (0..percentile_count) |_| {
+        try inner.append(try quantityValueHexU256(allocator, 0));
+    }
+    return .{ .array = inner };
 }
 
 fn putOwnedJson(
@@ -371,4 +523,40 @@ fn putOwnedJson(
     const owned_key = try allocator.dupe(u8, key);
     errdefer allocator.free(owned_key);
     try obj.put(owned_key, value);
+}
+
+fn putOwnedJsonValue(
+    obj: *std.json.ObjectMap,
+    allocator: std.mem.Allocator,
+    key: []const u8,
+    value: std.json.Value,
+) !void {
+    var owned_value = value;
+    errdefer deinitJsonValue(allocator, &owned_value);
+
+    const owned_key = try allocator.dupe(u8, key);
+    errdefer allocator.free(owned_key);
+    try obj.put(owned_key, owned_value);
+}
+
+fn deinitJsonValue(allocator: std.mem.Allocator, value: *std.json.Value) void {
+    switch (value.*) {
+        .string => |text| allocator.free(text),
+        .number_string => |text| allocator.free(text),
+        .array => |*array| {
+            for (array.items) |*item| {
+                deinitJsonValue(allocator, item);
+            }
+            array.deinit();
+        },
+        .object => |*object| {
+            var iterator = object.iterator();
+            while (iterator.next()) |entry| {
+                allocator.free(entry.key_ptr.*);
+                deinitJsonValue(allocator, entry.value_ptr);
+            }
+            object.deinit();
+        },
+        else => {},
+    }
 }

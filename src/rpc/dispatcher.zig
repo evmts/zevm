@@ -1,8 +1,16 @@
 const std = @import("std");
 const jsonrpc = @import("jsonrpc");
+const log = @import("../log.zig");
 
 pub const HandlerRegistry = struct {
     on_method: ?*const fn (allocator: std.mem.Allocator, method_name: []const u8, params: ?std.json.Value) anyerror!std.json.Value = null,
+};
+
+pub const RuntimeErrorCode = struct {
+    pub const MODE_UNSUPPORTED: i32 = -32010;
+    pub const LIGHT_NOT_READY: i32 = -32011;
+    pub const PROOF_VERIFY_FAILED: i32 = -32014;
+    pub const MALFORMED_PROOF: i32 = -32015;
 };
 
 pub fn dispatch(allocator: std.mem.Allocator, request: jsonrpc.envelope.RequestEnvelope, handlers: *const HandlerRegistry) !jsonrpc.envelope.ResponseEnvelope {
@@ -26,7 +34,20 @@ pub fn dispatch(allocator: std.mem.Allocator, request: jsonrpc.envelope.RequestE
         error.InvalidParams => {
             return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.INVALID_PARAMS, "Invalid params");
         },
+        error.ModeUnsupported => {
+            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.MODE_UNSUPPORTED, "Method unsupported in active mode");
+        },
+        error.LightNotReady => {
+            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.LIGHT_NOT_READY, "Light mode not ready");
+        },
+        error.MalformedProof => {
+            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.MALFORMED_PROOF, "Malformed proof payload");
+        },
+        error.ProofVerifyFailed => {
+            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.PROOF_VERIFY_FAILED, "Proof verification failed");
+        },
         else => {
+            log.err(.rpc, "rpc internal error method={s} error={s}", .{ request.method, @errorName(err) });
             return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.INTERNAL_ERROR, "Internal error");
         },
     };
@@ -74,6 +95,10 @@ fn validateParamsForMethod(allocator: std.mem.Allocator, method_name: []const u8
         return;
     }
 
+    if (isModeRoutedPrefix(method_name)) {
+        return;
+    }
+
     return error.UnknownMethod;
 }
 
@@ -94,6 +119,9 @@ fn isLocallyHandledMethod(method_name: []const u8) bool {
         std.mem.eql(u8, method_name, "net_version") or
         std.mem.eql(u8, method_name, "net_listening") or
         std.mem.eql(u8, method_name, "net_peerCount") or
+        std.mem.eql(u8, method_name, "txpool_content") or
+        std.mem.eql(u8, method_name, "txpool_status") or
+        std.mem.eql(u8, method_name, "txpool_inspect") or
         std.mem.eql(u8, method_name, "eth_mining") or
         std.mem.eql(u8, method_name, "eth_protocolVersion") or
         std.mem.eql(u8, method_name, "zevm_setBalance") or
@@ -111,15 +139,62 @@ fn isLocallyHandledMethod(method_name: []const u8) bool {
         std.mem.eql(u8, method_name, "zevm_setCoinbase") or
         std.mem.eql(u8, method_name, "anvil_setCoinbase") or
         std.mem.eql(u8, method_name, "hardhat_setCoinbase") or
+        std.mem.eql(u8, method_name, "zevm_setBlockGasLimit") or
+        std.mem.eql(u8, method_name, "anvil_setBlockGasLimit") or
+        std.mem.eql(u8, method_name, "hardhat_setBlockGasLimit") or
+        std.mem.eql(u8, method_name, "evm_setBlockGasLimit") or
         std.mem.eql(u8, method_name, "zevm_setNextBlockBaseFeePerGas") or
         std.mem.eql(u8, method_name, "anvil_setNextBlockBaseFeePerGas") or
         std.mem.eql(u8, method_name, "hardhat_setNextBlockBaseFeePerGas") or
+        std.mem.eql(u8, method_name, "zevm_setBlobBaseFee") or
+        std.mem.eql(u8, method_name, "anvil_setBlobBaseFee") or
+        std.mem.eql(u8, method_name, "hardhat_setBlobBaseFee") or
+        std.mem.eql(u8, method_name, "zevm_impersonateAccount") or
+        std.mem.eql(u8, method_name, "anvil_impersonateAccount") or
+        std.mem.eql(u8, method_name, "hardhat_impersonateAccount") or
+        std.mem.eql(u8, method_name, "zevm_stopImpersonatingAccount") or
+        std.mem.eql(u8, method_name, "anvil_stopImpersonatingAccount") or
+        std.mem.eql(u8, method_name, "hardhat_stopImpersonatingAccount") or
+        std.mem.eql(u8, method_name, "zevm_setAutoImpersonateAccount") or
+        std.mem.eql(u8, method_name, "anvil_setAutoImpersonateAccount") or
+        std.mem.eql(u8, method_name, "hardhat_setAutoImpersonateAccount") or
+        std.mem.eql(u8, method_name, "zevm_autoImpersonateAccount") or
+        std.mem.eql(u8, method_name, "anvil_autoImpersonateAccount") or
+        std.mem.eql(u8, method_name, "zevm_increaseTime") or
+        std.mem.eql(u8, method_name, "anvil_increaseTime") or
+        std.mem.eql(u8, method_name, "evm_increaseTime") or
+        std.mem.eql(u8, method_name, "zevm_setTime") or
+        std.mem.eql(u8, method_name, "anvil_setTime") or
+        std.mem.eql(u8, method_name, "evm_setTime") or
+        std.mem.eql(u8, method_name, "zevm_setNextBlockTimestamp") or
+        std.mem.eql(u8, method_name, "anvil_setNextBlockTimestamp") or
+        std.mem.eql(u8, method_name, "evm_setNextBlockTimestamp") or
+        std.mem.eql(u8, method_name, "hardhat_setNextBlockTimestamp") or
         std.mem.eql(u8, method_name, "zevm_snapshot") or
         std.mem.eql(u8, method_name, "anvil_snapshot") or
         std.mem.eql(u8, method_name, "evm_snapshot") or
         std.mem.eql(u8, method_name, "zevm_revert") or
         std.mem.eql(u8, method_name, "anvil_revert") or
-        std.mem.eql(u8, method_name, "evm_revert");
+        std.mem.eql(u8, method_name, "evm_revert") or
+        std.mem.eql(u8, method_name, "zevm_mine") or
+        std.mem.eql(u8, method_name, "anvil_mine") or
+        std.mem.eql(u8, method_name, "evm_mine") or
+        std.mem.eql(u8, method_name, "hardhat_mine") or
+        std.mem.eql(u8, method_name, "zevm_setAutomine") or
+        std.mem.eql(u8, method_name, "anvil_setAutomine") or
+        std.mem.eql(u8, method_name, "evm_setAutomine") or
+        std.mem.eql(u8, method_name, "zevm_setIntervalMining") or
+        std.mem.eql(u8, method_name, "anvil_setIntervalMining") or
+        std.mem.eql(u8, method_name, "evm_setIntervalMining") or
+        std.mem.eql(u8, method_name, "zevm_lightSyncStatus");
+}
+
+fn isModeRoutedPrefix(method_name: []const u8) bool {
+    return std.mem.startsWith(u8, method_name, "zevm_") or
+        std.mem.startsWith(u8, method_name, "dev_") or
+        std.mem.startsWith(u8, method_name, "anvil_") or
+        std.mem.startsWith(u8, method_name, "hardhat_") or
+        std.mem.startsWith(u8, method_name, "evm_");
 }
 
 fn validateResetParams(params: ?std.json.Value) !void {

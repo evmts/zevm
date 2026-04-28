@@ -86,6 +86,57 @@ test "NodeRuntime init respects custom mining config" {
     try std.testing.expectEqual(mining.MiningConfigType.interval, std.meta.activeTag(rt.mining_config));
 }
 
+test "NodeRuntime time controls adjust effective current time" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    try std.testing.expectEqual(@as(i128, 0), rt.time_offset);
+    try std.testing.expectEqual(@as(?u64, null), rt.next_block_timestamp);
+
+    const before = rt.effectiveCurrentTime();
+    try std.testing.expectEqual(@as(u64, 42), try rt.increaseTime(42));
+    try std.testing.expect(rt.effectiveCurrentTime() >= before + 42);
+
+    const target = before + 600;
+    try std.testing.expectEqual(target, try rt.setTime(target));
+    const effective = rt.effectiveCurrentTime();
+    try std.testing.expect(effective >= target);
+    try std.testing.expect(effective <= target + 1);
+}
+
+test "NodeRuntime nextBlockTimestamp consumes one-shot override" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    rt.setNextBlockTimestamp(100);
+    try std.testing.expectEqual(@as(u64, 100), try rt.nextBlockTimestamp(99));
+    try std.testing.expectEqual(@as(?u64, null), rt.next_block_timestamp);
+
+    rt.setNextBlockTimestamp(100);
+    try std.testing.expectError(error.InvalidParams, rt.nextBlockTimestamp(100));
+    try std.testing.expectEqual(@as(?u64, 100), rt.next_block_timestamp);
+}
+
+test "NodeRuntime snapshot and reset preserve time controls" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    _ = try rt.increaseTime(10);
+    rt.setNextBlockTimestamp(100);
+    const snap = try rt.snapshot();
+
+    _ = try rt.increaseTime(5);
+    rt.setNextBlockTimestamp(200);
+
+    try std.testing.expect(try rt.revertToSnapshot(snap));
+    try std.testing.expectEqual(@as(i128, 10), rt.time_offset);
+    try std.testing.expectEqual(@as(?u64, 100), rt.next_block_timestamp);
+
+    try rt.reset(.keep_current);
+    try std.testing.expectEqual(@as(i128, 0), rt.time_offset);
+    try std.testing.expectEqual(@as(?u64, null), rt.next_block_timestamp);
+}
+
 const MockForkResolver = struct {
     url_a: []const u8,
     url_b: []const u8,
@@ -187,6 +238,59 @@ fn parseAddr(comptime hex: *const [42]u8) primitives.Address {
     var out: [20]u8 = undefined;
     _ = std.fmt.hexToBytes(&out, hex[2..]) catch unreachable;
     return .{ .bytes = out };
+}
+
+test "impersonation signer scope includes managed manual and auto accounts" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    const unmanaged = testAddress();
+    try std.testing.expect(rt.canSignForAccount(runtime.DEFAULT_DEV_ACCOUNTS[0]));
+    try std.testing.expect(!rt.canSignForAccount(unmanaged));
+
+    try rt.impersonateAccount(unmanaged);
+    try std.testing.expect(rt.isImpersonatingAccount(unmanaged));
+    try std.testing.expect(rt.canSignForAccount(unmanaged));
+
+    rt.stopImpersonatingAccount(unmanaged);
+    try std.testing.expect(!rt.isImpersonatingAccount(unmanaged));
+    try std.testing.expect(!rt.canSignForAccount(unmanaged));
+
+    rt.setAutoImpersonateAccount(true);
+    try std.testing.expect(rt.canSignForAccount(unmanaged));
+
+    rt.stopImpersonatingAccount(unmanaged);
+    try std.testing.expect(rt.canSignForAccount(unmanaged));
+
+    rt.setAutoImpersonateAccount(false);
+    try std.testing.expect(!rt.canSignForAccount(unmanaged));
+}
+
+test "snapshot revert and reset restore impersonation state" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    const manual = testAddress();
+    const auto_only = parseAddr("0x0000000000000000000000000000000000000043");
+
+    try rt.impersonateAccount(manual);
+    rt.setAutoImpersonateAccount(true);
+
+    const snapshot_id = try rt.snapshot();
+    rt.stopImpersonatingAccount(manual);
+    rt.setAutoImpersonateAccount(false);
+
+    try std.testing.expect(!rt.canSignForAccount(manual));
+    try std.testing.expect(!rt.canSignForAccount(auto_only));
+
+    try std.testing.expect(try rt.revertToSnapshot(snapshot_id));
+    try std.testing.expect(rt.isImpersonatingAccount(manual));
+    try std.testing.expect(rt.canSignForAccount(manual));
+    try std.testing.expect(rt.canSignForAccount(auto_only));
+
+    try rt.reset(.disable);
+    try std.testing.expect(!rt.isImpersonatingAccount(manual));
+    try std.testing.expect(!rt.canSignForAccount(auto_only));
 }
 
 test "forked runtime reads remote account code and storage" {

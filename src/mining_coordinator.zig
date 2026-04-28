@@ -5,6 +5,7 @@ const guillotine_mini = @import("guillotine_mini");
 const tx_processor = @import("tx_processor.zig");
 const block_builder = @import("block_builder.zig");
 const host_adapter = @import("host_adapter.zig");
+const dev_runtime = @import("rpc/dev_runtime.zig");
 
 pub const INITIAL_BASE_FEE: u256 = 1_000_000_000;
 pub const BASE_FEE_MAX_CHANGE_DENOMINATOR: u64 = 8;
@@ -60,6 +61,7 @@ pub const MiningMode = enum {
 pub const MiningBlockOptions = struct {
     prevrandao: u256 = 0,
     blob_gas_used: u64 = 0,
+    dev_runtime: ?*dev_runtime.DevRuntime = null,
 };
 
 pub fn resolveHardfork(block_number: u64, timestamp: u64) primitives.Hardfork {
@@ -334,22 +336,23 @@ pub const MiningCoordinator = struct {
         host_iface: guillotine_mini.HostInterface,
         options: MiningBlockOptions,
     ) !block_builder.BlockResult {
-        const active_hardfork = resolveHardfork(self.current_block_number, self.current_timestamp);
-        const block_base_fee = currentBlockBaseFee(self.current_base_fee_per_gas, active_hardfork);
-        const block_ctx = self.blockContext(options);
+        const block_ctx = block_builder.blockContextWithEnvironmentOverrides(options.dev_runtime, self.blockContext(options));
+        const active_hardfork = resolveHardfork(block_ctx.block_number, block_ctx.block_timestamp);
+        const block_base_fee = block_ctx.block_base_fee;
 
-        const result = try block_builder.buildBlock(
+        const result = try block_builder.buildBlockWithOptions(
             allocator,
             sm,
             host_iface,
             self.pending_txs.items,
             block_ctx,
+            .{ .dev_runtime = options.dev_runtime },
         );
 
         self.pending_txs.clearRetainingCapacity();
-        self.advanceFeeState(active_hardfork, block_base_fee, result.total_gas_used, options.blob_gas_used);
+        self.advanceFeeState(active_hardfork, block_base_fee, result.total_gas_used, options.blob_gas_used, block_ctx.block_gas_limit);
         self.current_block_number += 1;
-        self.current_timestamp += 1;
+        self.current_timestamp = block_ctx.block_timestamp +| 1;
 
         const result_copy = result;
         try self.mined_blocks.append(allocator, result_copy);
@@ -365,12 +368,24 @@ pub const MiningCoordinator = struct {
         count: u64,
         interval: u64,
     ) !void {
+        try self.mineBlocksWithOptions(allocator, sm, host_iface, count, interval, .{});
+    }
+
+    pub fn mineBlocksWithOptions(
+        self: *MiningCoordinator,
+        allocator: std.mem.Allocator,
+        sm: *state_manager.StateManager,
+        host_iface: guillotine_mini.HostInterface,
+        count: u64,
+        interval: u64,
+        options: MiningBlockOptions,
+    ) !void {
         var i: u64 = 0;
         while (i < count) : (i += 1) {
             if (i > 0 and interval > 0) {
                 self.current_timestamp += interval - 1;
             }
-            var result = try self.mineBlock(allocator, sm, host_iface);
+            var result = try self.mineBlockWithOptions(allocator, sm, host_iface, options);
             _ = &result;
         }
     }
@@ -390,6 +405,7 @@ pub const MiningCoordinator = struct {
         block_base_fee: u256,
         gas_used: u64,
         blob_gas_used: u64,
+        block_gas_limit: u64,
     ) void {
         const next_hardfork = resolveHardfork(self.current_block_number + 1, self.current_timestamp + 1);
         if (next_hardfork.isBefore(.LONDON)) {
@@ -397,7 +413,7 @@ pub const MiningCoordinator = struct {
         } else if (active_hardfork.isBefore(.LONDON)) {
             self.current_base_fee_per_gas = INITIAL_BASE_FEE;
         } else {
-            self.current_base_fee_per_gas = calculateNextBaseFee(block_base_fee, gas_used, self.block_gas_limit);
+            self.current_base_fee_per_gas = calculateNextBaseFee(block_base_fee, gas_used, block_gas_limit);
         }
 
         if (next_hardfork.isBefore(.CANCUN)) {

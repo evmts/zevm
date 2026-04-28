@@ -1,7 +1,17 @@
 const std = @import("std");
 const state_manager = @import("state-manager");
 const primitives = @import("primitives");
+const blockchain_mod = @import("blockchain");
 const mining = @import("../mining.zig");
+const mining_coordinator = @import("../mining_coordinator.zig");
+const txpool = @import("../txpool.zig");
+const host_adapter = @import("../host_adapter.zig");
+const dev_runtime_mod = @import("../rpc/dev_runtime.zig");
+const receipt_index_mod = @import("../receipt_index.zig");
+const log_index_mod = @import("../log_index.zig");
+const checkpoint = @import("../checkpoint.zig");
+const consensus_sync = @import("../consensus_sync.zig");
+const log = @import("../log.zig");
 
 /// Hardhat/Anvil-style deterministic dev accounts.
 /// These are the same 10 accounts used by Hardhat/Anvil (derived from mnemonic
@@ -37,6 +47,68 @@ pub const DEFAULT_BLOB_BASE_FEE: u256 = 1;
 /// Default max priority fee: 1 gwei
 pub const DEFAULT_MAX_PRIORITY_FEE: u256 = 1_000_000_000;
 
+pub const Mode = enum { trusted, light };
+
+pub const LightNetwork = enum {
+    mainnet,
+    sepolia,
+    holesky,
+
+    pub fn fromString(value: []const u8) !LightNetwork {
+        if (std.mem.eql(u8, value, "mainnet")) return .mainnet;
+        if (std.mem.eql(u8, value, "sepolia")) return .sepolia;
+        if (std.mem.eql(u8, value, "holesky")) return .holesky;
+        return error.InvalidLightNetwork;
+    }
+
+    pub fn name(self: LightNetwork) []const u8 {
+        return switch (self) {
+            .mainnet => "mainnet",
+            .sepolia => "sepolia",
+            .holesky => "holesky",
+        };
+    }
+
+    pub fn networkConfig(self: LightNetwork, consensus_rpc_url: []const u8) consensus_sync.NetworkConfig {
+        return switch (self) {
+            .mainnet => consensus_sync.NetworkConfig.mainnet(consensus_rpc_url),
+            .sepolia => consensus_sync.NetworkConfig.sepolia(consensus_rpc_url),
+            .holesky => consensus_sync.NetworkConfig.holesky(consensus_rpc_url),
+        };
+    }
+};
+
+pub const CheckpointSource = enum {
+    explicit,
+    persisted,
+    default,
+
+    pub fn name(self: CheckpointSource) []const u8 {
+        return switch (self) {
+            .explicit => "explicit",
+            .persisted => "persisted",
+            .default => "default",
+        };
+    }
+};
+
+pub const LightProofReadState = enum {
+    available,
+    malformed_payload,
+    verify_failure,
+};
+
+pub const LightConfig = struct {
+    network: LightNetwork = .mainnet,
+    consensus_rpc_url: []const u8 = "",
+    checkpoint: ?[32]u8 = null,
+    checkpoint_dir: ?[]const u8 = null,
+    checkpoint_source: ?CheckpointSource = null,
+    max_checkpoint_age_seconds: ?u64 = null,
+    strict_checkpoint_age: bool = false,
+    proof_read_state: LightProofReadState = .verify_failure,
+};
+
 pub const ForkConfig = struct {
     url: []const u8,
     block_number: ?u64 = null,
@@ -64,6 +136,7 @@ pub const ResetForkMode = union(enum) {
 };
 
 pub const NodeConfig = struct {
+    mode: Mode = .trusted,
     chain_id: u64 = DEFAULT_CHAIN_ID,
     coinbase_index: u8 = 0,
     initial_balance: u256 = DEFAULT_BALANCE,
@@ -75,22 +148,67 @@ pub const NodeConfig = struct {
     fork_url: ?[]const u8 = null,
     fork_block_number: ?u64 = null,
     fork_rpc_resolver: ?ForkRpcResolver = null,
+    light: LightConfig = .{},
+};
+
+pub const LightModeState = struct {
+    network: LightNetwork,
+    checkpoint_source: CheckpointSource,
+    engine: consensus_sync.ConsensusSyncEngine,
+    safe_slot: u64,
+    proof_read_state: LightProofReadState,
+
+    pub fn deinit(self: *LightModeState, allocator: std.mem.Allocator) void {
+        allocator.free(self.engine.config.consensus_rpc);
+    }
+
+    pub fn effectiveStatus(self: *const LightModeState) consensus_sync.SyncStatus {
+        if (self.engine.status == .synced and !self.slotCoherent()) {
+            return .err;
+        }
+        return self.engine.status;
+    }
+
+    pub fn ready(self: *const LightModeState) bool {
+        return self.effectiveStatus() == .synced;
+    }
+
+    pub fn optimisticSlot(self: *const LightModeState) u64 {
+        return self.engine.store.optimistic_header.beacon.slot;
+    }
+
+    pub fn finalizedSlot(self: *const LightModeState) u64 {
+        return self.engine.store.finalized_header.beacon.slot;
+    }
+
+    pub fn slotCoherent(self: *const LightModeState) bool {
+        return self.finalizedSlot() <= self.safe_slot and self.safe_slot <= self.optimisticSlot();
+    }
 };
 
 const SnapshotEntry = struct {
     state_snapshot_id: u64,
     head_block_number: u64,
+    head_block_timestamp: u64,
     coinbase: primitives.Address,
     gas_price: u256,
     base_fee: u256,
     blob_base_fee: u256,
     max_priority_fee: u256,
     mining_config: mining.MiningConfig,
+    pool: txpool.TransactionPool,
+    time_offset: i128,
+    next_block_timestamp: ?u64,
+    dev_config: dev_runtime_mod.NodeDevConfig,
     fork_config: ?ForkConfig,
+    impersonated_accounts: std.AutoHashMap(primitives.Address, bool),
+    auto_impersonate_account: bool,
 };
 
 pub const NodeRuntime = struct {
     allocator: std.mem.Allocator,
+    mode: Mode,
+    light: ?LightModeState,
     chain_id: u64,
     initial_balance: u256,
     default_coinbase: primitives.Address,
@@ -101,17 +219,27 @@ pub const NodeRuntime = struct {
     default_mining_config: mining.MiningConfig,
     coinbase: primitives.Address,
     head_block_number: u64,
+    head_block_timestamp: u64,
     gas_price: u256,
     base_fee: u256,
     blob_base_fee: u256,
     max_priority_fee: u256,
     mining_config: mining.MiningConfig,
+    pool: txpool.TransactionPool,
+    time_offset: i128,
+    next_block_timestamp: ?u64,
+    dev_runtime: dev_runtime_mod.DevRuntime,
     state: state_manager.StateManager,
+    blockchain: blockchain_mod.Blockchain,
+    receipt_index: receipt_index_mod.ReceiptIndex,
+    log_index: log_index_mod.LogIndex,
     fork_config: ?ForkConfig,
     fork_backend: ?*state_manager.ForkBackend,
     fork_rpc_resolver: ?ForkRpcResolver,
     snapshots: std.AutoHashMap(u64, SnapshotEntry),
     next_snapshot_id: u64,
+    impersonated_accounts: std.AutoHashMap(primitives.Address, bool),
+    auto_impersonate_account: bool,
 
     pub fn init(allocator: std.mem.Allocator, config_opt: ?NodeConfig) !NodeRuntime {
         const config = config_opt orelse NodeConfig{};
@@ -123,8 +251,16 @@ pub const NodeRuntime = struct {
             return error.InvalidCoinbaseIndex;
         }
 
-        const initial_fork_config = try allocForkConfig(allocator, if (config.fork_url) |url| .{
-            .url = url,
+        var light_state: ?LightModeState = if (config.mode == .light)
+            try initLightModeState(allocator, config.light)
+        else
+            null;
+        errdefer if (light_state) |*state| state.deinit(allocator);
+
+        const runtime_chain_id = if (light_state) |state| state.engine.config.chain_id else config.chain_id;
+
+        const initial_fork_config = try allocForkConfig(allocator, if (config.mode == .trusted and config.fork_url != null) .{
+            .url = config.fork_url.?,
             .block_number = config.fork_block_number,
         } else null);
         errdefer freeForkConfig(allocator, initial_fork_config);
@@ -134,6 +270,15 @@ pub const NodeRuntime = struct {
 
         var state = try state_manager.StateManager.init(allocator, fork_backend);
         errdefer state.deinit();
+
+        var blockchain = try initBlockchainWithGenesis(allocator, runtime_chain_id);
+        errdefer blockchain.deinit();
+
+        var receipt_index = receipt_index_mod.ReceiptIndex.init(allocator);
+        errdefer receipt_index.deinit(allocator);
+
+        var log_index = log_index_mod.LogIndex.init();
+        errdefer log_index.deinit(allocator);
 
         // Seed deterministic dev accounts as the local writable overlay.
         // Use initAccount to bypass fork backend reads — dev accounts are
@@ -145,6 +290,9 @@ pub const NodeRuntime = struct {
         var snapshots = std.AutoHashMap(u64, SnapshotEntry).init(allocator);
         errdefer snapshots.deinit();
 
+        var impersonated_accounts = std.AutoHashMap(primitives.Address, bool).init(allocator);
+        errdefer impersonated_accounts.deinit();
+
         const resolver: ?ForkRpcResolver = if (initial_fork_config != null) blk: {
             if (config.fork_rpc_resolver) |custom| {
                 break :blk custom;
@@ -155,29 +303,43 @@ pub const NodeRuntime = struct {
             };
         } else null;
 
+        const default_coinbase = DEFAULT_DEV_ACCOUNTS[config.coinbase_index];
+
         return .{
             .allocator = allocator,
-            .chain_id = config.chain_id,
+            .mode = config.mode,
+            .light = light_state,
+            .chain_id = runtime_chain_id,
             .initial_balance = config.initial_balance,
-            .default_coinbase = DEFAULT_DEV_ACCOUNTS[config.coinbase_index],
+            .default_coinbase = default_coinbase,
             .default_gas_price = config.gas_price,
             .default_base_fee = config.base_fee,
             .default_blob_base_fee = config.blob_base_fee,
             .default_max_priority_fee = config.max_priority_fee,
             .default_mining_config = config.mining_config,
-            .coinbase = DEFAULT_DEV_ACCOUNTS[config.coinbase_index],
+            .coinbase = default_coinbase,
             .head_block_number = 0,
+            .head_block_timestamp = 0,
             .gas_price = config.gas_price,
             .base_fee = config.base_fee,
             .blob_base_fee = config.blob_base_fee,
             .max_priority_fee = config.max_priority_fee,
             .mining_config = config.mining_config,
+            .pool = txpool.TransactionPool.init(allocator),
+            .time_offset = 0,
+            .next_block_timestamp = null,
+            .dev_runtime = dev_runtime_mod.DevRuntime.initWithCoinbase(default_coinbase),
             .state = state,
+            .blockchain = blockchain,
+            .receipt_index = receipt_index,
+            .log_index = log_index,
             .fork_config = initial_fork_config,
             .fork_backend = fork_backend,
             .fork_rpc_resolver = resolver,
             .snapshots = snapshots,
             .next_snapshot_id = 1,
+            .impersonated_accounts = impersonated_accounts,
+            .auto_impersonate_account = false,
         };
     }
 
@@ -185,8 +347,162 @@ pub const NodeRuntime = struct {
         self.mining_config = config;
     }
 
+    pub fn isLightReady(self: *const NodeRuntime) bool {
+        const light = self.light orelse return false;
+        return light.ready();
+    }
+
+    pub fn lightStatus(self: *const NodeRuntime) consensus_sync.SyncStatus {
+        const light = self.light orelse return .err;
+        return light.effectiveStatus();
+    }
+
+    pub fn lightCheckpointSource(self: *const NodeRuntime) ?CheckpointSource {
+        const light = self.light orelse return null;
+        return light.checkpoint_source;
+    }
+
+    pub fn lightNetwork(self: *const NodeRuntime) ?LightNetwork {
+        const light = self.light orelse return null;
+        return light.network;
+    }
+
+    pub fn lightLastCheckpoint(self: *const NodeRuntime) ?[32]u8 {
+        const light = self.light orelse return null;
+        return light.engine.lastCheckpoint();
+    }
+
+    pub fn lightOptimisticSlot(self: *const NodeRuntime) u64 {
+        const light = self.light orelse return 0;
+        return light.optimisticSlot();
+    }
+
+    pub fn lightSafeSlot(self: *const NodeRuntime) u64 {
+        const light = self.light orelse return 0;
+        return light.safe_slot;
+    }
+
+    pub fn lightFinalizedSlot(self: *const NodeRuntime) u64 {
+        const light = self.light orelse return 0;
+        return light.finalizedSlot();
+    }
+
+    pub fn lightProofReadState(self: *const NodeRuntime) LightProofReadState {
+        const light = self.light orelse return .verify_failure;
+        return light.proof_read_state;
+    }
+
+    pub fn setLightSyncProgress(
+        self: *NodeRuntime,
+        status: consensus_sync.SyncStatus,
+        optimistic_slot: u64,
+        safe_slot: u64,
+        finalized_slot: u64,
+        latest_block_number: u64,
+    ) !void {
+        const light = if (self.light) |*state| state else return error.NotLightMode;
+        light.engine.status = status;
+        light.engine.store.optimistic_header.beacon.slot = optimistic_slot;
+        light.engine.store.finalized_header.beacon.slot = finalized_slot;
+        light.safe_slot = safe_slot;
+        self.head_block_number = latest_block_number;
+    }
+
+    pub fn effectiveCurrentTime(self: *const NodeRuntime) u64 {
+        const effective = @as(i128, currentUnixSeconds()) + self.time_offset;
+        if (effective <= 0) return 0;
+        if (effective > std.math.maxInt(u64)) return std.math.maxInt(u64);
+        return @intCast(effective);
+    }
+
+    pub fn increaseTime(self: *NodeRuntime, seconds: u64) !u64 {
+        const next_offset = std.math.add(i128, self.time_offset, @as(i128, seconds)) catch return error.InvalidParams;
+        if (next_offset < 0 or next_offset > std.math.maxInt(u64)) return error.InvalidParams;
+        self.time_offset = next_offset;
+        return @intCast(next_offset);
+    }
+
+    pub fn setTime(self: *NodeRuntime, timestamp: u64) !u64 {
+        self.time_offset = @as(i128, timestamp) - @as(i128, currentUnixSeconds());
+        return timestamp;
+    }
+
+    pub fn setNextBlockTimestamp(self: *NodeRuntime, timestamp: u64) void {
+        self.next_block_timestamp = timestamp;
+        self.dev_runtime.config.next_block_timestamp = timestamp;
+    }
+
+    pub fn nextBlockTimestamp(self: *NodeRuntime, parent_timestamp: u64) !u64 {
+        const minimum = std.math.add(u64, parent_timestamp, 1) catch return error.InvalidParams;
+        if (self.next_block_timestamp) |timestamp| {
+            if (timestamp < minimum) return error.InvalidParams;
+            self.next_block_timestamp = null;
+            return timestamp;
+        }
+        return @max(minimum, self.effectiveCurrentTime());
+    }
+
+    pub fn setAutomine(self: *NodeRuntime, enabled: bool) void {
+        self.setMiningConfig(if (enabled) .auto else .manual);
+    }
+
+    pub fn setIntervalMining(self: *NodeRuntime, seconds: u64) void {
+        var coordinator = miningCoordinatorFromConfig(self.mining_config);
+        defer coordinator.deinit(self.allocator);
+
+        coordinator.setIntervalMining(seconds);
+        self.setMiningConfig(miningConfigFromCoordinator(coordinator));
+    }
+
+    pub fn mineBlocks(self: *NodeRuntime, count: u64, interval: u64) !void {
+        if (count == 0) return;
+
+        const had_next_block_timestamp = self.next_block_timestamp != null;
+        const first_timestamp = try self.nextBlockTimestamp(self.head_block_timestamp);
+        errdefer {
+            if (had_next_block_timestamp) self.next_block_timestamp = first_timestamp;
+        }
+
+        var coordinator = miningCoordinatorFromRuntime(self);
+        defer coordinator.deinit(self.allocator);
+        coordinator.current_timestamp = first_timestamp;
+
+        var adapter = host_adapter.HostAdapter{ .state = &self.state };
+        try coordinator.mineBlocksWithOptions(self.allocator, &self.state, adapter.hostInterface(), count, interval, .{
+            .dev_runtime = &self.dev_runtime,
+        });
+
+        self.head_block_number = coordinator.current_block_number - 1;
+        self.head_block_timestamp = coordinator.current_timestamp - 1;
+        if (coordinator.current_base_fee_per_gas) |base_fee| {
+            self.base_fee = base_fee;
+        }
+    }
+
     pub fn isForkingEnabled(self: *const NodeRuntime) bool {
         return self.fork_config != null;
+    }
+
+    pub fn impersonateAccount(self: *NodeRuntime, address: primitives.Address) !void {
+        try self.impersonated_accounts.put(address, true);
+    }
+
+    pub fn stopImpersonatingAccount(self: *NodeRuntime, address: primitives.Address) void {
+        _ = self.impersonated_accounts.remove(address);
+    }
+
+    pub fn setAutoImpersonateAccount(self: *NodeRuntime, enabled: bool) void {
+        self.auto_impersonate_account = enabled;
+    }
+
+    pub fn isImpersonatingAccount(self: *const NodeRuntime, address: primitives.Address) bool {
+        return self.impersonated_accounts.get(address) orelse false;
+    }
+
+    pub fn canSignForAccount(self: *const NodeRuntime, address: primitives.Address) bool {
+        return isManagedDevAccount(address) or
+            self.auto_impersonate_account or
+            self.isImpersonatingAccount(address);
     }
 
     pub fn getBalance(self: *NodeRuntime, address: primitives.Address) !u256 {
@@ -278,17 +594,28 @@ pub const NodeRuntime = struct {
         const state_snapshot_id = try self.state.snapshot();
         const fork_copy = try allocForkConfig(self.allocator, self.fork_config);
         errdefer freeForkConfig(self.allocator, fork_copy);
+        var pool_copy = try self.pool.clone(self.allocator);
+        errdefer pool_copy.deinit();
+        var impersonated_copy = try self.impersonated_accounts.clone();
+        errdefer impersonated_copy.deinit();
 
         try self.snapshots.put(snapshot_id, .{
             .state_snapshot_id = state_snapshot_id,
             .head_block_number = self.head_block_number,
+            .head_block_timestamp = self.head_block_timestamp,
             .coinbase = self.coinbase,
             .gas_price = self.gas_price,
             .base_fee = self.base_fee,
             .blob_base_fee = self.blob_base_fee,
             .max_priority_fee = self.max_priority_fee,
             .mining_config = self.mining_config,
+            .pool = pool_copy,
+            .time_offset = self.time_offset,
+            .next_block_timestamp = self.next_block_timestamp,
+            .dev_config = self.dev_runtime.config,
             .fork_config = fork_copy,
+            .impersonated_accounts = impersonated_copy,
+            .auto_impersonate_account = self.auto_impersonate_account,
         });
 
         return snapshot_id;
@@ -296,18 +623,39 @@ pub const NodeRuntime = struct {
 
     pub fn revertToSnapshot(self: *NodeRuntime, snapshot_id: u64) !bool {
         const entry = self.snapshots.get(snapshot_id) orelse return false;
+        var pool_copy = try entry.pool.clone(self.allocator);
+        var pool_assigned = false;
+        errdefer {
+            if (!pool_assigned) pool_copy.deinit();
+        }
+        var impersonated_copy = try entry.impersonated_accounts.clone();
+        var impersonation_assigned = false;
+        errdefer {
+            if (!impersonation_assigned) impersonated_copy.deinit();
+        }
 
         self.state.revertToSnapshot(entry.state_snapshot_id) catch return false;
 
         self.head_block_number = entry.head_block_number;
+        self.head_block_timestamp = entry.head_block_timestamp;
         self.coinbase = entry.coinbase;
         self.gas_price = entry.gas_price;
         self.base_fee = entry.base_fee;
         self.blob_base_fee = entry.blob_base_fee;
         self.max_priority_fee = entry.max_priority_fee;
         self.mining_config = entry.mining_config;
+        self.pool.deinit();
+        self.pool = pool_copy;
+        pool_assigned = true;
+        self.time_offset = entry.time_offset;
+        self.next_block_timestamp = entry.next_block_timestamp;
+        self.dev_runtime.config = entry.dev_config;
 
         try self.restoreForkStateFromSnapshot(entry.fork_config);
+        self.impersonated_accounts.deinit();
+        self.impersonated_accounts = impersonated_copy;
+        impersonation_assigned = true;
+        self.auto_impersonate_account = entry.auto_impersonate_account;
 
         var to_remove = std.ArrayList(u64){};
         defer to_remove.deinit(self.allocator);
@@ -322,6 +670,8 @@ pub const NodeRuntime = struct {
         for (to_remove.items) |id| {
             if (self.snapshots.fetchRemove(id)) |removed| {
                 freeForkConfig(self.allocator, removed.value.fork_config);
+                removed.value.pool.deinit();
+                removed.value.impersonated_accounts.deinit();
             }
         }
 
@@ -342,11 +692,19 @@ pub const NodeRuntime = struct {
         try self.rebuildState(target_fork);
         self.coinbase = self.default_coinbase;
         self.head_block_number = 0;
+        self.head_block_timestamp = 0;
         self.gas_price = self.default_gas_price;
         self.base_fee = self.default_base_fee;
         self.blob_base_fee = self.default_blob_base_fee;
         self.max_priority_fee = self.default_max_priority_fee;
         self.mining_config = self.default_mining_config;
+        self.pool.clear();
+        self.time_offset = 0;
+        self.next_block_timestamp = null;
+        self.dev_runtime.resetConfig(self.default_coinbase);
+        self.impersonated_accounts.clearRetainingCapacity();
+        self.auto_impersonate_account = false;
+        try self.resetQueryIndexes();
         self.clearSnapshots();
     }
 
@@ -364,8 +722,18 @@ pub const NodeRuntime = struct {
     }
 
     pub fn deinit(self: *NodeRuntime) void {
+        if (self.light) |*light| {
+            light.deinit(self.allocator);
+            self.light = null;
+        }
         self.clearSnapshots();
+        self.pool.deinit();
+        self.dev_runtime.deinit(self.allocator);
         self.snapshots.deinit();
+        self.impersonated_accounts.deinit();
+        self.log_index.deinit(self.allocator);
+        self.receipt_index.deinit(self.allocator);
+        self.blockchain.deinit();
         self.state.deinit();
         destroyForkBackend(self.allocator, self.fork_backend);
         freeForkConfig(self.allocator, self.fork_config);
@@ -452,11 +820,150 @@ pub const NodeRuntime = struct {
         var it = self.snapshots.valueIterator();
         while (it.next()) |entry| {
             freeForkConfig(self.allocator, entry.fork_config);
+            entry.pool.deinit();
+            entry.impersonated_accounts.deinit();
         }
         self.snapshots.clearRetainingCapacity();
         self.next_snapshot_id = 1;
     }
+
+    fn resetQueryIndexes(self: *NodeRuntime) !void {
+        var new_blockchain = try initBlockchainWithGenesis(self.allocator, self.chain_id);
+        errdefer new_blockchain.deinit();
+
+        var new_receipt_index = receipt_index_mod.ReceiptIndex.init(self.allocator);
+        errdefer new_receipt_index.deinit(self.allocator);
+
+        var new_log_index = log_index_mod.LogIndex.init();
+        errdefer new_log_index.deinit(self.allocator);
+
+        self.log_index.deinit(self.allocator);
+        self.receipt_index.deinit(self.allocator);
+        self.blockchain.deinit();
+
+        self.blockchain = new_blockchain;
+        self.receipt_index = new_receipt_index;
+        self.log_index = new_log_index;
+    }
 };
+
+fn initBlockchainWithGenesis(
+    allocator: std.mem.Allocator,
+    chain_id: u64,
+) !blockchain_mod.Blockchain {
+    var blockchain = try blockchain_mod.Blockchain.init(allocator, null);
+    errdefer blockchain.deinit();
+
+    const genesis = try primitives.Block.genesis(chain_id, allocator);
+    try blockchain.putBlock(genesis);
+    try blockchain.setCanonicalHead(genesis.hash);
+    return blockchain;
+}
+
+pub fn isManagedDevAccount(address: primitives.Address) bool {
+    for (&DEFAULT_DEV_ACCOUNTS) |managed| {
+        if (std.mem.eql(u8, &managed.bytes, &address.bytes)) return true;
+    }
+    return false;
+}
+
+fn miningCoordinatorFromRuntime(rt: *const NodeRuntime) mining_coordinator.MiningCoordinator {
+    var coordinator = miningCoordinatorFromConfig(rt.mining_config);
+    const minimum_timestamp = std.math.add(u64, rt.head_block_timestamp, 1) catch std.math.maxInt(u64);
+    coordinator.current_block_number = rt.head_block_number + 1;
+    coordinator.current_timestamp = @max(minimum_timestamp, rt.effectiveCurrentTime());
+    coordinator.chain_id = rt.chain_id;
+    coordinator.coinbase = rt.coinbase;
+    coordinator.block_gas_limit = rt.dev_runtime.config.block_gas_limit;
+    coordinator.current_base_fee_per_gas = rt.base_fee;
+    return coordinator;
+}
+
+fn miningCoordinatorFromConfig(config: mining.MiningConfig) mining_coordinator.MiningCoordinator {
+    var coordinator = mining_coordinator.MiningCoordinator.init();
+    switch (config) {
+        .auto => coordinator.setMode(.auto),
+        .manual => coordinator.setMode(.manual),
+        .interval => |interval| {
+            coordinator.mode = .interval;
+            coordinator.interval_seconds = interval.block_time;
+        },
+    }
+    return coordinator;
+}
+
+fn miningConfigFromCoordinator(coordinator: mining_coordinator.MiningCoordinator) mining.MiningConfig {
+    return switch (coordinator.mode) {
+        .auto => .auto,
+        .manual => .manual,
+        .interval => .{ .interval = .{ .block_time = coordinator.interval_seconds } },
+    };
+}
+
+fn initLightModeState(allocator: std.mem.Allocator, config: LightConfig) !LightModeState {
+    if (config.consensus_rpc_url.len == 0) return error.MissingConsensusRpcUrl;
+
+    const consensus_rpc_url = try allocator.dupe(u8, config.consensus_rpc_url);
+    errdefer allocator.free(consensus_rpc_url);
+
+    var network_config = config.network.networkConfig(consensus_rpc_url);
+    if (config.max_checkpoint_age_seconds) |max_age| {
+        network_config.max_checkpoint_age = max_age;
+    }
+    network_config.strict_checkpoint_age = config.strict_checkpoint_age;
+
+    const selected = try selectStartupCheckpoint(allocator, network_config.default_checkpoint, config);
+
+    var engine = consensus_sync.ConsensusSyncEngine.init(network_config);
+    engine.last_checkpoint = selected.checkpoint_hash;
+
+    const checkpoint_hex = std.fmt.bytesToHex(selected.checkpoint_hash, .lower);
+    log.info(.startup, "light checkpoint resolved network={s} source={s} checkpoint=0x{s}", .{
+        config.network.name(),
+        selected.source.name(),
+        checkpoint_hex[0..],
+    });
+
+    return .{
+        .network = config.network,
+        .checkpoint_source = selected.source,
+        .engine = engine,
+        .safe_slot = engine.safeSlot(),
+        .proof_read_state = config.proof_read_state,
+    };
+}
+
+const SelectedCheckpoint = struct {
+    checkpoint_hash: [32]u8,
+    source: CheckpointSource,
+};
+
+fn selectStartupCheckpoint(
+    allocator: std.mem.Allocator,
+    default_checkpoint: [32]u8,
+    config: LightConfig,
+) !SelectedCheckpoint {
+    if (config.checkpoint) |explicit| {
+        return .{
+            .checkpoint_hash = explicit,
+            .source = config.checkpoint_source orelse .explicit,
+        };
+    }
+
+    if (config.checkpoint_dir) |dir_path| {
+        if (checkpoint.checkpointExists(dir_path)) {
+            return .{
+                .checkpoint_hash = try checkpoint.loadCheckpoint(allocator, dir_path),
+                .source = config.checkpoint_source orelse .persisted,
+            };
+        }
+    }
+
+    return .{
+        .checkpoint_hash = default_checkpoint,
+        .source = config.checkpoint_source orelse .default,
+    };
+}
 
 fn validateForkUrl(url: []const u8) !void {
     if (url.len == 0) return error.InvalidForkUrl;
@@ -508,6 +1015,12 @@ fn destroyForkBackend(allocator: std.mem.Allocator, backend: ?*state_manager.For
         fork_backend.deinit();
         allocator.destroy(fork_backend);
     }
+}
+
+fn currentUnixSeconds() u64 {
+    const now = std.time.timestamp();
+    if (now <= 0) return 0;
+    return @intCast(now);
 }
 
 fn resolveForkRpcViaHttp(

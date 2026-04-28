@@ -71,6 +71,22 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
+    const release_metadata_exe = b.addExecutable(.{
+        .name = "release-metadata",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/release_metadata.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const release_metadata_step = b.step("release-metadata", "Generate release metadata artifacts");
+    const release_metadata_cmd = b.addRunArtifact(release_metadata_exe);
+    if (b.args) |args| {
+        release_metadata_cmd.addArgs(args);
+    }
+    release_metadata_step.dependOn(&release_metadata_cmd.step);
+
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);

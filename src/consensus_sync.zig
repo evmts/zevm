@@ -2,6 +2,7 @@ const std = @import("std");
 const primitives = @import("primitives");
 const beacon_api = @import("beacon_api.zig");
 const consensus_verifier = @import("consensus_verifier.zig");
+const log = @import("log.zig");
 
 const MAX_REQUEST_LIGHT_CLIENT_UPDATES: u8 = 128;
 const DEFAULT_MAX_CHECKPOINT_AGE_SECONDS: u64 = 1_209_600;
@@ -78,11 +79,14 @@ pub const ConsensusSyncEngine = struct {
         allocator: std.mem.Allocator,
         checkpoint: [32]u8,
     ) !void {
-        self.status = .syncing;
-        errdefer self.status = .err;
+        self.setStatus(.syncing);
+        errdefer self.setStatus(.err);
 
         self.store = std.mem.zeroes(primitives.LightClientUpdate.LightClientStore);
         self.last_checkpoint = null;
+
+        const checkpoint_hex = std.fmt.bytesToHex(checkpoint, .lower);
+        log.info(.consensus_sync, "light checkpoint resolved checkpoint=0x{s}", .{checkpoint_hex[0..]});
 
         try self.bootstrap(allocator, checkpoint);
 
@@ -124,7 +128,7 @@ pub const ConsensusSyncEngine = struct {
             self.last_checkpoint = checkpoint;
         }
 
-        self.status = .synced;
+        self.setStatus(.synced);
     }
 
     pub fn bootstrap(
@@ -139,10 +143,7 @@ pub const ConsensusSyncEngine = struct {
             if (self.config.strict_checkpoint_age) {
                 return error.CheckpointTooOld;
             }
-            std.log.warn(
-                "checkpoint too old; consider syncing with a newer checkpoint",
-                .{},
-            );
+            log.warn(.consensus_sync, "checkpoint too old; consider syncing with a newer checkpoint", .{});
         }
 
         try consensus_verifier.verifyBootstrap(
@@ -157,7 +158,7 @@ pub const ConsensusSyncEngine = struct {
     }
 
     pub fn advance(self: *ConsensusSyncEngine, allocator: std.mem.Allocator) !void {
-        errdefer self.status = .err;
+        errdefer self.setStatus(.err);
 
         const api = beacon_api.BeaconApi{ .endpoint_url = self.config.consensus_rpc };
         const finality_update = try api.getFinalityUpdate(allocator);
@@ -197,7 +198,7 @@ pub const ConsensusSyncEngine = struct {
             }
         }
 
-        self.status = .synced;
+        self.setStatus(.synced);
     }
 
     pub fn getUpdates(
@@ -263,10 +264,33 @@ pub const ConsensusSyncEngine = struct {
         return self.store.finalized_header.beacon.slot;
     }
 
+    pub fn safeSlot(self: *ConsensusSyncEngine) u64 {
+        return self.finalizedSlot();
+    }
+
     pub fn optimisticSlot(self: *ConsensusSyncEngine) u64 {
         return self.store.optimistic_header.beacon.slot;
     }
+
+    fn setStatus(self: *ConsensusSyncEngine, next: SyncStatus) void {
+        const previous = self.status;
+        if (previous != next) {
+            log.info(.consensus_sync, "sync status transition from={s} to={s}", .{
+                statusText(previous),
+                statusText(next),
+            });
+        }
+        self.status = next;
+    }
 };
+
+fn statusText(status: SyncStatus) []const u8 {
+    return switch (status) {
+        .syncing => "syncing",
+        .synced => "synced",
+        .err => "error",
+    };
+}
 
 fn genericFromLightClientUpdate(
     update: primitives.LightClientUpdate.LightClientUpdate,

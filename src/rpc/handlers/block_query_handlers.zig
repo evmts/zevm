@@ -25,7 +25,7 @@ pub fn handleGetBlockByNumber(
     ctx: *const BlockQueryContext,
     params: jsonrpc.eth.GetBlockByNumber.Params,
 ) !jsonrpc.eth.GetBlockByNumber.Result {
-    const tag = blockSpecToTag(allocator, params.block) catch return .{ .block = null };
+    const tag = blockSpecToTag(allocator, params.block) catch return error.InvalidParams;
     defer allocator.free(tag);
 
     const internal = block_queries.getBlockByNumber(allocator, ctx.blockchain, tag, params.hydrated_transactions) catch return .{ .block = null };
@@ -76,7 +76,7 @@ pub fn handleGetBlockTransactionCountByNumber(
     ctx: *const BlockQueryContext,
     params: jsonrpc.eth.GetBlockTransactionCountByNumber.Params,
 ) !jsonrpc.eth.GetBlockTransactionCountByNumber.Result {
-    const tag = blockSpecToTag(allocator, params.block) catch return .{ .value = null };
+    const tag = blockSpecToTag(allocator, params.block) catch return error.InvalidParams;
     defer allocator.free(tag);
 
     const count = block_queries.getBlockTxCountByNumber(ctx.blockchain, tag) catch return .{ .value = null };
@@ -113,7 +113,7 @@ pub fn handleGetUncleCountByBlockNumber(
     ctx: *const BlockQueryContext,
     params: jsonrpc.eth.GetUncleCountByBlockNumber.Params,
 ) !jsonrpc.eth.GetUncleCountByBlockNumber.Result {
-    const tag = blockSpecToTag(allocator, params.block) catch return .{ .value = try zeroQuantity(allocator) };
+    const tag = blockSpecToTag(allocator, params.block) catch return error.InvalidParams;
     defer allocator.free(tag);
 
     const count = block_queries.getUncleCountByNumber(ctx.blockchain, tag) catch return .{ .value = try zeroQuantity(allocator) };
@@ -148,7 +148,7 @@ pub fn handleGetBlockReceipts(
     ctx: *const BlockQueryContext,
     params: jsonrpc.eth.GetBlockReceipts.Params,
 ) !jsonrpc.eth.GetBlockReceipts.Result {
-    const maybe_receipts = blockReceiptsFromSpec(allocator, ctx, params.block) catch return .{ .value = null };
+    const maybe_receipts = blockReceiptsFromSpec(allocator, ctx, params.block) catch return error.InvalidParams;
     if (maybe_receipts) |resps| {
         defer allocator.free(resps);
         const rpc_receipts = allocator.alloc(jsonrpc.types.ReceiptResponse, resps.len) catch return .{ .value = null };
@@ -172,6 +172,7 @@ fn blockReceiptsFromSpec(
             if (parseBlockHashString(s)) |hash_bytes| {
                 return try block_queries.getBlockReceiptsByHash(allocator, ctx.blockchain, ctx.receipt_index, hash_bytes);
             }
+            if (!isTrustedBlockSelector(s)) return error.InvalidBlockSpec;
             return try block_queries.getBlockReceipts(allocator, ctx.blockchain, ctx.receipt_index, s);
         },
         .integer => |n| {
@@ -218,9 +219,9 @@ pub fn handleGetLogs(
     ctx: *const BlockQueryContext,
     params: jsonrpc.eth.GetLogs.Params,
 ) !jsonrpc.eth.GetLogs.Result {
-    const filter = rpcFilterToInternal(allocator, params.filter) catch return .{ .logs = &.{} };
+    const filter = rpcFilterToInternal(allocator, ctx, params.filter) catch return error.InvalidParams;
 
-    const internal = block_queries.getLogs(allocator, ctx.blockchain, ctx.log_index, filter) catch return .{ .logs = &.{} };
+    const internal = block_queries.getLogs(allocator, ctx.blockchain, ctx.log_index, filter) catch return error.InvalidParams;
     defer allocator.free(internal);
 
     const rpc_logs = allocator.alloc(jsonrpc.types.LogEntry, internal.len) catch return .{ .logs = &.{} };
@@ -252,12 +253,60 @@ pub fn handleGetTransactionByHash(
 }
 
 // ============================================================================
+// eth_getTransactionByBlockHashAndIndex
+// ============================================================================
+
+pub fn handleGetTransactionByBlockHashAndIndex(
+    allocator: std.mem.Allocator,
+    ctx: *const BlockQueryContext,
+    params: jsonrpc.eth.GetTransactionByBlockHashAndIndex.Params,
+) !jsonrpc.eth.GetTransactionByBlockHashAndIndex.Result {
+    const index = parseQuantityToU64(params.transaction_index) catch return error.InvalidParams;
+    const internal = block_queries.getTransactionByBlockHashAndIndex(
+        ctx.blockchain,
+        params.block_hash.bytes,
+        index,
+    ) catch return .{ .value = null };
+    if (internal) |tx| {
+        return .{ .value = internalTxToRpc(allocator, tx) catch return .{ .value = null } };
+    }
+    return .{ .value = null };
+}
+
+// ============================================================================
+// eth_getTransactionByBlockNumberAndIndex
+// ============================================================================
+
+pub fn handleGetTransactionByBlockNumberAndIndex(
+    allocator: std.mem.Allocator,
+    ctx: *const BlockQueryContext,
+    params: jsonrpc.eth.GetTransactionByBlockNumberAndIndex.Params,
+) !jsonrpc.eth.GetTransactionByBlockNumberAndIndex.Result {
+    const tag = blockSpecToTag(allocator, params.block) catch return error.InvalidParams;
+    defer allocator.free(tag);
+
+    const index = parseQuantityToU64(params.transaction_index) catch return error.InvalidParams;
+    const internal = block_queries.getTransactionByBlockNumberAndIndex(
+        ctx.blockchain,
+        tag,
+        index,
+    ) catch return .{ .value = null };
+    if (internal) |tx| {
+        return .{ .value = internalTxToRpc(allocator, tx) catch return .{ .value = null } };
+    }
+    return .{ .value = null };
+}
+
+// ============================================================================
 // Conversion Helpers
 // ============================================================================
 
 fn blockSpecToTag(allocator: std.mem.Allocator, spec: jsonrpc.types.BlockSpec) ![]u8 {
     switch (spec.value) {
-        .string => |s| return try allocator.dupe(u8, s),
+        .string => |s| {
+            if (!isTrustedBlockSelector(s)) return error.InvalidBlockSpec;
+            return try allocator.dupe(u8, s);
+        },
         .integer => |n| {
             if (n < 0) return error.InvalidBlockSpec;
             return try std.fmt.allocPrint(allocator, "0x{x}", .{@as(u64, @intCast(n))});
@@ -493,67 +542,52 @@ fn internalLogToRpc(
     };
 }
 
-fn rpcFilterToInternal(allocator: std.mem.Allocator, filter: anytype) !log_index_mod.LogFilter {
-    var result: log_index_mod.LogFilter = .{};
+fn rpcFilterToInternal(
+    allocator: std.mem.Allocator,
+    ctx: *const BlockQueryContext,
+    filter: jsonrpc.types.Quantity,
+) !log_index_mod.LogFilter {
+    const object = switch (filter.value) {
+        .object => |obj| obj,
+        else => return error.InvalidParams,
+    };
 
-    if (@hasField(@TypeOf(filter), "fromBlock")) {
-        if (filter.fromBlock) |fb| {
-            result.from_block = parseQuantityToU64(fb) catch null;
+    var result: log_index_mod.LogFilter = .{};
+    var saw_from_block = false;
+    var saw_to_block = false;
+
+    var iterator = object.iterator();
+    while (iterator.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const value = entry.value_ptr.*;
+        if (std.mem.eql(u8, key, "fromBlock")) {
+            result.from_block = try resolveFilterBlock(ctx, value);
+            saw_from_block = true;
+        } else if (std.mem.eql(u8, key, "toBlock")) {
+            result.to_block = try resolveFilterBlock(ctx, value);
+            saw_to_block = true;
+        } else if (std.mem.eql(u8, key, "blockHash")) {
+            result.block_hash = try parseHashValue(value);
+        } else if (std.mem.eql(u8, key, "address")) {
+            result.addresses = try parseAddressFilter(allocator, value);
+        } else if (std.mem.eql(u8, key, "topics")) {
+            result.topics = try parseTopicsFilter(allocator, value);
+        } else {
+            return error.InvalidParams;
         }
     }
-    if (@hasField(@TypeOf(filter), "toBlock")) {
-        if (filter.toBlock) |tb| {
-            result.to_block = parseQuantityToU64(tb) catch null;
-        }
+
+    if (result.block_hash != null and (saw_from_block or saw_to_block)) {
+        return error.InvalidParams;
     }
-    if (@hasField(@TypeOf(filter), "blockHash")) {
-        if (filter.blockHash) |bh| {
-            result.block_hash = bh.bytes;
-        }
+
+    if (result.block_hash == null) {
+        const latest = ctx.blockchain.getHeadBlockNumber() orelse 0;
+        if (!saw_from_block) result.from_block = latest;
+        if (!saw_to_block) result.to_block = latest;
     }
-    if (@hasField(@TypeOf(filter), "address")) {
-        if (filter.address) |addr| {
-            switch (addr) {
-                .single => |a| {
-                    const addrs = try allocator.alloc(primitives.Address.Address, 1);
-                    addrs[0] = .{ .bytes = a.bytes };
-                    result.addresses = addrs;
-                },
-                .array => |arr| {
-                    const addrs = try allocator.alloc(primitives.Address.Address, arr.len);
-                    for (arr, 0..) |a, i| {
-                        addrs[i] = .{ .bytes = a.bytes };
-                    }
-                    result.addresses = addrs;
-                },
-            }
-        }
-    }
-    if (@hasField(@TypeOf(filter), "topics")) {
-        if (filter.topics) |topics| {
-            const internal_topics = try allocator.alloc(?[]const [32]u8, topics.len);
-            for (topics, 0..) |maybe_topic, i| {
-                if (maybe_topic) |topic| {
-                    switch (topic) {
-                        .single => |h| {
-                            const hashes = try allocator.alloc([32]u8, 1);
-                            hashes[0] = h.bytes;
-                            internal_topics[i] = hashes;
-                        },
-                        .array => |arr| {
-                            const hashes = try allocator.alloc([32]u8, arr.len);
-                            for (arr, 0..) |h, j| {
-                                hashes[j] = h.bytes;
-                            }
-                            internal_topics[i] = hashes;
-                        },
-                    }
-                } else {
-                    internal_topics[i] = null;
-                }
-            }
-            result.topics = internal_topics;
-        }
+    if (result.from_block != null and result.to_block != null and result.from_block.? > result.to_block.?) {
+        return error.InvalidParams;
     }
 
     return result;
@@ -573,6 +607,112 @@ fn parseQuantityToU64(q: jsonrpc.types.Quantity) !u64 {
         },
         else => return error.InvalidQuantity,
     }
+}
+
+fn isTrustedBlockSelector(text: []const u8) bool {
+    return std.mem.eql(u8, text, "latest") or
+        std.mem.eql(u8, text, "earliest") or
+        std.mem.eql(u8, text, "pending") or
+        std.mem.eql(u8, text, "safe") or
+        std.mem.eql(u8, text, "finalized") or
+        isQuantityHex(text);
+}
+
+fn isQuantityHex(text: []const u8) bool {
+    return text.len > 2 and text[0] == '0' and (text[1] == 'x' or text[1] == 'X');
+}
+
+fn resolveFilterBlock(ctx: *const BlockQueryContext, value: std.json.Value) !u64 {
+    switch (value) {
+        .integer => |n| {
+            if (n < 0) return error.InvalidParams;
+            return @intCast(n);
+        },
+        .string => |s| {
+            if (std.mem.eql(u8, s, "latest") or
+                std.mem.eql(u8, s, "pending") or
+                std.mem.eql(u8, s, "safe") or
+                std.mem.eql(u8, s, "finalized"))
+            {
+                return ctx.blockchain.getHeadBlockNumber() orelse 0;
+            }
+            if (std.mem.eql(u8, s, "earliest")) return 0;
+            if (!isQuantityHex(s)) return error.InvalidParams;
+            return std.fmt.parseInt(u64, s[2..], 16) catch return error.InvalidParams;
+        },
+        else => return error.InvalidParams,
+    }
+}
+
+fn parseHashValue(value: std.json.Value) ![32]u8 {
+    const s = switch (value) {
+        .string => |text| text,
+        else => return error.InvalidParams,
+    };
+    return parseBlockHashString(s) orelse error.InvalidParams;
+}
+
+fn parseAddressValue(value: std.json.Value) !primitives.Address.Address {
+    const s = switch (value) {
+        .string => |text| text,
+        else => return error.InvalidParams,
+    };
+    if (s.len != 42 or s[0] != '0' or (s[1] != 'x' and s[1] != 'X')) return error.InvalidParams;
+    var out: [20]u8 = undefined;
+    _ = std.fmt.hexToBytes(&out, s[2..]) catch return error.InvalidParams;
+    return .{ .bytes = out };
+}
+
+fn parseAddressFilter(
+    allocator: std.mem.Allocator,
+    value: std.json.Value,
+) ![]const primitives.Address.Address {
+    switch (value) {
+        .string => {
+            const addresses = try allocator.alloc(primitives.Address.Address, 1);
+            addresses[0] = try parseAddressValue(value);
+            return addresses;
+        },
+        .array => |array| {
+            const addresses = try allocator.alloc(primitives.Address.Address, array.items.len);
+            for (array.items, 0..) |item, i| {
+                addresses[i] = try parseAddressValue(item);
+            }
+            return addresses;
+        },
+        else => return error.InvalidParams,
+    }
+}
+
+fn parseTopicsFilter(
+    allocator: std.mem.Allocator,
+    value: std.json.Value,
+) ![]const ?[]const [32]u8 {
+    const items = switch (value) {
+        .array => |array| array.items,
+        else => return error.InvalidParams,
+    };
+
+    const topics = try allocator.alloc(?[]const [32]u8, items.len);
+    for (items, 0..) |item, i| {
+        switch (item) {
+            .null => topics[i] = null,
+            .string => {
+                const hashes = try allocator.alloc([32]u8, 1);
+                hashes[0] = try parseHashValue(item);
+                topics[i] = hashes;
+            },
+            .array => |array| {
+                const hashes = try allocator.alloc([32]u8, array.items.len);
+                for (array.items, 0..) |hash_value, j| {
+                    hashes[j] = try parseHashValue(hash_value);
+                }
+                topics[i] = hashes;
+            },
+            else => return error.InvalidParams,
+        }
+    }
+    return topics;
 }
 
 test {

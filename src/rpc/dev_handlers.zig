@@ -94,6 +94,13 @@ pub fn handleHardhatSetNextBlockBaseFeePerGas(
     runtime: *dev_runtime.DevRuntime,
     params: ?std.json.Value,
 ) !std.json.Value {
+    return handleSetNextBlockBaseFeePerGas(runtime, params);
+}
+
+pub fn handleSetNextBlockBaseFeePerGas(
+    runtime: *dev_runtime.DevRuntime,
+    params: ?std.json.Value,
+) !std.json.Value {
     const items = getParamsArray(params) orelse return error.InvalidParams;
     if (items.len < 1) return error.InvalidParams;
     const fee = parseU256(items[0]) orelse return error.InvalidParams;
@@ -105,10 +112,39 @@ pub fn handleEvmSetBlockGasLimit(
     runtime: *dev_runtime.DevRuntime,
     params: ?std.json.Value,
 ) !std.json.Value {
+    return handleSetBlockGasLimit(runtime, params);
+}
+
+pub fn handleSetBlockGasLimit(
+    runtime: *dev_runtime.DevRuntime,
+    params: ?std.json.Value,
+) !std.json.Value {
     const items = getParamsArray(params) orelse return error.InvalidParams;
     if (items.len < 1) return error.InvalidParams;
     const limit = parseU64(items[0]) orelse return error.InvalidParams;
     runtime.config.block_gas_limit = limit;
+    return .{ .bool = true };
+}
+
+pub fn handleSetNextBlockTimestamp(
+    runtime: *dev_runtime.DevRuntime,
+    params: ?std.json.Value,
+) !std.json.Value {
+    const items = getParamsArray(params) orelse return error.InvalidParams;
+    if (items.len < 1) return error.InvalidParams;
+    const timestamp = parseU64(items[0]) orelse return error.InvalidParams;
+    runtime.config.next_block_timestamp = timestamp;
+    return .{ .bool = true };
+}
+
+pub fn handleSetBlobBaseFee(
+    runtime: *dev_runtime.DevRuntime,
+    params: ?std.json.Value,
+) !std.json.Value {
+    const items = getParamsArray(params) orelse return error.InvalidParams;
+    if (items.len < 1) return error.InvalidParams;
+    const fee = parseU256(items[0]) orelse return error.InvalidParams;
+    runtime.config.blob_base_fee = fee;
     return .{ .bool = true };
 }
 
@@ -367,4 +403,30 @@ test "evm_setBlockGasLimit updates next block gas limit" {
     const result = try handleEvmSetBlockGasLimit(&runtime, .{ .array = arr });
     try std.testing.expect(result.bool);
     try std.testing.expectEqual(@as(u64, 0x1000000), runtime.config.block_gas_limit);
+}
+
+test "setNextBlockTimestamp updates one-shot timestamp override" {
+    const allocator = std.testing.allocator;
+    var runtime = dev_runtime.DevRuntime.init();
+    defer runtime.deinit(allocator);
+
+    var arr = std.json.Array.init(allocator);
+    defer arr.deinit();
+    try arr.append(.{ .string = "0x4d2" });
+    const result = try handleSetNextBlockTimestamp(&runtime, .{ .array = arr });
+    try std.testing.expect(result.bool);
+    try std.testing.expectEqual(@as(u64, 1234), runtime.config.next_block_timestamp.?);
+}
+
+test "setBlobBaseFee updates persistent blob base fee override" {
+    const allocator = std.testing.allocator;
+    var runtime = dev_runtime.DevRuntime.init();
+    defer runtime.deinit(allocator);
+
+    var arr = std.json.Array.init(allocator);
+    defer arr.deinit();
+    try arr.append(.{ .string = "0x7" });
+    const result = try handleSetBlobBaseFee(&runtime, .{ .array = arr });
+    try std.testing.expect(result.bool);
+    try std.testing.expectEqual(@as(u256, 7), runtime.config.blob_base_fee.?);
 }

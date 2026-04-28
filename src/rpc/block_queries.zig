@@ -271,6 +271,41 @@ pub fn getTransactionByHash(
     return txResponseFromReceipt(allocator, receipt, block);
 }
 
+pub fn getTransactionByBlockHashAndIndex(
+    bc: *blockchain_mod.Blockchain,
+    block_hash: [32]u8,
+    index: u64,
+) !?TxResponse {
+    const block = (try bc.getBlockByHash(block_hash)) orelse return null;
+    if (index >= block.body.transactions.len) return null;
+    if (index > std.math.maxInt(u32)) return null;
+    const tx_index: usize = @intCast(index);
+    return txResponseFromRaw(
+        block.body.transactions[tx_index].raw,
+        block.hash,
+        block.header.number,
+        @intCast(index),
+    );
+}
+
+pub fn getTransactionByBlockNumberAndIndex(
+    bc: *blockchain_mod.Blockchain,
+    tag: []const u8,
+    index: u64,
+) !?TxResponse {
+    const number = resolveBlockTag(bc, tag) orelse return null;
+    const block = (try bc.getBlockByNumber(number)) orelse return null;
+    if (index >= block.body.transactions.len) return null;
+    if (index > std.math.maxInt(u32)) return null;
+    const tx_index: usize = @intCast(index);
+    return txResponseFromRaw(
+        block.body.transactions[tx_index].raw,
+        block.hash,
+        block.header.number,
+        @intCast(index),
+    );
+}
+
 // ============================================================================
 // Log Queries
 // ============================================================================

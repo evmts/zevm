@@ -1,6 +1,7 @@
 const std = @import("std");
 const jsonrpc = @import("jsonrpc");
 const dispatcher = @import("dispatcher.zig");
+const log = @import("../log.zig");
 
 pub const ServerConfig = struct {
     host: []const u8 = "127.0.0.1",
@@ -86,6 +87,8 @@ pub fn run(allocator: std.mem.Allocator, config: ServerConfig, handlers: *const 
     const address = try std.net.Address.parseIp(config.host, config.port);
     var tcp_server = try address.listen(.{ .reuse_address = true });
     defer tcp_server.deinit();
+
+    log.info(.rpc, "listener bound host={s} port={}", .{ config.host, config.port });
 
     while (true) {
         const connection = try tcp_server.accept();

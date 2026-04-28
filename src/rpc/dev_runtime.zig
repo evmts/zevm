@@ -3,10 +3,14 @@ const primitives = @import("primitives");
 const state_manager = @import("state-manager");
 const blockchain = @import("blockchain");
 
+pub const DEFAULT_BLOCK_GAS_LIMIT: u64 = 30_000_000;
+
 pub const NodeDevConfig = struct {
     coinbase: primitives.Address.Address,
     next_block_base_fee_per_gas: ?u256,
+    next_block_timestamp: ?u64,
     block_gas_limit: u64,
+    blob_base_fee: ?u256,
 };
 
 pub const SnapshotEntry = struct {
@@ -21,19 +25,28 @@ pub const DevRuntime = struct {
     config: NodeDevConfig,
 
     pub fn init() DevRuntime {
+        return initWithCoinbase(primitives.Address.Address.ZERO_ADDRESS);
+    }
+
+    pub fn initWithCoinbase(coinbase: primitives.Address.Address) DevRuntime {
         return .{
             .snapshots = .{},
             .next_snapshot_id = 1,
-            .config = .{
-                .coinbase = primitives.Address.Address.ZERO_ADDRESS,
-                .next_block_base_fee_per_gas = null,
-                .block_gas_limit = 30_000_000,
-            },
+            .config = defaultConfig(coinbase),
         };
     }
 
     pub fn deinit(self: *DevRuntime, allocator: std.mem.Allocator) void {
         self.snapshots.deinit(allocator);
+    }
+
+    pub fn resetConfig(self: *DevRuntime, coinbase: primitives.Address.Address) void {
+        self.config = defaultConfig(coinbase);
+    }
+
+    pub fn clearNextBlockOverrides(self: *DevRuntime) void {
+        self.config.next_block_base_fee_per_gas = null;
+        self.config.next_block_timestamp = null;
     }
 
     pub fn takeSnapshot(
@@ -89,6 +102,16 @@ pub const DevRuntime = struct {
     }
 };
 
+pub fn defaultConfig(coinbase: primitives.Address.Address) NodeDevConfig {
+    return .{
+        .coinbase = coinbase,
+        .next_block_base_fee_per_gas = null,
+        .next_block_timestamp = null,
+        .block_gas_limit = DEFAULT_BLOCK_GAS_LIMIT,
+        .blob_base_fee = null,
+    };
+}
+
 test "takeSnapshot stores state snapshot id and block number" {
     const allocator = std.testing.allocator;
     var runtime = DevRuntime.init();
@@ -113,12 +136,18 @@ test "takeSnapshot clones node config" {
     defer state.deinit();
 
     runtime.config.block_gas_limit = 15_000_000;
+    runtime.config.next_block_timestamp = 1234;
+    runtime.config.blob_base_fee = 7;
     const snap_id = try runtime.takeSnapshot(allocator, &state, 0);
 
     runtime.config.block_gas_limit = 99_000_000;
+    runtime.config.next_block_timestamp = 9999;
+    runtime.config.blob_base_fee = 42;
 
     const entry = runtime.snapshots.get(snap_id).?;
     try std.testing.expectEqual(@as(u64, 15_000_000), entry.config.block_gas_limit);
+    try std.testing.expectEqual(@as(u64, 1234), entry.config.next_block_timestamp.?);
+    try std.testing.expectEqual(@as(u256, 7), entry.config.blob_base_fee.?);
 }
 
 test "revertSnapshot returns false for unknown id" {
@@ -148,13 +177,40 @@ test "revertSnapshot restores block number and config" {
     defer bc.deinit();
 
     runtime.config.block_gas_limit = 15_000_000;
+    runtime.config.next_block_base_fee_per_gas = 2;
+    runtime.config.next_block_timestamp = 1234;
+    runtime.config.blob_base_fee = 7;
     const snap_id = try runtime.takeSnapshot(allocator, &state, 5);
 
     runtime.config.block_gas_limit = 99_000_000;
+    runtime.config.next_block_base_fee_per_gas = 3;
+    runtime.config.next_block_timestamp = 9999;
+    runtime.config.blob_base_fee = 42;
 
     const result = try runtime.revertSnapshot(allocator, &state, &bc, snap_id);
     try std.testing.expect(result);
     try std.testing.expectEqual(@as(u64, 15_000_000), runtime.config.block_gas_limit);
+    try std.testing.expectEqual(@as(u256, 2), runtime.config.next_block_base_fee_per_gas.?);
+    try std.testing.expectEqual(@as(u64, 1234), runtime.config.next_block_timestamp.?);
+    try std.testing.expectEqual(@as(u256, 7), runtime.config.blob_base_fee.?);
+}
+
+test "clearNextBlockOverrides keeps persistent block environment overrides" {
+    const allocator = std.testing.allocator;
+    var runtime = DevRuntime.init();
+    defer runtime.deinit(allocator);
+
+    runtime.config.next_block_base_fee_per_gas = 2;
+    runtime.config.next_block_timestamp = 1234;
+    runtime.config.block_gas_limit = 15_000_000;
+    runtime.config.blob_base_fee = 7;
+
+    runtime.clearNextBlockOverrides();
+
+    try std.testing.expect(runtime.config.next_block_base_fee_per_gas == null);
+    try std.testing.expect(runtime.config.next_block_timestamp == null);
+    try std.testing.expectEqual(@as(u64, 15_000_000), runtime.config.block_gas_limit);
+    try std.testing.expectEqual(@as(u256, 7), runtime.config.blob_base_fee.?);
 }
 
 test "revertSnapshot removes newer snapshots (nested semantics)" {

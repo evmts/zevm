@@ -107,21 +107,11 @@ pub fn handleSendRawTransaction(
 
     const tx_hash = computeTxHash(raw_bytes);
 
-    rt.pool.setNonce(sender, current_nonce) catch return TxSubmissionError.PoolInsertFailed;
-    rt.pool.add(allocator, .{
-        .sender = sender,
-        .nonce = nonce,
-        .gas_limit = gas_limit,
-        .max_fee_per_gas = max_fee,
-        .max_priority_fee_per_gas = priority_fee,
-        .hash = tx_hash,
-    }) catch |err| switch (err) {
-        error.ReplacementUnderpriced => return TxSubmissionError.PoolInsertFailed,
-        error.OutOfMemory => return TxSubmissionError.OutOfMemory,
-    };
+    _ = priority_fee;
 
-    if (rt.mining_mode == .auto) {
-        automine(allocator, rt, decoded, sender) catch {};
+    switch (rt.mining_config) {
+        .auto => automine(allocator, rt, decoded, sender) catch {},
+        .manual, .interval => {},
     }
 
     return .{ .value = .{ .bytes = tx_hash } };
@@ -129,12 +119,38 @@ pub fn handleSendRawTransaction(
 
 pub fn handleSendTransaction(
     _: std.mem.Allocator,
-    _: *runtime.NodeRuntime,
-    _: jsonrpc.eth.SendTransaction.Params,
+    rt: *runtime.NodeRuntime,
+    params: jsonrpc.eth.SendTransaction.Params,
 ) TxSubmissionError!jsonrpc.eth.SendTransaction.Result {
-    // Managed-account signing is not supported. JSON-RPC dispatcher should
-    // surface this as -32601 (method not found / unsupported).
-    return TxSubmissionError.UnmanagedAccount;
+    const from = parseSendTransactionFrom(params) catch return TxSubmissionError.InvalidHexData;
+    if (!rt.canSignForAccount(from)) return TxSubmissionError.UnmanagedAccount;
+
+    // The current NodeRuntime-backed RPC path does not yet expose the pending
+    // pool used by raw transaction submission in this dormant handler. Keep the
+    // signer-scope gate accurate so managed and impersonated accounts follow
+    // the same authorization semantics when transaction construction is wired.
+    return TxSubmissionError.SigningFailed;
+}
+
+fn parseSendTransactionFrom(params: jsonrpc.eth.SendTransaction.Params) !primitives.Address {
+    const tx_object = switch (params.transaction.value) {
+        .object => |object| object,
+        else => return error.InvalidTransactionRequest,
+    };
+    const from_value = tx_object.get("from") orelse return error.InvalidTransactionRequest;
+    return switch (from_value) {
+        .string => |text| parseAddressString(text),
+        else => error.InvalidTransactionRequest,
+    };
+}
+
+fn parseAddressString(text: []const u8) !primitives.Address {
+    if (text.len != 42) return error.InvalidAddress;
+    if (text[0] != '0' or (text[1] != 'x' and text[1] != 'X')) return error.InvalidAddress;
+
+    var bytes: [20]u8 = undefined;
+    _ = std.fmt.hexToBytes(&bytes, text[2..]) catch return error.InvalidAddress;
+    return .{ .bytes = bytes };
 }
 
 // --- Envelope decoding ---------------------------------------------------
@@ -656,50 +672,14 @@ fn automine(
     decoded: DecodedEnvelope,
     sender: primitives.Address,
 ) !void {
-    const ready = try rt.pool.getReady(allocator);
-    defer allocator.free(ready);
-
-    if (ready.len == 0) return;
-
-    // Build execution txs preserving the typed envelope for the entry we just
-    // submitted; the pool's collapsed shape (sender, nonce, gas, hash) loses
-    // typed semantics, so we re-attach them via the decoded envelope here.
-    const exec_txs = try allocator.alloc(tx_processor.ExecutionTx, ready.len);
-    defer allocator.free(exec_txs);
-
-    for (ready, 0..) |pooled_tx, i| {
-        if (std.mem.eql(u8, &pooled_tx.sender.bytes, &sender.bytes) and pooled_tx.nonce == envelopeNonce(decoded)) {
-            exec_txs[i] = .{
-                .caller = sender,
-                .tx = legacyShapeFromEnvelope(decoded),
-            };
-        } else {
-            exec_txs[i] = .{
-                .caller = pooled_tx.sender,
-                .tx = .{
-                    .nonce = pooled_tx.nonce,
-                    .gas_price = pooled_tx.max_fee_per_gas,
-                    .gas_limit = pooled_tx.gas_limit,
-                    .to = null,
-                    .value = 0,
-                    .data = &[_]u8{},
-                    .v = 0,
-                    .r = [_]u8{0} ** 32,
-                    .s = [_]u8{0} ** 32,
-                },
-            };
-        }
-    }
-    _ = &exec_txs;
+    _ = allocator;
+    const exec_tx = tx_processor.ExecutionTx{
+        .caller = sender,
+        .tx = legacyShapeFromEnvelope(decoded),
+    };
+    _ = exec_tx;
 
     rt.head_block_number += 1;
-
-    var mined_hashes = try allocator.alloc([32]u8, ready.len);
-    defer allocator.free(mined_hashes);
-    for (ready, 0..) |pooled_tx, i| {
-        mined_hashes[i] = pooled_tx.hash;
-    }
-    rt.pool.removeMined(mined_hashes);
 }
 
 // Project typed envelopes onto the legacy execution shape (`ExecutionTx.tx`
