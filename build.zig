@@ -103,4 +103,30 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
+
+    const external_verify_exe = b.addExecutable(.{
+        .name = "external-verify",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/external_verify.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zevm", .module = mod },
+                .{ .name = "primitives", .module = primitives_mod },
+                .{ .name = "state-manager", .module = state_manager_mod },
+                .{ .name = "guillotine_mini", .module = guillotine_mini_mod },
+            },
+        }),
+    });
+
+    const run_external_verify = b.addRunArtifact(external_verify_exe);
+    run_external_verify.addDirectoryArg(b.path("."));
+    run_external_verify.addArtifactArg(exe);
+
+    const verify_fast_step = b.step("verify-fast", "Run fast local verification");
+    verify_fast_step.dependOn(test_step);
+
+    const verify_step = b.step("verify", "Run fast checks and active external suite slices");
+    verify_step.dependOn(verify_fast_step);
+    verify_step.dependOn(&run_external_verify.step);
 }
