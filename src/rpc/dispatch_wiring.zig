@@ -1,12 +1,15 @@
 //! Wires the JSON-RPC dispatcher to the live NodeRuntime.
 
 const std = @import("std");
+const jsonrpc = @import("jsonrpc");
 const primitives = @import("primitives");
 const dispatcher_mod = @import("dispatcher.zig");
+const block_query_handlers = @import("handlers/block_query_handlers.zig");
 const eth_read = @import("handlers/eth_read.zig");
 const runtime_mod = @import("../node/runtime.zig");
 const simulation = @import("handlers/simulation.zig");
 const trusted_fork_handlers = @import("trusted_fork_handlers.zig");
+const tx_submission = @import("handlers/tx_submission.zig");
 const txpool_handlers = @import("handlers/txpool.zig");
 
 var runtime_ptr: ?*runtime_mod.NodeRuntime = null;

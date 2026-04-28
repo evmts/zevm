@@ -395,10 +395,7 @@ fn executeCreate(
     execution_gas: u64,
     intrinsic: u64,
 ) !ExecutionResult {
-    evm.initTransactionState(null) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return error.ExecutionFailed,
-    };
+    try evm.initTransactionState(null);
 
     const result = evm.inner_create(tx.value, tx.data, execution_gas, null) catch return error.ExecutionFailed;
     if (adapter.takeHostError() != null) return error.ExecutionFailed;
