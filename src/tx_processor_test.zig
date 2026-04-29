@@ -149,6 +149,37 @@ test "reject wrong nonce" {
     try std.testing.expectError(tx_processor.TxError.NonceMismatch, result);
 }
 
+test "reject transaction from sender with code" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    const sender = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
+
+    try sm.setBalance(sender, 1_000_000_000_000);
+    try sm.setNonce(sender, 0);
+    try sm.setCode(sender, &[_]u8{0x00});
+
+    const result = tx_processor.processTransaction(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        sender,
+        makeLegacyTx(.{
+            .to = primitives.Address{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 19 },
+            .value = 0,
+            .data = &[_]u8{},
+            .gas_limit = 21_000,
+            .gas_price = 1,
+            .nonce = 0,
+        }),
+        defaultBlockContext(),
+    );
+
+    try std.testing.expectError(tx_processor.TxError.SenderNotEOA, result);
+    try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(sender));
+}
+
 test "reject insufficient balance" {
     var sm = try state_manager.StateManager.init(std.testing.allocator, null);
     defer sm.deinit();

@@ -28,6 +28,7 @@ pub const ProcessTransactionOptions = struct {
 pub const TxError = error{
     InsufficientBalance,
     NonceMismatch,
+    SenderNotEOA,
     IntrinsicGasExceedsLimit,
     GasPriceBelowBaseFee,
     StateError,
@@ -158,6 +159,9 @@ pub fn processTransactionWithOptions(
     block_ctx: guillotine_mini.BlockContext,
     options: ProcessTransactionOptions,
 ) TxError!primitives.Receipt.Receipt {
+    const sender_code = sm.getCode(caller) catch return TxError.StateError;
+    if (sender_code.len != 0) return TxError.SenderNotEOA;
+
     const current_nonce = sm.getNonce(caller) catch return TxError.StateError;
     if (current_nonce != tx.nonce) return TxError.NonceMismatch;
 

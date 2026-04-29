@@ -47,6 +47,7 @@ const legacy_state_fixture_dirs = [_][]const u8{
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stCodeCopyTest",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stCodeSizeLimit",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP2930",
+    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP3607",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stHomesteadSpecific",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stRecursiveCreate",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stSLoadTest",
@@ -266,8 +267,6 @@ fn runLegacyCancunStateFixture(allocator: std.mem.Allocator, fixture: std.json.V
 }
 
 fn runLegacyStatePostCase(allocator: std.mem.Allocator, fixture: std.json.Value, post_case: std.json.Value, hardfork: guillotine_mini.Hardfork) !void {
-    if (post_case.object.get("expectException")) |_| return VerifyError.UnexpectedTransactionResult;
-
     var sm = try state_manager.StateManager.init(allocator, null);
     defer sm.deinit();
     try seedPreState(allocator, &sm, try field(fixture, "pre"));
@@ -278,7 +277,7 @@ fn runLegacyStatePostCase(allocator: std.mem.Allocator, fixture: std.json.Value,
 
     const block_ctx = try blockContextFromFixture(fixture, hardfork);
     var adapter = zevm.host_adapter.HostAdapter{ .state = &sm };
-    var receipt = try zevm.tx_processor.processTransactionWithOptions(
+    const receipt_result = zevm.tx_processor.processTransactionWithOptions(
         allocator,
         &sm,
         adapter.hostInterface(),
@@ -287,9 +286,30 @@ fn runLegacyStatePostCase(allocator: std.mem.Allocator, fixture: std.json.Value,
         block_ctx,
         tx.options.withHardfork(hardfork),
     );
+
+    if (post_case.object.get("expectException")) |expected_exception| {
+        try expectFixtureTxError(allocator, expected_exception, receipt_result);
+        try assertLegacyStateRoot(allocator, &sm, hardfork, try field(fixture, "pre"), post_case, indexes);
+        try assertLegacyLogsHash(allocator, &.{}, post_case);
+        return;
+    }
+
+    var receipt = try receipt_result;
     defer receipt.deinit(allocator);
 
-    const actual_state_root = try computeStateRoot(allocator, &sm, hardfork, try field(fixture, "pre"));
+    try assertLegacyStateRoot(allocator, &sm, hardfork, try field(fixture, "pre"), post_case, indexes);
+    try assertLegacyLogsHash(allocator, receipt.logs, post_case);
+}
+
+fn assertLegacyStateRoot(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+    hardfork: guillotine_mini.Hardfork,
+    pre_state: std.json.Value,
+    post_case: std.json.Value,
+    indexes: TransactionIndexes,
+) !void {
+    const actual_state_root = try computeStateRoot(allocator, sm, hardfork, pre_state);
     const expected_state_root = try parseHashValue(try field(post_case, "hash"));
     if (!std.mem.eql(u8, &actual_state_root, &expected_state_root)) {
         const actual_hex = std.fmt.bytesToHex(actual_state_root, .lower);
@@ -297,8 +317,10 @@ fn runLegacyStatePostCase(allocator: std.mem.Allocator, fixture: std.json.Value,
         std.debug.print("legacy state root mismatch fork={s} indexes(data={}, gas={}, value={}) actual=0x{s} expected=0x{s}\n", .{ hardfork.toString(), indexes.data, indexes.gas, indexes.value, &actual_hex, &expected_hex });
         return VerifyError.UnexpectedState;
     }
+}
 
-    const actual_logs_hash = try computeLogsHash(allocator, receipt.logs);
+fn assertLegacyLogsHash(allocator: std.mem.Allocator, logs: []const primitives.EventLog.EventLog, post_case: std.json.Value) !void {
+    const actual_logs_hash = try computeLogsHash(allocator, logs);
     const expected_logs_hash = try parseHashValue(try field(post_case, "logs"));
     if (!std.mem.eql(u8, &actual_logs_hash, &expected_logs_hash)) return VerifyError.UnexpectedTransactionResult;
 }
@@ -1078,6 +1100,27 @@ fn expectTxError(expected: zevm.tx_processor.TxError, actual: zevm.tx_processor.
     } else |err| {
         if (err != expected) return VerifyError.UnexpectedTransactionResult;
     }
+}
+
+fn expectFixtureTxError(
+    allocator: std.mem.Allocator,
+    expected_exception: std.json.Value,
+    actual: zevm.tx_processor.TxError!primitives.Receipt.Receipt,
+) !void {
+    if (expected_exception != .string) return VerifyError.InvalidFixture;
+    const expected = txErrorFromFixtureException(expected_exception.string) orelse return VerifyError.InvalidFixture;
+    if (actual) |receipt| {
+        var owned_receipt = receipt;
+        owned_receipt.deinit(allocator);
+        return VerifyError.UnexpectedTransactionResult;
+    } else |err| {
+        if (err != expected) return VerifyError.UnexpectedTransactionResult;
+    }
+}
+
+fn txErrorFromFixtureException(name: []const u8) ?zevm.tx_processor.TxError {
+    if (std.ascii.eqlIgnoreCase(name, "SenderNotEOA")) return zevm.tx_processor.TxError.SenderNotEOA;
+    return null;
 }
 
 fn parseAddressValue(value: std.json.Value) !primitives.Address {
