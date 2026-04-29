@@ -521,8 +521,10 @@ fn syncCommitteeRoot(
 
 fn isHeaderExecutionPayloadProofValid(
     header: primitives.LightClientHeader.LightClientHeader,
+    fork_config: primitives.ForkConfig.ForkConfig,
     allocator: std.mem.Allocator,
 ) !bool {
+    _ = fork_config;
     const execution_root = try executionPayloadHeaderFieldsRoot(header.execution, allocator);
     return primitives.consensus.isExecutionPayloadProofValid(
         header.beacon.body_root,
@@ -535,30 +537,67 @@ fn executionPayloadHeaderFieldsRoot(
     execution: primitives.LightClientHeader.LightClientHeader.ExecutionPayloadHeaderFields,
     allocator: std.mem.Allocator,
 ) ![32]u8 {
-    var field_roots: [16][32]u8 = undefined;
-    field_roots[0] = execution.parent_hash;
-    field_roots[1] = fixedBytesRoot(execution.fee_recipient[0..]);
-    field_roots[2] = execution.state_root;
-    field_roots[3] = execution.receipts_root;
-    field_roots[4] = try primitives.Ssz.merkle.hashTreeRoot(allocator, execution.logs_bloom[0..]);
-    field_roots[5] = execution.prev_randao;
-    field_roots[6] = primitives.Ssz.merkle.hashTreeRootBasic(u64, execution.block_number);
-    field_roots[7] = primitives.Ssz.merkle.hashTreeRootBasic(u64, execution.gas_limit);
-    field_roots[8] = primitives.Ssz.merkle.hashTreeRootBasic(u64, execution.gas_used);
-    field_roots[9] = primitives.Ssz.merkle.hashTreeRootBasic(u64, execution.timestamp);
-    field_roots[10] = primitives.Ssz.merkle.hashTreeRootBasic(u256, execution.base_fee_per_gas);
-    field_roots[11] = execution.block_hash;
-    field_roots[12] = execution.transactions_root;
-    field_roots[13] = execution.withdrawals_root;
-    field_roots[14] = primitives.Ssz.merkle.hashTreeRootBasic(u64, execution.blob_gas_used);
-    field_roots[15] = primitives.Ssz.merkle.hashTreeRootBasic(u64, execution.excess_blob_gas);
+    var field_roots: [17][32]u8 = undefined;
+    var field_count: usize = 0;
 
-    var container_data: [16 * 32]u8 = undefined;
-    for (field_roots, 0..) |field_root, index| {
+    field_roots[field_count] = execution.parent_hash;
+    field_count += 1;
+    field_roots[field_count] = fixedBytesRoot(execution.fee_recipient[0..]);
+    field_count += 1;
+    field_roots[field_count] = execution.state_root;
+    field_count += 1;
+    field_roots[field_count] = execution.receipts_root;
+    field_count += 1;
+    field_roots[field_count] = try primitives.Ssz.merkle.hashTreeRoot(allocator, execution.logs_bloom[0..]);
+    field_count += 1;
+    field_roots[field_count] = execution.prev_randao;
+    field_count += 1;
+    field_roots[field_count] = primitives.Ssz.merkle.hashTreeRootBasic(u64, execution.block_number);
+    field_count += 1;
+    field_roots[field_count] = primitives.Ssz.merkle.hashTreeRootBasic(u64, execution.gas_limit);
+    field_count += 1;
+    field_roots[field_count] = primitives.Ssz.merkle.hashTreeRootBasic(u64, execution.gas_used);
+    field_count += 1;
+    field_roots[field_count] = primitives.Ssz.merkle.hashTreeRootBasic(u64, execution.timestamp);
+    field_count += 1;
+    field_roots[field_count] = try byteListRoot(allocator, execution.extraData());
+    field_count += 1;
+    field_roots[field_count] = primitives.Ssz.merkle.hashTreeRootBasic(u256, execution.base_fee_per_gas);
+    field_count += 1;
+    field_roots[field_count] = execution.block_hash;
+    field_count += 1;
+    field_roots[field_count] = execution.transactions_root;
+    field_count += 1;
+
+    if (execution.fork.hasWithdrawalsRoot()) {
+        field_roots[field_count] = execution.withdrawals_root;
+        field_count += 1;
+    }
+    if (execution.fork.hasBlobGasFields()) {
+        field_roots[field_count] = primitives.Ssz.merkle.hashTreeRootBasic(u64, execution.blob_gas_used);
+        field_count += 1;
+        field_roots[field_count] = primitives.Ssz.merkle.hashTreeRootBasic(u64, execution.excess_blob_gas);
+        field_count += 1;
+    }
+
+    var container_data: [17 * 32]u8 = undefined;
+    for (field_roots[0..field_count], 0..) |field_root, index| {
         @memcpy(container_data[(index * 32)..][0..32], field_root[0..]);
     }
 
-    return primitives.Ssz.merkle.hashTreeRoot(allocator, container_data[0..]);
+    return primitives.Ssz.merkle.hashTreeRoot(allocator, container_data[0 .. field_count * 32]);
+}
+
+fn byteListRoot(allocator: std.mem.Allocator, bytes: []const u8) ![32]u8 {
+    _ = allocator;
+    if (bytes.len > 32) return error.ExtraDataTooLong;
+
+    var chunk: [32]u8 = [_]u8{0} ** 32;
+    @memcpy(chunk[0..bytes.len], bytes);
+
+    var length_chunk: [32]u8 = [_]u8{0} ** 32;
+    std.mem.writeInt(u64, length_chunk[0..8], bytes.len, .little);
+    return primitives.Ssz.merkle.hashPair(chunk, length_chunk);
 }
 
 fn fixedBytesRoot(bytes: []const u8) [32]u8 {

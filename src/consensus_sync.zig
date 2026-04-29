@@ -124,6 +124,20 @@ pub const ConsensusSyncEngine = struct {
             self.last_checkpoint = new_checkpoint;
         }
 
+        const optimistic_update = try api.getOptimisticUpdate(allocator);
+        const generic_optimistic_update = genericFromOptimisticUpdate(optimistic_update);
+        try consensus_verifier.verifyUpdate(
+            generic_optimistic_update,
+            self.expectedCurrentSlot(),
+            self.store,
+            self.config.genesis_validators_root,
+            self.config.fork_config,
+            allocator,
+        );
+        if (consensus_verifier.applyUpdate(&self.store, generic_optimistic_update)) |new_checkpoint| {
+            self.last_checkpoint = new_checkpoint;
+        }
+
         if (self.last_checkpoint == null) {
             self.last_checkpoint = checkpoint;
         }
@@ -173,6 +187,20 @@ pub const ConsensusSyncEngine = struct {
             allocator,
         );
         if (consensus_verifier.applyUpdate(&self.store, generic_finality_update)) |new_checkpoint| {
+            self.last_checkpoint = new_checkpoint;
+        }
+
+        const optimistic_update = try api.getOptimisticUpdate(allocator);
+        const generic_optimistic_update = genericFromOptimisticUpdate(optimistic_update);
+        try consensus_verifier.verifyUpdate(
+            generic_optimistic_update,
+            self.expectedCurrentSlot(),
+            self.store,
+            self.config.genesis_validators_root,
+            self.config.fork_config,
+            allocator,
+        );
+        if (consensus_verifier.applyUpdate(&self.store, generic_optimistic_update)) |new_checkpoint| {
             self.last_checkpoint = new_checkpoint;
         }
 
@@ -321,6 +349,22 @@ fn genericFromFinalityUpdate(
         null,
         update.finalized_header,
         update.finality_branch[0..],
+    );
+}
+
+fn genericFromOptimisticUpdate(
+    update: primitives.LightClientUpdate.LightClientOptimisticUpdate,
+) primitives.LightClientUpdate.GenericUpdate {
+    return primitives.LightClientUpdate.GenericUpdate.from(
+        update.attested_header,
+        update.sync_committee_bits,
+        update.sync_committee_signature,
+        update.signature_slot,
+        null,
+        null,
+        null,
+        null,
+        null,
     );
 }
 
