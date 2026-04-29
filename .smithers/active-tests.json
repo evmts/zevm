@@ -13,7 +13,7 @@
       "verify-fast",
       "execution-spec-tests: generated type-0 state fixtures for Paris, Shanghai, and Cancun plus Cancun tx_type_1 access-list",
       "legacy state filler: stExample/invalidTrFiller intrinsic-gas failure",
-      "ethereum-tests state: full Cancun stArgsZeroOneBalance, stAttackTest, stCallCodes, stChainId, stCodeCopyTest, stRecursiveCreate, and stSLoadTest directories across all post forks with state-root and logs-hash assertions",
+      "ethereum-tests state: full Cancun stArgsZeroOneBalance, stAttackTest, stBugs, stCallCodes, stChainId, stCodeCopyTest, stRecursiveCreate, and stSLoadTest directories across all post forks with state-root and logs-hash assertions",
       "ethereum-tests blockchain fixture smoke: BlockchainTests/ValidBlocks/bcExample/optionsTest.json",
       "execution-spec-tests: generated blockchain fixture structural walk for 10 JSON fixtures",
       "hive rpc-compat: parse and run execution-apis .io cases for chain/network identity, blob base fee, syncing, and unknown-account reads"

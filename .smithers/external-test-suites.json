@@ -10,6 +10,7 @@
       "activeCases": [
         "LegacyTests/Cancun/GeneralStateTests/stArgsZeroOneBalance/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stAttackTest/*.json",
+        "LegacyTests/Cancun/GeneralStateTests/stBugs/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stCallCodes/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stChainId/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stCodeCopyTest/*.json",
