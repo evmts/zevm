@@ -46,6 +46,7 @@ const legacy_state_fixture_dirs = [_][]const u8{
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stChainId",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stCodeCopyTest",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stCodeSizeLimit",
+    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP150Specific",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP158Specific",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP2930",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP3607",
