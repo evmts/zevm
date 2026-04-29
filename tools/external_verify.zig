@@ -21,6 +21,7 @@ const VerifyError = error{
 const execution_spec_state_fixture_paths = [_][]const u8{
     "execution-spec-tests/src/ethereum_test_specs/tests/fixtures/chainid_paris_state_test_tx_type_0.json",
     "execution-spec-tests/src/ethereum_test_specs/tests/fixtures/chainid_cancun_state_test_tx_type_0.json",
+    "execution-spec-tests/src/ethereum_test_specs/tests/fixtures/chainid_cancun_state_test_tx_type_1.json",
     "execution-spec-tests/src/ethereum_test_specs/tests/fixtures/chainid_shanghai_state_test_tx_type_0.json",
 };
 
@@ -113,16 +114,17 @@ fn runGeneratedStatePostCase(allocator: std.mem.Allocator, fixture: std.json.Val
 
     const indexes = try indexesFromPostCase(post_case);
     const tx = try legacyTxFromFixtureCase(allocator, fixture, indexes);
-    defer allocator.free(tx.tx.data);
+    defer tx.deinit(allocator);
 
     var adapter = zevm.host_adapter.HostAdapter{ .state = &sm };
-    var receipt = try zevm.tx_processor.processTransaction(
+    var receipt = try zevm.tx_processor.processTransactionWithOptions(
         allocator,
         &sm,
         adapter.hostInterface(),
         tx.sender,
         tx.tx,
         try blockContextFromFixture(fixture),
+        tx.options,
     );
     defer receipt.deinit(allocator);
 
@@ -148,7 +150,7 @@ fn runLegacyInvalidIntrinsicGasFixture(allocator: std.mem.Allocator, repo_root: 
     try seedPreState(allocator, &sm, try field(fixture, "pre"));
 
     const tx = try legacyTxFromFixture(allocator, fixture);
-    defer allocator.free(tx.tx.data);
+    defer tx.deinit(allocator);
 
     var adapter = zevm.host_adapter.HostAdapter{ .state = &sm };
     const result = zevm.tx_processor.processTransaction(
@@ -487,6 +489,15 @@ fn seedPreState(allocator: std.mem.Allocator, sm: *state_manager.StateManager, p
 const FixtureTx = struct {
     sender: primitives.Address,
     tx: primitives.Transaction.LegacyTransaction,
+
+    options: zevm.tx_processor.ProcessTransactionOptions = .{},
+
+    fn deinit(self: FixtureTx, allocator: std.mem.Allocator) void {
+        allocator.free(self.tx.data);
+        if (self.options.access_list) |access_list| {
+            freeAccessList(allocator, access_list);
+        }
+    }
 };
 
 const TransactionIndexes = struct {
@@ -510,6 +521,8 @@ fn legacyTxFromFixtureCase(allocator: std.mem.Allocator, fixture: std.json.Value
     const value = try parseQuantityAtIndex(try field(transaction, "value"), indexes.value);
     const data = try dataFromTransactionAtIndex(allocator, transaction, indexes.data);
     errdefer allocator.free(data);
+    const access_list = try accessListFromTransactionAtIndex(allocator, transaction, indexes.data);
+    errdefer if (access_list) |list| freeAccessList(allocator, list);
 
     const to_text = try stringField(transaction, "to");
     const to = if (to_text.len == 0) null else try parseAddressText(to_text);
@@ -526,6 +539,10 @@ fn legacyTxFromFixtureCase(allocator: std.mem.Allocator, fixture: std.json.Value
             .v = 0,
             .r = [_]u8{0} ** 32,
             .s = [_]u8{0} ** 32,
+        },
+        .options = .{
+            .access_list = access_list,
+            .receipt_type = if (access_list == null) .legacy else .eip2930,
         },
     };
 }
@@ -548,6 +565,51 @@ fn dataFromTransactionAtIndex(allocator: std.mem.Allocator, transaction: std.jso
         else => return VerifyError.InvalidFixture,
     };
     return try hexBytes(allocator, data_text);
+}
+
+fn accessListFromTransactionAtIndex(allocator: std.mem.Allocator, transaction: std.json.Value, index: usize) !?primitives.AccessList.AccessList {
+    const access_lists_value = transaction.object.get("accessLists") orelse return null;
+    if (access_lists_value != .array) return VerifyError.InvalidFixture;
+    if (index >= access_lists_value.array.items.len) return VerifyError.InvalidFixture;
+
+    const selected = access_lists_value.array.items[index];
+    if (selected != .array) return VerifyError.InvalidFixture;
+
+    var entries = try allocator.alloc(primitives.AccessList.AccessListEntry, selected.array.items.len);
+    var initialized_entries: usize = 0;
+    errdefer {
+        var i: usize = 0;
+        while (i < initialized_entries) : (i += 1) {
+            allocator.free(entries[i].storage_keys);
+        }
+        allocator.free(entries);
+    }
+
+    for (selected.array.items, 0..) |item, i| {
+        const storage_keys_value = try field(item, "storageKeys");
+        if (storage_keys_value != .array) return VerifyError.InvalidFixture;
+
+        const storage_keys = try allocator.alloc(primitives.Hash.Hash, storage_keys_value.array.items.len);
+        errdefer allocator.free(storage_keys);
+        for (storage_keys_value.array.items, 0..) |storage_key_value, j| {
+            storage_keys[j] = try parseHashValue(storage_key_value);
+        }
+
+        entries[i] = .{
+            .address = try parseAddressValue(try field(item, "address")),
+            .storage_keys = storage_keys,
+        };
+        initialized_entries += 1;
+    }
+
+    return entries;
+}
+
+fn freeAccessList(allocator: std.mem.Allocator, access_list: primitives.AccessList.AccessList) void {
+    for (access_list) |entry| {
+        allocator.free(entry.storage_keys);
+    }
+    allocator.free(access_list);
 }
 
 fn indexesFromPostCase(post_case: std.json.Value) !TransactionIndexes {
@@ -666,6 +728,22 @@ fn parseAddressText(text: []const u8) !primitives.Address {
     var bytes: [20]u8 = undefined;
     _ = std.fmt.hexToBytes(&bytes, hex) catch return VerifyError.InvalidAddress;
     return .{ .bytes = bytes };
+}
+
+fn parseHashValue(value: std.json.Value) !primitives.Hash.Hash {
+    if (value != .string) return VerifyError.InvalidHexData;
+    return parseHashText(value.string);
+}
+
+fn parseHashText(text: []const u8) !primitives.Hash.Hash {
+    var hex = text;
+    if (std.mem.startsWith(u8, hex, "0x") or std.mem.startsWith(u8, hex, "0X")) {
+        hex = hex[2..];
+    }
+    if (hex.len != 64) return VerifyError.InvalidHexData;
+    var out: primitives.Hash.Hash = undefined;
+    _ = std.fmt.hexToBytes(&out, hex) catch return VerifyError.InvalidHexData;
+    return out;
 }
 
 fn parseFirstQuantity(value: std.json.Value) !u256 {

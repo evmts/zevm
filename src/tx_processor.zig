@@ -12,6 +12,11 @@ pub const ExecutionTx = struct {
     tx: primitives.Transaction.LegacyTransaction,
 };
 
+pub const ProcessTransactionOptions = struct {
+    access_list: ?primitives.AccessList.AccessList = null,
+    receipt_type: primitives.Receipt.TransactionType = .legacy,
+};
+
 pub const TxError = error{
     InsufficientBalance,
     NonceMismatch,
@@ -117,10 +122,33 @@ pub fn processTransaction(
     tx: primitives.Transaction.LegacyTransaction,
     block_ctx: guillotine_mini.BlockContext,
 ) TxError!primitives.Receipt.Receipt {
+    return processTransactionWithOptions(
+        allocator,
+        sm,
+        host_iface,
+        caller,
+        tx,
+        block_ctx,
+        .{},
+    );
+}
+
+pub fn processTransactionWithOptions(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+    host_iface: guillotine_mini.HostInterface,
+    caller: primitives.Address,
+    tx: primitives.Transaction.LegacyTransaction,
+    block_ctx: guillotine_mini.BlockContext,
+    options: ProcessTransactionOptions,
+) TxError!primitives.Receipt.Receipt {
     const current_nonce = sm.getNonce(caller) catch return TxError.StateError;
     if (current_nonce != tx.nonce) return TxError.NonceMismatch;
 
-    const intrinsic = intrinsicGas(tx.data, tx.to == null);
+    var intrinsic = intrinsicGas(tx.data, tx.to == null);
+    if (options.access_list) |access_list| {
+        intrinsic = std.math.add(u64, intrinsic, primitives.AccessList.calculateAccessListGasCost(access_list)) catch return TxError.IntrinsicGasExceedsLimit;
+    }
     if (intrinsic > tx.gas_limit) return TxError.IntrinsicGasExceedsLimit;
 
     // EIP-1559 base-fee floor: legacy tx must pay at least the block base fee.
@@ -171,6 +199,7 @@ pub fn processTransaction(
         } else {
             evm.setBytecode(tx.data);
         }
+        evm.setAccessList(options.access_list);
 
         const call_params: EvmType.CallParams = if (tx.to) |to|
             .{ .call = .{
@@ -240,7 +269,7 @@ pub fn processTransaction(
         .status = primitives.Receipt.TransactionStatus{ .success = result.success, .gas_used = effective_gas_used_u256 },
         .root = null,
         .effective_gas_price = effective_gas_price,
-        .type = primitives.Receipt.TransactionType.legacy,
+        .type = options.receipt_type,
         .blob_gas_used = null,
         .blob_gas_price = null,
     };

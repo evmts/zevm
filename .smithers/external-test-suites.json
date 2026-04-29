@@ -1,0 +1,69 @@
+{
+  "schemaVersion": "zevm-external-test-suites.v1",
+  "updated": "2026-04-29",
+  "suites": [
+    {
+      "name": "ethereum-tests-state",
+      "path": "ethereum-tests/LegacyTests/*/GeneralStateTests",
+      "status": "available",
+      "reason": "GeneralStateTests populated via git submodule update; filled legacy state hash/log verification still needs a state-root/log-hash runner before these can join active verify.",
+      "activeCases": []
+    },
+    {
+      "name": "ethereum-tests-blockchain",
+      "path": "ethereum-tests/BlockchainTests",
+      "status": "partial",
+      "activeCases": [
+        "BlockchainTests/ValidBlocks/bcExample/optionsTest.json"
+      ],
+      "remaining": [
+        "decode typed and legacy block transactions into block_builder execution inputs",
+        "compare postState/stateRoot/receipts for ValidBlocks",
+        "assert InvalidBlocks fail for the expected reason"
+      ]
+    },
+    {
+      "name": "execution-spec-tests",
+      "path": "execution-spec-tests",
+      "status": "partial",
+      "activeCases": [
+        "src/ethereum_test_specs/tests/fixtures/chainid_paris_state_test_tx_type_0.json",
+        "src/ethereum_test_specs/tests/fixtures/chainid_cancun_state_test_tx_type_0.json",
+        "src/ethereum_test_specs/tests/fixtures/chainid_cancun_state_test_tx_type_1.json",
+        "src/ethereum_test_specs/tests/fixtures/chainid_shanghai_state_test_tx_type_0.json",
+        "tests/static/state_tests/stExample/invalidTrFiller.json",
+        "src/ethereum_test_specs/tests/fixtures/blockchain_london_invalid_filled.json",
+        "src/ethereum_test_specs/tests/fixtures/blockchain_london_valid_filled.json",
+        "src/ethereum_test_specs/tests/fixtures/blockchain_shanghai_invalid_filled_engine.json",
+        "src/ethereum_test_specs/tests/fixtures/blockchain_shanghai_valid_filled_engine.json",
+        "src/ethereum_test_specs/tests/fixtures/chainid_cancun_blockchain_test_engine_tx_type_0.json",
+        "src/ethereum_test_specs/tests/fixtures/chainid_cancun_blockchain_test_tx_type_0.json",
+        "src/ethereum_test_specs/tests/fixtures/chainid_istanbul_blockchain_test_tx_type_0.json",
+        "src/ethereum_test_specs/tests/fixtures/chainid_london_blockchain_test_tx_type_0.json",
+        "src/ethereum_test_specs/tests/fixtures/chainid_paris_blockchain_test_engine_tx_type_0.json",
+        "src/ethereum_test_specs/tests/fixtures/chainid_shanghai_blockchain_test_engine_tx_type_0.json"
+      ],
+      "remaining": [
+        "execution-spec-tests/fixtures is absent in this checkout; current active coverage walks src/ethereum_test_specs/tests/fixtures and tests/static/state_tests",
+        "walk generated state_test fixtures by fork",
+        "support EIP-1559, blob, and set-code transaction forms",
+        "execute blockchain fixtures instead of structural-only validation",
+        "compare logs hash, state hash, and all post-state entries for fixtures without explicit postState/state"
+      ]
+    },
+    {
+      "name": "hive-rpc-compat",
+      "path": "hive/simulators/ethereum/rpc-compat",
+      "status": "partial",
+      "activeCases": [
+        "execution-apis/tests/eth_chainId/get-chain-id.io",
+        "execution-apis/tests/net_version/get-network-id.io"
+      ],
+      "remaining": [
+        "materialize the execution-apis chain.rlp/genesis/head forkchoice setup in ZEVM",
+        "map hive client lifecycle onto the zevm binary",
+        "run every rpc-compat .io transcript, including block, receipt, log, call, estimate, and sendRawTransaction methods"
+      ]
+    }
+  ]
+}

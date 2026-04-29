@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "zevm-active-tests.v1",
+  "updated": "2026-04-29",
+  "fast": {
+    "command": "zig build verify-fast",
+    "steps": [
+      "zig build test"
+    ]
+  },
+  "verify": {
+    "command": "zig build verify",
+    "includes": [
+      "verify-fast",
+      "execution-spec-tests: generated type-0 state fixtures for Paris, Shanghai, and Cancun plus Cancun tx_type_1 access-list",
+      "legacy state filler: stExample/invalidTrFiller intrinsic-gas failure",
+      "ethereum-tests blockchain fixture smoke: BlockchainTests/ValidBlocks/bcExample/optionsTest.json",
+      "execution-spec-tests: generated blockchain fixture structural walk for 10 JSON fixtures",
+      "hive rpc-compat: parse and run execution-apis .io cases for eth_chainId and net_version against HIVE_CHAIN_ID"
+    ]
+  }
+}
