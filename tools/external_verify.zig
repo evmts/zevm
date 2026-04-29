@@ -43,6 +43,7 @@ const legacy_state_fixture_dirs = [_][]const u8{
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stAttackTest",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stCallCodes",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stChainId",
+    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stCodeCopyTest",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stRecursiveCreate",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stSLoadTest",
 };
@@ -282,7 +283,7 @@ fn runLegacyStatePostCase(allocator: std.mem.Allocator, fixture: std.json.Value,
     );
     defer receipt.deinit(allocator);
 
-    const actual_state_root = try computeStateRoot(allocator, &sm, hardfork);
+    const actual_state_root = try computeStateRoot(allocator, &sm, hardfork, try field(fixture, "pre"));
     const expected_state_root = try parseHashValue(try field(post_case, "hash"));
     if (!std.mem.eql(u8, &actual_state_root, &expected_state_root)) {
         const actual_hex = std.fmt.bytesToHex(actual_state_root, .lower);
@@ -847,7 +848,7 @@ fn assertState(allocator: std.mem.Allocator, sm: *state_manager.StateManager, ex
     }
 }
 
-fn computeStateRoot(allocator: std.mem.Allocator, sm: *state_manager.StateManager, hardfork: guillotine_mini.Hardfork) !primitives.Hash.Hash {
+fn computeStateRoot(allocator: std.mem.Allocator, sm: *state_manager.StateManager, hardfork: guillotine_mini.Hardfork, pre_state: std.json.Value) !primitives.Hash.Hash {
     var keys = std.ArrayList([]const u8){};
     defer {
         for (keys.items) |key| allocator.free(key);
@@ -872,15 +873,19 @@ fn computeStateRoot(allocator: std.mem.Allocator, sm: *state_manager.StateManage
         }
 
         const storage_root = try computeStorageRoot(allocator, sm, address);
-        const empty_account = nonce == 0 and
+        const empty_account_core = nonce == 0 and
             balance == 0 and
             std.mem.eql(u8, &code_hash, &primitives.State.EMPTY_CODE_HASH);
+        const storage_only_empty_account = empty_account_core and
+            !std.mem.eql(u8, &storage_root, &primitives.State.EMPTY_TRIE_ROOT);
+        const seeded_empty_account = empty_account_core and
+            try preStateHasEmptyAccount(pre_state, address);
 
         // EIP-161 (Spurious Dragon) defines emptiness by nonce, balance, and
-        // code. Legacy state fixtures can seed storage-only empty accounts;
-        // those must not be encoded in post-Spurious state roots. Before
-        // Spurious Dragon, explicitly present empty accounts are root entries.
-        if (empty_account and hardfork.isAtLeast(.SPURIOUS_DRAGON)) {
+        // code. Explicitly seeded untouched empty accounts remain trie entries,
+        // while new empty artifacts and impossible storage-only empty accounts
+        // are pruned from post-Spurious roots.
+        if (hardfork.isAtLeast(.SPURIOUS_DRAGON) and empty_account_core and (!seeded_empty_account or storage_only_empty_account)) {
             continue;
         }
 
@@ -905,6 +910,33 @@ fn computeStateRoot(allocator: std.mem.Allocator, sm: *state_manager.StateManage
     }
 
     return try primitives.TrieHash.secure_trie_root(allocator, keys.items, values.items);
+}
+
+fn preStateHasEmptyAccount(pre_state: std.json.Value, address: primitives.Address) !bool {
+    var it = pre_state.object.iterator();
+    while (it.next()) |entry| {
+        if (std.mem.startsWith(u8, entry.key_ptr.*, "//")) continue;
+        const pre_address = try parseAddressText(entry.key_ptr.*);
+        if (!pre_address.equals(address)) continue;
+
+        const account = entry.value_ptr.*;
+        const balance = try parseQuantity(try field(account, "balance"));
+        const nonce = try parseQuantity(try field(account, "nonce"));
+        const code_text = try stringField(account, "code");
+        var code_hex = code_text;
+        if (std.mem.startsWith(u8, code_hex, "0x") or std.mem.startsWith(u8, code_hex, "0X")) {
+            code_hex = code_hex[2..];
+        }
+
+        const storage = try field(account, "storage");
+        var storage_it = storage.object.iterator();
+        while (storage_it.next()) |storage_entry| {
+            if (try parseQuantity(storage_entry.value_ptr.*) != 0) return false;
+        }
+
+        return balance == 0 and nonce == 0 and code_hex.len == 0;
+    }
+    return false;
 }
 
 fn computeStorageRoot(allocator: std.mem.Allocator, sm: *state_manager.StateManager, address: primitives.Address) !primitives.Hash.Hash {

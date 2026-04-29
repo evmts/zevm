@@ -35,6 +35,7 @@ pub const HostAdapter = struct {
         .setStorage = setStorageVTable,
         .getNonce = getNonceVTable,
         .setNonce = setNonceVTable,
+        .deleteAccount = deleteAccountVTable,
     };
 
     pub fn hostInterface(self: *HostAdapter) guillotine_mini.HostInterface {
@@ -88,6 +89,15 @@ pub const HostAdapter = struct {
 
     pub fn setNonce(self: *HostAdapter, address: primitives.Address, nonce: u64) Error!void {
         self.state.setNonce(address, nonce) catch |err| return hostErrorToError(mapStateWriteError(err));
+    }
+
+    pub fn deleteAccount(self: *HostAdapter, address: primitives.Address) Error!void {
+        _ = self.state.journaled_state.account_cache.delete(address);
+        _ = self.state.journaled_state.contract_cache.delete(address);
+        if (self.state.journaled_state.storage_cache.cache.fetchRemove(address)) |entry| {
+            var slots = entry.value;
+            slots.deinit();
+        }
     }
 
     pub fn accountExists(self: *HostAdapter, address: primitives.Address) Error!bool {
@@ -165,6 +175,13 @@ pub const HostAdapter = struct {
     fn setNonceVTable(ptr: *anyopaque, address: primitives.Address, nonce: u64) void {
         const self: *HostAdapter = @ptrCast(@alignCast(ptr));
         self.state.setNonce(address, nonce) catch |err| {
+            self.recordError(mapStateWriteError(err));
+        };
+    }
+
+    fn deleteAccountVTable(ptr: *anyopaque, address: primitives.Address) void {
+        const self: *HostAdapter = @ptrCast(@alignCast(ptr));
+        self.deleteAccount(address) catch |err| {
             self.recordError(mapStateWriteError(err));
         };
     }
