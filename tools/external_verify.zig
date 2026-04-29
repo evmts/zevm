@@ -46,6 +46,7 @@ const legacy_state_fixture_dirs = [_][]const u8{
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stChainId",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stCodeCopyTest",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stCodeSizeLimit",
+    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP2930",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stHomesteadSpecific",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stRecursiveCreate",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stSLoadTest",
@@ -657,15 +658,22 @@ fn legacyTxFromFixtureCase(allocator: std.mem.Allocator, fixture: std.json.Value
     errdefer allocator.free(data);
     const access_list = try accessListFromTransactionAtIndex(allocator, transaction, indexes.data);
     errdefer if (access_list) |list| freeAccessList(allocator, list);
+    const gas_price = try effectiveGasPriceFromFixture(fixture, transaction);
 
     const to_text = try stringField(transaction, "to");
     const to = if (to_text.len == 0) null else try parseAddressText(to_text);
+    const receipt_type: primitives.Receipt.TransactionType = if (transaction.object.get("maxFeePerGas") != null)
+        .eip1559
+    else if (access_list != null)
+        .eip2930
+    else
+        .legacy;
 
     return .{
         .sender = sender,
         .tx = .{
             .nonce = std.math.cast(u64, try parseQuantity(try field(transaction, "nonce"))) orelse return VerifyError.InvalidQuantity,
-            .gas_price = try parseQuantity(try field(transaction, "gasPrice")),
+            .gas_price = gas_price,
             .gas_limit = std.math.cast(u64, gas_limit) orelse return VerifyError.InvalidQuantity,
             .to = to,
             .value = value,
@@ -676,9 +684,25 @@ fn legacyTxFromFixtureCase(allocator: std.mem.Allocator, fixture: std.json.Value
         },
         .options = .{
             .access_list = access_list,
-            .receipt_type = if (access_list == null) .legacy else .eip2930,
+            .receipt_type = receipt_type,
         },
     };
+}
+
+fn effectiveGasPriceFromFixture(fixture: std.json.Value, transaction: std.json.Value) !u256 {
+    if (transaction.object.get("gasPrice")) |gas_price| {
+        return parseQuantity(gas_price);
+    }
+
+    const max_fee_per_gas = try parseQuantity(try field(transaction, "maxFeePerGas"));
+    const max_priority_fee_per_gas = try parseQuantity(try field(transaction, "maxPriorityFeePerGas"));
+    const env = try field(fixture, "env");
+    const base_fee = if (env.object.get("currentBaseFee")) |base_fee_value|
+        try parseQuantity(base_fee_value)
+    else
+        0;
+    const fee_cap_with_tip = std.math.add(u256, base_fee, max_priority_fee_per_gas) catch return VerifyError.InvalidQuantity;
+    return @min(max_fee_per_gas, fee_cap_with_tip);
 }
 
 fn dataFromTransaction(allocator: std.mem.Allocator, transaction: std.json.Value) ![]u8 {
@@ -707,6 +731,7 @@ fn accessListFromTransactionAtIndex(allocator: std.mem.Allocator, transaction: s
     if (index >= access_lists_value.array.items.len) return VerifyError.InvalidFixture;
 
     const selected = access_lists_value.array.items[index];
+    if (selected == .null) return null;
     if (selected != .array) return VerifyError.InvalidFixture;
 
     var entries = try allocator.alloc(primitives.AccessList.AccessListEntry, selected.array.items.len);
