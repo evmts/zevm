@@ -70,6 +70,8 @@ test "parse reads light flags" {
         "sepolia",
         "--consensus-rpc-url",
         "https://beacon.example",
+        "--execution-rpc-url",
+        "https://execution.example",
         "--checkpoint",
         checkpoint,
         "--checkpoint-dir",
@@ -82,6 +84,7 @@ test "parse reads light flags" {
     try std.testing.expectEqual(cli.Mode.light, options.mode.?);
     try std.testing.expectEqual(cli.Network.sepolia, options.network.?);
     try std.testing.expectEqualStrings("https://beacon.example", options.consensus_rpc_url.?);
+    try std.testing.expectEqualStrings("https://execution.example", options.execution_rpc_url.?);
     try std.testing.expectEqual(@as(u8, 0x11), options.checkpoint.?[0]);
     try std.testing.expectEqualStrings(".state/<network>", options.checkpoint_dir.?);
     try std.testing.expectEqual(@as(u64, 42), options.max_checkpoint_age_seconds.?);

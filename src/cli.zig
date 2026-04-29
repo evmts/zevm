@@ -44,6 +44,7 @@ pub const Options = struct {
 
     network: ?Network = null,
     consensus_rpc_url: ?[]const u8 = null,
+    execution_rpc_url: ?[]const u8 = null,
     checkpoint: ?[32]u8 = null,
     checkpoint_dir: ?[]const u8 = null,
     max_checkpoint_age_seconds: ?u64 = null,
@@ -68,6 +69,7 @@ pub const Options = struct {
     pub fn hasLightOnly(self: Options) bool {
         return self.network != null or
             self.consensus_rpc_url != null or
+            self.execution_rpc_url != null or
             self.checkpoint != null or
             self.checkpoint_dir != null or
             self.max_checkpoint_age_seconds != null or
@@ -125,6 +127,8 @@ pub fn parse(args: []const []const u8) ParseError!Options {
             options.network = networkFromString(try nextValue(args, &index)) orelse return error.InvalidFlagValue;
         } else if (std.mem.eql(u8, arg, "--consensus-rpc-url")) {
             options.consensus_rpc_url = try nextValue(args, &index);
+        } else if (std.mem.eql(u8, arg, "--execution-rpc-url")) {
+            options.execution_rpc_url = try nextValue(args, &index);
         } else if (std.mem.eql(u8, arg, "--checkpoint")) {
             options.checkpoint = try parsePrefixedHash32(try nextValue(args, &index));
         } else if (std.mem.eql(u8, arg, "--checkpoint-dir")) {

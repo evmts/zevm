@@ -156,6 +156,10 @@ test "load rejects mode-specific flag mixing" {
         error.InvalidConfig,
         config.load(std.testing.allocator, &[_][]const u8{ "--consensus-rpc-url", "https://beacon.example" }),
     );
+    try std.testing.expectError(
+        error.InvalidConfig,
+        config.load(std.testing.allocator, &[_][]const u8{ "--execution-rpc-url", "https://execution.example" }),
+    );
 }
 
 test "load validates mining and fork option combinations" {
@@ -184,6 +188,7 @@ test "load parses light config and resolves checkpoint dir default" {
         \\    "light": {
         \\      "network": "holesky",
         \\      "consensusRpcUrl": "https://beacon.example",
+        \\      "executionRpcUrl": "https://execution.example",
         \\      "checkpoint": null,
         \\      "maxCheckpointAgeSeconds": 42,
         \\      "strictCheckpointAge": true
@@ -200,6 +205,7 @@ test "load parses light config and resolves checkpoint dir default" {
     try std.testing.expectEqual(@as(u16, 9000), app_config.rpc.port);
     try std.testing.expectEqual(config.Network.holesky, light.network);
     try std.testing.expectEqualStrings("https://beacon.example", light.consensus_rpc_url);
+    try std.testing.expectEqualStrings("https://execution.example", light.execution_rpc_url.?);
     try std.testing.expectEqual(config.CheckpointSource.default, light.checkpoint_source);
     try std.testing.expect(std.mem.endsWith(u8, light.checkpoint_dir, ".zevm/checkpoints/holesky"));
     try std.testing.expectEqual(@as(u64, 42), light.max_checkpoint_age_seconds);

@@ -65,6 +65,7 @@ pub const CheckpointSource = enum {
 pub const LightConfig = struct {
     network: Network,
     consensus_rpc_url: []const u8,
+    execution_rpc_url: ?[]const u8,
     checkpoint: [32]u8,
     checkpoint_source: CheckpointSource,
     checkpoint_dir: []const u8,
@@ -77,6 +78,7 @@ pub const LightConfig = struct {
             .light = .{
                 .network = lightNetworkToRuntime(self.network),
                 .consensus_rpc_url = self.consensus_rpc_url,
+                .proof_rpc_url = self.execution_rpc_url,
                 .checkpoint = self.checkpoint,
                 .checkpoint_dir = self.checkpoint_dir,
                 .checkpoint_source = checkpointSourceToRuntime(self.checkpoint_source),
@@ -106,6 +108,7 @@ pub const AppConfig = struct {
             },
             .light => |light| {
                 allocator.free(light.consensus_rpc_url);
+                if (light.execution_rpc_url) |url| allocator.free(url);
                 allocator.free(light.checkpoint_dir);
             },
         }
@@ -154,6 +157,7 @@ const FileTrusted = struct {
 const FileLight = struct {
     network: ?Network = null,
     consensus_rpc_url: ?[]const u8 = null,
+    execution_rpc_url: ?[]const u8 = null,
     checkpoint: ?[32]u8 = null,
     checkpoint_dir: ?[]const u8 = null,
     max_checkpoint_age_seconds: ?u64 = null,
@@ -331,6 +335,10 @@ fn resolveLight(
     const owned_consensus_rpc_url = try allocator.dupe(u8, consensus_rpc_url);
     errdefer allocator.free(owned_consensus_rpc_url);
 
+    const execution_rpc_url = options.execution_rpc_url orelse file_value.execution_rpc_url;
+    const owned_execution_rpc_url = if (execution_rpc_url) |url| try allocator.dupe(u8, url) else null;
+    errdefer if (owned_execution_rpc_url) |url| allocator.free(url);
+
     const checkpoint_dir_template = options.checkpoint_dir orelse file_value.checkpoint_dir orelse DEFAULT_CHECKPOINT_DIR_TEMPLATE;
     const checkpoint_dir = try resolveCheckpointDir(allocator, checkpoint_dir_template, network);
     errdefer allocator.free(checkpoint_dir);
@@ -346,6 +354,7 @@ fn resolveLight(
     return .{
         .network = network,
         .consensus_rpc_url = owned_consensus_rpc_url,
+        .execution_rpc_url = owned_execution_rpc_url,
         .checkpoint = selected_checkpoint.hash,
         .checkpoint_source = selected_checkpoint.source,
         .checkpoint_dir = checkpoint_dir,
@@ -633,6 +642,8 @@ fn parseLight(value: std.json.Value) LoadError!FileLight {
             light.network = cli.networkFromString(try parseString(entry.value_ptr.*)) orelse return error.InvalidConfig;
         } else if (std.mem.eql(u8, key, "consensusRpcUrl")) {
             light.consensus_rpc_url = try parseString(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "executionRpcUrl")) {
+            light.execution_rpc_url = try parseString(entry.value_ptr.*);
         } else if (std.mem.eql(u8, key, "checkpoint")) {
             light.checkpoint = try parseOptionalPrefixedHash32(entry.value_ptr.*);
         } else if (std.mem.eql(u8, key, "checkpointDir")) {
@@ -725,6 +736,7 @@ fn deinitModeConfig(allocator: std.mem.Allocator, mode_config: ModeConfig) void 
         .trusted => |trusted| freeFork(allocator, trusted.fork),
         .light => |light| {
             allocator.free(light.consensus_rpc_url);
+            if (light.execution_rpc_url) |url| allocator.free(url);
             allocator.free(light.checkpoint_dir);
         },
     }
