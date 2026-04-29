@@ -16,6 +16,10 @@ pub const PooledTransaction = struct {
     to: ?primitives.Address = null,
     value: u256 = 0,
     input: []const u8 = &.{},
+    raw: []const u8 = &.{},
+    v: u64 = 0,
+    r: [32]u8 = [_]u8{0} ** 32,
+    s: [32]u8 = [_]u8{0} ** 32,
 };
 
 const SenderNonce = struct {
@@ -45,6 +49,7 @@ pub const TransactionPool = struct {
     pub fn clear(self: *TransactionPool) void {
         for (self.transactions.items) |tx| {
             self.allocator.free(tx.input);
+            self.allocator.free(tx.raw);
         }
         self.transactions.clearRetainingCapacity();
         self.sender_nonces.clearRetainingCapacity();
@@ -62,6 +67,8 @@ pub const TransactionPool = struct {
             var cloned = tx;
             cloned.input = try allocator.dupe(u8, tx.input);
             errdefer allocator.free(cloned.input);
+            cloned.raw = try allocator.dupe(u8, tx.raw);
+            errdefer allocator.free(cloned.raw);
             try out.transactions.append(allocator, cloned);
         }
 
@@ -88,8 +95,11 @@ pub const TransactionPool = struct {
             var stored = tx;
             stored.input = try self.allocator.dupe(u8, tx.input);
             errdefer self.allocator.free(stored.input);
+            stored.raw = try self.allocator.dupe(u8, tx.raw);
+            errdefer self.allocator.free(stored.raw);
 
             self.allocator.free(self.transactions.items[index].input);
+            self.allocator.free(self.transactions.items[index].raw);
             self.transactions.items[index] = stored;
             return;
         }
@@ -97,6 +107,8 @@ pub const TransactionPool = struct {
         var stored = tx;
         stored.input = try self.allocator.dupe(u8, tx.input);
         errdefer self.allocator.free(stored.input);
+        stored.raw = try self.allocator.dupe(u8, tx.raw);
+        errdefer self.allocator.free(stored.raw);
         try self.transactions.append(self.allocator, stored);
     }
 
@@ -143,6 +155,7 @@ pub const TransactionPool = struct {
 
             self.advanceSenderNonce(tx.sender, tx.nonce);
             self.allocator.free(tx.input);
+            self.allocator.free(tx.raw);
             _ = self.transactions.orderedRemove(index);
         }
     }

@@ -68,6 +68,7 @@ pub const BlockCommitments = struct {
 
 pub const BlockResult = struct {
     receipts: []primitives.Receipt.Receipt,
+    included_tx_indexes: []usize = &.{},
     total_gas_used: u64,
     block_number: u64,
     transactions_root: [32]u8,
@@ -83,6 +84,7 @@ pub const BlockResult = struct {
             receipt.deinit(allocator);
         }
         allocator.free(self.receipts);
+        allocator.free(self.included_tx_indexes);
     }
 };
 
@@ -132,11 +134,13 @@ pub fn buildBlockWithOptions(
         for (receipts.items) |r| r.deinit(allocator);
         receipts.deinit();
     }
+    var included_tx_indexes = std.array_list.Managed(usize).init(allocator);
+    errdefer included_tx_indexes.deinit();
 
     var total_gas_used: u64 = 0;
     var total_blob_gas_used: u64 = 0;
 
-    for (transactions) |item| {
+    for (transactions, 0..) |item, tx_index| {
         if (total_gas_used >= effective_block_ctx.block_gas_limit) {
             break;
         }
@@ -171,6 +175,7 @@ pub fn buildBlockWithOptions(
         receipt.cumulative_gas_used = @as(u256, total_gas_used);
         receipt.transaction_index = @as(u32, @intCast(receipts.items.len));
         try receipts.append(receipt);
+        try included_tx_indexes.append(tx_index);
         receipt_appended = true;
     }
 
@@ -199,8 +204,16 @@ pub fn buildBlockWithOptions(
         runtime.clearNextBlockOverrides();
     }
 
+    const owned_receipts = try receipts.toOwnedSlice();
+    errdefer {
+        for (owned_receipts) |receipt| receipt.deinit(allocator);
+        allocator.free(owned_receipts);
+    }
+    const owned_included_tx_indexes = try included_tx_indexes.toOwnedSlice();
+
     return BlockResult{
-        .receipts = try receipts.toOwnedSlice(),
+        .receipts = owned_receipts,
+        .included_tx_indexes = owned_included_tx_indexes,
         .total_gas_used = total_gas_used,
         .block_number = effective_block_ctx.block_number,
         .transactions_root = transactions_root,

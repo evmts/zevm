@@ -4,6 +4,8 @@ const primitives = @import("primitives");
 const blockchain_mod = @import("blockchain");
 const mining = @import("../mining.zig");
 const mining_coordinator = @import("../mining_coordinator.zig");
+const block_builder = @import("../block_builder.zig");
+const tx_processor = @import("../tx_processor.zig");
 const txpool = @import("../txpool.zig");
 const host_adapter = @import("../host_adapter.zig");
 const dev_runtime_mod = @import("../rpc/dev_runtime.zig");
@@ -12,6 +14,7 @@ const log_index_mod = @import("../log_index.zig");
 const checkpoint = @import("../checkpoint.zig");
 const consensus_sync = @import("../consensus_sync.zig");
 const log = @import("../log.zig");
+const guillotine_mini = @import("guillotine_mini");
 
 /// Hardhat/Anvil-style deterministic dev accounts.
 /// These are the same 10 accounts used by Hardhat/Anvil (derived from mnemonic
@@ -205,6 +208,10 @@ const SnapshotEntry = struct {
     auto_impersonate_account: bool,
 };
 
+const OwnedBlockBody = struct {
+    transactions: []primitives.BlockBody.TransactionData,
+};
+
 pub const NodeRuntime = struct {
     allocator: std.mem.Allocator,
     mode: Mode,
@@ -231,6 +238,7 @@ pub const NodeRuntime = struct {
     dev_runtime: dev_runtime_mod.DevRuntime,
     state: state_manager.StateManager,
     blockchain: blockchain_mod.Blockchain,
+    owned_block_bodies: std.ArrayList(OwnedBlockBody),
     receipt_index: receipt_index_mod.ReceiptIndex,
     log_index: log_index_mod.LogIndex,
     fork_config: ?ForkConfig,
@@ -331,6 +339,7 @@ pub const NodeRuntime = struct {
             .dev_runtime = dev_runtime_mod.DevRuntime.initWithCoinbase(default_coinbase),
             .state = state,
             .blockchain = blockchain,
+            .owned_block_bodies = .{},
             .receipt_index = receipt_index,
             .log_index = log_index,
             .fork_config = initial_fork_config,
@@ -468,15 +477,68 @@ pub const NodeRuntime = struct {
         coordinator.current_timestamp = first_timestamp;
 
         var adapter = host_adapter.HostAdapter{ .state = &self.state };
-        try coordinator.mineBlocksWithOptions(self.allocator, &self.state, adapter.hostInterface(), count, interval, .{
-            .dev_runtime = &self.dev_runtime,
-        });
+        var i: u64 = 0;
+        while (i < count) : (i += 1) {
+            if (i > 0 and interval > 0) {
+                coordinator.current_timestamp += interval - 1;
+            }
 
-        self.head_block_number = coordinator.current_block_number - 1;
-        self.head_block_timestamp = coordinator.current_timestamp - 1;
+            const ready = try self.pool.getReady(self.allocator);
+            defer self.allocator.free(ready);
+
+            for (ready) |pooled| {
+                try coordinator.pending_txs.append(self.allocator, NodeRuntime.executionTransactionFromPooled(pooled));
+            }
+
+            const block_options = mining_coordinator.MiningBlockOptions{
+                .prevrandao = coordinator.next_prevrandao,
+                .dev_runtime = &self.dev_runtime,
+            };
+            const block_ctx = block_builder.blockContextWithEnvironmentOverrides(
+                &self.dev_runtime,
+                coordinator.blockContext(block_options),
+            );
+            const block_excess_blob_gas = coordinator.current_excess_blob_gas;
+
+            var result = try coordinator.mineBlockWithOptions(
+                self.allocator,
+                &self.state,
+                adapter.hostInterface(),
+                block_options,
+            );
+            _ = &result;
+
+            const block_hash = try self.persistMinedBlock(block_ctx, block_excess_blob_gas, &result, ready);
+
+            const mined_hashes = try self.minedHashesFromResult(result, ready);
+            defer self.allocator.free(mined_hashes);
+            self.pool.removeMined(mined_hashes);
+
+            const block = (try self.blockchain.getBlockByHash(block_hash)) orelse return error.MinedBlockMissing;
+            self.head_block_number = block.header.number;
+            self.head_block_timestamp = block.header.timestamp;
+        }
+
         if (coordinator.current_base_fee_per_gas) |base_fee| {
             self.base_fee = base_fee;
         }
+    }
+
+    fn executionTransactionFromPooled(pooled: txpool.PooledTransaction) tx_processor.ExecutionTx {
+        return .{
+            .caller = pooled.sender,
+            .tx = .{
+                .nonce = pooled.nonce,
+                .gas_price = pooled.max_fee_per_gas,
+                .gas_limit = pooled.gas_limit,
+                .to = pooled.to,
+                .value = pooled.value,
+                .data = pooled.input,
+                .v = pooled.v,
+                .r = pooled.r,
+                .s = pooled.s,
+            },
+        };
     }
 
     pub fn isForkingEnabled(self: *const NodeRuntime) bool {
@@ -735,6 +797,8 @@ pub const NodeRuntime = struct {
         self.log_index.deinit(self.allocator);
         self.receipt_index.deinit(self.allocator);
         self.blockchain.deinit();
+        self.clearOwnedBlockBodies();
+        self.owned_block_bodies.deinit(self.allocator);
         self.state.deinit();
         destroyForkBackend(self.allocator, self.fork_backend);
         freeForkConfig(self.allocator, self.fork_config);
@@ -841,12 +905,162 @@ pub const NodeRuntime = struct {
         self.log_index.deinit(self.allocator);
         self.receipt_index.deinit(self.allocator);
         self.blockchain.deinit();
+        self.clearOwnedBlockBodies();
 
         self.blockchain = new_blockchain;
         self.receipt_index = new_receipt_index;
         self.log_index = new_log_index;
     }
+
+    fn persistMinedBlock(
+        self: *NodeRuntime,
+        block_ctx: guillotine_mini.BlockContext,
+        block_excess_blob_gas: u64,
+        result: *block_builder.BlockResult,
+        ready: []const txpool.PooledTransaction,
+    ) ![32]u8 {
+        const transactions = try self.cloneIncludedBlockTransactions(result, ready);
+        var transactions_owned_by_runtime = false;
+        errdefer if (!transactions_owned_by_runtime) freeBlockTransactions(self.allocator, transactions);
+
+        const parent = (try self.blockchain.getBlockByNumber(self.head_block_number)) orelse return error.MissingParentBlock;
+        const hardfork = mining_coordinator.resolveHardfork(block_ctx.block_number, block_ctx.block_timestamp);
+        const transactions_root = try block_builder.computeRawTransactionsRoot(self.allocator, transactions);
+
+        var header = primitives.BlockHeader.BlockHeader{
+            .parent_hash = parent.hash,
+            .ommers_hash = primitives.BlockHeader.EMPTY_OMMERS_HASH,
+            .beneficiary = block_ctx.block_coinbase,
+            .state_root = result.state_root orelse primitives.Hash.ZERO,
+            .transactions_root = transactions_root,
+            .receipts_root = result.receipts_root,
+            .logs_bloom = result.logs_bloom,
+            .difficulty = 0,
+            .number = block_ctx.block_number,
+            .gas_limit = block_ctx.block_gas_limit,
+            .gas_used = result.total_gas_used,
+            .timestamp = block_ctx.block_timestamp,
+            .base_fee_per_gas = if (hardfork.isAtLeast(.LONDON)) block_ctx.block_base_fee else null,
+            .withdrawals_root = if (hardfork.isAtLeast(.SHANGHAI))
+                (result.withdrawals_root orelse primitives.BlockHeader.EMPTY_WITHDRAWALS_ROOT)
+            else
+                null,
+            .blob_gas_used = if (hardfork.isAtLeast(.CANCUN)) result.blob_gas_used else null,
+            .excess_blob_gas = if (hardfork.isAtLeast(.CANCUN)) block_excess_blob_gas else null,
+            .parent_beacon_block_root = if (hardfork.isAtLeast(.CANCUN)) primitives.Hash.ZERO else null,
+        };
+        _ = &header;
+
+        const empty_withdrawals: []const primitives.BlockBody.Withdrawal = &.{};
+        const body = primitives.BlockBody.BlockBody{
+            .transactions = transactions,
+            .ommers = &.{},
+            .withdrawals = if (header.withdrawals_root != null) empty_withdrawals else null,
+        };
+
+        const block = try primitives.Block.from(&header, &body, self.allocator);
+        try finalizeReceiptsForBlock(result, ready, block.hash, block.header.number);
+
+        try self.blockchain.putBlock(block);
+        try self.blockchain.setCanonicalHead(block.hash);
+        try self.owned_block_bodies.append(self.allocator, .{ .transactions = transactions });
+        transactions_owned_by_runtime = true;
+
+        try self.receipt_index.putBlockReceipts(self.allocator, block.hash, result.receipts);
+        try self.log_index.appendBlockLogs(self.allocator, block.header.number, block.hash, result.receipts);
+
+        return block.hash;
+    }
+
+    fn cloneIncludedBlockTransactions(
+        self: *NodeRuntime,
+        result: *const block_builder.BlockResult,
+        ready: []const txpool.PooledTransaction,
+    ) ![]primitives.BlockBody.TransactionData {
+        const transactions = try self.allocator.alloc(primitives.BlockBody.TransactionData, result.included_tx_indexes.len);
+        var initialized: usize = 0;
+        errdefer {
+            var i: usize = 0;
+            while (i < initialized) : (i += 1) {
+                self.allocator.free(transactions[i].raw);
+            }
+            self.allocator.free(transactions);
+        }
+
+        for (result.included_tx_indexes, 0..) |ready_index, out_index| {
+            if (ready_index >= ready.len) return error.InvalidIncludedTransactionIndex;
+            const pooled = ready[ready_index];
+            const raw = if (pooled.raw.len > 0)
+                try self.allocator.dupe(u8, pooled.raw)
+            else
+                try primitives.Transaction.encodeLegacyForSigning(
+                    self.allocator,
+                    NodeRuntime.executionTransactionFromPooled(pooled).tx,
+                    self.chain_id,
+                );
+            transactions[out_index] = .{ .raw = raw };
+            initialized += 1;
+        }
+
+        return transactions;
+    }
+
+    fn minedHashesFromResult(
+        self: *NodeRuntime,
+        result: block_builder.BlockResult,
+        ready: []const txpool.PooledTransaction,
+    ) ![][32]u8 {
+        const hashes = try self.allocator.alloc([32]u8, result.included_tx_indexes.len);
+        for (result.included_tx_indexes, 0..) |ready_index, i| {
+            if (ready_index >= ready.len) return error.InvalidIncludedTransactionIndex;
+            hashes[i] = ready[ready_index].hash;
+        }
+        return hashes;
+    }
+
+    fn clearOwnedBlockBodies(self: *NodeRuntime) void {
+        for (self.owned_block_bodies.items) |entry| {
+            freeBlockTransactions(self.allocator, entry.transactions);
+        }
+        self.owned_block_bodies.clearRetainingCapacity();
+    }
 };
+
+fn finalizeReceiptsForBlock(
+    result: *block_builder.BlockResult,
+    ready: []const txpool.PooledTransaction,
+    block_hash: [32]u8,
+    block_number: u64,
+) !void {
+    var log_index: u32 = 0;
+    for (result.receipts, 0..) |*receipt, receipt_index| {
+        const ready_index = result.included_tx_indexes[receipt_index];
+        if (ready_index >= ready.len) return error.InvalidIncludedTransactionIndex;
+        receipt.transaction_hash = ready[ready_index].hash;
+        receipt.transaction_index = @intCast(receipt_index);
+        receipt.block_hash = block_hash;
+        receipt.block_number = block_number;
+
+        const logs = @constCast(receipt.logs);
+        for (logs) |*event_log| {
+            event_log.block_number = block_number;
+            event_log.transaction_hash = receipt.transaction_hash;
+            event_log.transaction_index = receipt.transaction_index;
+            event_log.log_index = log_index;
+            log_index += 1;
+        }
+    }
+}
+
+fn freeBlockTransactions(
+    allocator: std.mem.Allocator,
+    transactions: []primitives.BlockBody.TransactionData,
+) void {
+    for (transactions) |tx| {
+        allocator.free(tx.raw);
+    }
+    allocator.free(transactions);
+}
 
 fn initBlockchainWithGenesis(
     allocator: std.mem.Allocator,
