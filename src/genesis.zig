@@ -392,7 +392,7 @@ fn buildGenesisTrie(
     allocator: std.mem.Allocator,
     entries: []const GenesisTrieEntry,
     depth: usize,
-) !*GenesisTrieNode {
+) anyerror!*GenesisTrieNode {
     const node = try allocator.create(GenesisTrieNode);
 
     if (entries.len == 1) {
@@ -450,7 +450,7 @@ fn commonPrefixLen(entries: []const GenesisTrieEntry, depth: usize) usize {
     return len;
 }
 
-fn encodeGenesisTrieNode(allocator: std.mem.Allocator, node: *const GenesisTrieNode) ![]u8 {
+fn encodeGenesisTrieNode(allocator: std.mem.Allocator, node: *const GenesisTrieNode) anyerror![]u8 {
     return switch (node.*) {
         .leaf => |leaf| blk: {
             var fields = std.ArrayList([]const u8){};
@@ -483,7 +483,7 @@ fn encodeGenesisTrieNode(allocator: std.mem.Allocator, node: *const GenesisTrieN
     };
 }
 
-fn encodeChildReference(allocator: std.mem.Allocator, node: *const GenesisTrieNode) ![]const u8 {
+fn encodeChildReference(allocator: std.mem.Allocator, node: *const GenesisTrieNode) anyerror![]const u8 {
     const encoded = try encodeGenesisTrieNode(allocator, node);
     if (encoded.len < 32) {
         return encoded;

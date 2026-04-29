@@ -70,37 +70,37 @@ test "DEFAULT_BASE_FEE is 1 gwei" {
 
 test "createGenesisBlock returns block with number 0" {
     const allocator = std.testing.allocator;
-    const block = try genesis.createGenesisBlock(allocator);
+    const block = try genesis.createGenesisBlock(allocator, genesis.DEVNET_CHAIN_ID);
     try std.testing.expectEqual(@as(u64, 0), block.header.number);
 }
 
 test "createGenesisBlock has correct gas limit" {
     const allocator = std.testing.allocator;
-    const block = try genesis.createGenesisBlock(allocator);
+    const block = try genesis.createGenesisBlock(allocator, genesis.DEVNET_CHAIN_ID);
     try std.testing.expectEqual(@as(u64, 30_000_000), block.header.gas_limit);
 }
 
 test "createGenesisBlock has correct base fee" {
     const allocator = std.testing.allocator;
-    const block = try genesis.createGenesisBlock(allocator);
+    const block = try genesis.createGenesisBlock(allocator, genesis.DEVNET_CHAIN_ID);
     try std.testing.expectEqual(@as(u256, 1_000_000_000), block.header.base_fee_per_gas.?);
 }
 
 test "createGenesisBlock has zero parent hash" {
     const allocator = std.testing.allocator;
-    const block = try genesis.createGenesisBlock(allocator);
+    const block = try genesis.createGenesisBlock(allocator, genesis.DEVNET_CHAIN_ID);
     try std.testing.expect(primitives.Hash.isZero(&block.header.parent_hash));
 }
 
 test "createGenesisBlock has zero difficulty" {
     const allocator = std.testing.allocator;
-    const block = try genesis.createGenesisBlock(allocator);
+    const block = try genesis.createGenesisBlock(allocator, genesis.DEVNET_CHAIN_ID);
     try std.testing.expectEqual(@as(u256, 0), block.header.difficulty);
 }
 
 test "createGenesisBlock has beneficiary set to account 0" {
     const allocator = std.testing.allocator;
-    const block = try genesis.createGenesisBlock(allocator);
+    const block = try genesis.createGenesisBlock(allocator, genesis.DEVNET_CHAIN_ID);
     try std.testing.expect(primitives.Address.Address.equals(
         block.header.beneficiary,
         genesis.DEV_ACCOUNTS[0].address,
@@ -109,7 +109,7 @@ test "createGenesisBlock has beneficiary set to account 0" {
 
 test "createGenesisBlock has empty transactions root" {
     const allocator = std.testing.allocator;
-    const block = try genesis.createGenesisBlock(allocator);
+    const block = try genesis.createGenesisBlock(allocator, genesis.DEVNET_CHAIN_ID);
     try std.testing.expect(primitives.Hash.equals(
         &block.header.transactions_root,
         &primitives.BlockHeader.EMPTY_TRANSACTIONS_ROOT,
@@ -118,7 +118,7 @@ test "createGenesisBlock has empty transactions root" {
 
 test "createGenesisBlock has empty ommers hash" {
     const allocator = std.testing.allocator;
-    const block = try genesis.createGenesisBlock(allocator);
+    const block = try genesis.createGenesisBlock(allocator, genesis.DEVNET_CHAIN_ID);
     try std.testing.expect(primitives.Hash.equals(
         &block.header.ommers_hash,
         &primitives.BlockHeader.EMPTY_OMMERS_HASH,
@@ -127,19 +127,19 @@ test "createGenesisBlock has empty ommers hash" {
 
 test "createGenesisBlock has non-zero hash" {
     const allocator = std.testing.allocator;
-    const block = try genesis.createGenesisBlock(allocator);
+    const block = try genesis.createGenesisBlock(allocator, genesis.DEVNET_CHAIN_ID);
     try std.testing.expect(!primitives.Hash.isZero(&block.hash));
 }
 
 test "createGenesisBlock has non-zero timestamp" {
     const allocator = std.testing.allocator;
-    const block = try genesis.createGenesisBlock(allocator);
+    const block = try genesis.createGenesisBlock(allocator, genesis.DEVNET_CHAIN_ID);
     try std.testing.expect(block.header.timestamp > 0);
 }
 
 test "createGenesisBlock has empty body" {
     const allocator = std.testing.allocator;
-    const block = try genesis.createGenesisBlock(allocator);
+    const block = try genesis.createGenesisBlock(allocator, genesis.DEVNET_CHAIN_ID);
     try std.testing.expectEqual(@as(usize, 0), block.body.transactions.len);
     try std.testing.expectEqual(@as(usize, 0), block.body.ommers.len);
 }
@@ -153,7 +153,7 @@ test "initGenesisState funds all 10 dev accounts" {
     var db = try database.Database.init(allocator, null);
     defer db.deinit(allocator);
 
-    try genesis.initGenesisState(&db.state);
+    _ = try genesis.initGenesisState(allocator, &db, .devnet, null);
 
     for (&genesis.DEV_ACCOUNTS) |*account| {
         const balance = try db.state.getBalance(account.address);
@@ -166,7 +166,7 @@ test "initGenesisState sets nonce 0 for all dev accounts" {
     var db = try database.Database.init(allocator, null);
     defer db.deinit(allocator);
 
-    try genesis.initGenesisState(&db.state);
+    _ = try genesis.initGenesisState(allocator, &db, .devnet, null);
 
     for (&genesis.DEV_ACCOUNTS) |*account| {
         const nonce = try db.state.getNonce(account.address);
@@ -179,7 +179,7 @@ test "initGenesisState does not affect non-dev addresses" {
     var db = try database.Database.init(allocator, null);
     defer db.deinit(allocator);
 
-    try genesis.initGenesisState(&db.state);
+    _ = try genesis.initGenesisState(allocator, &db, .devnet, null);
 
     const random_addr = primitives.Address.Address{ .bytes = .{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01 } };
     const balance = try db.state.getBalance(random_addr);
@@ -197,7 +197,7 @@ test "initGenesis stores genesis block in blockchain" {
     var chain = try blockchain_mod.Blockchain.init(allocator, null);
     defer chain.deinit();
 
-    _ = try genesis.initGenesis(allocator, &db, &chain);
+    _ = try genesis.initGenesis(allocator, &db, &chain, genesis.DEVNET_CHAIN_ID, null);
 
     const head = chain.getHeadBlockNumber();
     try std.testing.expect(head != null);
@@ -211,7 +211,7 @@ test "initGenesis records genesis hash in block_hashes" {
     var chain = try blockchain_mod.Blockchain.init(allocator, null);
     defer chain.deinit();
 
-    const result = try genesis.initGenesis(allocator, &db, &chain);
+    const result = try genesis.initGenesis(allocator, &db, &chain, genesis.DEVNET_CHAIN_ID, null);
 
     const hash = db.block_hashes.get(0);
     try std.testing.expect(hash != null);
@@ -225,7 +225,7 @@ test "initGenesis returns correct chain_id" {
     var chain = try blockchain_mod.Blockchain.init(allocator, null);
     defer chain.deinit();
 
-    const result = try genesis.initGenesis(allocator, &db, &chain);
+    const result = try genesis.initGenesis(allocator, &db, &chain, genesis.DEVNET_CHAIN_ID, null);
     try std.testing.expectEqual(@as(u64, 31337), result.chain_id);
 }
 
@@ -236,7 +236,7 @@ test "initGenesis returns genesis hash" {
     var chain = try blockchain_mod.Blockchain.init(allocator, null);
     defer chain.deinit();
 
-    const result = try genesis.initGenesis(allocator, &db, &chain);
+    const result = try genesis.initGenesis(allocator, &db, &chain, genesis.DEVNET_CHAIN_ID, null);
     try std.testing.expect(!primitives.Hash.isZero(&result.genesis_hash));
 }
 
@@ -247,7 +247,7 @@ test "initGenesis returns all 10 managed accounts" {
     var chain = try blockchain_mod.Blockchain.init(allocator, null);
     defer chain.deinit();
 
-    const result = try genesis.initGenesis(allocator, &db, &chain);
+    const result = try genesis.initGenesis(allocator, &db, &chain, genesis.DEVNET_CHAIN_ID, null);
     try std.testing.expectEqual(@as(usize, 10), result.managed_accounts.len);
     try std.testing.expect(primitives.Address.Address.equals(
         result.managed_accounts[0].address,
@@ -262,7 +262,7 @@ test "initGenesis returns coinbase as first dev account" {
     var chain = try blockchain_mod.Blockchain.init(allocator, null);
     defer chain.deinit();
 
-    const result = try genesis.initGenesis(allocator, &db, &chain);
+    const result = try genesis.initGenesis(allocator, &db, &chain, genesis.DEVNET_CHAIN_ID, null);
     try std.testing.expect(primitives.Address.Address.equals(
         result.coinbase,
         genesis.DEV_ACCOUNTS[0].address,
@@ -276,7 +276,7 @@ test "initGenesis balances are queryable after init" {
     var chain = try blockchain_mod.Blockchain.init(allocator, null);
     defer chain.deinit();
 
-    _ = try genesis.initGenesis(allocator, &db, &chain);
+    _ = try genesis.initGenesis(allocator, &db, &chain, genesis.DEVNET_CHAIN_ID, null);
 
     for (&genesis.DEV_ACCOUNTS) |*account| {
         const balance = try db.state.getBalance(account.address);
@@ -291,7 +291,7 @@ test "initGenesis genesis block retrievable by hash from blockchain" {
     var chain = try blockchain_mod.Blockchain.init(allocator, null);
     defer chain.deinit();
 
-    const result = try genesis.initGenesis(allocator, &db, &chain);
+    const result = try genesis.initGenesis(allocator, &db, &chain, genesis.DEVNET_CHAIN_ID, null);
 
     const block = try chain.getBlockByHash(result.genesis_hash);
     try std.testing.expect(block != null);
@@ -305,7 +305,7 @@ test "initGenesis genesis block retrievable by number from blockchain" {
     var chain = try blockchain_mod.Blockchain.init(allocator, null);
     defer chain.deinit();
 
-    _ = try genesis.initGenesis(allocator, &db, &chain);
+    _ = try genesis.initGenesis(allocator, &db, &chain, genesis.DEVNET_CHAIN_ID, null);
 
     const block = try chain.getBlockByNumber(0);
     try std.testing.expect(block != null);
