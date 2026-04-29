@@ -18,6 +18,7 @@
         "LegacyTests/Cancun/GeneralStateTests/stEIP2930/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stEIP3607/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stHomesteadSpecific/*.json",
+        "LegacyTests/Cancun/GeneralStateTests/stMemExpandingEIP150Calls/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stRecursiveCreate/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stSLoadTest/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stSelfBalance/*.json",

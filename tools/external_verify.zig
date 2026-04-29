@@ -49,6 +49,7 @@ const legacy_state_fixture_dirs = [_][]const u8{
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP2930",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP3607",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stHomesteadSpecific",
+    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stMemExpandingEIP150Calls",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stRecursiveCreate",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stSLoadTest",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stSelfBalance",
