@@ -52,8 +52,8 @@ Startup input rule:
 - checkpoint startup inputs from CLI/config (`--checkpoint`, `mode.light.checkpoint`) must be `0x`-prefixed 32-byte hashes (`Hash32`)
 - `--strict-checkpoint-age` is a presence flag: present means `true`, omitted means `false`, and explicit assignment forms (for example `--strict-checkpoint-age=false`) are invalid
 - selected startup checkpoint hash must resolve on the configured `network` via `consensusRpcUrl`; network mismatch is startup failure before opening the HTTP listener
-- phase-1 operator-facing light-mode startup inputs are `network`, `consensusRpcUrl`, `checkpoint`, `checkpointDir`, `maxCheckpointAgeSeconds`, and `strictCheckpointAge`
-- among proof-source plumbing inputs, only `consensusRpcUrl` is operator-configurable; other proof-source internals are implementation-defined and not user-configurable
+- phase-1 operator-facing light-mode startup inputs are `network`, `consensusRpcUrl`, `executionRpcUrl`, `checkpoint`, `checkpointDir`, `maxCheckpointAgeSeconds`, and `strictCheckpointAge`
+- `executionRpcUrl` is the execution JSON-RPC source used for proof-backed execution reads
 
 Startup consensus-network handshake (before listener):
 

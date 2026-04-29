@@ -20,7 +20,8 @@ Minimal startup:
 ./zig-out/bin/zevm \
   --mode light \
   --network sepolia \
-  --consensus-rpc-url https://beacon.example
+  --consensus-rpc-url https://beacon.example \
+  --execution-rpc-url https://execution.example
 ```
 
 Config-file startup equivalent (`mode.light`):
@@ -34,7 +35,8 @@ Config-file startup equivalent (`mode.light`):
   "mode": {
     "light": {
       "network": "sepolia",
-      "consensusRpcUrl": "https://beacon.example"
+      "consensusRpcUrl": "https://beacon.example",
+      "executionRpcUrl": "https://execution.example"
     }
   }
 }
@@ -50,8 +52,9 @@ Security baseline:
 Operational startup notes:
 
 - supported light networks are `mainnet`, `sepolia`, `holesky`
-- examples on this page use `sepolia`; keep `--network`, `--consensus-rpc-url`, and `checkpointDir` for the same network
+- examples on this page use `sepolia`; keep `--network`, `--consensus-rpc-url`, `--execution-rpc-url`, and `checkpointDir` for the same network
 - `--consensus-rpc-url` must be a Beacon API for the same selected network
+- `--execution-rpc-url` must be an execution JSON-RPC endpoint that serves `eth_getProof` and `eth_getCode` for the same selected network
 - startup validation runs before listener bind (consensus/network handshake + checkpoint/network checks)
 - handshake root checks use the [canonical chain-id/genesis-root mapping](../reference/configuration/light-mode#canonical-chain-id-and-genesis-root-mapping)
 - startup always calls `GET <consensusRpcUrl>/eth/v1/beacon/genesis` and validates `data.genesis_validators_root` against `network`; any handshake failure or root mismatch exits before listener bind
@@ -137,6 +140,7 @@ Example with explicit checkpoint:
   --mode light \
   --network sepolia \
   --consensus-rpc-url https://beacon.example \
+  --execution-rpc-url https://execution.example \
   --checkpoint 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 ```
 
@@ -184,7 +188,7 @@ Serving guidance:
 
 Error-state recovery path (`status = "error"`):
 
-1. Verify `network`, `consensusRpcUrl`, and checkpoint inputs (`--checkpoint`, `mode.light.checkpoint`, `checkpointDir/checkpoint`) for format/network mismatches.
+1. Verify `network`, `consensusRpcUrl`, `executionRpcUrl`, and checkpoint inputs (`--checkpoint`, `mode.light.checkpoint`, `checkpointDir/checkpoint`) for format/network mismatches.
 2. Correct the underlying input/configuration issue.
 3. Restart the ZEVM process.
 4. Re-check `zevm_lightSyncStatus` and continue only after `status = "synced"` with `ready = true`.

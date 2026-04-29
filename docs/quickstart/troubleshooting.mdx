@@ -15,7 +15,7 @@ Capture process `stderr` from your shell or service manager and inspect it for s
 Shell redirection example:
 
 ```bash
-./zig-out/bin/zevm --mode light --network sepolia --consensus-rpc-url https://beacon.example \
+./zig-out/bin/zevm --mode light --network sepolia --consensus-rpc-url https://beacon.example --execution-rpc-url https://execution.example \
   1>./zevm.stdout.log \
   2>./zevm.stderr.log
 ```

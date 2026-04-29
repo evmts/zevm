@@ -266,8 +266,8 @@ Light readiness rule:
 - when `ready = true`, `eth_blockNumber` returns the light-mode `latest` head number
 - for `eth_blockNumber`, non-empty params still fail first with `-32602`; readiness gating is the next check (`-32011`)
 - `zevm_lightSyncStatus` fields/invariants (including `ready`/`status` coupling, `checkpointSource`, `lastCheckpoint`, slot-field constraints, and lifecycle implications) are defined canonically in section 10 and apply uniformly to light-mode behavior in this section
-- phase-1 operator-facing light-mode startup inputs are `--network`, `--consensus-rpc-url`, `--checkpoint`, `--checkpoint-dir`, `--max-checkpoint-age-seconds`, and `--strict-checkpoint-age`
-- among proof-source plumbing inputs, only `--consensus-rpc-url` is operator-configurable in this product contract; other proof-source internals are implementation-defined and not user-configurable
+- phase-1 operator-facing light-mode startup inputs are `--network`, `--consensus-rpc-url`, `--execution-rpc-url`, `--checkpoint`, `--checkpoint-dir`, `--max-checkpoint-age-seconds`, and `--strict-checkpoint-age`
+- `--execution-rpc-url` is the execution JSON-RPC source used for proof-backed execution reads
 - no additional operator-facing proof-source tuning knobs are part of the phase-1 public contract
 
 Light sync lifecycle (`status`/`ready`):
@@ -325,6 +325,7 @@ Trusted-mode validation:
 | --- | --- | --- |
 | `--network` | `mainnet`, `sepolia`, `holesky` | `mainnet` |
 | `--consensus-rpc-url` | Beacon API URL | required |
+| `--execution-rpc-url` | Execution JSON-RPC URL with `eth_getProof`/`eth_getCode` | `--consensus-rpc-url` |
 | `--checkpoint` | `0x`-prefixed 32-byte hash | none |
 | `--checkpoint-dir` | directory path | `.zevm/checkpoints/<network>` |
 | `--max-checkpoint-age-seconds` | `u64` | `1209600` |
@@ -332,7 +333,7 @@ Trusted-mode validation:
 
 Light-mode startup naming/path bridge:
 
-- CLI startup flags map to config keys by hyphenated-to-camelCase naming: `--network` -> `network`, `--consensus-rpc-url` -> `consensusRpcUrl`, `--checkpoint` -> `checkpoint`, `--checkpoint-dir` -> `checkpointDir`, `--max-checkpoint-age-seconds` -> `maxCheckpointAgeSeconds`, `--strict-checkpoint-age` -> `strictCheckpointAge`
+- CLI startup flags map to config keys by hyphenated-to-camelCase naming: `--network` -> `network`, `--consensus-rpc-url` -> `consensusRpcUrl`, `--execution-rpc-url` -> `executionRpcUrl`, `--checkpoint` -> `checkpoint`, `--checkpoint-dir` -> `checkpointDir`, `--max-checkpoint-age-seconds` -> `maxCheckpointAgeSeconds`, `--strict-checkpoint-age` -> `strictCheckpointAge`
 - `--checkpoint-dir` default template is `.zevm/checkpoints/<network>`; `<network>` expands from resolved startup `network` after CLI/config merge
 - after CLI/config merge and `<network>` expansion, any relative `checkpointDir` value (including the default `.zevm/checkpoints/<network>`) is resolved against the process current working directory at startup
 - persisted checkpoint startup input path is `${resolvedCheckpointDir}/checkpoint`, where `resolvedCheckpointDir` is the absolute path after that resolution step
@@ -394,6 +395,7 @@ Light-mode example:
     "light": {
       "network": "mainnet",
       "consensusRpcUrl": "https://beacon.example",
+      "executionRpcUrl": "https://execution.example",
       "checkpoint": null,
       "checkpointDir": ".zevm/checkpoints/mainnet",
       "maxCheckpointAgeSeconds": 1209600,

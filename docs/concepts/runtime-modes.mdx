@@ -22,7 +22,7 @@ Mode is selected from startup inputs in this order:
 - otherwise, the config mode branch (`mode.trusted` or `mode.light`)
 - otherwise, the trusted-mode default
 
-Light-mode operator-facing startup inputs are `network` and `consensusRpcUrl`, with optional checkpoint controls (`checkpoint`, `checkpointDir`, `maxCheckpointAgeSeconds`, `strictCheckpointAge`).
+Light-mode operator-facing startup inputs are `network`, `consensusRpcUrl`, and `executionRpcUrl`, with optional checkpoint controls (`checkpoint`, `checkpointDir`, `maxCheckpointAgeSeconds`, `strictCheckpointAge`).
 If operators want persisted checkpoint-source behavior, they must manage `checkpointDir/checkpoint` themselves; ZEVM does not auto-populate it.
 Proof-source internals are not user-configurable in the public contract.
 

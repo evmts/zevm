@@ -60,6 +60,7 @@ Light CLI flags:
 
 - `--network` (`mainnet`, `sepolia`, `holesky`)
 - `--consensus-rpc-url`
+- `--execution-rpc-url`
 - `--checkpoint`
 - `--checkpoint-dir`
 - `--max-checkpoint-age-seconds` (default `1209600`)
@@ -75,7 +76,7 @@ Checkpoint-age defaults for light mode:
 
 Naming/path bridge for light startup inputs:
 
-- hyphenated CLI flags map to camelCase config keys: `--network` -> `network`, `--consensus-rpc-url` -> `consensusRpcUrl`, `--checkpoint` -> `checkpoint`, `--checkpoint-dir` -> `checkpointDir`, `--max-checkpoint-age-seconds` -> `maxCheckpointAgeSeconds`, `--strict-checkpoint-age` -> `strictCheckpointAge`
+- hyphenated CLI flags map to camelCase config keys: `--network` -> `network`, `--consensus-rpc-url` -> `consensusRpcUrl`, `--execution-rpc-url` -> `executionRpcUrl`, `--checkpoint` -> `checkpoint`, `--checkpoint-dir` -> `checkpointDir`, `--max-checkpoint-age-seconds` -> `maxCheckpointAgeSeconds`, `--strict-checkpoint-age` -> `strictCheckpointAge`
 - checkpoint-dir default template is `.zevm/checkpoints/<network>`; `<network>` expands from resolved startup `network` after CLI/config merge
 - after CLI/config merge and `<network>` expansion, any relative `checkpointDir` value is resolved against the process current working directory at startup
 - persisted checkpoint startup input path is `${resolvedCheckpointDir}/checkpoint`, where `resolvedCheckpointDir` is the absolute path after that resolution step
@@ -85,6 +86,7 @@ Validation:
 - `consensusRpcUrl` is required in light mode
 - `network` must be one of `mainnet`, `sepolia`, `holesky`
 - `consensusRpcUrl` must serve the same network selected by `network`
+- `executionRpcUrl` must serve execution JSON-RPC for the same network when proof-backed reads are used
 - `--strict-checkpoint-age` CLI semantics are presence-based: present means `true`, omitted means `false`, and explicit assignment forms (for example `--strict-checkpoint-age=false`) are invalid
 - checkpoint startup inputs from CLI/config are nullable for precedence selection: `--checkpoint` absent and `mode.light.checkpoint` absent or `null` are treated as absent startup inputs
 - only non-null CLI/config checkpoint values (`--checkpoint`, `mode.light.checkpoint`) must be `0x`-prefixed 32-byte hashes (`Hash32`)

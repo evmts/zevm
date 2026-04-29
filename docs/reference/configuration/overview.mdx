@@ -126,6 +126,7 @@ For concrete capture examples and failure triage flow, see [Troubleshooting -> C
     "light": {
       "network": "mainnet",
       "consensusRpcUrl": "https://beacon.example",
+      "executionRpcUrl": "https://execution.example",
       "checkpoint": null,
       "checkpointDir": ".zevm/checkpoints/mainnet",
       "maxCheckpointAgeSeconds": 1209600,
@@ -234,12 +235,12 @@ In light mode:
 - `eth_chainId` is always callable, including while `ready = false`
 - while `ready = false`, `eth_blockNumber` fails with `-32011`
 - while `ready = false`, proof-backed account/code/storage/nonce reads fail with `-32011`
-- phase-1 operator-facing startup inputs are `network` and `consensusRpcUrl`, with optional checkpoint controls (`checkpoint`, `checkpointDir`, `maxCheckpointAgeSeconds`, `strictCheckpointAge`); proof-source internals are not user-configurable in the public contract
+- phase-1 operator-facing startup inputs are `network`, `consensusRpcUrl`, and `executionRpcUrl`, with optional checkpoint controls (`checkpoint`, `checkpointDir`, `maxCheckpointAgeSeconds`, `strictCheckpointAge`)
 - `status = "syncing"` means startup validation passed and listener is live, but readiness gate remains closed
 - `status = "synced"` is the only state where `ready = true`; readiness transitions to `true` only after synced state with verified optimistic, safe, and finalized heads
 - while `ready = true`, verified heads maintain `finalized <= safe <= latest`
 - on any sync-state degradation from ready conditions (including slot coherence no longer holding: `finalizedSlot <= safeSlot <= optimisticSlot`), ZEVM sets `ready = false` immediately before serving readiness-gated calls
-- `status = "error"` keeps `ready = false`; if persistent, operators should verify `network`, `consensusRpcUrl`, and checkpoint inputs, then restart
+- `status = "error"` keeps `ready = false`; if persistent, operators should verify `network`, `consensusRpcUrl`, `executionRpcUrl`, and checkpoint inputs, then restart
 
 ## Startup Failures
 

@@ -11,8 +11,8 @@ Light mode is read-only, proof-backed, and consensus-anchored.
 >
 > This page is an operational summary. For product-contract disputes, follow those normative sources.
 
-Phase-1 operator-facing startup inputs are `network` and `consensusRpcUrl`, plus optional checkpoint controls (`checkpoint`, `checkpointDir`, `maxCheckpointAgeSeconds`, `strictCheckpointAge`).
-Proof-source internals are not user-configurable in the public contract.
+Phase-1 operator-facing startup inputs are `network`, `consensusRpcUrl`, and `executionRpcUrl`, plus optional checkpoint controls (`checkpoint`, `checkpointDir`, `maxCheckpointAgeSeconds`, `strictCheckpointAge`).
+`executionRpcUrl` supplies the execution JSON-RPC source used for proof-backed reads.
 
 ## Networks And Chain IDs
 
@@ -36,6 +36,7 @@ Use this mapping for both light-mode `eth_chainId` and startup handshake root va
 | --- | --- | --- | --- |
 | `--network` | `mode.light.network` | `mainnet`, `sepolia`, `holesky` | `mainnet` |
 | `--consensus-rpc-url` | `mode.light.consensusRpcUrl` | Beacon API URL | required |
+| `--execution-rpc-url` | `mode.light.executionRpcUrl` | Execution JSON-RPC URL with `eth_getProof`/`eth_getCode` | `consensusRpcUrl` |
 | `--checkpoint` | `mode.light.checkpoint` | `0x`-prefixed 32-byte hash | none |
 | `--checkpoint-dir` | `mode.light.checkpointDir` | directory path | `.zevm/checkpoints/<network>` |
 | `--max-checkpoint-age-seconds` | `mode.light.maxCheckpointAgeSeconds` | `u64` | `1209600` |
@@ -271,7 +272,7 @@ mv "$CHECKPOINT_DIR/checkpoint.next" "$CHECKPOINT_DIR/checkpoint"
 - `syncing`: startup validation passed and listener is live, but readiness gate is closed
 - `synced`: readiness gate is open and readiness-gated reads are serviceable while verified-head ordering holds (`finalized <= safe <= latest`) and slot ordering holds (`finalizedSlot <= safeSlot <= optimisticSlot`)
 - `error`: readiness gate is closed; while this state holds, `eth_blockNumber` and proof-backed reads fail with `-32011`
-- do not assume operator-free recovery from a persistent `error`; if it persists, verify `network`, `consensusRpcUrl`, and checkpoint inputs, then restart ZEVM
+- do not assume operator-free recovery from a persistent `error`; if it persists, verify `network`, `consensusRpcUrl`, `executionRpcUrl`, and checkpoint inputs, then restart ZEVM
 
 Readiness semantics and selector contracts are defined in [Verified Light-Mode Reads](../json-rpc/verified-light-mode-reads#readiness-and-proof-rules).
 
@@ -284,6 +285,7 @@ Readiness semantics and selector contracts are defined in [Verified Light-Mode R
     "light": {
       "network": "sepolia",
       "consensusRpcUrl": "https://beacon.example",
+      "executionRpcUrl": "https://execution.example",
       "checkpoint": null,
       "checkpointDir": ".zevm/checkpoints/sepolia",
       "maxCheckpointAgeSeconds": 1209600,
@@ -300,6 +302,7 @@ zevm \
   --mode light \
   --network sepolia \
   --consensus-rpc-url https://beacon.example \
+  --execution-rpc-url https://execution.example \
   --checkpoint-dir .zevm/checkpoints/sepolia
 ```
 

@@ -11,7 +11,7 @@ Light mode is ZEVM's read-only, proof-backed, consensus-anchored runtime.
 
 Light mode provides proof-backed, consensus-anchored reads and readiness reporting. It does not expose trusted-mode local-dev controls.
 
-Phase-1 operator-facing startup inputs are `network` and `consensusRpcUrl`, plus optional checkpoint controls (`checkpoint`, `checkpointDir`, `maxCheckpointAgeSeconds`, `strictCheckpointAge`).
+Phase-1 operator-facing startup inputs are `network`, `consensusRpcUrl`, and `executionRpcUrl`, plus optional checkpoint controls (`checkpoint`, `checkpointDir`, `maxCheckpointAgeSeconds`, `strictCheckpointAge`).
 
 Supported light networks are a closed phase-1 set: `mainnet`, `sepolia`, and `holesky`.
 Any other `network` value is invalid startup input.
@@ -56,7 +56,7 @@ Operational guidance:
 - `ready` is non-monotonic: after `ready = true`, ZEVM can transition back to `ready = false` if `status` leaves `synced` or slot coherence no longer holds (`finalizedSlot <= safeSlot <= optimisticSlot`)
 - `eth_chainId` is available before readiness
 - while not ready, readiness-gated reads (including `eth_blockNumber`) are unavailable
-- if status remains `error`, verify `network`, `consensusRpcUrl`, and checkpoint inputs, then restart
+- if status remains `error`, verify `network`, `consensusRpcUrl`, `executionRpcUrl`, and checkpoint inputs, then restart
 - `zevm_lightSyncStatus` observability uses slot fields `optimisticSlot`, `safeSlot`, and `finalizedSlot`; while ready, expect `finalizedSlot <= safeSlot <= optimisticSlot`
 
 Canonical readiness/proof contract:

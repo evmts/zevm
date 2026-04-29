@@ -986,8 +986,8 @@ Rules:
 - once ready: `eth_blockNumber` returns light-mode `latest` head number
 - light-mode numeric selector acceptance is exactly the retained-history rule in section 6.2
 - in phase 1, `${resolvedCheckpointDir}/checkpoint` is startup input only; `lastCheckpoint` runtime progression is not persisted to this file
-- phase-1 operator-facing light-mode startup inputs are `network`, `consensusRpcUrl`, `checkpoint`, `checkpointDir`, `maxCheckpointAgeSeconds`, and `strictCheckpointAge`
-- among proof-source plumbing inputs, only `consensusRpcUrl` is operator-configurable in this JSON-RPC contract; other proof-source internals are not user-configurable
+- phase-1 operator-facing light-mode startup inputs are `network`, `consensusRpcUrl`, `executionRpcUrl`, `checkpoint`, `checkpointDir`, `maxCheckpointAgeSeconds`, and `strictCheckpointAge`
+- `executionRpcUrl` is the execution JSON-RPC source used for proof-backed execution reads
 - deferred/out-of-contract method families (for example filter lifecycle beyond `eth_getLogs`, subscriptions, and debug tracing) are listed in section 14
 - deferred/out-of-contract method names return JSON-RPC `-32601` (method not found), not `-32010`
 - WebSocket transport is unsupported at transport layer (section 3) and is not a JSON-RPC method mapping

@@ -76,7 +76,7 @@ This page defines the exact light-mode JSON-RPC contract.
   5. when `ready = true`, malformed upstream proof payload -> `-32015`
   6. when `ready = true`, well-formed proof payload that fails verification against resolved state root -> `-32014`
 - `status = "error"` is an operator-recovery state: remediate the underlying startup/sync input issue, then restart the ZEVM process before expecting readiness-gated reads to recover
-- phase-1 operator-facing startup inputs are `network` and `consensusRpcUrl`, with optional checkpoint controls (`checkpoint`, `checkpointDir`, `maxCheckpointAgeSeconds`, `strictCheckpointAge`); proof-source internals are not user-configurable in the public contract; for startup consensus-network handshake details, see [Light-Mode Configuration](../configuration/light-mode#validation-rules) and [Run Light Mode](../../quickstart/run-light-mode#1-start-light-mode)
+- phase-1 operator-facing startup inputs are `network`, `consensusRpcUrl`, and `executionRpcUrl`, with optional checkpoint controls (`checkpoint`, `checkpointDir`, `maxCheckpointAgeSeconds`, `strictCheckpointAge`); for startup consensus-network handshake details, see [Light-Mode Configuration](../configuration/light-mode#validation-rules) and [Run Light Mode](../../quickstart/run-light-mode#1-start-light-mode)
 
 ## `zevm_lightSyncStatus` Result
 
