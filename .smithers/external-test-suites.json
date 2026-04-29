@@ -23,6 +23,7 @@
         "LegacyTests/Cancun/GeneralStateTests/stExample/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stHomesteadSpecific/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stMemExpandingEIP150Calls/*.json",
+        "LegacyTests/Cancun/GeneralStateTests/stPreCompiledContracts/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stRecursiveCreate/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stSLoadTest/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stSelfBalance/*.json",
@@ -31,6 +32,7 @@
         "LegacyTests/Cancun/GeneralStateTests/stTransitionTest/*.json"
       ],
       "remaining": [
+        "complete MODEXP oversized-length semantics and unquarantine LegacyTests/Cancun/GeneralStateTests/stPreCompiledContracts/modexpTests.json",
         "walk all GeneralStateTests directories and all post indexes"
       ]
     },

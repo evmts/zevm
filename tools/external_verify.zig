@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const primitives = @import("primitives");
 const state_manager = @import("state-manager");
 const guillotine_mini = @import("guillotine_mini");
@@ -6,6 +7,7 @@ const zevm = @import("zevm");
 
 const VerifyError = error{
     MissingArgument,
+    InvalidArgument,
     MissingField,
     InvalidFixture,
     InvalidAddress,
@@ -54,6 +56,7 @@ const legacy_state_fixture_dirs = [_][]const u8{
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stExample",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stHomesteadSpecific",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stMemExpandingEIP150Calls",
+    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stPreCompiledContracts",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stRecursiveCreate",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stSLoadTest",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stSelfBalance",
@@ -77,59 +80,375 @@ const hive_rpc_fixture_paths = [_][]const u8{
 // TODO(external-verify): continue legacy state expansion with another GeneralStateTests directory and keep state-root/logs assertions enabled.
 // TODO(external-verify): activate the remaining rpc-compat .io files after importing execution-apis genesis.json, chain.rlp, and headfcu.json into the ZEVM runtime.
 
+const VerifyOptions = struct {
+    shard_index: usize = 0,
+    shard_total: usize = 1,
+    timeout_seconds: u64 = 30,
+    progress_every: usize = 100,
+};
+
+const ProgressState = struct {
+    discovered: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    selected: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    skipped: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    unsupported: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    completed: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    failed: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    task_started_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    task_sequence: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    mutex: std.Thread.Mutex = .{},
+    current_task: [1024]u8 = [_]u8{0} ** 1024,
+    current_task_len: usize = 0,
+
+    fn setCurrentTask(self: *ProgressState, label: []const u8, started_ns: u64) void {
+        self.mutex.lock();
+        const len = @min(label.len, self.current_task.len);
+        @memcpy(self.current_task[0..len], label[0..len]);
+        self.current_task_len = len;
+        self.mutex.unlock();
+        self.task_started_ns.store(started_ns, .release);
+        _ = self.task_sequence.fetchAdd(1, .release);
+    }
+
+    fn clearCurrentTask(self: *ProgressState) void {
+        self.task_started_ns.store(0, .release);
+        self.mutex.lock();
+        self.current_task_len = 0;
+        self.mutex.unlock();
+    }
+
+    fn copyCurrentTask(self: *ProgressState, buffer: []u8) []const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const len = @min(self.current_task_len, buffer.len);
+        @memcpy(buffer[0..len], self.current_task[0..len]);
+        return buffer[0..len];
+    }
+};
+
+const VerifyContext = struct {
+    options: VerifyOptions,
+    progress: *ProgressState,
+    timer: *std.time.Timer,
+
+    fn claimTask(self: *VerifyContext) ?usize {
+        const zero_based = self.progress.discovered.fetchAdd(1, .monotonic);
+        if (zero_based % self.options.shard_total != self.options.shard_index) {
+            _ = self.progress.skipped.fetchAdd(1, .monotonic);
+            return null;
+        }
+        _ = self.progress.selected.fetchAdd(1, .monotonic);
+        return zero_based + 1;
+    }
+
+    fn startTask(self: *VerifyContext, task_id: usize, suite: []const u8, label: []const u8) u64 {
+        const started_ns = self.timer.read();
+        self.progress.setCurrentTask(label, monotonicNowNs());
+        if ((task_id - 1) % self.options.progress_every == 0) {
+            std.debug.print("external-verify: start #{d} suite={s} fixture=\"{s}\"\n", .{ task_id, suite, label });
+        }
+        return started_ns;
+    }
+
+    fn finishTask(self: *VerifyContext, task_id: usize, suite: []const u8, started_ns: u64) void {
+        const elapsed_ms = (self.timer.read() - started_ns) / std.time.ns_per_ms;
+        _ = self.progress.completed.fetchAdd(1, .monotonic);
+        if ((task_id - 1) % self.options.progress_every == 0) {
+            std.debug.print("external-verify: ok #{d} suite={s} elapsed_ms={d}\n", .{ task_id, suite, elapsed_ms });
+        }
+        self.progress.clearCurrentTask();
+    }
+
+    fn skipTask(self: *VerifyContext, task_id: usize, suite: []const u8, label: []const u8, reason: []const u8) void {
+        _ = self.progress.unsupported.fetchAdd(1, .monotonic);
+        if ((task_id - 1) % self.options.progress_every == 0) {
+            std.debug.print("external-verify: skip #{d} suite={s} fixture=\"{s}\" reason=\"{s}\"\n", .{ task_id, suite, label, reason });
+        }
+    }
+
+    fn failTask(self: *VerifyContext, task_id: usize, suite: []const u8, label: []const u8, started_ns: u64, err: anyerror) void {
+        const elapsed_ms = (self.timer.read() - started_ns) / std.time.ns_per_ms;
+        _ = self.progress.failed.fetchAdd(1, .monotonic);
+        std.debug.print("external-verify: FAIL #{d} suite={s} fixture=\"{s}\" elapsed_ms={d} error={s}\n", .{ task_id, suite, label, elapsed_ms, @errorName(err) });
+        printMemoryDiagnostics("external-verify: failure diagnostics", null);
+        self.progress.clearCurrentTask();
+    }
+};
+
+fn parseVerifyOptions(allocator: std.mem.Allocator, args: []const []const u8) !VerifyOptions {
+    var options = VerifyOptions{};
+
+    if (try envOwned(allocator, "ZEVM_VERIFY_SHARD")) |value| {
+        defer allocator.free(value);
+        try parseShard(value, &options);
+    }
+    if (try envOwned(allocator, "ZEVM_VERIFY_SHARD_INDEX")) |value| {
+        defer allocator.free(value);
+        options.shard_index = try parseUsizeText(value);
+    }
+    if (try envOwned(allocator, "ZEVM_VERIFY_SHARD_TOTAL")) |value| {
+        defer allocator.free(value);
+        options.shard_total = try parseUsizeText(value);
+    }
+    if (try envOwned(allocator, "ZEVM_VERIFY_TIMEOUT_SECONDS")) |value| {
+        defer allocator.free(value);
+        options.timeout_seconds = try parseU64Text(value);
+    }
+    if (try envOwned(allocator, "ZEVM_VERIFY_PROGRESS_EVERY")) |value| {
+        defer allocator.free(value);
+        options.progress_every = try parseUsizeText(value);
+    }
+
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--shard")) {
+            index += 1;
+            if (index >= args.len) return VerifyError.MissingArgument;
+            try parseShard(args[index], &options);
+        } else if (std.mem.startsWith(u8, arg, "--shard=")) {
+            try parseShard(arg["--shard=".len..], &options);
+        } else if (std.mem.eql(u8, arg, "--shard-index")) {
+            index += 1;
+            if (index >= args.len) return VerifyError.MissingArgument;
+            options.shard_index = try parseUsizeText(args[index]);
+        } else if (std.mem.startsWith(u8, arg, "--shard-index=")) {
+            options.shard_index = try parseUsizeText(arg["--shard-index=".len..]);
+        } else if (std.mem.eql(u8, arg, "--shard-total")) {
+            index += 1;
+            if (index >= args.len) return VerifyError.MissingArgument;
+            options.shard_total = try parseUsizeText(args[index]);
+        } else if (std.mem.startsWith(u8, arg, "--shard-total=")) {
+            options.shard_total = try parseUsizeText(arg["--shard-total=".len..]);
+        } else if (std.mem.eql(u8, arg, "--timeout-seconds")) {
+            index += 1;
+            if (index >= args.len) return VerifyError.MissingArgument;
+            options.timeout_seconds = try parseU64Text(args[index]);
+        } else if (std.mem.startsWith(u8, arg, "--timeout-seconds=")) {
+            options.timeout_seconds = try parseU64Text(arg["--timeout-seconds=".len..]);
+        } else if (std.mem.eql(u8, arg, "--progress-every")) {
+            index += 1;
+            if (index >= args.len) return VerifyError.MissingArgument;
+            options.progress_every = try parseUsizeText(args[index]);
+        } else if (std.mem.startsWith(u8, arg, "--progress-every=")) {
+            options.progress_every = try parseUsizeText(arg["--progress-every=".len..]);
+        } else {
+            return VerifyError.InvalidArgument;
+        }
+    }
+
+    if (options.shard_total == 0 or options.shard_index >= options.shard_total or options.progress_every == 0) {
+        return VerifyError.InvalidArgument;
+    }
+    return options;
+}
+
+fn envOwned(allocator: std.mem.Allocator, name: []const u8) !?[]u8 {
+    return std.process.getEnvVarOwned(allocator, name) catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => null,
+        else => err,
+    };
+}
+
+fn parseShard(text: []const u8, options: *VerifyOptions) !void {
+    const slash = std.mem.indexOfScalar(u8, text, '/') orelse return VerifyError.InvalidArgument;
+    options.shard_index = try parseUsizeText(text[0..slash]);
+    options.shard_total = try parseUsizeText(text[slash + 1 ..]);
+}
+
+fn parseUsizeText(text: []const u8) !usize {
+    if (text.len == 0) return VerifyError.InvalidArgument;
+    return std.fmt.parseInt(usize, text, 10) catch VerifyError.InvalidArgument;
+}
+
+fn parseU64Text(text: []const u8) !u64 {
+    if (text.len == 0) return VerifyError.InvalidArgument;
+    return std.fmt.parseInt(u64, text, 10) catch VerifyError.InvalidArgument;
+}
+
+fn watchdogMain(progress: *ProgressState, timeout_ns: u64) void {
+    if (timeout_ns == 0) return;
+
+    var last_reported_sequence: u64 = std.math.maxInt(u64);
+    while (!progress.done.load(.acquire)) {
+        std.Thread.sleep(@min(timeout_ns, 5 * std.time.ns_per_s));
+
+        const started_ns = progress.task_started_ns.load(.acquire);
+        if (started_ns == 0) continue;
+        const now_u64 = monotonicNowNs();
+        if (now_u64 < started_ns or now_u64 - started_ns < timeout_ns) continue;
+
+        const sequence = progress.task_sequence.load(.acquire);
+        if (sequence == last_reported_sequence) continue;
+        last_reported_sequence = sequence;
+
+        var task_buffer: [1024]u8 = undefined;
+        const task = progress.copyCurrentTask(&task_buffer);
+        const elapsed_ms = (now_u64 - started_ns) / std.time.ns_per_ms;
+        std.debug.print("external-verify: timeout diagnostic elapsed_ms={d} fixture=\"{s}\"\n", .{ elapsed_ms, task });
+        printMemoryDiagnostics("external-verify: timeout diagnostics", null);
+    }
+}
+
+fn monotonicNowNs() u64 {
+    const now_ns = std.time.nanoTimestamp();
+    return if (now_ns < 0) 0 else @intCast(now_ns);
+}
+
+fn printMemoryDiagnostics(prefix: []const u8, active_alloc_bytes: ?usize) void {
+    const usage = std.posix.getrusage(std.posix.rusage.SELF);
+    const max_rss_mib = maxResidentSetBytes(usage.maxrss) / (1024 * 1024);
+    if (active_alloc_bytes) |bytes| {
+        std.debug.print("{s}: max_rss_mib={d} active_alloc_mib={d} major_faults={d} involuntary_ctx_switches={d}\n", .{
+            prefix,
+            max_rss_mib,
+            bytes / (1024 * 1024),
+            usage.majflt,
+            usage.nivcsw,
+        });
+    } else {
+        std.debug.print("{s}: max_rss_mib={d} major_faults={d} involuntary_ctx_switches={d}\n", .{
+            prefix,
+            max_rss_mib,
+            usage.majflt,
+            usage.nivcsw,
+        });
+    }
+}
+
+fn maxResidentSetBytes(raw: isize) u64 {
+    if (raw <= 0) return 0;
+    const value: u64 = @intCast(raw);
+    return switch (builtin.os.tag) {
+        .linux => value * 1024,
+        else => value,
+    };
+}
+
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{
+        .stack_trace_frames = 0,
+        .enable_memory_limit = true,
+        .thread_safe = false,
+    }){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
-    if (args.len != 3) return VerifyError.MissingArgument;
+    if (args.len < 3) return VerifyError.MissingArgument;
 
     const repo_root = args[1];
     const zevm_bin = args[2];
+    const options = try parseVerifyOptions(allocator, args[3..]);
 
-    try runExecutionSpecStateFixtures(allocator, repo_root);
-    try runLegacyInvalidIntrinsicGasFixture(allocator, repo_root);
-    try runLegacyStateFixtures(allocator, repo_root);
-    try runBlockchainFixtureSmoke(allocator, repo_root);
-    try runExecutionSpecBlockchainStructuralFixtures(allocator, repo_root);
-    try runHiveRpcCompatibilityFixtures(allocator, repo_root, zevm_bin);
+    var timer = try std.time.Timer.start();
+    var progress = ProgressState{};
+    var ctx = VerifyContext{
+        .options = options,
+        .progress = &progress,
+        .timer = &timer,
+    };
+
+    std.debug.print("external-verify: start shard={d}/{d} timeout_seconds={d} progress_every={d}\n", .{
+        options.shard_index,
+        options.shard_total,
+        options.timeout_seconds,
+        options.progress_every,
+    });
+
+    const timeout_ns = options.timeout_seconds * std.time.ns_per_s;
+    const watchdog = try std.Thread.spawn(.{}, watchdogMain, .{ &progress, timeout_ns });
+    defer watchdog.join();
+    defer progress.done.store(true, .release);
+
+    runExternalVerify(allocator, repo_root, zevm_bin, &ctx) catch |err| {
+        var task_buffer: [1024]u8 = undefined;
+        const current = progress.copyCurrentTask(&task_buffer);
+        std.debug.print("external-verify: failed error={s} elapsed_ms={d} current=\"{s}\"\n", .{
+            @errorName(err),
+            timer.read() / std.time.ns_per_ms,
+            current,
+        });
+        printMemoryDiagnostics("external-verify: final diagnostics", gpa.total_requested_bytes);
+        return err;
+    };
+
+    progress.done.store(true, .release);
+    std.debug.print("external-verify: complete discovered={d} selected={d} skipped={d} unsupported={d} completed={d} elapsed_ms={d}\n", .{
+        progress.discovered.load(.monotonic),
+        progress.selected.load(.monotonic),
+        progress.skipped.load(.monotonic),
+        progress.unsupported.load(.monotonic),
+        progress.completed.load(.monotonic),
+        timer.read() / std.time.ns_per_ms,
+    });
+    printMemoryDiagnostics("external-verify: final diagnostics", gpa.total_requested_bytes);
 }
 
-fn runExecutionSpecStateFixtures(allocator: std.mem.Allocator, repo_root: []const u8) !void {
+fn runExternalVerify(allocator: std.mem.Allocator, repo_root: []const u8, zevm_bin: []const u8, ctx: *VerifyContext) !void {
+    try runExecutionSpecStateFixtures(allocator, repo_root, ctx);
+    try runLegacyInvalidIntrinsicGasFixture(allocator, repo_root, ctx);
+    try runLegacyStateFixtures(allocator, repo_root, ctx);
+    try runBlockchainFixtureSmoke(allocator, repo_root, ctx);
+    try runExecutionSpecBlockchainStructuralFixtures(allocator, repo_root, ctx);
+    try runHiveRpcCompatibilityFixtures(allocator, repo_root, zevm_bin, ctx);
+}
+
+fn runExecutionSpecStateFixtures(allocator: std.mem.Allocator, repo_root: []const u8, ctx: *VerifyContext) !void {
     for (execution_spec_state_fixture_paths) |relative_path| {
         const path = try std.fs.path.join(allocator, &.{ repo_root, relative_path });
         defer allocator.free(path);
-        try runStateFixtureFile(allocator, path);
+        try runStateFixtureFile(allocator, path, relative_path, ctx);
     }
 }
 
-fn runStateFixtureFile(allocator: std.mem.Allocator, path: []const u8) !void {
+fn runStateFixtureFile(allocator: std.mem.Allocator, path: []const u8, label_path: []const u8, ctx: *VerifyContext) !void {
     var parsed = try readJson(allocator, path);
     defer parsed.deinit();
 
     var case_count: usize = 0;
     var it = parsed.value.object.iterator();
     while (it.next()) |entry| {
-        try runGeneratedStateFixture(allocator, entry.value_ptr.*);
+        try runGeneratedStateFixture(allocator, entry.value_ptr.*, label_path, entry.key_ptr.*, ctx);
         case_count += 1;
     }
 
     if (case_count == 0) return VerifyError.InvalidFixture;
 }
 
-fn runGeneratedStateFixture(allocator: std.mem.Allocator, fixture: std.json.Value) !void {
+fn runGeneratedStateFixture(
+    allocator: std.mem.Allocator,
+    fixture: std.json.Value,
+    label_path: []const u8,
+    fixture_name: []const u8,
+    ctx: *VerifyContext,
+) !void {
     const post_by_fork = try field(fixture, "post");
     var ran: usize = 0;
     var fork_it = post_by_fork.object.iterator();
     while (fork_it.next()) |fork_entry| {
+        const hardfork = try hardforkFromFixtureName(fork_entry.key_ptr.*);
         const post_cases = fork_entry.value_ptr.*;
         if (post_cases != .array) return VerifyError.InvalidFixture;
 
-        for (post_cases.array.items) |post_case| {
-            const hardfork = try hardforkFromFixtureName(fork_entry.key_ptr.*);
-            try runGeneratedStatePostCase(allocator, fixture, post_case, hardfork);
+        for (post_cases.array.items, 0..) |post_case, post_index| {
+            if (ctx.claimTask()) |task_id| {
+                const task_label = try std.fmt.allocPrint(allocator, "{s} :: {s} :: {s} post={d}", .{
+                    label_path,
+                    fixture_name,
+                    fork_entry.key_ptr.*,
+                    post_index,
+                });
+                defer allocator.free(task_label);
+                const started_ns = ctx.startTask(task_id, "execution-spec-state", task_label);
+                runGeneratedStatePostCase(allocator, fixture, post_case, hardfork) catch |err| {
+                    ctx.failTask(task_id, "execution-spec-state", task_label, started_ns, err);
+                    return err;
+                };
+                ctx.finishTask(task_id, "execution-spec-state", started_ns);
+            }
             ran += 1;
         }
     }
@@ -137,7 +456,11 @@ fn runGeneratedStateFixture(allocator: std.mem.Allocator, fixture: std.json.Valu
     if (ran == 0) return VerifyError.InvalidFixture;
 }
 
-fn runGeneratedStatePostCase(allocator: std.mem.Allocator, fixture: std.json.Value, post_case: std.json.Value, hardfork: guillotine_mini.Hardfork) !void {
+fn runGeneratedStatePostCase(parent_allocator: std.mem.Allocator, fixture: std.json.Value, post_case: std.json.Value, hardfork: guillotine_mini.Hardfork) !void {
+    var arena = std.heap.ArenaAllocator.init(parent_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
     if (post_case.object.get("expectException")) |_| return VerifyError.UnexpectedTransactionResult;
 
     var sm = try state_manager.StateManager.init(allocator, null);
@@ -167,7 +490,22 @@ fn runGeneratedStatePostCase(allocator: std.mem.Allocator, fixture: std.json.Val
     try assertState(allocator, &sm, try field(post_case, "state"));
 }
 
-fn runLegacyInvalidIntrinsicGasFixture(allocator: std.mem.Allocator, repo_root: []const u8) !void {
+fn runLegacyInvalidIntrinsicGasFixture(allocator: std.mem.Allocator, repo_root: []const u8, ctx: *VerifyContext) !void {
+    const label = "execution-spec-tests/tests/static/state_tests/stExample/invalidTrFiller.json";
+    const task_id = ctx.claimTask() orelse return;
+    const started_ns = ctx.startTask(task_id, "legacy-state-filler", label);
+    runLegacyInvalidIntrinsicGasFixtureTask(allocator, repo_root) catch |err| {
+        ctx.failTask(task_id, "legacy-state-filler", label, started_ns, err);
+        return err;
+    };
+    ctx.finishTask(task_id, "legacy-state-filler", started_ns);
+}
+
+fn runLegacyInvalidIntrinsicGasFixtureTask(parent_allocator: std.mem.Allocator, repo_root: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(parent_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
     const path = try std.fs.path.join(allocator, &.{
         repo_root,
         "execution-spec-tests/tests/static/state_tests/stExample/invalidTrFiller.json",
@@ -201,15 +539,15 @@ fn runLegacyInvalidIntrinsicGasFixture(allocator: std.mem.Allocator, repo_root: 
     try assertState(allocator, &sm, expected);
 }
 
-fn runLegacyStateFixtures(allocator: std.mem.Allocator, repo_root: []const u8) !void {
+fn runLegacyStateFixtures(allocator: std.mem.Allocator, repo_root: []const u8, ctx: *VerifyContext) !void {
     for (legacy_state_fixture_dirs) |relative_path| {
         const path = try std.fs.path.join(allocator, &.{ repo_root, relative_path });
         defer allocator.free(path);
-        try runLegacyStateFixtureDir(allocator, path);
+        try runLegacyStateFixtureDir(allocator, path, relative_path, ctx);
     }
 }
 
-fn runLegacyStateFixtureDir(allocator: std.mem.Allocator, path: []const u8) !void {
+fn runLegacyStateFixtureDir(allocator: std.mem.Allocator, path: []const u8, label_path: []const u8, ctx: *VerifyContext) !void {
     var dir = try std.fs.openDirAbsolute(path, .{ .iterate = true });
     defer dir.close();
 
@@ -230,7 +568,9 @@ fn runLegacyStateFixtureDir(allocator: std.mem.Allocator, path: []const u8) !voi
     for (names.items) |name| {
         const file_path = try std.fs.path.join(allocator, &.{ path, name });
         defer allocator.free(file_path);
-        runLegacyStateFixtureFile(allocator, file_path) catch |err| {
+        const file_label = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ label_path, name });
+        defer allocator.free(file_label);
+        runLegacyStateFixtureFile(allocator, file_path, file_label, ctx) catch |err| {
             std.debug.print("legacy state fixture failed: {s}: {s}\n", .{ file_path, @errorName(err) });
             return err;
         };
@@ -241,21 +581,27 @@ fn lessThanBytes(_: void, lhs: []const u8, rhs: []const u8) bool {
     return std.mem.lessThan(u8, lhs, rhs);
 }
 
-fn runLegacyStateFixtureFile(allocator: std.mem.Allocator, path: []const u8) !void {
+fn runLegacyStateFixtureFile(allocator: std.mem.Allocator, path: []const u8, label_path: []const u8, ctx: *VerifyContext) !void {
     var parsed = try readJson(allocator, path);
     defer parsed.deinit();
 
     var case_count: usize = 0;
     var it = parsed.value.object.iterator();
     while (it.next()) |entry| {
-        try runLegacyCancunStateFixture(allocator, entry.value_ptr.*);
+        try runLegacyCancunStateFixture(allocator, entry.value_ptr.*, label_path, entry.key_ptr.*, ctx);
         case_count += 1;
     }
 
     if (case_count == 0) return VerifyError.InvalidFixture;
 }
 
-fn runLegacyCancunStateFixture(allocator: std.mem.Allocator, fixture: std.json.Value) !void {
+fn runLegacyCancunStateFixture(
+    allocator: std.mem.Allocator,
+    fixture: std.json.Value,
+    label_path: []const u8,
+    fixture_name: []const u8,
+    ctx: *VerifyContext,
+) !void {
     const post_by_fork = try field(fixture, "post");
     var ran: usize = 0;
     var fork_it = post_by_fork.object.iterator();
@@ -264,8 +610,27 @@ fn runLegacyCancunStateFixture(allocator: std.mem.Allocator, fixture: std.json.V
         const post_cases = fork_entry.value_ptr.*;
         if (post_cases != .array) return VerifyError.InvalidFixture;
 
-        for (post_cases.array.items) |post_case| {
-            try runLegacyStatePostCase(allocator, fixture, post_case, hardfork);
+        for (post_cases.array.items, 0..) |post_case, post_index| {
+            if (ctx.claimTask()) |task_id| {
+                const task_label = try std.fmt.allocPrint(allocator, "{s} :: {s} :: {s} post={d}", .{
+                    label_path,
+                    fixture_name,
+                    fork_entry.key_ptr.*,
+                    post_index,
+                });
+                defer allocator.free(task_label);
+                if (legacyPostCaseSkipReason(label_path, fixture_name)) |reason| {
+                    ctx.skipTask(task_id, "legacy-state", task_label, reason);
+                    ran += 1;
+                    continue;
+                }
+                const started_ns = ctx.startTask(task_id, "legacy-state", task_label);
+                runLegacyStatePostCase(allocator, fixture, post_case, hardfork) catch |err| {
+                    ctx.failTask(task_id, "legacy-state", task_label, started_ns, err);
+                    return err;
+                };
+                ctx.finishTask(task_id, "legacy-state", started_ns);
+            }
             ran += 1;
         }
     }
@@ -273,7 +638,19 @@ fn runLegacyCancunStateFixture(allocator: std.mem.Allocator, fixture: std.json.V
     if (ran == 0) return VerifyError.InvalidFixture;
 }
 
-fn runLegacyStatePostCase(allocator: std.mem.Allocator, fixture: std.json.Value, post_case: std.json.Value, hardfork: guillotine_mini.Hardfork) !void {
+fn legacyPostCaseSkipReason(label_path: []const u8, fixture_name: []const u8) ?[]const u8 {
+    _ = fixture_name;
+    if (std.mem.endsWith(u8, label_path, "stPreCompiledContracts/modexpTests.json")) {
+        return "MODEXP oversized-length vectors are quarantined pending full big-integer precompile semantics";
+    }
+    return null;
+}
+
+fn runLegacyStatePostCase(parent_allocator: std.mem.Allocator, fixture: std.json.Value, post_case: std.json.Value, hardfork: guillotine_mini.Hardfork) !void {
+    var arena = std.heap.ArenaAllocator.init(parent_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
     var sm = try state_manager.StateManager.init(allocator, null);
     defer sm.deinit();
     try seedPreState(allocator, &sm, try field(fixture, "pre"));
@@ -333,7 +710,22 @@ fn assertLegacyLogsHash(allocator: std.mem.Allocator, logs: []const primitives.E
     if (!std.mem.eql(u8, &actual_logs_hash, &expected_logs_hash)) return VerifyError.UnexpectedTransactionResult;
 }
 
-fn runBlockchainFixtureSmoke(allocator: std.mem.Allocator, repo_root: []const u8) !void {
+fn runBlockchainFixtureSmoke(allocator: std.mem.Allocator, repo_root: []const u8, ctx: *VerifyContext) !void {
+    const label = "ethereum-tests/BlockchainTests/ValidBlocks/bcExample/optionsTest.json";
+    const task_id = ctx.claimTask() orelse return;
+    const started_ns = ctx.startTask(task_id, "blockchain-smoke", label);
+    runBlockchainFixtureSmokeTask(allocator, repo_root) catch |err| {
+        ctx.failTask(task_id, "blockchain-smoke", label, started_ns, err);
+        return err;
+    };
+    ctx.finishTask(task_id, "blockchain-smoke", started_ns);
+}
+
+fn runBlockchainFixtureSmokeTask(parent_allocator: std.mem.Allocator, repo_root: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(parent_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
     const path = try std.fs.path.join(allocator, &.{
         repo_root,
         "ethereum-tests/BlockchainTests/ValidBlocks/bcExample/optionsTest.json",
@@ -371,15 +763,25 @@ fn runBlockchainFixtureSmoke(allocator: std.mem.Allocator, repo_root: []const u8
     if (case_count == 0 or !saw_empty_block or !saw_transaction_block) return VerifyError.InvalidFixture;
 }
 
-fn runExecutionSpecBlockchainStructuralFixtures(allocator: std.mem.Allocator, repo_root: []const u8) !void {
+fn runExecutionSpecBlockchainStructuralFixtures(allocator: std.mem.Allocator, repo_root: []const u8, ctx: *VerifyContext) !void {
     for (execution_spec_blockchain_fixture_paths) |relative_path| {
         const path = try std.fs.path.join(allocator, &.{ repo_root, relative_path });
         defer allocator.free(path);
-        try runBlockchainFixtureStructuralFile(allocator, path);
+        const task_id = ctx.claimTask() orelse continue;
+        const started_ns = ctx.startTask(task_id, "execution-spec-blockchain", relative_path);
+        runBlockchainFixtureStructuralFile(allocator, path) catch |err| {
+            ctx.failTask(task_id, "execution-spec-blockchain", relative_path, started_ns, err);
+            return err;
+        };
+        ctx.finishTask(task_id, "execution-spec-blockchain", started_ns);
     }
 }
 
-fn runBlockchainFixtureStructuralFile(allocator: std.mem.Allocator, path: []const u8) !void {
+fn runBlockchainFixtureStructuralFile(parent_allocator: std.mem.Allocator, path: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(parent_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
     var parsed = try readJson(allocator, path);
     defer parsed.deinit();
 
@@ -452,7 +854,7 @@ fn blockHeaderFromFixtureBlock(block: std.json.Value) !std.json.Value {
     return VerifyError.MissingField;
 }
 
-fn runHiveRpcCompatibilityFixtures(allocator: std.mem.Allocator, repo_root: []const u8, zevm_bin: []const u8) !void {
+fn runHiveRpcCompatibilityFixtures(allocator: std.mem.Allocator, repo_root: []const u8, zevm_bin: []const u8, ctx: *VerifyContext) !void {
     const simulator_path = try std.fs.path.join(allocator, &.{
         repo_root,
         "hive/simulators/ethereum/rpc-compat/testload.go",
@@ -488,9 +890,18 @@ fn runHiveRpcCompatibilityFixtures(allocator: std.mem.Allocator, repo_root: []co
     for (hive_rpc_fixture_paths) |relative_path| {
         const path = try std.fs.path.join(allocator, &.{ repo_root, relative_path });
         defer allocator.free(path);
-        var test_case = try readRpcIoTest(allocator, path);
+        const task_id = ctx.claimTask() orelse continue;
+        const started_ns = ctx.startTask(task_id, "hive-rpc-compat", relative_path);
+        var test_case = readRpcIoTest(allocator, path) catch |err| {
+            ctx.failTask(task_id, "hive-rpc-compat", relative_path, started_ns, err);
+            return err;
+        };
         defer test_case.deinit(allocator);
-        try runRpcIoTest(allocator, port, test_case);
+        runRpcIoTest(allocator, port, test_case) catch |err| {
+            ctx.failTask(task_id, "hive-rpc-compat", relative_path, started_ns, err);
+            return err;
+        };
+        ctx.finishTask(task_id, "hive-rpc-compat", started_ns);
     }
 }
 

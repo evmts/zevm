@@ -122,11 +122,14 @@ pub fn build(b: *std.Build) void {
     const run_external_verify = b.addRunArtifact(external_verify_exe);
     run_external_verify.addDirectoryArg(b.path("."));
     run_external_verify.addArtifactArg(exe);
+    if (b.args) |args| {
+        run_external_verify.addArgs(args);
+    }
 
     const verify_fast_step = b.step("verify-fast", "Run fast local verification");
     verify_fast_step.dependOn(test_step);
 
     const verify_step = b.step("verify", "Run fast checks and active external suite slices");
-    verify_step.dependOn(verify_fast_step);
+    run_external_verify.step.dependOn(verify_fast_step);
     verify_step.dependOn(&run_external_verify.step);
 }
