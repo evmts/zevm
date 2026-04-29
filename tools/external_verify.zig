@@ -38,10 +38,8 @@ const execution_spec_blockchain_fixture_paths = [_][]const u8{
     "execution-spec-tests/src/ethereum_test_specs/tests/fixtures/chainid_shanghai_blockchain_test_engine_tx_type_0.json",
 };
 
-const legacy_state_fixture_paths = [_][]const u8{
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stArgsZeroOneBalance/addNonConst.json",
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stArgsZeroOneBalance/addmodNonConst.json",
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stArgsZeroOneBalance/andNonConst.json",
+const legacy_state_fixture_dirs = [_][]const u8{
+    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stArgsZeroOneBalance",
 };
 
 const hive_rpc_fixture_paths = [_][]const u8{
@@ -57,7 +55,7 @@ const hive_rpc_fixture_paths = [_][]const u8{
 
 // TODO(external-verify): execution-spec-tests/fixtures is absent in this checkout; when it is populated, walk fixtures/state_tests and fixtures/blockchain_tests directly.
 // TODO(external-verify): activate the remaining LegacyTests GeneralStateTests after extending hardfork selection beyond the current Cancun execution path.
-// TODO(external-verify): expand LegacyTests/Cancun/GeneralStateTests/stArgsZeroOneBalance after resolving the callNonConst value=1 gas/state-root mismatch around nested precompile failure accounting.
+// TODO(external-verify): continue legacy state expansion with another Cancun GeneralStateTests directory and keep state-root/logs assertions enabled.
 // TODO(external-verify): activate the remaining rpc-compat .io files after importing execution-apis genesis.json, chain.rlp, and headfcu.json into the ZEVM runtime.
 
 pub fn main() !void {
@@ -183,14 +181,43 @@ fn runLegacyInvalidIntrinsicGasFixture(allocator: std.mem.Allocator, repo_root: 
 }
 
 fn runLegacyStateFixtures(allocator: std.mem.Allocator, repo_root: []const u8) !void {
-    for (legacy_state_fixture_paths) |relative_path| {
+    for (legacy_state_fixture_dirs) |relative_path| {
         const path = try std.fs.path.join(allocator, &.{ repo_root, relative_path });
         defer allocator.free(path);
-        runLegacyStateFixtureFile(allocator, path) catch |err| {
-            std.debug.print("legacy state fixture failed: {s}: {s}\n", .{ path, @errorName(err) });
+        try runLegacyStateFixtureDir(allocator, path);
+    }
+}
+
+fn runLegacyStateFixtureDir(allocator: std.mem.Allocator, path: []const u8) !void {
+    var dir = try std.fs.openDirAbsolute(path, .{ .iterate = true });
+    defer dir.close();
+
+    var names = std.ArrayList([]const u8){};
+    defer {
+        for (names.items) |name| allocator.free(name);
+        names.deinit(allocator);
+    }
+
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".json")) continue;
+        try names.append(allocator, try allocator.dupe(u8, entry.name));
+    }
+    std.mem.sort([]const u8, names.items, {}, lessThanBytes);
+
+    if (names.items.len == 0) return VerifyError.InvalidFixture;
+    for (names.items) |name| {
+        const file_path = try std.fs.path.join(allocator, &.{ path, name });
+        defer allocator.free(file_path);
+        runLegacyStateFixtureFile(allocator, file_path) catch |err| {
+            std.debug.print("legacy state fixture failed: {s}: {s}\n", .{ file_path, @errorName(err) });
             return err;
         };
     }
+}
+
+fn lessThanBytes(_: void, lhs: []const u8, rhs: []const u8) bool {
+    return std.mem.lessThan(u8, lhs, rhs);
 }
 
 fn runLegacyStateFixtureFile(allocator: std.mem.Allocator, path: []const u8) !void {
