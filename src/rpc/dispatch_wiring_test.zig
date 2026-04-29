@@ -138,6 +138,37 @@ test "installed dispatch wiring reaches runtime-backed eth_feeHistory" {
     try std.testing.expect(result.object.get("baseFeePerBlobGas") == null);
 }
 
+test "installed dispatch wiring returns eth_getStorageAt as 32-byte data" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    const address_text = "0x0000000000000000000000000000000000000042";
+    const address = try primitives.Address.fromHex(address_text);
+    try rt.setStorage(address, 1, 42);
+
+    var params = std.json.Array.init(std.testing.allocator);
+    defer params.deinit();
+    try params.append(.{ .string = address_text });
+    try params.append(.{ .string = "0x01" });
+    try params.append(.{ .string = "latest" });
+
+    var request = try makeRequest("eth_getStorageAt", .{ .array = params });
+    defer request.deinit(std.testing.allocator);
+
+    var response = try dispatcher.dispatch(std.testing.allocator, request, &handlers);
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expect(response.error_value == null);
+    try std.testing.expect(response.result != null);
+    try std.testing.expectEqualStrings(
+        "0x000000000000000000000000000000000000000000000000000000000000002a",
+        response.result.?.string,
+    );
+}
+
 test "installed dispatch wiring reaches hardhat state mutation aliases" {
     var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();

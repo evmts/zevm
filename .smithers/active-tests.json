@@ -15,7 +15,7 @@
       "legacy state filler: stExample/invalidTrFiller intrinsic-gas failure",
       "ethereum-tests blockchain fixture smoke: BlockchainTests/ValidBlocks/bcExample/optionsTest.json",
       "execution-spec-tests: generated blockchain fixture structural walk for 10 JSON fixtures",
-      "hive rpc-compat: parse and run execution-apis .io cases for eth_chainId and net_version against HIVE_CHAIN_ID"
+      "hive rpc-compat: parse and run execution-apis .io cases for chain/network identity, blob base fee, syncing, and unknown-account reads"
     ]
   }
 }

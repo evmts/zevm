@@ -132,7 +132,7 @@ fn dispatchMethod(
     if (std.mem.eql(u8, method_name, "eth_getStorageAt")) {
         const args = try parseStorageArgs(params);
         const value = try rt.getStorage(args.address, args.slot);
-        return hexU256(allocator, value);
+        return dataHexU256(allocator, value);
     }
     if (std.mem.eql(u8, method_name, "eth_sendTransaction")) {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -1282,6 +1282,16 @@ fn hexQuantity(allocator: std.mem.Allocator, n: u64) !std.json.Value {
 
 fn hexU256(allocator: std.mem.Allocator, n: u256) !std.json.Value {
     return .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{n}) };
+}
+
+fn dataHexU256(allocator: std.mem.Allocator, n: u256) !std.json.Value {
+    const buf = try allocator.alloc(u8, 66);
+    buf[0] = '0';
+    buf[1] = 'x';
+    var bytes: [32]u8 = undefined;
+    std.mem.writeInt(u256, &bytes, n, .big);
+    writeHexLower(buf[2..], bytes[0..]);
+    return .{ .string = buf };
 }
 
 fn hexBytes(allocator: std.mem.Allocator, bytes: []const u8) !std.json.Value {

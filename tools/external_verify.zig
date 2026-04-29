@@ -40,6 +40,12 @@ const execution_spec_blockchain_fixture_paths = [_][]const u8{
 
 const hive_rpc_fixture_paths = [_][]const u8{
     "execution-apis/tests/eth_chainId/get-chain-id.io",
+    "execution-apis/tests/eth_blobBaseFee/get-current-blobfee.io",
+    "execution-apis/tests/eth_getBalance/get-balance-unknown-account.io",
+    "execution-apis/tests/eth_getCode/get-code-unknown-account.io",
+    "execution-apis/tests/eth_getStorageAt/get-storage-unknown-account.io",
+    "execution-apis/tests/eth_getTransactionCount/get-nonce-unknown-account.io",
+    "execution-apis/tests/eth_syncing/check-syncing.io",
     "execution-apis/tests/net_version/get-network-id.io",
 };
 
