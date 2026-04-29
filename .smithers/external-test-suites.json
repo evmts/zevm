@@ -5,9 +5,18 @@
     {
       "name": "ethereum-tests-state",
       "path": "ethereum-tests/LegacyTests/*/GeneralStateTests",
-      "status": "available",
-      "reason": "GeneralStateTests populated via git submodule update; filled legacy state hash/log verification still needs a state-root/log-hash runner before these can join active verify.",
-      "activeCases": []
+      "status": "partial",
+      "reason": "GeneralStateTests populated via git submodule update; active legacy cases now execute Cancun post cases and compare state root plus logs hash.",
+      "activeCases": [
+        "LegacyTests/Cancun/GeneralStateTests/stArgsZeroOneBalance/addNonConst.json",
+        "LegacyTests/Cancun/GeneralStateTests/stArgsZeroOneBalance/addmodNonConst.json",
+        "LegacyTests/Cancun/GeneralStateTests/stArgsZeroOneBalance/andNonConst.json"
+      ],
+      "remaining": [
+        "extend hardfork selection beyond current Cancun execution path",
+        "expand stArgsZeroOneBalance after resolving callNonConst value=1 gas/state-root mismatch around nested precompile failure accounting",
+        "walk all GeneralStateTests directories and all post indexes"
+      ]
     },
     {
       "name": "ethereum-tests-blockchain",

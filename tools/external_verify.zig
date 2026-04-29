@@ -38,6 +38,12 @@ const execution_spec_blockchain_fixture_paths = [_][]const u8{
     "execution-spec-tests/src/ethereum_test_specs/tests/fixtures/chainid_shanghai_blockchain_test_engine_tx_type_0.json",
 };
 
+const legacy_state_fixture_paths = [_][]const u8{
+    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stArgsZeroOneBalance/addNonConst.json",
+    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stArgsZeroOneBalance/addmodNonConst.json",
+    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stArgsZeroOneBalance/andNonConst.json",
+};
+
 const hive_rpc_fixture_paths = [_][]const u8{
     "execution-apis/tests/eth_chainId/get-chain-id.io",
     "execution-apis/tests/eth_blobBaseFee/get-current-blobfee.io",
@@ -50,7 +56,8 @@ const hive_rpc_fixture_paths = [_][]const u8{
 };
 
 // TODO(external-verify): execution-spec-tests/fixtures is absent in this checkout; when it is populated, walk fixtures/state_tests and fixtures/blockchain_tests directly.
-// TODO(external-verify): activate LegacyTests GeneralStateTests after wiring state-root and logs-hash assertions for filled fixtures without explicit post-state.
+// TODO(external-verify): activate the remaining LegacyTests GeneralStateTests after extending hardfork selection beyond the current Cancun execution path.
+// TODO(external-verify): expand LegacyTests/Cancun/GeneralStateTests/stArgsZeroOneBalance after resolving the callNonConst value=1 gas/state-root mismatch around nested precompile failure accounting.
 // TODO(external-verify): activate the remaining rpc-compat .io files after importing execution-apis genesis.json, chain.rlp, and headfcu.json into the ZEVM runtime.
 
 pub fn main() !void {
@@ -67,6 +74,7 @@ pub fn main() !void {
 
     try runExecutionSpecStateFixtures(allocator, repo_root);
     try runLegacyInvalidIntrinsicGasFixture(allocator, repo_root);
+    try runLegacyStateFixtures(allocator, repo_root);
     try runBlockchainFixtureSmoke(allocator, repo_root);
     try runExecutionSpecBlockchainStructuralFixtures(allocator, repo_root);
     try runHiveRpcCompatibilityFixtures(allocator, repo_root, zevm_bin);
@@ -172,6 +180,78 @@ fn runLegacyInvalidIntrinsicGasFixture(allocator: std.mem.Allocator, repo_root: 
     const expect_items = try field(fixture, "expect");
     const expected = try field(expect_items.array.items[0], "result");
     try assertState(allocator, &sm, expected);
+}
+
+fn runLegacyStateFixtures(allocator: std.mem.Allocator, repo_root: []const u8) !void {
+    for (legacy_state_fixture_paths) |relative_path| {
+        const path = try std.fs.path.join(allocator, &.{ repo_root, relative_path });
+        defer allocator.free(path);
+        runLegacyStateFixtureFile(allocator, path) catch |err| {
+            std.debug.print("legacy state fixture failed: {s}: {s}\n", .{ path, @errorName(err) });
+            return err;
+        };
+    }
+}
+
+fn runLegacyStateFixtureFile(allocator: std.mem.Allocator, path: []const u8) !void {
+    var parsed = try readJson(allocator, path);
+    defer parsed.deinit();
+
+    var case_count: usize = 0;
+    var it = parsed.value.object.iterator();
+    while (it.next()) |entry| {
+        try runLegacyCancunStateFixture(allocator, entry.value_ptr.*);
+        case_count += 1;
+    }
+
+    if (case_count == 0) return VerifyError.InvalidFixture;
+}
+
+fn runLegacyCancunStateFixture(allocator: std.mem.Allocator, fixture: std.json.Value) !void {
+    const post_by_fork = try field(fixture, "post");
+    const post_cases = post_by_fork.object.get("Cancun") orelse return VerifyError.InvalidFixture;
+    if (post_cases != .array or post_cases.array.items.len == 0) return VerifyError.InvalidFixture;
+
+    for (post_cases.array.items) |post_case| {
+        try runLegacyStatePostCase(allocator, fixture, post_case);
+    }
+}
+
+fn runLegacyStatePostCase(allocator: std.mem.Allocator, fixture: std.json.Value, post_case: std.json.Value) !void {
+    if (post_case.object.get("expectException")) |_| return VerifyError.UnexpectedTransactionResult;
+
+    var sm = try state_manager.StateManager.init(allocator, null);
+    defer sm.deinit();
+    try seedPreState(allocator, &sm, try field(fixture, "pre"));
+
+    const indexes = try indexesFromPostCase(post_case);
+    const tx = try legacyTxFromFixtureCase(allocator, fixture, indexes);
+    defer tx.deinit(allocator);
+
+    var adapter = zevm.host_adapter.HostAdapter{ .state = &sm };
+    var receipt = try zevm.tx_processor.processTransactionWithOptions(
+        allocator,
+        &sm,
+        adapter.hostInterface(),
+        tx.sender,
+        tx.tx,
+        try blockContextFromFixture(fixture),
+        tx.options,
+    );
+    defer receipt.deinit(allocator);
+
+    const actual_state_root = try computeStateRoot(allocator, &sm);
+    const expected_state_root = try parseHashValue(try field(post_case, "hash"));
+    if (!std.mem.eql(u8, &actual_state_root, &expected_state_root)) {
+        const actual_hex = std.fmt.bytesToHex(actual_state_root, .lower);
+        const expected_hex = std.fmt.bytesToHex(expected_state_root, .lower);
+        std.debug.print("legacy state root mismatch indexes(data={}, gas={}, value={}) actual=0x{s} expected=0x{s}\n", .{ indexes.data, indexes.gas, indexes.value, &actual_hex, &expected_hex });
+        return VerifyError.UnexpectedState;
+    }
+
+    const actual_logs_hash = try computeLogsHash(allocator, receipt.logs);
+    const expected_logs_hash = try parseHashValue(try field(post_case, "logs"));
+    if (!std.mem.eql(u8, &actual_logs_hash, &expected_logs_hash)) return VerifyError.UnexpectedTransactionResult;
 }
 
 fn runBlockchainFixtureSmoke(allocator: std.mem.Allocator, repo_root: []const u8) !void {
@@ -710,6 +790,159 @@ fn assertState(allocator: std.mem.Allocator, sm: *state_manager.StateManager, ex
             }
         }
     }
+}
+
+fn computeStateRoot(allocator: std.mem.Allocator, sm: *state_manager.StateManager) !primitives.Hash.Hash {
+    var keys = std.ArrayList([]const u8){};
+    defer {
+        for (keys.items) |key| allocator.free(key);
+        keys.deinit(allocator);
+    }
+    var values = std.ArrayList([]const u8){};
+    defer {
+        for (values.items) |value| allocator.free(value);
+        values.deinit(allocator);
+    }
+
+    var it = sm.accountIterator();
+    while (it.next()) |entry| {
+        const address = entry.key_ptr.*;
+        const nonce = try sm.getNonce(address);
+        const balance = try sm.getBalance(address);
+        const code = try sm.getCode(address);
+
+        var code_hash = primitives.State.EMPTY_CODE_HASH;
+        if (code.len > 0) {
+            std.crypto.hash.sha3.Keccak256.hash(code, &code_hash, .{});
+        }
+
+        const storage_root = try computeStorageRoot(allocator, sm, address);
+        if (nonce == 0 and balance == 0 and std.mem.eql(u8, &code_hash, &primitives.State.EMPTY_CODE_HASH) and std.mem.eql(u8, &storage_root, &primitives.State.EMPTY_TRIE_ROOT)) {
+            continue;
+        }
+
+        const account = primitives.AccountState.AccountState.from(.{
+            .nonce = nonce,
+            .balance = balance,
+            .storage_root = storage_root,
+            .code_hash = code_hash,
+        });
+
+        const key = try allocator.dupe(u8, address.bytes[0..]);
+        var key_owned = true;
+        errdefer if (key_owned) allocator.free(key);
+        const value = try account.rlpEncode(allocator);
+        var value_owned = true;
+        errdefer if (value_owned) allocator.free(value);
+
+        try keys.append(allocator, key);
+        key_owned = false;
+        try values.append(allocator, value);
+        value_owned = false;
+    }
+
+    return try primitives.TrieHash.secure_trie_root(allocator, keys.items, values.items);
+}
+
+fn computeStorageRoot(allocator: std.mem.Allocator, sm: *state_manager.StateManager, address: primitives.Address) !primitives.Hash.Hash {
+    const slots = sm.journaled_state.storage_cache.cache.getPtr(address) orelse return primitives.State.EMPTY_TRIE_ROOT;
+
+    var keys = std.ArrayList([]const u8){};
+    defer {
+        for (keys.items) |key| allocator.free(key);
+        keys.deinit(allocator);
+    }
+    var values = std.ArrayList([]const u8){};
+    defer {
+        for (values.items) |value| allocator.free(value);
+        values.deinit(allocator);
+    }
+
+    var it = slots.iterator();
+    while (it.next()) |entry| {
+        const value = entry.value_ptr.*;
+        if (value == 0) continue;
+
+        var slot_bytes: primitives.Hash.Hash = undefined;
+        std.mem.writeInt(u256, &slot_bytes, entry.key_ptr.*, .big);
+        const key = try allocator.dupe(u8, slot_bytes[0..]);
+        var key_owned = true;
+        errdefer if (key_owned) allocator.free(key);
+        const encoded_value = try primitives.Rlp.encode(allocator, value);
+        var value_owned = true;
+        errdefer if (value_owned) allocator.free(encoded_value);
+
+        try keys.append(allocator, key);
+        key_owned = false;
+        try values.append(allocator, encoded_value);
+        value_owned = false;
+    }
+
+    return try primitives.TrieHash.secure_trie_root(allocator, keys.items, values.items);
+}
+
+fn computeLogsHash(allocator: std.mem.Allocator, logs: []const primitives.EventLog.EventLog) !primitives.Hash.Hash {
+    var encoded_logs = std.ArrayList([]const u8){};
+    defer {
+        for (encoded_logs.items) |encoded| allocator.free(encoded);
+        encoded_logs.deinit(allocator);
+    }
+
+    for (logs) |log| {
+        try encoded_logs.append(allocator, try encodeLogForHash(allocator, log));
+    }
+
+    const encoded = try encodeRlpListFromEncoded(allocator, encoded_logs.items);
+    defer allocator.free(encoded);
+
+    var out: primitives.Hash.Hash = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(encoded, &out, .{});
+    return out;
+}
+
+fn encodeLogForHash(allocator: std.mem.Allocator, log: primitives.EventLog.EventLog) ![]const u8 {
+    const address = try primitives.Rlp.encodeBytes(allocator, log.address.bytes[0..]);
+    defer allocator.free(address);
+
+    var encoded_topics = std.ArrayList([]const u8){};
+    defer {
+        for (encoded_topics.items) |topic| allocator.free(topic);
+        encoded_topics.deinit(allocator);
+    }
+    for (log.topics) |topic| {
+        try encoded_topics.append(allocator, try primitives.Rlp.encodeBytes(allocator, topic[0..]));
+    }
+    const topics = try encodeRlpListFromEncoded(allocator, encoded_topics.items);
+    defer allocator.free(topics);
+
+    const data = try primitives.Rlp.encodeBytes(allocator, log.data);
+    defer allocator.free(data);
+
+    const fields = [_][]const u8{ address, topics, data };
+    return try encodeRlpListFromEncoded(allocator, &fields);
+}
+
+fn encodeRlpListFromEncoded(allocator: std.mem.Allocator, encoded_items: []const []const u8) ![]const u8 {
+    var payload_len: usize = 0;
+    for (encoded_items) |item| {
+        payload_len = std.math.add(usize, payload_len, item.len) catch return VerifyError.InvalidFixture;
+    }
+
+    var result = std.ArrayList(u8){};
+    errdefer result.deinit(allocator);
+    if (payload_len < 56) {
+        try result.append(allocator, 0xc0 + @as(u8, @intCast(payload_len)));
+    } else {
+        const len_bytes = try primitives.Rlp.encodeLength(allocator, payload_len);
+        defer allocator.free(len_bytes);
+        try result.append(allocator, 0xf7 + @as(u8, @intCast(len_bytes.len)));
+        try result.appendSlice(allocator, len_bytes);
+    }
+
+    for (encoded_items) |item| {
+        try result.appendSlice(allocator, item);
+    }
+    return try result.toOwnedSlice(allocator);
 }
 
 fn expectTxError(expected: zevm.tx_processor.TxError, actual: zevm.tx_processor.TxError!primitives.Receipt.Receipt) !void {
