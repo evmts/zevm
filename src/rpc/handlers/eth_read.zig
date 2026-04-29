@@ -61,6 +61,10 @@ pub const GetProofParams = struct {
     block: jsonrpc.types.BlockSpec,
 };
 
+pub const AccountsResult = struct {
+    value: []jsonrpc.types.Address,
+};
+
 pub fn handleEthChainId(
     allocator: std.mem.Allocator,
     rt: *const runtime.NodeRuntime,
@@ -130,7 +134,7 @@ pub fn handleEthAccounts(
     allocator: std.mem.Allocator,
     _: *const runtime.NodeRuntime,
     _: jsonrpc.eth.Accounts.Params,
-) !jsonrpc.eth.Accounts.Result {
+) !AccountsResult {
     const addrs = try allocator.alloc(jsonrpc.types.Address, runtime.DEFAULT_DEV_ACCOUNTS.len);
     for (runtime.DEFAULT_DEV_ACCOUNTS, 0..) |addr, i| {
         addrs[i] = .{ .bytes = addr.bytes };
@@ -304,7 +308,7 @@ fn resolveFeeHistoryRange(rt: *const runtime.NodeRuntime, params: FeeHistoryPara
     const returned_count = @min(effective_count, available);
 
     return .{
-        .oldest = newest - returned_count + 1,
+        .oldest = newest - (returned_count - 1),
         .count = @intCast(returned_count),
     };
 }
