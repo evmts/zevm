@@ -17,7 +17,8 @@
         "LegacyTests/Cancun/GeneralStateTests/stCodeSizeLimit/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stHomesteadSpecific/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stRecursiveCreate/*.json",
-        "LegacyTests/Cancun/GeneralStateTests/stSLoadTest/*.json"
+        "LegacyTests/Cancun/GeneralStateTests/stSLoadTest/*.json",
+        "LegacyTests/Cancun/GeneralStateTests/stSelfBalance/*.json"
       ],
       "remaining": [
         "walk all GeneralStateTests directories and all post indexes"
