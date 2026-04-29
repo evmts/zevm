@@ -225,6 +225,10 @@ fn getVersionedData(value: std.json.Value, hint_fork: ?primitives.LightClientHea
     return .{ .data = value, .fork = fork };
 }
 
+fn defaultFork(fork: ?primitives.LightClientHeader.Fork) primitives.LightClientHeader.Fork {
+    return fork orelse .deneb;
+}
+
 fn getVersionedArray(value: std.json.Value, hint_fork: ?primitives.LightClientHeader.Fork) !VersionedJson {
     return getVersionedData(value, hint_fork);
 }
@@ -247,8 +251,7 @@ pub fn parseBootstrapResponseWithFork(
     defer parsed.deinit();
 
     const response = try getVersionedData(parsed.value, consensus_fork);
-    _ = response.fork;
-    return try parseBootstrap(response.data);
+    return try parseBootstrap(response.data, defaultFork(response.fork));
 }
 
 pub fn parseUpdatesResponse(
@@ -275,8 +278,7 @@ pub fn parseUpdatesResponseWithFork(
 
     for (items, 0..) |item, index| {
         const item_response = try getVersionedData(item, response.fork);
-        _ = item_response.fork;
-        updates[index] = try parseUpdate(item_response.data);
+        updates[index] = try parseUpdate(item_response.data, defaultFork(item_response.fork));
     }
 
     return updates;
@@ -300,8 +302,7 @@ pub fn parseFinalityUpdateResponseWithFork(
     defer parsed.deinit();
 
     const response = try getVersionedData(parsed.value, consensus_fork);
-    _ = response.fork;
-    return try parseFinalityUpdate(response.data);
+    return try parseFinalityUpdate(response.data, defaultFork(response.fork));
 }
 
 pub fn parseOptimisticUpdateResponse(
@@ -322,8 +323,7 @@ pub fn parseOptimisticUpdateResponseWithFork(
     defer parsed.deinit();
 
     const response = try getVersionedData(parsed.value, consensus_fork);
-    _ = response.fork;
-    return try parseOptimisticUpdate(response.data);
+    return try parseOptimisticUpdate(response.data, defaultFork(response.fork));
 }
 
 pub fn hexToBytes(comptime N: usize, input: []const u8) ![N]u8 {
@@ -338,6 +338,23 @@ pub fn hexToBytes(comptime N: usize, input: []const u8) ![N]u8 {
 
     var out: [N]u8 = undefined;
     _ = std.fmt.hexToBytes(out[0..], raw) catch {
+        return error.InvalidHexValue;
+    };
+    return out;
+}
+
+fn hexBytesMax(comptime N: usize, input: []const u8) ![N]u8 {
+    if (!std.mem.startsWith(u8, input, "0x")) {
+        return error.InvalidHexPrefix;
+    }
+
+    const raw = input[2..];
+    if (raw.len > N * 2 or raw.len % 2 != 0) {
+        return error.InvalidHexLength;
+    }
+
+    var out = [_]u8{0} ** N;
+    _ = std.fmt.hexToBytes(out[0 .. raw.len / 2], raw) catch {
         return error.InvalidHexValue;
     };
     return out;
@@ -386,6 +403,13 @@ fn getStringField(value: std.json.Value, key: []const u8) ![]const u8 {
     return try expectString(try getObjectField(value, key));
 }
 
+fn getOptionalStringField(value: std.json.Value, key: []const u8) !?[]const u8 {
+    return switch (value) {
+        .object => |object| if (object.get(key)) |field| try expectString(field) else null,
+        else => error.InvalidJsonType,
+    };
+}
+
 fn expectString(value: std.json.Value) ![]const u8 {
     return switch (value) {
         .string => |string| string,
@@ -400,27 +424,33 @@ fn expectArray(value: std.json.Value) ![]const std.json.Value {
     };
 }
 
-fn parseBootstrap(value: std.json.Value) !primitives.LightClientUpdate.LightClientBootstrap {
+fn parseBootstrap(
+    value: std.json.Value,
+    fork: primitives.LightClientHeader.Fork,
+) !primitives.LightClientUpdate.LightClientBootstrap {
     const current_sync_committee = try getObjectField(value, "current_sync_committee");
 
     return primitives.LightClientUpdate.LightClientBootstrap.from(
-        try parseLightClientHeader(try getObjectField(value, "header")),
+        try parseLightClientHeader(try getObjectField(value, "header"), fork),
         try parseSyncCommitteePubkeys(try getObjectField(current_sync_committee, "pubkeys")),
         try hexToBytes(48, try getStringField(current_sync_committee, "aggregate_pubkey")),
         try parseBranch(5, try getObjectField(value, "current_sync_committee_branch")),
     );
 }
 
-fn parseUpdate(value: std.json.Value) !primitives.LightClientUpdate.LightClientUpdate {
+fn parseUpdate(
+    value: std.json.Value,
+    fork: primitives.LightClientHeader.Fork,
+) !primitives.LightClientUpdate.LightClientUpdate {
     const sync_aggregate = try parseSyncAggregate(try getObjectField(value, "sync_aggregate"));
     const next_sync_committee = try getObjectField(value, "next_sync_committee");
 
     return primitives.LightClientUpdate.LightClientUpdate.from(
-        try parseLightClientHeader(try getObjectField(value, "attested_header")),
+        try parseLightClientHeader(try getObjectField(value, "attested_header"), fork),
         try parseSyncCommitteePubkeys(try getObjectField(next_sync_committee, "pubkeys")),
         try hexToBytes(48, try getStringField(next_sync_committee, "aggregate_pubkey")),
         try parseBranch(5, try getObjectField(value, "next_sync_committee_branch")),
-        try parseLightClientHeader(try getObjectField(value, "finalized_header")),
+        try parseLightClientHeader(try getObjectField(value, "finalized_header"), fork),
         try parseBranch(6, try getObjectField(value, "finality_branch")),
         sync_aggregate.sync_committee_bits,
         sync_aggregate.sync_committee_signature,
@@ -428,12 +458,15 @@ fn parseUpdate(value: std.json.Value) !primitives.LightClientUpdate.LightClientU
     );
 }
 
-fn parseFinalityUpdate(value: std.json.Value) !primitives.LightClientUpdate.LightClientFinalityUpdate {
+fn parseFinalityUpdate(
+    value: std.json.Value,
+    fork: primitives.LightClientHeader.Fork,
+) !primitives.LightClientUpdate.LightClientFinalityUpdate {
     const sync_aggregate = try parseSyncAggregate(try getObjectField(value, "sync_aggregate"));
 
     return primitives.LightClientUpdate.LightClientFinalityUpdate.from(
-        try parseLightClientHeader(try getObjectField(value, "attested_header")),
-        try parseLightClientHeader(try getObjectField(value, "finalized_header")),
+        try parseLightClientHeader(try getObjectField(value, "attested_header"), fork),
+        try parseLightClientHeader(try getObjectField(value, "finalized_header"), fork),
         try parseBranch(6, try getObjectField(value, "finality_branch")),
         sync_aggregate.sync_committee_bits,
         sync_aggregate.sync_committee_signature,
@@ -441,21 +474,28 @@ fn parseFinalityUpdate(value: std.json.Value) !primitives.LightClientUpdate.Ligh
     );
 }
 
-fn parseOptimisticUpdate(value: std.json.Value) !primitives.LightClientUpdate.LightClientOptimisticUpdate {
+fn parseOptimisticUpdate(
+    value: std.json.Value,
+    fork: primitives.LightClientHeader.Fork,
+) !primitives.LightClientUpdate.LightClientOptimisticUpdate {
     const sync_aggregate = try parseSyncAggregate(try getObjectField(value, "sync_aggregate"));
 
     return primitives.LightClientUpdate.LightClientOptimisticUpdate.from(
-        try parseLightClientHeader(try getObjectField(value, "attested_header")),
+        try parseLightClientHeader(try getObjectField(value, "attested_header"), fork),
         sync_aggregate.sync_committee_bits,
         sync_aggregate.sync_committee_signature,
         try parseU64(try getStringField(value, "signature_slot")),
     );
 }
 
-fn parseLightClientHeader(value: std.json.Value) !primitives.LightClientHeader.LightClientHeader {
-    return primitives.LightClientHeader.LightClientHeader.from(
+fn parseLightClientHeader(
+    value: std.json.Value,
+    fork: primitives.LightClientHeader.Fork,
+) !primitives.LightClientHeader.LightClientHeader {
+    return primitives.LightClientHeader.LightClientHeader.fromWithFork(
+        fork,
         try parseBeaconHeader(try getObjectField(value, "beacon")),
-        try parseExecutionHeader(try getObjectField(value, "execution")),
+        try parseExecutionHeader(try getObjectField(value, "execution"), fork),
         try parseBranch(4, try getObjectField(value, "execution_branch")),
     );
 }
@@ -472,8 +512,37 @@ fn parseBeaconHeader(value: std.json.Value) !primitives.LightClientHeader.LightC
 
 fn parseExecutionHeader(
     value: std.json.Value,
+    fork: primitives.LightClientHeader.Fork,
 ) !primitives.LightClientHeader.LightClientHeader.ExecutionPayloadHeaderFields {
-    return primitives.LightClientHeader.LightClientHeader.ExecutionPayloadHeaderFields.from(
+    const extra_data = if (try getOptionalStringField(value, "extra_data")) |bytes_hex|
+        try hexBytesMax(32, bytes_hex)
+    else
+        [_]u8{0} ** 32;
+    const extra_data_len: usize = if (try getOptionalStringField(value, "extra_data")) |bytes_hex|
+        (bytes_hex.len - 2) / 2
+    else
+        0;
+    const withdrawals_root = if (fork.hasWithdrawalsRoot())
+        try hexToBytes(32, try getStringField(value, "withdrawals_root"))
+    else if (try getOptionalStringField(value, "withdrawals_root")) |withdrawals|
+        try hexToBytes(32, withdrawals)
+    else
+        [_]u8{0} ** 32;
+    const blob_gas_used = if (fork.hasBlobGasFields())
+        try parseU64(try getStringField(value, "blob_gas_used"))
+    else if (try getOptionalStringField(value, "blob_gas_used")) |blob_gas_used_text|
+        try parseU64(blob_gas_used_text)
+    else
+        0;
+    const excess_blob_gas = if (fork.hasBlobGasFields())
+        try parseU64(try getStringField(value, "excess_blob_gas"))
+    else if (try getOptionalStringField(value, "excess_blob_gas")) |excess_blob_gas_text|
+        try parseU64(excess_blob_gas_text)
+    else
+        0;
+
+    return primitives.LightClientHeader.LightClientHeader.ExecutionPayloadHeaderFields.fromWithExtraData(
+        fork,
         try hexToBytes(32, try getStringField(value, "parent_hash")),
         try hexToBytes(20, try getStringField(value, "fee_recipient")),
         try hexToBytes(32, try getStringField(value, "state_root")),
@@ -484,12 +553,13 @@ fn parseExecutionHeader(
         try parseU64(try getStringField(value, "gas_limit")),
         try parseU64(try getStringField(value, "gas_used")),
         try parseU64(try getStringField(value, "timestamp")),
+        extra_data[0..extra_data_len],
         try parseU256(try getStringField(value, "base_fee_per_gas")),
         try hexToBytes(32, try getStringField(value, "block_hash")),
         try hexToBytes(32, try getStringField(value, "transactions_root")),
-        try hexToBytes(32, try getStringField(value, "withdrawals_root")),
-        try parseU64(try getStringField(value, "blob_gas_used")),
-        try parseU64(try getStringField(value, "excess_blob_gas")),
+        withdrawals_root,
+        blob_gas_used,
+        excess_blob_gas,
     );
 }
 
