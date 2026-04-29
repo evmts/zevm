@@ -6,12 +6,12 @@
       "name": "ethereum-tests-state",
       "path": "ethereum-tests/LegacyTests/*/GeneralStateTests",
       "status": "partial",
-      "reason": "GeneralStateTests populated via git submodule update; active legacy cases now execute Cancun post cases and compare state root plus logs hash.",
+      "reason": "GeneralStateTests populated via git submodule update; active legacy cases now execute every post fork case and compare state root plus logs hash.",
       "activeCases": [
-        "LegacyTests/Cancun/GeneralStateTests/stArgsZeroOneBalance/*.json"
+        "LegacyTests/Cancun/GeneralStateTests/stArgsZeroOneBalance/*.json",
+        "LegacyTests/Cancun/GeneralStateTests/stCallCodes/*.json"
       ],
       "remaining": [
-        "extend hardfork selection beyond current Cancun execution path",
         "walk all GeneralStateTests directories and all post indexes"
       ]
     },

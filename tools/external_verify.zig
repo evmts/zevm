@@ -40,6 +40,7 @@ const execution_spec_blockchain_fixture_paths = [_][]const u8{
 
 const legacy_state_fixture_dirs = [_][]const u8{
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stArgsZeroOneBalance",
+    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stCallCodes",
 };
 
 const hive_rpc_fixture_paths = [_][]const u8{
@@ -54,8 +55,7 @@ const hive_rpc_fixture_paths = [_][]const u8{
 };
 
 // TODO(external-verify): execution-spec-tests/fixtures is absent in this checkout; when it is populated, walk fixtures/state_tests and fixtures/blockchain_tests directly.
-// TODO(external-verify): activate the remaining LegacyTests GeneralStateTests after extending hardfork selection beyond the current Cancun execution path.
-// TODO(external-verify): continue legacy state expansion with another Cancun GeneralStateTests directory and keep state-root/logs assertions enabled.
+// TODO(external-verify): continue legacy state expansion with another GeneralStateTests directory and keep state-root/logs assertions enabled.
 // TODO(external-verify): activate the remaining rpc-compat .io files after importing execution-apis genesis.json, chain.rlp, and headfcu.json into the ZEVM runtime.
 
 pub fn main() !void {
@@ -109,7 +109,8 @@ fn runGeneratedStateFixture(allocator: std.mem.Allocator, fixture: std.json.Valu
         if (post_cases != .array) return VerifyError.InvalidFixture;
 
         for (post_cases.array.items) |post_case| {
-            try runGeneratedStatePostCase(allocator, fixture, post_case);
+            const hardfork = try hardforkFromFixtureName(fork_entry.key_ptr.*);
+            try runGeneratedStatePostCase(allocator, fixture, post_case, hardfork);
             ran += 1;
         }
     }
@@ -117,7 +118,7 @@ fn runGeneratedStateFixture(allocator: std.mem.Allocator, fixture: std.json.Valu
     if (ran == 0) return VerifyError.InvalidFixture;
 }
 
-fn runGeneratedStatePostCase(allocator: std.mem.Allocator, fixture: std.json.Value, post_case: std.json.Value) !void {
+fn runGeneratedStatePostCase(allocator: std.mem.Allocator, fixture: std.json.Value, post_case: std.json.Value, hardfork: guillotine_mini.Hardfork) !void {
     if (post_case.object.get("expectException")) |_| return VerifyError.UnexpectedTransactionResult;
 
     var sm = try state_manager.StateManager.init(allocator, null);
@@ -128,6 +129,7 @@ fn runGeneratedStatePostCase(allocator: std.mem.Allocator, fixture: std.json.Val
     const tx = try legacyTxFromFixtureCase(allocator, fixture, indexes);
     defer tx.deinit(allocator);
 
+    const block_ctx = try blockContextFromFixture(fixture, hardfork);
     var adapter = zevm.host_adapter.HostAdapter{ .state = &sm };
     var receipt = try zevm.tx_processor.processTransactionWithOptions(
         allocator,
@@ -135,8 +137,8 @@ fn runGeneratedStatePostCase(allocator: std.mem.Allocator, fixture: std.json.Val
         adapter.hostInterface(),
         tx.sender,
         tx.tx,
-        try blockContextFromFixture(fixture),
-        tx.options,
+        block_ctx,
+        tx.options.withHardfork(hardfork),
     );
     defer receipt.deinit(allocator);
 
@@ -171,7 +173,7 @@ fn runLegacyInvalidIntrinsicGasFixture(allocator: std.mem.Allocator, repo_root: 
         adapter.hostInterface(),
         tx.sender,
         tx.tx,
-        try blockContextFromFixture(fixture),
+        try blockContextFromFixture(fixture, .CANCUN),
     );
     try expectTxError(zevm.tx_processor.TxError.IntrinsicGasExceedsLimit, result);
 
@@ -236,15 +238,23 @@ fn runLegacyStateFixtureFile(allocator: std.mem.Allocator, path: []const u8) !vo
 
 fn runLegacyCancunStateFixture(allocator: std.mem.Allocator, fixture: std.json.Value) !void {
     const post_by_fork = try field(fixture, "post");
-    const post_cases = post_by_fork.object.get("Cancun") orelse return VerifyError.InvalidFixture;
-    if (post_cases != .array or post_cases.array.items.len == 0) return VerifyError.InvalidFixture;
+    var ran: usize = 0;
+    var fork_it = post_by_fork.object.iterator();
+    while (fork_it.next()) |fork_entry| {
+        const hardfork = try hardforkFromFixtureName(fork_entry.key_ptr.*);
+        const post_cases = fork_entry.value_ptr.*;
+        if (post_cases != .array) return VerifyError.InvalidFixture;
 
-    for (post_cases.array.items) |post_case| {
-        try runLegacyStatePostCase(allocator, fixture, post_case);
+        for (post_cases.array.items) |post_case| {
+            try runLegacyStatePostCase(allocator, fixture, post_case, hardfork);
+            ran += 1;
+        }
     }
+
+    if (ran == 0) return VerifyError.InvalidFixture;
 }
 
-fn runLegacyStatePostCase(allocator: std.mem.Allocator, fixture: std.json.Value, post_case: std.json.Value) !void {
+fn runLegacyStatePostCase(allocator: std.mem.Allocator, fixture: std.json.Value, post_case: std.json.Value, hardfork: guillotine_mini.Hardfork) !void {
     if (post_case.object.get("expectException")) |_| return VerifyError.UnexpectedTransactionResult;
 
     var sm = try state_manager.StateManager.init(allocator, null);
@@ -255,6 +265,7 @@ fn runLegacyStatePostCase(allocator: std.mem.Allocator, fixture: std.json.Value,
     const tx = try legacyTxFromFixtureCase(allocator, fixture, indexes);
     defer tx.deinit(allocator);
 
+    const block_ctx = try blockContextFromFixture(fixture, hardfork);
     var adapter = zevm.host_adapter.HostAdapter{ .state = &sm };
     var receipt = try zevm.tx_processor.processTransactionWithOptions(
         allocator,
@@ -262,17 +273,17 @@ fn runLegacyStatePostCase(allocator: std.mem.Allocator, fixture: std.json.Value,
         adapter.hostInterface(),
         tx.sender,
         tx.tx,
-        try blockContextFromFixture(fixture),
-        tx.options,
+        block_ctx,
+        tx.options.withHardfork(hardfork),
     );
     defer receipt.deinit(allocator);
 
-    const actual_state_root = try computeStateRoot(allocator, &sm);
+    const actual_state_root = try computeStateRoot(allocator, &sm, hardfork);
     const expected_state_root = try parseHashValue(try field(post_case, "hash"));
     if (!std.mem.eql(u8, &actual_state_root, &expected_state_root)) {
         const actual_hex = std.fmt.bytesToHex(actual_state_root, .lower);
         const expected_hex = std.fmt.bytesToHex(expected_state_root, .lower);
-        std.debug.print("legacy state root mismatch indexes(data={}, gas={}, value={}) actual=0x{s} expected=0x{s}\n", .{ indexes.data, indexes.gas, indexes.value, &actual_hex, &expected_hex });
+        std.debug.print("legacy state root mismatch fork={s} indexes(data={}, gas={}, value={}) actual=0x{s} expected=0x{s}\n", .{ hardfork.toString(), indexes.data, indexes.gas, indexes.value, &actual_hex, &expected_hex });
         return VerifyError.UnexpectedState;
     }
 
@@ -755,10 +766,23 @@ fn senderFromPre(pre: std.json.Value) !primitives.Address {
     return VerifyError.InvalidFixture;
 }
 
-fn blockContextFromFixture(fixture: std.json.Value) !guillotine_mini.BlockContext {
+fn hardforkFromFixtureName(name: []const u8) !guillotine_mini.Hardfork {
+    if (guillotine_mini.Hardfork.fromString(name)) |hardfork| return hardfork;
+    if (std.ascii.eqlIgnoreCase(name, "EIP150")) return .TANGERINE_WHISTLE;
+    if (std.ascii.eqlIgnoreCase(name, "EIP158")) return .SPURIOUS_DRAGON;
+    return VerifyError.InvalidFixture;
+}
+
+fn blockContextFromFixture(fixture: std.json.Value, hardfork: guillotine_mini.Hardfork) !guillotine_mini.BlockContext {
     const env = try field(fixture, "env");
     const base_fee = if (env.object.get("currentBaseFee")) |value| try parseQuantity(value) else 0;
-    const difficulty = if (env.object.get("currentRandom")) |_| 0 else try parseQuantity(try field(env, "currentDifficulty"));
+    const random = if (env.object.get("currentRandom")) |value| try parseQuantity(value) else 0;
+    const difficulty = if (hardfork.isAtLeast(.MERGE))
+        0
+    else if (env.object.get("currentDifficulty")) |value|
+        try parseQuantity(value)
+    else
+        0;
     const chain_id = if (fixture.object.get("config")) |config_value|
         std.math.cast(u64, try parseQuantity(try field(config_value, "chainid"))) orelse return VerifyError.InvalidQuantity
     else
@@ -768,7 +792,7 @@ fn blockContextFromFixture(fixture: std.json.Value) !guillotine_mini.BlockContex
         .block_number = std.math.cast(u64, try parseQuantity(try field(env, "currentNumber"))) orelse return VerifyError.InvalidQuantity,
         .block_timestamp = std.math.cast(u64, try parseQuantity(try field(env, "currentTimestamp"))) orelse return VerifyError.InvalidQuantity,
         .block_difficulty = difficulty,
-        .block_prevrandao = 0,
+        .block_prevrandao = if (hardfork.isAtLeast(.MERGE)) random else 0,
         .block_coinbase = try parseAddressValue(try field(env, "currentCoinbase")),
         .block_gas_limit = std.math.cast(u64, try parseQuantity(try field(env, "currentGasLimit"))) orelse return VerifyError.InvalidQuantity,
         .block_base_fee = base_fee,
@@ -819,7 +843,7 @@ fn assertState(allocator: std.mem.Allocator, sm: *state_manager.StateManager, ex
     }
 }
 
-fn computeStateRoot(allocator: std.mem.Allocator, sm: *state_manager.StateManager) !primitives.Hash.Hash {
+fn computeStateRoot(allocator: std.mem.Allocator, sm: *state_manager.StateManager, hardfork: guillotine_mini.Hardfork) !primitives.Hash.Hash {
     var keys = std.ArrayList([]const u8){};
     defer {
         for (keys.items) |key| allocator.free(key);
@@ -844,7 +868,15 @@ fn computeStateRoot(allocator: std.mem.Allocator, sm: *state_manager.StateManage
         }
 
         const storage_root = try computeStorageRoot(allocator, sm, address);
-        if (nonce == 0 and balance == 0 and std.mem.eql(u8, &code_hash, &primitives.State.EMPTY_CODE_HASH) and std.mem.eql(u8, &storage_root, &primitives.State.EMPTY_TRIE_ROOT)) {
+        const empty_account = nonce == 0 and
+            balance == 0 and
+            std.mem.eql(u8, &code_hash, &primitives.State.EMPTY_CODE_HASH);
+
+        // EIP-161 (Spurious Dragon) defines emptiness by nonce, balance, and
+        // code. Legacy state fixtures can seed storage-only empty accounts;
+        // those must not be encoded in post-Spurious state roots. Before
+        // Spurious Dragon, explicitly present empty accounts are root entries.
+        if (empty_account and hardfork.isAtLeast(.SPURIOUS_DRAGON)) {
             continue;
         }
 

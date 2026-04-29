@@ -15,6 +15,13 @@ pub const ExecutionTx = struct {
 pub const ProcessTransactionOptions = struct {
     access_list: ?primitives.AccessList.AccessList = null,
     receipt_type: primitives.Receipt.TransactionType = .legacy,
+    hardfork_override: ?guillotine_mini.Hardfork = null,
+
+    pub fn withHardfork(self: ProcessTransactionOptions, hardfork: guillotine_mini.Hardfork) ProcessTransactionOptions {
+        var options = self;
+        options.hardfork_override = hardfork;
+        return options;
+    }
 };
 
 pub const TxError = error{
@@ -29,12 +36,17 @@ pub const TxError = error{
 
 /// Calculates the intrinsic gas cost for a transaction.
 pub fn intrinsicGas(data: []const u8, is_create: bool) u64 {
+    return intrinsicGasForFork(data, is_create, .CANCUN);
+}
+
+pub fn intrinsicGasForFork(data: []const u8, is_create: bool, hardfork: guillotine_mini.Hardfork) u64 {
     var gas: u64 = INTRINSIC_GAS;
     if (is_create) {
         gas += CREATE_GAS;
     }
+    const nonzero_byte_gas = if (hardfork.isBefore(.ISTANBUL)) 68 else CALLDATA_NONZERO_BYTE_GAS;
     for (data) |byte| {
-        gas += if (byte == 0) CALLDATA_ZERO_BYTE_GAS else CALLDATA_NONZERO_BYTE_GAS;
+        gas += if (byte == 0) CALLDATA_ZERO_BYTE_GAS else nonzero_byte_gas;
     }
     return gas;
 }
@@ -145,14 +157,15 @@ pub fn processTransactionWithOptions(
     const current_nonce = sm.getNonce(caller) catch return TxError.StateError;
     if (current_nonce != tx.nonce) return TxError.NonceMismatch;
 
-    var intrinsic = intrinsicGas(tx.data, tx.to == null);
+    const hardfork = options.hardfork_override orelse resolveHardfork(block_ctx);
+    var intrinsic = intrinsicGasForFork(tx.data, tx.to == null, hardfork);
     if (options.access_list) |access_list| {
         intrinsic = std.math.add(u64, intrinsic, primitives.AccessList.calculateAccessListGasCost(access_list)) catch return TxError.IntrinsicGasExceedsLimit;
     }
     if (intrinsic > tx.gas_limit) return TxError.IntrinsicGasExceedsLimit;
 
     // EIP-1559 base-fee floor: legacy tx must pay at least the block base fee.
-    const base_fee: u256 = block_ctx.block_base_fee;
+    const base_fee: u256 = if (hardfork.isAtLeast(.LONDON)) block_ctx.block_base_fee else 0;
     if (tx.gas_price < base_fee) return TxError.GasPriceBelowBaseFee;
 
     const effective_gas_price: u256 = tx.gas_price;
@@ -174,7 +187,7 @@ pub fn processTransactionWithOptions(
         evm.init(
             allocator,
             host_iface,
-            resolveHardfork(block_ctx),
+            hardfork,
             block_ctx,
             caller,
             effective_gas_price,
@@ -229,7 +242,10 @@ pub fn processTransactionWithOptions(
 
     const gas_consumed = if (result.gas_left > execution_gas) 0 else execution_gas - result.gas_left;
     const total_gas_used = intrinsic + gas_consumed;
-    const max_refund = total_gas_used / 5;
+    const max_refund = if (hardfork.isAtLeast(.LONDON))
+        total_gas_used / 5
+    else
+        total_gas_used / 2;
     const refund = @min(result.refund_counter, max_refund);
     const effective_gas_used = total_gas_used - refund;
     const effective_gas_used_u256: u256 = @as(u256, effective_gas_used);
