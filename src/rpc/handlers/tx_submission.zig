@@ -3,6 +3,7 @@ const primitives = @import("primitives");
 const crypto = @import("crypto");
 const jsonrpc = @import("jsonrpc");
 const runtime = @import("../../node/runtime.zig");
+const genesis = @import("../../genesis.zig");
 
 pub const TxSubmissionError = error{
     InvalidHexData,
@@ -17,6 +18,7 @@ pub const TxSubmissionError = error{
     PoolInsertFailed,
     UnmanagedAccount,
     SigningFailed,
+    MiningFailed,
     OutOfMemory,
     StateError,
 };
@@ -90,6 +92,7 @@ pub fn handleSendRawTransaction(
     // Intrinsic gas.
     const intrinsic = computeIntrinsicGas(decoded, is_create, data);
     if (intrinsic > gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
+    if (gas_limit > rt.dev_runtime.config.block_gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
 
     // Balance covers value + max gas cost. Phase 1 only accepts legacy raw
     // transactions, so blob gas accounting is not reachable here.
@@ -111,41 +114,169 @@ pub fn handleSendRawTransaction(
         .to = envelopeTo(decoded),
         .value = value,
         .input = data,
+        .raw = raw_bytes,
+        .v = envelopeV(decoded),
+        .r = envelopeR(decoded),
+        .s = envelopeS(decoded),
     }) catch |err| switch (err) {
         error.ReplacementUnderpriced => return TxSubmissionError.PoolInsertFailed,
         error.OutOfMemory => return TxSubmissionError.OutOfMemory,
     };
 
     switch (rt.mining_config) {
-        .auto => automine(allocator, rt, decoded, sender) catch {},
+        .auto => automine(rt) catch return TxSubmissionError.MiningFailed,
         .manual, .interval => {},
     }
 
     return .{ .value = .{ .bytes = tx_hash } };
 }
 
+const SendTransactionRequest = struct {
+    from: primitives.Address,
+    to: ?primitives.Address = null,
+    gas: ?u64 = null,
+    gas_price: ?u256 = null,
+    value: u256 = 0,
+    nonce: ?u64 = null,
+    data: []const u8 = &.{},
+};
+
+fn parseQuantityU64Value(value: std.json.Value) !u64 {
+    return switch (value) {
+        .integer => |n| if (n < 0) error.InvalidTransactionRequest else @intCast(n),
+        .string => |text| parseQuantityString(u64, text),
+        else => error.InvalidTransactionRequest,
+    };
+}
+
+fn managedDevPrivateKey(address: primitives.Address) ?[32]u8 {
+    for (genesis.DEV_ACCOUNTS) |account| {
+        if (std.mem.eql(u8, &account.address.bytes, &address.bytes)) return account.private_key;
+    }
+    return null;
+}
+
 pub fn handleSendTransaction(
-    _: std.mem.Allocator,
+    allocator: std.mem.Allocator,
     rt: *runtime.NodeRuntime,
     params: jsonrpc.eth.SendTransaction.Params,
 ) TxSubmissionError!jsonrpc.eth.SendTransaction.Result {
-    const from = parseSendTransactionFrom(params) catch return TxSubmissionError.InvalidHexData;
-    if (!rt.canSignForAccount(from)) return TxSubmissionError.UnmanagedAccount;
+    const request = parseSendTransactionRequest(allocator, params) catch return TxSubmissionError.InvalidHexData;
+    if (!rt.canSignForAccount(request.from)) return TxSubmissionError.UnmanagedAccount;
 
-    // The current NodeRuntime-backed RPC path does not yet expose the pending
-    // pool used by raw transaction submission in this dormant handler. Keep the
-    // signer-scope gate accurate so managed and impersonated accounts follow
-    // the same authorization semantics when transaction construction is wired.
-    return TxSubmissionError.SigningFailed;
+    const current_nonce = rt.state.getNonce(request.from) catch return TxSubmissionError.StateError;
+    const nonce = request.nonce orelse current_nonce;
+    if (current_nonce != nonce) return TxSubmissionError.NonceMismatch;
+
+    const gas_price = request.gas_price orelse rt.gas_price;
+    var tx = primitives.Transaction.LegacyTransaction{
+        .nonce = nonce,
+        .gas_price = gas_price,
+        .gas_limit = request.gas orelse 0,
+        .to = request.to,
+        .value = request.value,
+        .data = request.data,
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    const intrinsic = computeIntrinsicGas(.{ .legacy = tx }, tx.to == null, tx.data);
+    tx.gas_limit = request.gas orelse intrinsic;
+    if (intrinsic > tx.gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
+    if (tx.gas_limit > rt.dev_runtime.config.block_gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
+
+    const max_gas_cost = gas_price * @as(u256, tx.gas_limit);
+    const total_cost = tx.value +| max_gas_cost;
+    const balance = rt.state.getBalance(request.from) catch return TxSubmissionError.StateError;
+    if (balance < total_cost) return TxSubmissionError.InsufficientBalance;
+
+    if (managedDevPrivateKey(request.from)) |private_key| {
+        tx = primitives.Transaction.signLegacyTransaction(allocator, tx, private_key, rt.chain_id) catch return TxSubmissionError.SigningFailed;
+    }
+
+    const raw = primitives.Transaction.encodeLegacyForSigning(allocator, tx, rt.chain_id) catch return TxSubmissionError.SigningFailed;
+    defer allocator.free(raw);
+    const tx_hash = computeTxHash(raw);
+
+    rt.pool.setNonce(request.from, current_nonce) catch return TxSubmissionError.PoolInsertFailed;
+    rt.pool.add(allocator, .{
+        .sender = request.from,
+        .nonce = tx.nonce,
+        .gas_limit = tx.gas_limit,
+        .max_fee_per_gas = tx.gas_price,
+        .max_priority_fee_per_gas = 0,
+        .hash = tx_hash,
+        .to = tx.to,
+        .value = tx.value,
+        .input = tx.data,
+        .raw = raw,
+        .v = tx.v,
+        .r = tx.r,
+        .s = tx.s,
+    }) catch |err| switch (err) {
+        error.ReplacementUnderpriced => return TxSubmissionError.PoolInsertFailed,
+        error.OutOfMemory => return TxSubmissionError.OutOfMemory,
+    };
+
+    switch (rt.mining_config) {
+        .auto => automine(rt) catch return TxSubmissionError.MiningFailed,
+        .manual, .interval => {},
+    }
+
+    return .{ .value = .{ .bytes = tx_hash } };
 }
 
-fn parseSendTransactionFrom(params: jsonrpc.eth.SendTransaction.Params) !primitives.Address {
+fn parseSendTransactionRequest(
+    allocator: std.mem.Allocator,
+    params: jsonrpc.eth.SendTransaction.Params,
+) !SendTransactionRequest {
     const tx_object = switch (params.transaction.value) {
         .object => |object| object,
         else => return error.InvalidTransactionRequest,
     };
-    const from_value = tx_object.get("from") orelse return error.InvalidTransactionRequest;
-    return switch (from_value) {
+
+    var request = SendTransactionRequest{ .from = undefined };
+    var saw_from = false;
+    var data_value: ?[]const u8 = null;
+    var input_value: ?[]const u8 = null;
+
+    var it = tx_object.iterator();
+    while (it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const value = entry.value_ptr.*;
+        if (std.mem.eql(u8, key, "from")) {
+            request.from = try parseAddressValue(value);
+            saw_from = true;
+        } else if (std.mem.eql(u8, key, "to")) {
+            request.to = if (value == .null) null else try parseAddressValue(value);
+        } else if (std.mem.eql(u8, key, "gas")) {
+            request.gas = try parseQuantityU64Value(value);
+        } else if (std.mem.eql(u8, key, "gasPrice")) {
+            request.gas_price = try parseQuantityU256Value(value);
+        } else if (std.mem.eql(u8, key, "value")) {
+            request.value = try parseQuantityU256Value(value);
+        } else if (std.mem.eql(u8, key, "nonce")) {
+            request.nonce = try parseQuantityU64Value(value);
+        } else if (std.mem.eql(u8, key, "data")) {
+            data_value = try parseHexDataValue(allocator, value);
+        } else if (std.mem.eql(u8, key, "input")) {
+            input_value = try parseHexDataValue(allocator, value);
+        } else {
+            return error.InvalidTransactionRequest;
+        }
+    }
+
+    if (!saw_from) return error.InvalidTransactionRequest;
+    if (data_value != null and input_value != null and !std.mem.eql(u8, data_value.?, input_value.?)) {
+        return error.InvalidTransactionRequest;
+    }
+    request.data = data_value orelse input_value orelse &.{};
+    return request;
+}
+
+fn parseAddressValue(value: std.json.Value) !primitives.Address {
+    return switch (value) {
         .string => |text| parseAddressString(text),
         else => error.InvalidTransactionRequest,
     };
@@ -158,6 +289,29 @@ fn parseAddressString(text: []const u8) !primitives.Address {
     var bytes: [20]u8 = undefined;
     _ = std.fmt.hexToBytes(&bytes, text[2..]) catch return error.InvalidAddress;
     return .{ .bytes = bytes };
+}
+
+fn parseQuantityU256Value(value: std.json.Value) !u256 {
+    return switch (value) {
+        .integer => |n| if (n < 0) error.InvalidTransactionRequest else @intCast(n),
+        .string => |text| parseQuantityString(u256, text),
+        else => error.InvalidTransactionRequest,
+    };
+}
+
+fn parseQuantityString(comptime T: type, text: []const u8) !T {
+    if (text.len <= 2 or text[0] != '0' or (text[1] != 'x' and text[1] != 'X')) return error.InvalidTransactionRequest;
+    return std.fmt.parseInt(T, text[2..], 16) catch error.InvalidTransactionRequest;
+}
+
+fn parseHexDataValue(allocator: std.mem.Allocator, value: std.json.Value) ![]const u8 {
+    const text = switch (value) {
+        .string => |s| s,
+        else => return error.InvalidTransactionRequest,
+    };
+    if (text.len < 2 or text[0] != '0' or (text[1] != 'x' and text[1] != 'X')) return error.InvalidTransactionRequest;
+    if ((text.len - 2) % 2 != 0) return error.InvalidTransactionRequest;
+    return primitives.Hex.hexToBytes(allocator, text) catch error.InvalidTransactionRequest;
 }
 
 // --- Envelope decoding ---------------------------------------------------
@@ -502,6 +656,36 @@ fn envelopeChainId(d: DecodedEnvelope) ?u64 {
     };
 }
 
+fn envelopeV(d: DecodedEnvelope) u64 {
+    return switch (d) {
+        .legacy => |t| t.v,
+        .eip2930 => |t| t.y_parity,
+        .eip1559 => |t| t.y_parity,
+        .eip4844 => |t| t.y_parity,
+        .eip7702 => |t| t.y_parity,
+    };
+}
+
+fn envelopeR(d: DecodedEnvelope) [32]u8 {
+    return switch (d) {
+        .legacy => |t| t.r,
+        .eip2930 => |t| t.r,
+        .eip1559 => |t| t.r,
+        .eip4844 => |t| t.r,
+        .eip7702 => |t| t.r,
+    };
+}
+
+fn envelopeS(d: DecodedEnvelope) [32]u8 {
+    return switch (d) {
+        .legacy => |t| t.s,
+        .eip2930 => |t| t.s,
+        .eip1559 => |t| t.s,
+        .eip4844 => |t| t.s,
+        .eip7702 => |t| t.s,
+    };
+}
+
 fn envelopeAccessList(d: DecodedEnvelope) []const primitives.Transaction.AccessListItem {
     return switch (d) {
         .legacy => &[_]primitives.Transaction.AccessListItem{},
@@ -629,30 +813,14 @@ fn computeTxHash(raw_bytes: []const u8) [32]u8 {
     return keccak(raw_bytes);
 }
 
-fn automine(
-    allocator: std.mem.Allocator,
-    rt: *runtime.NodeRuntime,
-    _: DecodedEnvelope,
-    _: primitives.Address,
-) !void {
-    const ready = try rt.pool.getReady(allocator);
-    defer allocator.free(ready);
-
-    if (ready.len == 0) return;
-
-    rt.head_block_number += 1;
-
-    var mined_hashes = try allocator.alloc([32]u8, ready.len);
-    defer allocator.free(mined_hashes);
-    for (ready, 0..) |pooled_tx, i| {
-        mined_hashes[i] = pooled_tx.hash;
-    }
-    rt.pool.removeMined(mined_hashes);
+fn automine(rt: *runtime.NodeRuntime) !void {
+    try rt.mineBlocks(1, 0);
 }
 
 // Project typed envelopes onto the legacy execution shape (`ExecutionTx.tx`
 // is `LegacyTransaction`). Preserves to/value/data/nonce/gas semantics; the
-// signature fields are not used downstream by tx_processor.
+// signature fields are preserved so receipt and canonical-block transaction
+// hashes can be aligned with the submitted envelope.
 fn legacyShapeFromEnvelope(d: DecodedEnvelope) primitives.Transaction.LegacyTransaction {
     const to_opt = envelopeTo(d);
     return .{
@@ -662,8 +830,8 @@ fn legacyShapeFromEnvelope(d: DecodedEnvelope) primitives.Transaction.LegacyTran
         .to = to_opt,
         .value = envelopeValue(d),
         .data = envelopeData(d),
-        .v = 0,
-        .r = [_]u8{0} ** 32,
-        .s = [_]u8{0} ** 32,
+        .v = envelopeV(d),
+        .r = envelopeR(d),
+        .s = envelopeS(d),
     };
 }
