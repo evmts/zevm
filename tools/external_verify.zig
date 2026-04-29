@@ -48,6 +48,7 @@ const legacy_state_fixture_dirs = [_][]const u8{
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stCodeSizeLimit",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP2930",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP3607",
+    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stExample",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stHomesteadSpecific",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stMemExpandingEIP150Calls",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stRecursiveCreate",
@@ -291,7 +292,7 @@ fn runLegacyStatePostCase(allocator: std.mem.Allocator, fixture: std.json.Value,
 
     if (post_case.object.get("expectException")) |expected_exception| {
         try expectFixtureTxError(allocator, expected_exception, receipt_result);
-        try assertLegacyStateRoot(allocator, &sm, hardfork, try field(fixture, "pre"), post_case, indexes);
+        try assertLegacyStateRoot(allocator, &sm, hardfork, block_ctx.block_coinbase, try field(fixture, "pre"), post_case, indexes);
         try assertLegacyLogsHash(allocator, &.{}, post_case);
         return;
     }
@@ -299,7 +300,7 @@ fn runLegacyStatePostCase(allocator: std.mem.Allocator, fixture: std.json.Value,
     var receipt = try receipt_result;
     defer receipt.deinit(allocator);
 
-    try assertLegacyStateRoot(allocator, &sm, hardfork, try field(fixture, "pre"), post_case, indexes);
+    try assertLegacyStateRoot(allocator, &sm, hardfork, block_ctx.block_coinbase, try field(fixture, "pre"), post_case, indexes);
     try assertLegacyLogsHash(allocator, receipt.logs, post_case);
 }
 
@@ -307,11 +308,12 @@ fn assertLegacyStateRoot(
     allocator: std.mem.Allocator,
     sm: *state_manager.StateManager,
     hardfork: guillotine_mini.Hardfork,
+    block_coinbase: primitives.Address,
     pre_state: std.json.Value,
     post_case: std.json.Value,
     indexes: TransactionIndexes,
 ) !void {
-    const actual_state_root = try computeStateRoot(allocator, sm, hardfork, pre_state);
+    const actual_state_root = try computeStateRoot(allocator, sm, hardfork, block_coinbase, pre_state);
     const expected_state_root = try parseHashValue(try field(post_case, "hash"));
     if (!std.mem.eql(u8, &actual_state_root, &expected_state_root)) {
         const actual_hex = std.fmt.bytesToHex(actual_state_root, .lower);
@@ -902,7 +904,13 @@ fn assertState(allocator: std.mem.Allocator, sm: *state_manager.StateManager, ex
     }
 }
 
-fn computeStateRoot(allocator: std.mem.Allocator, sm: *state_manager.StateManager, hardfork: guillotine_mini.Hardfork, pre_state: std.json.Value) !primitives.Hash.Hash {
+fn computeStateRoot(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+    hardfork: guillotine_mini.Hardfork,
+    block_coinbase: primitives.Address,
+    pre_state: std.json.Value,
+) !primitives.Hash.Hash {
     var keys = std.ArrayList([]const u8){};
     defer {
         for (keys.items) |key| allocator.free(key);
@@ -914,9 +922,11 @@ fn computeStateRoot(allocator: std.mem.Allocator, sm: *state_manager.StateManage
         values.deinit(allocator);
     }
 
+    var saw_coinbase = false;
     var it = sm.accountIterator();
     while (it.next()) |entry| {
         const address = entry.key_ptr.*;
+        if (address.equals(block_coinbase)) saw_coinbase = true;
         const nonce = try sm.getNonce(address);
         const balance = try sm.getBalance(address);
         const code = try sm.getCode(address);
@@ -943,27 +953,55 @@ fn computeStateRoot(allocator: std.mem.Allocator, sm: *state_manager.StateManage
             continue;
         }
 
-        const account = primitives.AccountState.AccountState.from(.{
-            .nonce = nonce,
-            .balance = balance,
-            .storage_root = storage_root,
-            .code_hash = code_hash,
-        });
+        try appendAccountTrieEntry(allocator, &keys, &values, address, nonce, balance, storage_root, code_hash);
+    }
 
-        const key = try allocator.dupe(u8, address.bytes[0..]);
-        var key_owned = true;
-        errdefer if (key_owned) allocator.free(key);
-        const value = try account.rlpEncode(allocator);
-        var value_owned = true;
-        errdefer if (value_owned) allocator.free(value);
-
-        try keys.append(allocator, key);
-        key_owned = false;
-        try values.append(allocator, value);
-        value_owned = false;
+    // Legacy state tests model the pre-Spurious zero block reward as a
+    // coinbase touch. Empty touched accounts stayed in the trie before EIP-161.
+    if (hardfork.isBefore(.SPURIOUS_DRAGON) and !saw_coinbase) {
+        try appendAccountTrieEntry(
+            allocator,
+            &keys,
+            &values,
+            block_coinbase,
+            0,
+            0,
+            primitives.State.EMPTY_TRIE_ROOT,
+            primitives.State.EMPTY_CODE_HASH,
+        );
     }
 
     return try primitives.TrieHash.secure_trie_root(allocator, keys.items, values.items);
+}
+
+fn appendAccountTrieEntry(
+    allocator: std.mem.Allocator,
+    keys: *std.ArrayList([]const u8),
+    values: *std.ArrayList([]const u8),
+    address: primitives.Address,
+    nonce: u64,
+    balance: u256,
+    storage_root: primitives.Hash.Hash,
+    code_hash: primitives.Hash.Hash,
+) !void {
+    const account = primitives.AccountState.AccountState.from(.{
+        .nonce = nonce,
+        .balance = balance,
+        .storage_root = storage_root,
+        .code_hash = code_hash,
+    });
+
+    const key = try allocator.dupe(u8, address.bytes[0..]);
+    var key_owned = true;
+    errdefer if (key_owned) allocator.free(key);
+    const value = try account.rlpEncode(allocator);
+    var value_owned = true;
+    errdefer if (value_owned) allocator.free(value);
+
+    try keys.append(allocator, key);
+    key_owned = false;
+    try values.append(allocator, value);
+    value_owned = false;
 }
 
 fn preStateHasEmptyAccount(pre_state: std.json.Value, address: primitives.Address) !bool {
@@ -1122,6 +1160,8 @@ fn expectFixtureTxError(
 
 fn txErrorFromFixtureException(name: []const u8) ?zevm.tx_processor.TxError {
     if (std.ascii.eqlIgnoreCase(name, "SenderNotEOA")) return zevm.tx_processor.TxError.SenderNotEOA;
+    if (std.ascii.eqlIgnoreCase(name, "TR_TypeNotSupported")) return zevm.tx_processor.TxError.UnsupportedTransactionType;
+    if (std.ascii.eqlIgnoreCase(name, "TR_IntrinsicGas")) return zevm.tx_processor.TxError.IntrinsicGasExceedsLimit;
     return null;
 }
 

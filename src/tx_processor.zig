@@ -29,6 +29,7 @@ pub const TxError = error{
     InsufficientBalance,
     NonceMismatch,
     SenderNotEOA,
+    UnsupportedTransactionType,
     IntrinsicGasExceedsLimit,
     GasPriceBelowBaseFee,
     StateError,
@@ -62,6 +63,16 @@ pub fn intrinsicGasForFork(data: []const u8, is_create: bool, hardfork: guilloti
 pub fn resolveHardfork(block_ctx: guillotine_mini.BlockContext) guillotine_mini.Hardfork {
     _ = block_ctx;
     return .CANCUN;
+}
+
+fn transactionTypeSupported(receipt_type: primitives.Receipt.TransactionType, hardfork: guillotine_mini.Hardfork) bool {
+    return switch (receipt_type) {
+        .legacy => true,
+        .eip2930 => hardfork.isAtLeast(.BERLIN),
+        .eip1559 => hardfork.isAtLeast(.LONDON),
+        .eip4844 => hardfork.isAtLeast(.CANCUN),
+        .eip7702 => hardfork.isAtLeast(.PRAGUE),
+    };
 }
 
 fn allocateEventLogs(
@@ -159,13 +170,15 @@ pub fn processTransactionWithOptions(
     block_ctx: guillotine_mini.BlockContext,
     options: ProcessTransactionOptions,
 ) TxError!primitives.Receipt.Receipt {
+    const hardfork = options.hardfork_override orelse resolveHardfork(block_ctx);
+    if (!transactionTypeSupported(options.receipt_type, hardfork)) return TxError.UnsupportedTransactionType;
+
     const sender_code = sm.getCode(caller) catch return TxError.StateError;
     if (sender_code.len != 0) return TxError.SenderNotEOA;
 
     const current_nonce = sm.getNonce(caller) catch return TxError.StateError;
     if (current_nonce != tx.nonce) return TxError.NonceMismatch;
 
-    const hardfork = options.hardfork_override orelse resolveHardfork(block_ctx);
     var intrinsic = intrinsicGasForFork(tx.data, tx.to == null, hardfork);
     if (options.access_list) |access_list| {
         intrinsic = std.math.add(u64, intrinsic, primitives.AccessList.calculateAccessListGasCost(access_list)) catch return TxError.IntrinsicGasExceedsLimit;

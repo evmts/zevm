@@ -180,6 +180,56 @@ test "reject transaction from sender with code" {
     try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(sender));
 }
 
+test "reject typed transactions before activation fork" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    const sender = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
+    const recipient = primitives.Address{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 19 };
+
+    try sm.setBalance(sender, 1_000_000_000_000);
+    try sm.setNonce(sender, 0);
+
+    const access_list_result = tx_processor.processTransactionWithOptions(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        sender,
+        makeLegacyTx(.{
+            .to = recipient,
+            .value = 0,
+            .data = &[_]u8{},
+            .gas_limit = 21_000,
+            .gas_price = 1,
+            .nonce = 0,
+        }),
+        defaultBlockContext(),
+        .{ .receipt_type = .eip2930, .hardfork_override = .ISTANBUL },
+    );
+    try std.testing.expectError(tx_processor.TxError.UnsupportedTransactionType, access_list_result);
+    try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(sender));
+
+    const dynamic_fee_result = tx_processor.processTransactionWithOptions(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        sender,
+        makeLegacyTx(.{
+            .to = recipient,
+            .value = 0,
+            .data = &[_]u8{},
+            .gas_limit = 21_000,
+            .gas_price = 1,
+            .nonce = 0,
+        }),
+        defaultBlockContext(),
+        .{ .receipt_type = .eip1559, .hardfork_override = .BERLIN },
+    );
+    try std.testing.expectError(tx_processor.TxError.UnsupportedTransactionType, dynamic_fee_result);
+    try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(sender));
+}
+
 test "reject insufficient balance" {
     var sm = try state_manager.StateManager.init(std.testing.allocator, null);
     defer sm.deinit();
