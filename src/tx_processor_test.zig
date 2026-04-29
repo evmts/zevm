@@ -44,6 +44,8 @@ test "intrinsic gas calculation" {
     try std.testing.expectEqual(@as(u64, 21_000), tx_processor.intrinsicGas(&[_]u8{}, false));
     try std.testing.expectEqual(@as(u64, 21_000 + 32_000), tx_processor.intrinsicGas(&[_]u8{}, true));
     try std.testing.expectEqual(@as(u64, 21_000 + 16 + 4 + 16), tx_processor.intrinsicGas(&[_]u8{ 0x01, 0x00, 0x02 }, false));
+    try std.testing.expectEqual(@as(u64, 21_000 + 32_000 + 8 + 16 * 100), tx_processor.intrinsicGasForFork(&([_]u8{0x01} ** 100), true, .CANCUN));
+    try std.testing.expectEqual(@as(u64, 21_000 + 32_000 + 16 * 100), tx_processor.intrinsicGasForFork(&([_]u8{0x01} ** 100), true, .LONDON));
 }
 
 test "process simple ETH transfer" {

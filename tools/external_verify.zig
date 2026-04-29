@@ -40,6 +40,7 @@ const execution_spec_blockchain_fixture_paths = [_][]const u8{
 
 const legacy_state_fixture_dirs = [_][]const u8{
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stArgsZeroOneBalance",
+    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stAttackTest",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stCallCodes",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stChainId",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stSLoadTest",

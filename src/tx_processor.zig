@@ -6,6 +6,7 @@ const INTRINSIC_GAS: u64 = 21_000;
 const CALLDATA_ZERO_BYTE_GAS: u64 = 4;
 const CALLDATA_NONZERO_BYTE_GAS: u64 = 16;
 const CREATE_GAS: u64 = 32_000;
+const INITCODE_WORD_GAS: u64 = 2;
 
 pub const ExecutionTx = struct {
     caller: primitives.Address,
@@ -43,6 +44,9 @@ pub fn intrinsicGasForFork(data: []const u8, is_create: bool, hardfork: guilloti
     var gas: u64 = INTRINSIC_GAS;
     if (is_create) {
         gas += CREATE_GAS;
+        if (hardfork.isAtLeast(.SHANGHAI)) {
+            gas += INITCODE_WORD_GAS * @as(u64, @intCast((data.len + 31) / 32));
+        }
     }
     const nonzero_byte_gas = if (hardfork.isBefore(.ISTANBUL)) 68 else CALLDATA_NONZERO_BYTE_GAS;
     for (data) |byte| {
