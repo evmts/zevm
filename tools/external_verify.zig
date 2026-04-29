@@ -58,6 +58,7 @@ const legacy_state_fixture_dirs = [_][]const u8{
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stSLoadTest",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stSelfBalance",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stStackTests",
+    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stStaticFlagEnabled",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stTransitionTest",
 };
 

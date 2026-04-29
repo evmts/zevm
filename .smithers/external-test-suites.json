@@ -27,6 +27,7 @@
         "LegacyTests/Cancun/GeneralStateTests/stSLoadTest/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stSelfBalance/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stStackTests/*.json",
+        "LegacyTests/Cancun/GeneralStateTests/stStaticFlagEnabled/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stTransitionTest/*.json"
       ],
       "remaining": [
