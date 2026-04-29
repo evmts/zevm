@@ -9,7 +9,8 @@
       "reason": "GeneralStateTests populated via git submodule update; active legacy cases now execute every post fork case and compare state root plus logs hash.",
       "activeCases": [
         "LegacyTests/Cancun/GeneralStateTests/stArgsZeroOneBalance/*.json",
-        "LegacyTests/Cancun/GeneralStateTests/stCallCodes/*.json"
+        "LegacyTests/Cancun/GeneralStateTests/stCallCodes/*.json",
+        "LegacyTests/Cancun/GeneralStateTests/stSLoadTest/*.json"
       ],
       "remaining": [
         "walk all GeneralStateTests directories and all post indexes"
