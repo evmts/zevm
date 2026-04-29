@@ -48,7 +48,7 @@ pub const LogIndex = struct {
 
         for (receipts) |receipt| {
             for (receipt.logs) |log| {
-                const cloned = try primitives.EventLog.clone(allocator, log);
+                const cloned = try cloneEventLog(allocator, log);
                 try self.logs.append(allocator, .{
                     .log = cloned,
                     .block_hash = block_hash,
@@ -141,4 +141,15 @@ fn matchesFilter(entry: IndexedLog, filter: LogFilter) bool {
     }
 
     return true;
+}
+
+fn cloneEventLog(
+    allocator: std.mem.Allocator,
+    log: primitives.EventLog.EventLog,
+) !primitives.EventLog.EventLog {
+    var cloned = log;
+    cloned.topics = try allocator.dupe(primitives.Hash.Hash, log.topics);
+    errdefer allocator.free(cloned.topics);
+    cloned.data = try allocator.dupe(u8, log.data);
+    return cloned;
 }

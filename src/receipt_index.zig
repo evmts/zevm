@@ -37,7 +37,7 @@ pub const ReceiptIndex = struct {
         errdefer allocator.free(cloned);
 
         for (receipts, 0..) |receipt, i| {
-            cloned[i] = try receipt.clone(allocator);
+            cloned[i] = try cloneReceipt(allocator, receipt);
             errdefer cloned[i].deinit(allocator);
             try self.by_tx.put(cloned[i].transaction_hash, cloned[i]);
         }
@@ -62,3 +62,61 @@ pub const ReceiptIndex = struct {
         return self.by_block.get(block_hash);
     }
 };
+
+fn cloneReceipt(allocator: std.mem.Allocator, receipt: primitives.Receipt.Receipt) !primitives.Receipt.Receipt {
+    const logs = try allocator.alloc(primitives.EventLog.EventLog, receipt.logs.len);
+    var cloned_logs: usize = 0;
+    errdefer {
+        for (logs[0..cloned_logs]) |log| {
+            deinitEventLog(allocator, log);
+        }
+        allocator.free(logs);
+    }
+
+    for (receipt.logs, 0..) |log, i| {
+        logs[i] = try cloneEventLog(allocator, log);
+        cloned_logs += 1;
+    }
+
+    return .{
+        .transaction_hash = receipt.transaction_hash,
+        .transaction_index = receipt.transaction_index,
+        .block_hash = receipt.block_hash,
+        .block_number = receipt.block_number,
+        .sender = receipt.sender,
+        .to = receipt.to,
+        .cumulative_gas_used = receipt.cumulative_gas_used,
+        .gas_used = receipt.gas_used,
+        .contract_address = receipt.contract_address,
+        .logs = logs,
+        .logs_bloom = receipt.logs_bloom,
+        .status = receipt.status,
+        .root = receipt.root,
+        .effective_gas_price = receipt.effective_gas_price,
+        .type = receipt.type,
+        .blob_gas_used = receipt.blob_gas_used,
+        .blob_gas_price = receipt.blob_gas_price,
+    };
+}
+
+fn cloneEventLog(allocator: std.mem.Allocator, log: primitives.EventLog.EventLog) !primitives.EventLog.EventLog {
+    const topics = try allocator.dupe([32]u8, log.topics);
+    errdefer allocator.free(topics);
+    const data = try allocator.dupe(u8, log.data);
+
+    return .{
+        .address = log.address,
+        .topics = topics,
+        .data = data,
+        .block_number = log.block_number,
+        .transaction_hash = log.transaction_hash,
+        .transaction_index = log.transaction_index,
+        .log_index = log.log_index,
+        .removed = log.removed,
+    };
+}
+
+fn deinitEventLog(allocator: std.mem.Allocator, log: primitives.EventLog.EventLog) void {
+    allocator.free(log.topics);
+    allocator.free(log.data);
+}
