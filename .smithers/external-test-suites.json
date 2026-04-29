@@ -16,6 +16,7 @@
         "LegacyTests/Cancun/GeneralStateTests/stCodeCopyTest/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stCodeSizeLimit/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stEIP150Specific/*.json",
+        "LegacyTests/Cancun/GeneralStateTests/stEIP1559/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stEIP158Specific/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stEIP2930/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stEIP3607/*.json",

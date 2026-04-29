@@ -16,6 +16,8 @@ pub const ExecutionTx = struct {
 pub const ProcessTransactionOptions = struct {
     access_list: ?primitives.AccessList.AccessList = null,
     receipt_type: primitives.Receipt.TransactionType = .legacy,
+    max_fee_per_gas: ?u256 = null,
+    max_priority_fee_per_gas: ?u256 = null,
     hardfork_override: ?guillotine_mini.Hardfork = null,
 
     pub fn withHardfork(self: ProcessTransactionOptions, hardfork: guillotine_mini.Hardfork) ProcessTransactionOptions {
@@ -30,8 +32,10 @@ pub const TxError = error{
     NonceMismatch,
     SenderNotEOA,
     UnsupportedTransactionType,
+    BlockGasLimitExceeded,
     IntrinsicGasExceedsLimit,
     GasPriceBelowBaseFee,
+    TipExceedsFeeCap,
     StateError,
     EvmInitError,
     OutOfMemory,
@@ -172,6 +176,7 @@ pub fn processTransactionWithOptions(
 ) TxError!primitives.Receipt.Receipt {
     const hardfork = options.hardfork_override orelse resolveHardfork(block_ctx);
     if (!transactionTypeSupported(options.receipt_type, hardfork)) return TxError.UnsupportedTransactionType;
+    if (tx.gas_limit > block_ctx.block_gas_limit) return TxError.BlockGasLimitExceeded;
 
     const sender_code = sm.getCode(caller) catch return TxError.StateError;
     if (sender_code.len != 0) return TxError.SenderNotEOA;
@@ -185,13 +190,24 @@ pub fn processTransactionWithOptions(
     }
     if (intrinsic > tx.gas_limit) return TxError.IntrinsicGasExceedsLimit;
 
-    // EIP-1559 base-fee floor: legacy tx must pay at least the block base fee.
+    if (options.receipt_type == .eip1559) {
+        const max_fee_per_gas = options.max_fee_per_gas orelse tx.gas_price;
+        const max_priority_fee_per_gas = options.max_priority_fee_per_gas orelse 0;
+        if (max_priority_fee_per_gas > max_fee_per_gas) return TxError.TipExceedsFeeCap;
+        if (max_fee_per_gas < block_ctx.block_base_fee) return TxError.GasPriceBelowBaseFee;
+    }
+
+    // EIP-1559 base-fee floor: non-dynamic-fee txs must pay at least the block base fee.
     const base_fee: u256 = if (hardfork.isAtLeast(.LONDON)) block_ctx.block_base_fee else 0;
-    if (tx.gas_price < base_fee) return TxError.GasPriceBelowBaseFee;
+    if (options.receipt_type != .eip1559 and tx.gas_price < base_fee) return TxError.GasPriceBelowBaseFee;
 
     const effective_gas_price: u256 = tx.gas_price;
+    const balance_check_gas_price: u256 = if (options.receipt_type == .eip1559)
+        options.max_fee_per_gas orelse tx.gas_price
+    else
+        effective_gas_price;
     const max_gas_cost = effective_gas_price * @as(u256, tx.gas_limit);
-    const total_cost = tx.value + max_gas_cost;
+    const total_cost = tx.value + balance_check_gas_price * @as(u256, tx.gas_limit);
     const balance = sm.getBalance(caller) catch return TxError.StateError;
     if (balance < total_cost) return TxError.InsufficientBalance;
 

@@ -230,6 +230,110 @@ test "reject typed transactions before activation fork" {
     try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(sender));
 }
 
+test "reject invalid dynamic fee caps" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    const sender = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
+    const recipient = primitives.Address{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 19 };
+    var block_ctx = defaultBlockContext();
+    block_ctx.block_base_fee = 100;
+
+    try sm.setBalance(sender, 1_000_000_000_000);
+    try sm.setNonce(sender, 0);
+
+    const low_fee_cap = tx_processor.processTransactionWithOptions(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        sender,
+        makeLegacyTx(.{
+            .to = recipient,
+            .value = 0,
+            .data = &[_]u8{},
+            .gas_limit = 21_000,
+            .gas_price = 99,
+            .nonce = 0,
+        }),
+        block_ctx,
+        .{ .receipt_type = .eip1559, .max_fee_per_gas = 99, .max_priority_fee_per_gas = 1, .hardfork_override = .LONDON },
+    );
+    try std.testing.expectError(tx_processor.TxError.GasPriceBelowBaseFee, low_fee_cap);
+    try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(sender));
+
+    const excessive_tip = tx_processor.processTransactionWithOptions(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        sender,
+        makeLegacyTx(.{
+            .to = recipient,
+            .value = 0,
+            .data = &[_]u8{},
+            .gas_limit = 21_000,
+            .gas_price = 100,
+            .nonce = 0,
+        }),
+        block_ctx,
+        .{ .receipt_type = .eip1559, .max_fee_per_gas = 100, .max_priority_fee_per_gas = 101, .hardfork_override = .LONDON },
+    );
+    try std.testing.expectError(tx_processor.TxError.TipExceedsFeeCap, excessive_tip);
+    try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(sender));
+
+    try sm.setBalance(sender, 50_000_020);
+    const insufficient_fee_cap_balance = tx_processor.processTransactionWithOptions(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        sender,
+        makeLegacyTx(.{
+            .to = recipient,
+            .value = 48_000_020,
+            .data = &[_]u8{0},
+            .gas_limit = 50_000,
+            .gas_price = 40,
+            .nonce = 0,
+        }),
+        block_ctx,
+        .{ .receipt_type = .eip1559, .max_fee_per_gas = 1000, .max_priority_fee_per_gas = 20, .hardfork_override = .LONDON },
+    );
+    try std.testing.expectError(tx_processor.TxError.InsufficientBalance, insufficient_fee_cap_balance);
+    try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(sender));
+}
+
+test "reject transaction gas limit above block gas limit" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    const sender = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
+    const recipient = primitives.Address{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 19 };
+    var block_ctx = defaultBlockContext();
+    block_ctx.block_gas_limit = 20_999;
+
+    try sm.setBalance(sender, 1_000_000_000_000);
+    try sm.setNonce(sender, 0);
+
+    const result = tx_processor.processTransaction(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        sender,
+        makeLegacyTx(.{
+            .to = recipient,
+            .value = 0,
+            .data = &[_]u8{},
+            .gas_limit = 21_000,
+            .gas_price = 1,
+            .nonce = 0,
+        }),
+        block_ctx,
+    );
+    try std.testing.expectError(tx_processor.TxError.BlockGasLimitExceeded, result);
+    try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(sender));
+}
+
 test "reject insufficient balance" {
     var sm = try state_manager.StateManager.init(std.testing.allocator, null);
     defer sm.deinit();

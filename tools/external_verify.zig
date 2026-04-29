@@ -47,6 +47,7 @@ const legacy_state_fixture_dirs = [_][]const u8{
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stCodeCopyTest",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stCodeSizeLimit",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP150Specific",
+    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP1559",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP158Specific",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP2930",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP3607",
@@ -687,6 +688,14 @@ fn legacyTxFromFixtureCase(allocator: std.mem.Allocator, fixture: std.json.Value
     const access_list = try accessListFromTransactionAtIndex(allocator, transaction, indexes.data);
     errdefer if (access_list) |list| freeAccessList(allocator, list);
     const gas_price = try effectiveGasPriceFromFixture(fixture, transaction);
+    const max_fee_per_gas: ?u256 = if (transaction.object.get("maxFeePerGas")) |max_fee_value|
+        try parseQuantity(max_fee_value)
+    else
+        null;
+    const max_priority_fee_per_gas: ?u256 = if (transaction.object.get("maxPriorityFeePerGas")) |priority_fee_value|
+        try parseQuantity(priority_fee_value)
+    else
+        null;
 
     const to_text = try stringField(transaction, "to");
     const to = if (to_text.len == 0) null else try parseAddressText(to_text);
@@ -713,6 +722,8 @@ fn legacyTxFromFixtureCase(allocator: std.mem.Allocator, fixture: std.json.Value
         .options = .{
             .access_list = access_list,
             .receipt_type = receipt_type,
+            .max_fee_per_gas = max_fee_per_gas,
+            .max_priority_fee_per_gas = max_priority_fee_per_gas,
         },
     };
 }
@@ -1164,6 +1175,10 @@ fn txErrorFromFixtureException(name: []const u8) ?zevm.tx_processor.TxError {
     if (std.ascii.eqlIgnoreCase(name, "SenderNotEOA")) return zevm.tx_processor.TxError.SenderNotEOA;
     if (std.ascii.eqlIgnoreCase(name, "TR_TypeNotSupported")) return zevm.tx_processor.TxError.UnsupportedTransactionType;
     if (std.ascii.eqlIgnoreCase(name, "TR_IntrinsicGas")) return zevm.tx_processor.TxError.IntrinsicGasExceedsLimit;
+    if (std.ascii.eqlIgnoreCase(name, "TR_FeeCapLessThanBlocks")) return zevm.tx_processor.TxError.GasPriceBelowBaseFee;
+    if (std.ascii.eqlIgnoreCase(name, "TR_TipGtFeeCap")) return zevm.tx_processor.TxError.TipExceedsFeeCap;
+    if (std.ascii.eqlIgnoreCase(name, "TR_NoFunds")) return zevm.tx_processor.TxError.InsufficientBalance;
+    if (std.ascii.eqlIgnoreCase(name, "TR_GasLimitReached")) return zevm.tx_processor.TxError.BlockGasLimitExceeded;
     return null;
 }
 
