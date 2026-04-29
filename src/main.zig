@@ -48,6 +48,7 @@ pub fn main() !void {
                 light_config.toNodeConfig(),
             );
             defer runtime.deinit();
+            try runtime.startLightSync();
 
             var handlers = zevm.rpc.dispatcher.HandlerRegistry{};
             zevm.rpc.dispatch_wiring.install(&handlers, &runtime);

@@ -17,6 +17,7 @@ pub const block_builder = @import("block_builder.zig");
 pub const consensus_verifier = @import("consensus_verifier.zig");
 pub const beacon_api = @import("beacon_api.zig");
 pub const consensus_sync = @import("consensus_sync.zig");
+pub const light_proof = @import("light_proof.zig");
 pub const checkpoint = @import("checkpoint.zig");
 pub const mining = @import("mining.zig");
 pub const cli = @import("cli.zig");
@@ -35,11 +36,17 @@ test {
     _ = @import("consensus_verifier_test.zig");
     _ = @import("beacon_api_test.zig");
     _ = @import("consensus_sync_test.zig");
+    _ = @import("light_proof.zig");
     _ = @import("checkpoint_test.zig");
     _ = @import("mining_test.zig");
     _ = @import("cli_test.zig");
+    _ = @import("config_test.zig");
+    _ = @import("genesis_test.zig");
+    _ = @import("log_index_test.zig");
     _ = @import("main_test.zig");
+    _ = @import("node_test.zig");
     _ = @import("node/runtime_test.zig");
+    _ = @import("receipt_index_test.zig");
     _ = @import("rpc/root.zig");
     _ = @import("release_metadata.zig");
 }

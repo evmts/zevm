@@ -13,6 +13,7 @@ const receipt_index_mod = @import("../receipt_index.zig");
 const log_index_mod = @import("../log_index.zig");
 const checkpoint = @import("../checkpoint.zig");
 const consensus_sync = @import("../consensus_sync.zig");
+const light_proof = @import("../light_proof.zig");
 const log = @import("../log.zig");
 const guillotine_mini = @import("guillotine_mini");
 
@@ -95,21 +96,17 @@ pub const CheckpointSource = enum {
     }
 };
 
-pub const LightProofReadState = enum {
-    available,
-    malformed_payload,
-    verify_failure,
-};
-
 pub const LightConfig = struct {
     network: LightNetwork = .mainnet,
     consensus_rpc_url: []const u8 = "",
+    proof_rpc_url: ?[]const u8 = null,
+    proof_resolver: ?light_proof.RpcResolver = null,
+    advance_on_request: bool = true,
     checkpoint: ?[32]u8 = null,
     checkpoint_dir: ?[]const u8 = null,
     checkpoint_source: ?CheckpointSource = null,
     max_checkpoint_age_seconds: ?u64 = null,
     strict_checkpoint_age: bool = false,
-    proof_read_state: LightProofReadState = .verify_failure,
 };
 
 pub const ForkConfig = struct {
@@ -157,12 +154,15 @@ pub const NodeConfig = struct {
 pub const LightModeState = struct {
     network: LightNetwork,
     checkpoint_source: CheckpointSource,
+    startup_checkpoint: [32]u8,
     engine: consensus_sync.ConsensusSyncEngine,
     safe_slot: u64,
-    proof_read_state: LightProofReadState,
+    proof_source: light_proof.ProofSource,
+    advance_on_request: bool,
 
     pub fn deinit(self: *LightModeState, allocator: std.mem.Allocator) void {
         allocator.free(self.engine.config.consensus_rpc);
+        allocator.free(self.proof_source.url);
     }
 
     pub fn effectiveStatus(self: *const LightModeState) consensus_sync.SyncStatus {
@@ -187,6 +187,19 @@ pub const LightModeState = struct {
     pub fn slotCoherent(self: *const LightModeState) bool {
         return self.finalizedSlot() <= self.safe_slot and self.safe_slot <= self.optimisticSlot();
     }
+};
+
+pub const LightReadHead = struct {
+    state_root: [32]u8,
+    block_number: u64,
+};
+
+pub const LightReadSelector = union(enum) {
+    latest,
+    safe,
+    finalized,
+    earliest,
+    number: u64,
 };
 
 const SnapshotEntry = struct {
@@ -396,9 +409,92 @@ pub const NodeRuntime = struct {
         return light.finalizedSlot();
     }
 
-    pub fn lightProofReadState(self: *const NodeRuntime) LightProofReadState {
-        const light = self.light orelse return .verify_failure;
-        return light.proof_read_state;
+    pub fn startLightSync(self: *NodeRuntime) !void {
+        const light = if (self.light) |*state| state else return error.NotLightMode;
+        try light.engine.sync(self.allocator, light.startup_checkpoint);
+        light.safe_slot = light.engine.safeSlot();
+        self.head_block_number = light.engine.store.optimistic_header.execution.block_number;
+    }
+
+    pub fn advanceLightSync(self: *NodeRuntime) !void {
+        const light = if (self.light) |*state| state else return error.NotLightMode;
+        try light.engine.advance(self.allocator);
+        light.safe_slot = light.engine.safeSlot();
+        self.head_block_number = light.engine.store.optimistic_header.execution.block_number;
+    }
+
+    pub fn refreshLightSyncForRequest(self: *NodeRuntime) !void {
+        const light = if (self.light) |*state| state else return error.NotLightMode;
+        if (!light.advance_on_request or !light.ready()) return;
+        self.advanceLightSync() catch return error.LightNotReady;
+    }
+
+    pub fn refreshLightSyncForStatus(self: *NodeRuntime) void {
+        const light = if (self.light) |*state| state else return;
+        if (!light.advance_on_request or !light.ready()) return;
+        self.advanceLightSync() catch {};
+    }
+
+    pub fn resolveLightReadHead(self: *const NodeRuntime, selector: LightReadSelector) !LightReadHead {
+        const light = self.light orelse return error.NotLightMode;
+        return switch (selector) {
+            .latest => .{
+                .state_root = light.engine.store.optimistic_header.execution.state_root,
+                .block_number = light.engine.store.optimistic_header.execution.block_number,
+            },
+            .safe, .finalized => .{
+                .state_root = light.engine.store.finalized_header.execution.state_root,
+                .block_number = light.engine.store.finalized_header.execution.block_number,
+            },
+            .earliest => error.ProofVerifyFailed,
+            .number => |block_number| blk: {
+                if (block_number == light.engine.store.optimistic_header.execution.block_number) {
+                    break :blk .{
+                        .state_root = light.engine.store.optimistic_header.execution.state_root,
+                        .block_number = block_number,
+                    };
+                }
+                if (block_number == light.engine.store.finalized_header.execution.block_number) {
+                    break :blk .{
+                        .state_root = light.engine.store.finalized_header.execution.state_root,
+                        .block_number = block_number,
+                    };
+                }
+                break :blk error.ProofVerifyFailed;
+            },
+        };
+    }
+
+    pub fn lightGetBalance(self: *NodeRuntime, selector: LightReadSelector, address: primitives.Address) !u256 {
+        const light = if (self.light) |*state| state else return error.NotLightMode;
+        const head = try self.resolveLightReadHead(selector);
+        const block_tag = try std.fmt.allocPrint(self.allocator, "0x{x}", .{head.block_number});
+        defer self.allocator.free(block_tag);
+        return light_proof.readBalance(self.allocator, light.proof_source, head.state_root, address, block_tag);
+    }
+
+    pub fn lightGetNonce(self: *NodeRuntime, selector: LightReadSelector, address: primitives.Address) !u64 {
+        const light = if (self.light) |*state| state else return error.NotLightMode;
+        const head = try self.resolveLightReadHead(selector);
+        const block_tag = try std.fmt.allocPrint(self.allocator, "0x{x}", .{head.block_number});
+        defer self.allocator.free(block_tag);
+        return light_proof.readTransactionCount(self.allocator, light.proof_source, head.state_root, address, block_tag);
+    }
+
+    pub fn lightGetCode(self: *NodeRuntime, selector: LightReadSelector, address: primitives.Address) ![]u8 {
+        const light = if (self.light) |*state| state else return error.NotLightMode;
+        const head = try self.resolveLightReadHead(selector);
+        const block_tag = try std.fmt.allocPrint(self.allocator, "0x{x}", .{head.block_number});
+        defer self.allocator.free(block_tag);
+        return light_proof.readCode(self.allocator, light.proof_source, head.state_root, address, block_tag);
+    }
+
+    pub fn lightGetStorage(self: *NodeRuntime, selector: LightReadSelector, address: primitives.Address, slot: u256) !u256 {
+        const light = if (self.light) |*state| state else return error.NotLightMode;
+        const head = try self.resolveLightReadHead(selector);
+        const block_tag = try std.fmt.allocPrint(self.allocator, "0x{x}", .{head.block_number});
+        defer self.allocator.free(block_tag);
+        return light_proof.readStorage(self.allocator, light.proof_source, head.state_root, address, slot, block_tag);
     }
 
     pub fn setLightSyncProgress(
@@ -1121,6 +1217,9 @@ fn initLightModeState(allocator: std.mem.Allocator, config: LightConfig) !LightM
     const consensus_rpc_url = try allocator.dupe(u8, config.consensus_rpc_url);
     errdefer allocator.free(consensus_rpc_url);
 
+    const proof_rpc_url = try allocator.dupe(u8, config.proof_rpc_url orelse config.consensus_rpc_url);
+    errdefer allocator.free(proof_rpc_url);
+
     var network_config = config.network.networkConfig(consensus_rpc_url);
     if (config.max_checkpoint_age_seconds) |max_age| {
         network_config.max_checkpoint_age = max_age;
@@ -1142,9 +1241,14 @@ fn initLightModeState(allocator: std.mem.Allocator, config: LightConfig) !LightM
     return .{
         .network = config.network,
         .checkpoint_source = selected.source,
+        .startup_checkpoint = selected.checkpoint_hash,
         .engine = engine,
         .safe_slot = engine.safeSlot(),
-        .proof_read_state = config.proof_read_state,
+        .proof_source = .{
+            .url = proof_rpc_url,
+            .resolver = config.proof_resolver,
+        },
+        .advance_on_request = config.advance_on_request,
     };
 }
 

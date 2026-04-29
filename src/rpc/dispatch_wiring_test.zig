@@ -3,6 +3,7 @@ const jsonrpc = @import("jsonrpc");
 const primitives = @import("primitives");
 const dispatcher = @import("dispatcher.zig");
 const dispatch_wiring = @import("dispatch_wiring.zig");
+const light_proof = @import("../light_proof.zig");
 const mining = @import("../mining.zig");
 const runtime_mod = @import("../node/runtime.zig");
 
@@ -354,15 +355,72 @@ fn testCheckpoint(byte: u8) [32]u8 {
     return [_]u8{byte} ** 32;
 }
 
-fn initLightRuntime(proof_state: runtime_mod.LightProofReadState) !runtime_mod.NodeRuntime {
+const LightProofFixtureMode = enum {
+    valid_empty,
+    malformed,
+};
+
+const LightProofFixture = struct {
+    mode: LightProofFixtureMode = .valid_empty,
+    code: []const u8 = "",
+
+    fn resolver(self: *LightProofFixture) light_proof.RpcResolver {
+        return .{
+            .context = self,
+            .resolve = &resolve,
+        };
+    }
+
+    fn resolve(
+        context: ?*anyopaque,
+        allocator: std.mem.Allocator,
+        request: light_proof.RpcRequest,
+    ) ![]u8 {
+        const self: *LightProofFixture = @ptrCast(@alignCast(context orelse return error.InvalidContext));
+        if (self.mode == .malformed) {
+            return allocator.dupe(u8, "{\"nonce\":\"0x0\"}");
+        }
+
+        if (std.mem.eql(u8, request.method, "eth_getCode")) {
+            const code_hex = try primitives.Hex.bytesToHex(allocator, self.code);
+            defer allocator.free(code_hex);
+            return try std.fmt.allocPrint(allocator, "\"{s}\"", .{code_hex});
+        }
+
+        const has_storage = std.mem.indexOf(u8, request.params_json, ",[\"0x") != null;
+        if (has_storage) {
+            return std.fmt.allocPrint(
+                allocator,
+                "{{\"nonce\":\"0x0\",\"balance\":\"0x0\",\"codeHash\":\"0x{s}\",\"storageHash\":\"0x{s}\",\"accountProof\":[],\"storageProof\":[{{\"key\":\"0x{x:0>64}\",\"value\":\"0x0\",\"proof\":[]}}]}}",
+                .{
+                    "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+                    "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                    @as(u256, 1),
+                },
+            );
+        }
+
+        return std.fmt.allocPrint(
+            allocator,
+            "{{\"nonce\":\"0x0\",\"balance\":\"0x0\",\"codeHash\":\"0x{s}\",\"storageHash\":\"0x{s}\",\"accountProof\":[],\"storageProof\":[]}}",
+            .{
+                "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+                "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+            },
+        );
+    }
+};
+
+fn initLightRuntime(proof_fixture: ?*LightProofFixture) !runtime_mod.NodeRuntime {
     return runtime_mod.NodeRuntime.init(std.testing.allocator, .{
         .mode = .light,
         .light = .{
             .network = .mainnet,
             .consensus_rpc_url = "http://localhost:5052",
+            .proof_resolver = if (proof_fixture) |fixture| fixture.resolver() else null,
+            .advance_on_request = false,
             .checkpoint = testCheckpoint(0xaa),
             .checkpoint_source = .explicit,
-            .proof_read_state = proof_state,
         },
     });
 }
@@ -393,8 +451,17 @@ fn validAddress() std.json.Value {
     return .{ .string = "0x0000000000000000000000000000000000000042" };
 }
 
+fn setLightExecutionHead(rt: *runtime_mod.NodeRuntime, block_number: u64, state_root: [32]u8) void {
+    if (rt.light) |*light| {
+        light.engine.store.optimistic_header.execution.block_number = block_number;
+        light.engine.store.optimistic_header.execution.state_root = state_root;
+        light.engine.store.finalized_header.execution.block_number = block_number;
+        light.engine.store.finalized_header.execution.state_root = state_root;
+    }
+}
+
 test "light sync status returns canonical payload while not ready" {
-    var rt = try initLightRuntime(.verify_failure);
+    var rt = try initLightRuntime(null);
     defer rt.deinit();
 
     var response = try dispatchForTest(&rt, "zevm_lightSyncStatus", null);
@@ -427,7 +494,7 @@ test "zevm_lightSyncStatus is mode unsupported in trusted mode after param valid
 }
 
 test "light mode malformed proof read params fail before readiness" {
-    var rt = try initLightRuntime(.verify_failure);
+    var rt = try initLightRuntime(null);
     defer rt.deinit();
 
     var params = std.json.Array.init(std.testing.allocator);
@@ -437,7 +504,7 @@ test "light mode malformed proof read params fail before readiness" {
 }
 
 test "light mode pending selector is mode unsupported before readiness" {
-    var rt = try initLightRuntime(.verify_failure);
+    var rt = try initLightRuntime(null);
     defer rt.deinit();
 
     var params = std.json.Array.init(std.testing.allocator);
@@ -449,7 +516,7 @@ test "light mode pending selector is mode unsupported before readiness" {
 }
 
 test "light mode unsupported methods return mode unsupported after validation" {
-    var rt = try initLightRuntime(.verify_failure);
+    var rt = try initLightRuntime(null);
     defer rt.deinit();
 
     var tx = std.json.ObjectMap.init(std.testing.allocator);
@@ -465,7 +532,7 @@ test "light mode unsupported methods return mode unsupported after validation" {
 }
 
 test "light mode proof reads and block number return not-ready after validation" {
-    var rt = try initLightRuntime(.verify_failure);
+    var rt = try initLightRuntime(null);
     defer rt.deinit();
 
     var params = std.json.Array.init(std.testing.allocator);
@@ -483,7 +550,7 @@ test "light mode proof reads and block number return not-ready after validation"
 }
 
 test "light mode retained window check runs after readiness" {
-    var rt = try initLightRuntime(.verify_failure);
+    var rt = try initLightRuntime(null);
     defer rt.deinit();
     try rt.setLightSyncProgress(.synced, 12, 11, 10, 10_000);
 
@@ -496,7 +563,8 @@ test "light mode retained window check runs after readiness" {
 }
 
 test "light mode malformed proof payload maps to -32015" {
-    var rt = try initLightRuntime(.malformed_payload);
+    var fixture = LightProofFixture{ .mode = .malformed };
+    var rt = try initLightRuntime(&fixture);
     defer rt.deinit();
     try rt.setLightSyncProgress(.synced, 12, 11, 10, 10_000);
 
@@ -509,7 +577,8 @@ test "light mode malformed proof payload maps to -32015" {
 }
 
 test "light mode proof verification failure maps to -32014" {
-    var rt = try initLightRuntime(.verify_failure);
+    var fixture = LightProofFixture{};
+    var rt = try initLightRuntime(&fixture);
     defer rt.deinit();
     try rt.setLightSyncProgress(.synced, 12, 11, 10, 10_000);
 
@@ -519,6 +588,56 @@ test "light mode proof verification failure maps to -32014" {
     try params.append(.{ .string = "latest" });
 
     try expectErrorCode(&rt, "eth_getBalance", .{ .array = params }, dispatcher.RuntimeErrorCode.PROOF_VERIFY_FAILED);
+}
+
+test "light mode proof-backed empty account reads verify against state root" {
+    var fixture = LightProofFixture{};
+    var rt = try initLightRuntime(&fixture);
+    defer rt.deinit();
+    try rt.setLightSyncProgress(.synced, 12, 11, 10, 10_000);
+    setLightExecutionHead(&rt, 10_000, primitives.AccountState.EMPTY_TRIE_ROOT);
+
+    var params = std.json.Array.init(std.testing.allocator);
+    defer params.deinit();
+    try params.append(validAddress());
+    try params.append(.{ .string = "latest" });
+
+    {
+        var response = try dispatchForTest(&rt, "eth_getBalance", .{ .array = params });
+        defer response.deinit(std.testing.allocator);
+
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expectEqualStrings("0x0", response.result.?.string);
+    }
+    {
+        var response = try dispatchForTest(&rt, "eth_getTransactionCount", .{ .array = params });
+        defer response.deinit(std.testing.allocator);
+
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expectEqualStrings("0x0", response.result.?.string);
+    }
+    {
+        var response = try dispatchForTest(&rt, "eth_getCode", .{ .array = params });
+        defer response.deinit(std.testing.allocator);
+
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expectEqualStrings("0x", response.result.?.string);
+    }
+
+    var storage_params = std.json.Array.init(std.testing.allocator);
+    defer storage_params.deinit();
+    try storage_params.append(validAddress());
+    try storage_params.append(.{ .string = "0x1" });
+    try storage_params.append(.{ .string = "latest" });
+
+    var storage_response = try dispatchForTest(&rt, "eth_getStorageAt", .{ .array = storage_params });
+    defer storage_response.deinit(std.testing.allocator);
+
+    try std.testing.expect(storage_response.error_value == null);
+    try std.testing.expectEqualStrings(
+        "0x0000000000000000000000000000000000000000000000000000000000000000",
+        storage_response.result.?.string,
+    );
 }
 
 test "installed dispatch wiring handles automine aliases" {

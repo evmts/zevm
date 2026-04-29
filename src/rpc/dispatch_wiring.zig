@@ -414,6 +414,7 @@ fn dispatchLightMethod(
 ) !std.json.Value {
     if (std.mem.eql(u8, method_name, "zevm_lightSyncStatus")) {
         try validateNoParams(params);
+        rt.refreshLightSyncForStatus();
         return lightSyncStatusValue(allocator, rt);
     }
     if (std.mem.eql(u8, method_name, "eth_chainId")) {
@@ -422,6 +423,7 @@ fn dispatchLightMethod(
     }
     if (std.mem.eql(u8, method_name, "eth_blockNumber")) {
         try validateNoParams(params);
+        try rt.refreshLightSyncForRequest();
         if (!rt.isLightReady()) return error.LightNotReady;
         return hexQuantity(allocator, rt.head_block_number);
     }
@@ -497,46 +499,46 @@ fn dispatchLightProofRead(
     if (std.mem.eql(u8, method_name, "eth_getStorageAt")) {
         const args = try parseLightStorageArgs(params);
         try applyLightReadGates(rt, args.selector);
-        return switch (rt.lightProofReadState()) {
-            .malformed_payload => error.MalformedProof,
-            .verify_failure => error.ProofVerifyFailed,
-            .available => hexU256(allocator, try rt.getStorage(args.address, args.slot)),
-        };
+        const value = try rt.lightGetStorage(runtimeLightSelector(args.selector), args.address, args.slot);
+        return dataHexU256(allocator, value);
     }
 
     const args = try parseLightAddrBlockArgs(params);
     try applyLightReadGates(rt, args.selector);
 
     if (std.mem.eql(u8, method_name, "eth_getBalance")) {
-        return switch (rt.lightProofReadState()) {
-            .malformed_payload => error.MalformedProof,
-            .verify_failure => error.ProofVerifyFailed,
-            .available => hexU256(allocator, try rt.getBalance(args.address)),
-        };
+        return hexU256(allocator, try rt.lightGetBalance(runtimeLightSelector(args.selector), args.address));
     }
     if (std.mem.eql(u8, method_name, "eth_getCode")) {
-        return switch (rt.lightProofReadState()) {
-            .malformed_payload => error.MalformedProof,
-            .verify_failure => error.ProofVerifyFailed,
-            .available => hexBytes(allocator, try rt.getCode(args.address)),
-        };
+        const code = try rt.lightGetCode(runtimeLightSelector(args.selector), args.address);
+        defer allocator.free(code);
+        return hexBytes(allocator, code);
     }
     if (std.mem.eql(u8, method_name, "eth_getTransactionCount")) {
-        return switch (rt.lightProofReadState()) {
-            .malformed_payload => error.MalformedProof,
-            .verify_failure => error.ProofVerifyFailed,
-            .available => hexQuantity(allocator, try rt.getNonce(args.address)),
-        };
+        return hexQuantity(allocator, try rt.lightGetNonce(runtimeLightSelector(args.selector), args.address));
     }
 
     return error.MethodNotFound;
 }
 
-fn applyLightReadGates(rt: *const runtime_mod.NodeRuntime, selector: LightBlockSelector) !void {
+fn runtimeLightSelector(selector: LightBlockSelector) runtime_mod.LightReadSelector {
+    return switch (selector) {
+        .latest => .latest,
+        .safe => .safe,
+        .finalized => .finalized,
+        .earliest => .earliest,
+        .number => |block_number| .{ .number = block_number },
+        .pending => unreachable,
+    };
+}
+
+fn applyLightReadGates(rt: *runtime_mod.NodeRuntime, selector: LightBlockSelector) !void {
     switch (selector) {
         .pending => return error.ModeUnsupported,
         else => {},
     }
+    if (!rt.isLightReady()) return error.LightNotReady;
+    try rt.refreshLightSyncForRequest();
     if (!rt.isLightReady()) return error.LightNotReady;
     try validateLightRetainedWindow(rt, selector);
 }
