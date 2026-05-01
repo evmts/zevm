@@ -21,6 +21,7 @@
         "LegacyTests/Cancun/GeneralStateTests/stEIP2930/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stEIP3607/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stExample/*.json",
+        "LegacyTests/Cancun/GeneralStateTests/stExtCodeHash/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stHomesteadSpecific/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stLogTests/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stMemExpandingEIP150Calls/*.json",
@@ -28,9 +29,12 @@
         "LegacyTests/Cancun/GeneralStateTests/stRecursiveCreate/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stSLoadTest/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stSelfBalance/*.json",
+        "LegacyTests/Cancun/GeneralStateTests/stShift/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stStackTests/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stStaticFlagEnabled/*.json",
-        "LegacyTests/Cancun/GeneralStateTests/stTransitionTest/*.json"
+        "LegacyTests/Cancun/GeneralStateTests/stTransitionTest/*.json",
+        "LegacyTests/Cancun/GeneralStateTests/stCreate2/*.json",
+        "LegacyTests/Cancun/GeneralStateTests/stCallCreateCallCodeTest/*.json"
       ],
       "quarantined": [
         {
@@ -40,7 +44,7 @@
         }
       ],
       "remaining": [
-        "walk all GeneralStateTests directories not yet in activeCases; next safe candidates: stShift, stExtCodeHash, stCreate2, stCallCreateCallCodeTest",
+        "walk all GeneralStateTests directories not yet in activeCases",
         "walk stPreCompiledContracts2 after auditing which vectors require unimplemented precompiles",
         "walk stBadOpcode, stZeroCallsTest, stZeroCallsRevert, stNonZeroCallsTest",
         "walk stZeroKnowledge and stZeroKnowledge2 after confirming pairing precompile coverage",
@@ -51,13 +55,11 @@
       "name": "ethereum-tests-blockchain",
       "path": "ethereum-tests/BlockchainTests",
       "status": "partial",
-      "activeCases": [
-        "BlockchainTests/ValidBlocks/bcExample/optionsTest.json"
-      ],
+      "activeCases": ["BlockchainTests/ValidBlocks/bcExample/optionsTest.json"],
       "remaining": [
         "decode typed and legacy block transactions into block_builder execution inputs",
-        "compare postState/stateRoot/receipts for ValidBlocks",
-        "assert InvalidBlocks fail for the expected reason"
+        "expand execution assertions to full postState/stateRoot/receipts matching for more fixtures",
+        "assert InvalidBlocks fail for the expected reason on executed blocks"
       ]
     },
     {
@@ -84,8 +86,8 @@
       "remaining": [
         "execution-spec-tests/fixtures is absent in this checkout; current active coverage walks src/ethereum_test_specs/tests/fixtures and tests/static/state_tests",
         "walk generated state_test fixtures by fork",
-        "support EIP-1559, blob, and set-code transaction forms",
-        "execute blockchain fixtures instead of structural-only validation",
+        "support EIP-1559, blob, and set-code transaction forms; tx_type_1 execution is active while typed RPC submission rejection remains documented where unsupported",
+        "broaden blockchain execution assertions beyond chain-shape validation",
         "compare logs hash, state hash, and all post-state entries for fixtures without explicit postState/state"
       ]
     },

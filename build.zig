@@ -160,4 +160,16 @@ pub fn build(b: *std.Build) void {
     const verify_step = b.step("verify", "Run fast checks and active external suite slices");
     run_external_verify.step.dependOn(verify_fast_step);
     verify_step.dependOn(&run_external_verify.step);
+
+    const run_external_verify_slow = b.addRunArtifact(external_verify_exe);
+    run_external_verify_slow.addDirectoryArg(b.path("."));
+    run_external_verify_slow.addArtifactArg(exe);
+    run_external_verify_slow.setEnvironmentVariable("ZEVM_VERIFY_INCLUDE_SLOW", "1");
+    if (b.args) |args| {
+        run_external_verify_slow.addArgs(args);
+    }
+
+    const verify_slow_step = b.step("verify-slow", "Run external verification including slow legacy suites");
+    run_external_verify_slow.step.dependOn(verify_fast_step);
+    verify_slow_step.dependOn(&run_external_verify_slow.step);
 }
