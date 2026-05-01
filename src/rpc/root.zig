@@ -15,6 +15,7 @@ test {
     _ = @import("dispatcher_test.zig");
     _ = @import("dispatch_wiring_test.zig");
     _ = @import("envelope_test.zig");
+    _ = @import("listener_smoke_test.zig");
     _ = @import("server_test.zig");
     _ = @import("eth_handler_test.zig");
     _ = @import("router_test.zig");
