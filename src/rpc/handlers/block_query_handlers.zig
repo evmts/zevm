@@ -7,6 +7,7 @@ const log_index_mod = @import("../../log_index.zig");
 const receipt_index_mod = @import("../../receipt_index.zig");
 const block_spec = @import("block_spec.zig");
 const runtime = @import("../../node/runtime.zig");
+const tx_index_mod = @import("../../tx_index.zig");
 
 /// Context needed by block query handlers beyond NodeRuntime.
 pub const BlockQueryContext = struct {
@@ -14,6 +15,7 @@ pub const BlockQueryContext = struct {
     blockchain: *blockchain_mod.Blockchain,
     receipt_index: *const receipt_index_mod.ReceiptIndex,
     log_index: *const log_index_mod.LogIndex,
+    tx_index: *const tx_index_mod.TxIndex,
 };
 
 // ============================================================================
@@ -243,7 +245,7 @@ pub fn handleGetTransactionByHash(
     const internal = block_queries.getTransactionByHash(
         allocator,
         ctx.blockchain,
-        ctx.receipt_index,
+        ctx.tx_index,
         params.transaction_hash.bytes,
     ) catch return .{ .value = null };
     if (internal) |tx| {
@@ -583,7 +585,7 @@ fn rpcFilterToInternal(
 
     if (result.block_hash == null) {
         const latest = ctx.blockchain.getHeadBlockNumber() orelse 0;
-        if (!saw_from_block) result.from_block = latest;
+        if (!saw_from_block) result.from_block = 0;
         if (!saw_to_block) result.to_block = latest;
     }
     if (result.from_block != null and result.to_block != null and result.from_block.? > result.to_block.?) {

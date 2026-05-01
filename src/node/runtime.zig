@@ -11,6 +11,7 @@ const host_adapter = @import("../host_adapter.zig");
 const dev_runtime_mod = @import("../rpc/dev_runtime.zig");
 const receipt_index_mod = @import("../receipt_index.zig");
 const log_index_mod = @import("../log_index.zig");
+const tx_index_mod = @import("../tx_index.zig");
 const checkpoint = @import("../checkpoint.zig");
 const consensus_sync = @import("../consensus_sync.zig");
 const light_proof = @import("../light_proof.zig");
@@ -254,6 +255,7 @@ pub const NodeRuntime = struct {
     owned_block_bodies: std.ArrayList(OwnedBlockBody),
     receipt_index: receipt_index_mod.ReceiptIndex,
     log_index: log_index_mod.LogIndex,
+    tx_index: tx_index_mod.TxIndex,
     fork_config: ?ForkConfig,
     fork_backend: ?*state_manager.ForkBackend,
     fork_rpc_resolver: ?ForkRpcResolver,
@@ -300,6 +302,8 @@ pub const NodeRuntime = struct {
 
         var log_index = log_index_mod.LogIndex.init();
         errdefer log_index.deinit(allocator);
+        var tx_index = tx_index_mod.TxIndex.init(allocator);
+        errdefer tx_index.deinit();
 
         // Seed deterministic dev accounts as the local writable overlay.
         // Use initAccount to bypass fork backend reads — dev accounts are
@@ -355,6 +359,7 @@ pub const NodeRuntime = struct {
             .owned_block_bodies = .{},
             .receipt_index = receipt_index,
             .log_index = log_index,
+            .tx_index = tx_index,
             .fork_config = initial_fork_config,
             .fork_backend = fork_backend,
             .fork_rpc_resolver = resolver,
@@ -892,6 +897,7 @@ pub const NodeRuntime = struct {
         self.impersonated_accounts.deinit();
         self.log_index.deinit(self.allocator);
         self.receipt_index.deinit(self.allocator);
+        self.tx_index.deinit();
         self.blockchain.deinit();
         self.clearOwnedBlockBodies();
         self.owned_block_bodies.deinit(self.allocator);
@@ -997,15 +1003,19 @@ pub const NodeRuntime = struct {
 
         var new_log_index = log_index_mod.LogIndex.init();
         errdefer new_log_index.deinit(self.allocator);
+        var new_tx_index = tx_index_mod.TxIndex.init(self.allocator);
+        errdefer new_tx_index.deinit();
 
         self.log_index.deinit(self.allocator);
         self.receipt_index.deinit(self.allocator);
+        self.tx_index.deinit();
         self.blockchain.deinit();
         self.clearOwnedBlockBodies();
 
         self.blockchain = new_blockchain;
         self.receipt_index = new_receipt_index;
         self.log_index = new_log_index;
+        self.tx_index = new_tx_index;
     }
 
     fn persistMinedBlock(
@@ -1064,6 +1074,9 @@ pub const NodeRuntime = struct {
 
         try self.receipt_index.putBlockReceipts(self.allocator, block.hash, result.receipts);
         try self.log_index.appendBlockLogs(self.allocator, block.header.number, block.hash, result.receipts);
+        const tx_hashes = try self.minedHashesFromResult(result.*, ready);
+        defer self.allocator.free(tx_hashes);
+        try self.tx_index.putBlockTransactions(block.hash, block.header.number, tx_hashes);
 
         return block.hash;
     }

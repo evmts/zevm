@@ -3,6 +3,7 @@ const primitives = @import("primitives");
 const blockchain_mod = @import("blockchain");
 const receipt_index_mod = @import("../receipt_index.zig");
 const log_index_mod = @import("../log_index.zig");
+const tx_index_mod = @import("../tx_index.zig");
 
 // ============================================================================
 // Response Types
@@ -260,15 +261,19 @@ fn receiptsForBlockHash(
 pub fn getTransactionByHash(
     allocator: std.mem.Allocator,
     bc: *blockchain_mod.Blockchain,
-    ri: *const receipt_index_mod.ReceiptIndex,
+    txi: *const tx_index_mod.TxIndex,
     tx_hash: [32]u8,
 ) !?TxResponse {
-    const receipt = ri.getByTxHash(tx_hash) orelse return null;
-    const block = (try bc.getBlockByHash(receipt.block_hash)) orelse {
-        // Receipt without block — degrade gracefully.
-        return @as(?TxResponse, try txResponseFromReceipt(allocator, receipt, null));
-    };
-    return @as(?TxResponse, try txResponseFromReceipt(allocator, receipt, block));
+    const loc = txi.getByHash(tx_hash) orelse return null;
+    const block = (try bc.getBlockByHash(loc.block_hash)) orelse return null;
+    if (loc.transaction_index >= block.body.transactions.len) return null;
+    return txResponseFromRaw(
+        allocator,
+        block.body.transactions[loc.transaction_index].raw,
+        block.hash,
+        block.header.number,
+        loc.transaction_index,
+    );
 }
 
 pub fn getTransactionByBlockHashAndIndex(
@@ -281,6 +286,7 @@ pub fn getTransactionByBlockHashAndIndex(
     if (index > std.math.maxInt(u32)) return null;
     const tx_index: usize = @intCast(index);
     return txResponseFromRaw(
+        std.heap.page_allocator,
         block.body.transactions[tx_index].raw,
         block.hash,
         block.header.number,
@@ -299,6 +305,7 @@ pub fn getTransactionByBlockNumberAndIndex(
     if (index > std.math.maxInt(u32)) return null;
     const tx_index: usize = @intCast(index);
     return txResponseFromRaw(
+        std.heap.page_allocator,
         block.body.transactions[tx_index].raw,
         block.hash,
         block.header.number,
@@ -350,7 +357,7 @@ fn blockToResponse(
     const txs: TransactionList = if (full_txs) blk: {
         const full = try allocator.alloc(TxResponse, block.body.transactions.len);
         for (block.body.transactions, 0..) |tx_data, i| {
-            full[i] = txResponseFromRaw(tx_data.raw, block.hash, block.header.number, @intCast(i));
+            full[i] = txResponseFromRaw(allocator, tx_data.raw, block.hash, block.header.number, @intCast(i));
         }
         break :blk .{ .full = full };
     } else blk: {
@@ -389,25 +396,27 @@ fn blockToResponse(
 }
 
 fn txResponseFromRaw(
+    allocator: std.mem.Allocator,
     raw: []const u8,
     block_hash: [32]u8,
     block_number: u64,
     index: u32,
 ) TxResponse {
+    const decoded = decodeLegacy(allocator, raw) catch null;
     return .{
         .hash = computeTxHash(raw),
         .blockHash = block_hash,
         .blockNumber = block_number,
         .transactionIndex = index,
         .from = primitives.Address.ZERO_ADDRESS,
-        .to = null,
-        .nonce = 0,
-        .gas = 0,
-        .value = 0,
-        .input = &.{},
+        .to = if (decoded) |tx| tx.to else null,
+        .nonce = if (decoded) |tx| tx.nonce else 0,
+        .gas = if (decoded) |tx| tx.gas_limit else 0,
+        .value = if (decoded) |tx| tx.value else 0,
+        .input = if (decoded) |tx| tx.data else &.{},
         .type_field = detectTxTypeField(raw),
         .chain_id = null,
-        .gas_price = null,
+        .gas_price = if (decoded) |tx| tx.gas_price else null,
         .max_fee_per_gas = null,
         .max_priority_fee_per_gas = null,
         .max_fee_per_blob_gas = null,
@@ -420,51 +429,27 @@ fn txResponseFromRaw(
         .y_parity = null,
     };
 }
-
-fn txResponseFromReceipt(
-    allocator: std.mem.Allocator,
-    receipt: primitives.Receipt.Receipt,
-    block: ?primitives.Block.Block,
-) !TxResponse {
-    var input_bytes: []const u8 = &.{};
-    if (block) |b| {
-        const idx: usize = @intCast(receipt.transaction_index);
-        if (idx < b.body.transactions.len) {
-            // Best-effort: expose the raw envelope as input. A future tx
-            // decoder can split this into nonce/value/input/signature.
-            const raw = b.body.transactions[idx].raw;
-            input_bytes = try allocator.dupe(u8, raw);
-        }
-    }
-
-    const type_field = txTypeToU8(receipt.type);
-    const tx_response = TxResponse{
-        .hash = receipt.transaction_hash,
-        .blockHash = receipt.block_hash,
-        .blockNumber = receipt.block_number,
-        .transactionIndex = receipt.transaction_index,
-        .from = receipt.sender,
-        .to = receipt.to,
-        .nonce = 0,
-        .gas = @intCast(@min(receipt.gas_used, @as(u256, std.math.maxInt(u64)))),
-        .value = 0,
-        .input = input_bytes,
-        .type_field = type_field,
-        .chain_id = null,
-        .gas_price = if (type_field == 0 or type_field == 1) receipt.effective_gas_price else null,
-        .max_fee_per_gas = if (type_field >= 2) receipt.effective_gas_price else null,
-        .max_priority_fee_per_gas = null,
-        .max_fee_per_blob_gas = if (type_field == 3) receipt.blob_gas_price else null,
-        .blob_versioned_hashes = null,
-        .access_list = null,
-        .authorization_list = null,
-        .v = null,
-        .r = null,
-        .s = null,
-        .y_parity = null,
+fn decodeLegacy(allocator: std.mem.Allocator, raw: []const u8) !primitives.Transaction.LegacyTransaction {
+    const decoded = try primitives.Rlp.decode(allocator, raw, false);
+    const fields = switch (decoded.data) { .List => |items| items, else => return error.InvalidLength };
+    if (fields.len != 9) return error.InvalidLength;
+    const data = switch (fields[5]) { .String => |b| b, else => return error.InvalidLength };
+    return .{
+        .nonce = rlpToU64(fields[0]) catch return error.InvalidLength,
+        .gas_price = rlpToU256(fields[1]) catch return error.InvalidLength,
+        .gas_limit = rlpToU64(fields[2]) catch return error.InvalidLength,
+        .to = rlpToOptionalAddress(fields[3]) catch return error.InvalidLength,
+        .value = rlpToU256(fields[4]) catch return error.InvalidLength,
+        .data = data,
+        .v = rlpToU64(fields[6]) catch return error.InvalidLength,
+        .r = rlpToFixed32(fields[7]) catch return error.InvalidLength,
+        .s = rlpToFixed32(fields[8]) catch return error.InvalidLength,
     };
-    return tx_response;
 }
+fn rlpToU64(d: primitives.Rlp.Data) !u64 { const b = switch (d) { .String => |s| s, else => return error.InvalidLength }; var out: u64 = 0; for (b) |v| out = (out << 8) | v; return out; }
+fn rlpToU256(d: primitives.Rlp.Data) !u256 { const b = switch (d) { .String => |s| s, else => return error.InvalidLength }; var out: u256 = 0; for (b) |v| out = (out << 8) | v; return out; }
+fn rlpToOptionalAddress(d: primitives.Rlp.Data) !?primitives.Address.Address { const b = switch (d) { .String => |s| s, else => return error.InvalidLength }; if (b.len == 0) return null; if (b.len != 20) return error.InvalidLength; var a: [20]u8 = undefined; @memcpy(&a, b); return .{ .bytes = a }; }
+fn rlpToFixed32(d: primitives.Rlp.Data) ![32]u8 { const b = switch (d) { .String => |s| s, else => return error.InvalidLength }; var out = [_]u8{0} ** 32; @memcpy(out[32 - b.len ..], b); return out; }
 
 fn detectTxTypeField(raw: []const u8) u8 {
     if (raw.len == 0) return 0;

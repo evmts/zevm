@@ -1000,6 +1000,7 @@ fn blockQueryContext(rt: *runtime_mod.NodeRuntime) block_query_handlers.BlockQue
         .blockchain = &rt.blockchain,
         .receipt_index = &rt.receipt_index,
         .log_index = &rt.log_index,
+        .tx_index = &rt.tx_index,
     };
 }
 

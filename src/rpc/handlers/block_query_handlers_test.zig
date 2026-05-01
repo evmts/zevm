@@ -5,6 +5,7 @@ const blockchain_mod = @import("blockchain");
 const block_query_handlers = @import("block_query_handlers.zig");
 const receipt_index_mod = @import("../../receipt_index.zig");
 const log_index_mod = @import("../../log_index.zig");
+const tx_index_mod = @import("../../tx_index.zig");
 const runtime = @import("../../node/runtime.zig");
 
 fn makeBlockSpec(tag: []const u8) jsonrpc.types.BlockSpec {
@@ -16,6 +17,7 @@ fn setupCtx(allocator: std.mem.Allocator) !struct {
     bc: blockchain_mod.Blockchain,
     ri: receipt_index_mod.ReceiptIndex,
     li: log_index_mod.LogIndex,
+    ti: tx_index_mod.TxIndex,
 
     fn getCtx(self: *@This()) block_query_handlers.BlockQueryContext {
         return .{
@@ -23,11 +25,13 @@ fn setupCtx(allocator: std.mem.Allocator) !struct {
             .blockchain = &self.bc,
             .receipt_index = &self.ri,
             .log_index = &self.li,
+            .tx_index = &self.ti,
         };
     }
 
     fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
         self.li.deinit(alloc);
+        self.ti.deinit();
         self.ri.deinit(alloc);
         self.bc.deinit();
         self.rt.deinit();
@@ -48,6 +52,7 @@ fn setupCtx(allocator: std.mem.Allocator) !struct {
         .bc = bc,
         .ri = receipt_index_mod.ReceiptIndex.init(allocator),
         .li = log_index_mod.LogIndex.init(),
+        .ti = tx_index_mod.TxIndex.init(allocator),
     };
 }
 
