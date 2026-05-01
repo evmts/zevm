@@ -23,17 +23,24 @@ fn installHandlers(rt: *runtime_mod.NodeRuntime, handlers: *dispatcher.HandlerRe
     dispatch_wiring.install(handlers, rt);
 }
 
-fn postJson(address: std.net.Address, body: []const u8) !RawHttpResponse {
+fn sendHttp(
+    address: std.net.Address,
+    method: []const u8,
+    target: []const u8,
+    content_type: ?[]const u8,
+    body: []const u8,
+) !RawHttpResponse {
     const allocator = std.testing.allocator;
     const stream = try std.net.tcpConnectToAddress(address);
     defer stream.close();
 
     var request = std.Io.Writer.Allocating.init(allocator);
     defer request.deinit();
-    try request.writer.print(
-        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}",
-        .{ body.len, body },
-    );
+    try request.writer.print("{s} {s} HTTP/1.1\r\nHost: 127.0.0.1\r\n", .{ method, target });
+    if (content_type) |value| {
+        try request.writer.print("Content-Type: {s}\r\n", .{value});
+    }
+    try request.writer.print("Content-Length: {d}\r\nConnection: close\r\n\r\n{s}", .{ body.len, body });
 
     try stream.writeAll(request.written());
 
@@ -75,6 +82,10 @@ fn postJson(address: std.net.Address, body: []const u8) !RawHttpResponse {
         .status_code = try statusCode(owned[0..end]),
         .body = owned[end .. end + len],
     };
+}
+
+fn postJson(address: std.net.Address, body: []const u8) !RawHttpResponse {
+    return sendHttp(address, "POST", "/", "application/json", body);
 }
 
 fn statusCode(headers: []const u8) !u16 {
@@ -154,6 +165,80 @@ test "trusted mode returns 204 for a notification over a real TCP listener" {
 
     try std.testing.expectEqual(@as(u16, 204), response.status_code);
     try std.testing.expectEqual(@as(usize, 0), response.body.len);
+}
+
+test "trusted mode returns 204 for notification-only batch over a real TCP listener" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, .{});
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    installHandlers(&rt, &handlers);
+
+    var listener = try server.TestListener.init(std.testing.allocator, "127.0.0.1", &handlers);
+    defer listener.deinit();
+    try listener.start();
+
+    var response = try postJson(
+        listener.address(),
+        "[{\"jsonrpc\":\"2.0\",\"method\":\"eth_chainId\"},{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\"}]",
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(u16, 204), response.status_code);
+    try std.testing.expectEqual(@as(usize, 0), response.body.len);
+}
+
+test "trusted mode returns -32601 for unknown method over a real TCP listener" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, .{});
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    installHandlers(&rt, &handlers);
+
+    var listener = try server.TestListener.init(std.testing.allocator, "127.0.0.1", &handlers);
+    defer listener.deinit();
+    try listener.start();
+
+    var response = try postJson(listener.address(), "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"no_such_method\"}");
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(u16, 200), response.status_code);
+
+    const parsed = try parseBody(response.body);
+    defer parsed.deinit();
+
+    const error_object = try objectField(parsed.value, "error");
+    try std.testing.expectEqual(@as(i64, dispatcher.ErrorCode.METHOD_NOT_FOUND), (try objectField(error_object, "code")).integer);
+}
+
+test "transport validation is enforced over a real TCP listener" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, .{});
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    installHandlers(&rt, &handlers);
+
+    var listener = try server.TestListener.init(std.testing.allocator, "127.0.0.1", &handlers);
+    defer listener.deinit();
+    try listener.start();
+
+    {
+        var response = try sendHttp(listener.address(), "POST", "/rpc", "application/json", "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_chainId\"}");
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expectEqual(@as(u16, 404), response.status_code);
+    }
+
+    {
+        var response = try sendHttp(listener.address(), "GET", "/", null, "");
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expectEqual(@as(u16, 405), response.status_code);
+    }
+
+    {
+        var response = try sendHttp(listener.address(), "POST", "/", "text/plain", "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_chainId\"}");
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expectEqual(@as(u16, 415), response.status_code);
+    }
 }
 
 test "light mode serves persisted checkpoint status over a real TCP listener" {

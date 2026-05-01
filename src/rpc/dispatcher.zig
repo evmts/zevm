@@ -1,10 +1,19 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const jsonrpc = @import("jsonrpc");
+const envelope = @import("envelope.zig");
 const log = @import("../log.zig");
 
 pub const HandlerRegistry = struct {
     on_method: ?*const fn (allocator: std.mem.Allocator, method_name: []const u8, params: ?std.json.Value) anyerror!std.json.Value = null,
+};
+
+pub const ErrorCode = struct {
+    pub const PARSE_ERROR: i32 = -32700;
+    pub const INVALID_REQUEST: i32 = -32600;
+    pub const METHOD_NOT_FOUND: i32 = -32601;
+    pub const INVALID_PARAMS: i32 = -32602;
+    pub const INTERNAL_ERROR: i32 = -32603;
 };
 
 pub const RuntimeErrorCode = struct {
@@ -14,38 +23,79 @@ pub const RuntimeErrorCode = struct {
     pub const MALFORMED_PROOF: i32 = -32015;
 };
 
-pub fn dispatch(allocator: std.mem.Allocator, request: jsonrpc.envelope.RequestEnvelope, handlers: *const HandlerRegistry) !jsonrpc.envelope.ResponseEnvelope {
-    validateParamsForMethod(allocator, request.method, request.params) catch |err| switch (err) {
+pub const RpcError = struct {
+    code: i32,
+    message: []const u8,
+};
+
+pub const Response = struct {
+    id: ?envelope.Id,
+    result: ?std.json.Value = null,
+    error_value: ?RpcError = null,
+
+    pub fn deinit(self: *Response, allocator: std.mem.Allocator) void {
+        if (self.id) |id| {
+            switch (id) {
+                .string => |text| allocator.free(text),
+                else => {},
+            }
+        }
+
+        if (self.result) |*result| {
+            deinitValue(allocator, result);
+        }
+    }
+};
+
+pub fn stringifyResponse(allocator: std.mem.Allocator, response: Response) ![]u8 {
+    if (response.error_value) |rpc_error| {
+        return envelope.writeError(allocator, response.id, rpc_error.code, rpc_error.message);
+    }
+
+    const result = response.result orelse return envelope.writeError(allocator, response.id, ErrorCode.INTERNAL_ERROR, "Internal error");
+    return envelope.writeSuccess(allocator, response.id, result);
+}
+
+pub fn dispatch(
+    allocator: std.mem.Allocator,
+    request: envelope.Request,
+    handlers: *const HandlerRegistry,
+) !Response {
+    if (request.invalid_request or request.method.len == 0) {
+        return errorResponse(allocator, request.id, ErrorCode.INVALID_REQUEST, "Invalid request");
+    }
+
+    validateParamsForMethod(request.method, request.params) catch |err| switch (err) {
         error.UnknownMethod => {
-            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND, "Method not found");
+            return errorResponse(allocator, request.id, ErrorCode.METHOD_NOT_FOUND, "Method not found");
         },
         else => {
-            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.INVALID_PARAMS, "Invalid params");
+            return errorResponse(allocator, request.id, ErrorCode.INVALID_PARAMS, "Invalid params");
         },
     };
 
     if (handlers.on_method == null) {
-        return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND, "Method not found");
+        return errorResponse(allocator, request.id, ErrorCode.METHOD_NOT_FOUND, "Method not found");
     }
 
     const result = handlers.on_method.?(allocator, request.method, request.params) catch |err| switch (err) {
         error.MethodNotFound => {
-            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND, "Method not found");
+            return errorResponse(allocator, request.id, ErrorCode.METHOD_NOT_FOUND, "Method not found");
         },
         error.InvalidParams => {
-            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.INVALID_PARAMS, "Invalid params");
+            return errorResponse(allocator, request.id, ErrorCode.INVALID_PARAMS, "Invalid params");
         },
         error.ModeUnsupported => {
-            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.MODE_UNSUPPORTED, "Method unsupported in active mode");
+            return errorResponse(allocator, request.id, RuntimeErrorCode.MODE_UNSUPPORTED, "Method unsupported in active mode");
         },
         error.LightNotReady => {
-            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.LIGHT_NOT_READY, "Light mode not ready");
+            return errorResponse(allocator, request.id, RuntimeErrorCode.LIGHT_NOT_READY, "Light mode not ready");
         },
         error.MalformedProof => {
-            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.MALFORMED_PROOF, "Malformed proof payload");
+            return errorResponse(allocator, request.id, RuntimeErrorCode.MALFORMED_PROOF, "Malformed proof payload");
         },
         error.ProofVerifyFailed => {
-            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.PROOF_VERIFY_FAILED, "Proof verification failed");
+            return errorResponse(allocator, request.id, RuntimeErrorCode.PROOF_VERIFY_FAILED, "Proof verification failed");
         },
         else => {
             if (builtin.mode == .Debug or isTestBuild()) {
@@ -53,11 +103,11 @@ pub fn dispatch(allocator: std.mem.Allocator, request: jsonrpc.envelope.RequestE
             } else {
                 log.err(.rpc, "rpc internal error method={s} error={s}", .{ request.method, @errorName(err) });
             }
-            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.INTERNAL_ERROR, "Internal error");
+            return errorResponse(allocator, request.id, ErrorCode.INTERNAL_ERROR, "Internal error");
         },
     };
 
-    return jsonrpc.envelope.ResponseEnvelope.makeSuccess(request.id, result);
+    return successResponse(allocator, request.id, result);
 }
 
 fn isTestBuild() bool {
@@ -65,9 +115,45 @@ fn isTestBuild() bool {
     return if (@hasDecl(root, "is_test")) root.is_test else false;
 }
 
-fn validateParamsForMethod(allocator: std.mem.Allocator, method_name: []const u8, params: ?std.json.Value) !void {
-    _ = allocator;
+fn errorResponse(
+    allocator: std.mem.Allocator,
+    id: ?envelope.Id,
+    code: i32,
+    message: []const u8,
+) !Response {
+    return .{
+        .id = try cloneId(allocator, id),
+        .error_value = .{
+            .code = code,
+            .message = message,
+        },
+    };
+}
 
+fn successResponse(
+    allocator: std.mem.Allocator,
+    id: ?envelope.Id,
+    result: std.json.Value,
+) !Response {
+    return .{
+        .id = try cloneId(allocator, id),
+        .result = result,
+    };
+}
+
+fn cloneId(allocator: std.mem.Allocator, id: ?envelope.Id) !?envelope.Id {
+    if (id) |value| {
+        return switch (value) {
+            .number => |number| .{ .number = number },
+            .string => |text| .{ .string = try allocator.dupe(u8, text) },
+            .null_value => .{ .null_value = {} },
+        };
+    }
+
+    return null;
+}
+
+fn validateParamsForMethod(method_name: []const u8, params: ?std.json.Value) !void {
     if (jsonrpc.eth.EthMethod.fromMethodName(method_name)) |_| {
         if (std.mem.eql(u8, method_name, "eth_getBalance")) {
             const params_value = params orelse return error.InvalidParams;
@@ -265,4 +351,26 @@ fn isHexQuantity(value: std.json.Value) bool {
     };
     if (text.len < 3) return false;
     return text[0] == '0' and (text[1] == 'x' or text[1] == 'X');
+}
+
+fn deinitValue(allocator: std.mem.Allocator, value: *std.json.Value) void {
+    switch (value.*) {
+        .number_string => |text| allocator.free(text),
+        .string => |text| allocator.free(text),
+        .array => |*array| {
+            for (array.items) |*item| {
+                deinitValue(allocator, item);
+            }
+            array.deinit();
+        },
+        .object => |*object| {
+            var iterator = object.iterator();
+            while (iterator.next()) |entry| {
+                allocator.free(entry.key_ptr.*);
+                deinitValue(allocator, entry.value_ptr);
+            }
+            object.deinit();
+        },
+        else => {},
+    }
 }

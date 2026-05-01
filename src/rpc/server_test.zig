@@ -1,5 +1,4 @@
 const std = @import("std");
-const jsonrpc = @import("jsonrpc");
 const dispatcher = @import("dispatcher.zig");
 const server = @import("server.zig");
 
@@ -75,7 +74,7 @@ test "batch request returns per-item result/error array" {
     try std.testing.expectEqual(@as(i64, 7), (try getObjectField(items[0], "result")).integer);
 
     const error_object = try getObjectField(items[1], "error");
-    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND), (try getObjectField(error_object, "code")).integer);
+    try std.testing.expectEqual(@as(i64, dispatcher.ErrorCode.METHOD_NOT_FOUND), (try getObjectField(error_object, "code")).integer);
 }
 
 test "malformed JSON returns -32700" {
@@ -93,7 +92,7 @@ test "malformed JSON returns -32700" {
     defer parsed.deinit();
 
     const error_object = try getObjectField(parsed.value, "error");
-    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.PARSE_ERROR), (try getObjectField(error_object, "code")).integer);
+    try std.testing.expectEqual(@as(i64, dispatcher.ErrorCode.PARSE_ERROR), (try getObjectField(error_object, "code")).integer);
 }
 
 test "invalid request object returns -32600" {
@@ -111,7 +110,7 @@ test "invalid request object returns -32600" {
     defer parsed.deinit();
 
     const error_object = try getObjectField(parsed.value, "error");
-    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.INVALID_REQUEST), (try getObjectField(error_object, "code")).integer);
+    try std.testing.expectEqual(@as(i64, dispatcher.ErrorCode.INVALID_REQUEST), (try getObjectField(error_object, "code")).integer);
 }
 
 test "unknown method returns -32601" {
@@ -129,7 +128,7 @@ test "unknown method returns -32601" {
     defer parsed.deinit();
 
     const error_object = try getObjectField(parsed.value, "error");
-    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND), (try getObjectField(error_object, "code")).integer);
+    try std.testing.expectEqual(@as(i64, dispatcher.ErrorCode.METHOD_NOT_FOUND), (try getObjectField(error_object, "code")).integer);
 }
 
 test "invalid params returns -32602" {
@@ -147,7 +146,7 @@ test "invalid params returns -32602" {
     defer parsed.deinit();
 
     const error_object = try getObjectField(parsed.value, "error");
-    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.INVALID_PARAMS), (try getObjectField(error_object, "code")).integer);
+    try std.testing.expectEqual(@as(i64, dispatcher.ErrorCode.INVALID_PARAMS), (try getObjectField(error_object, "code")).integer);
 }
 
 test "content-type is application/json for JSON-RPC responses" {

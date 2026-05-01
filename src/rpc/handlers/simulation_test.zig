@@ -1,9 +1,9 @@
 const std = @import("std");
-const jsonrpc = @import("jsonrpc");
 const primitives = @import("primitives");
 const runtime = @import("../../node/runtime.zig");
 const dispatcher = @import("../dispatcher.zig");
 const dispatch_wiring = @import("../dispatch_wiring.zig");
+const envelope = @import("../envelope.zig");
 const simulation = @import("simulation.zig");
 
 const RETURN_32_BYTE_42 = [_]u8{ 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
@@ -140,11 +140,10 @@ fn parseJson(bytes: []const u8) !std.json.Parsed(std.json.Value) {
     });
 }
 
-fn makeRequest(method: []const u8, params: ?std.json.Value) !jsonrpc.envelope.RequestEnvelope {
+fn makeRequest(method: []const u8, params: ?std.json.Value) !envelope.Request {
     return .{
-        .jsonrpc = try std.testing.allocator.dupe(u8, "2.0"),
-        .id = .{ .integer = 1 },
-        .method = try std.testing.allocator.dupe(u8, method),
+        .id = .{ .number = 1 },
+        .method = method,
         .params = params,
     };
 }

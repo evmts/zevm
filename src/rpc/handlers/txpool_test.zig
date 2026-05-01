@@ -1,8 +1,8 @@
 const std = @import("std");
-const jsonrpc = @import("jsonrpc");
 const primitives = @import("primitives");
 const dispatcher = @import("../dispatcher.zig");
 const dispatch_wiring = @import("../dispatch_wiring.zig");
+const envelope = @import("../envelope.zig");
 const runtime = @import("../../node/runtime.zig");
 const txpool = @import("txpool.zig");
 
@@ -14,11 +14,10 @@ fn makeHash(byte: u8) [32]u8 {
     return [_]u8{byte} ** 32;
 }
 
-fn makeRequest(method: []const u8, params: ?std.json.Value) !jsonrpc.envelope.RequestEnvelope {
+fn makeRequest(method: []const u8, params: ?std.json.Value) !envelope.Request {
     return .{
-        .jsonrpc = try std.testing.allocator.dupe(u8, "2.0"),
-        .id = .{ .integer = 1 },
-        .method = try std.testing.allocator.dupe(u8, method),
+        .id = .{ .number = 1 },
+        .method = method,
         .params = params,
     };
 }

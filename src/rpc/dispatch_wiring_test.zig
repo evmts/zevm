@@ -1,17 +1,16 @@
 const std = @import("std");
-const jsonrpc = @import("jsonrpc");
 const primitives = @import("primitives");
 const dispatcher = @import("dispatcher.zig");
 const dispatch_wiring = @import("dispatch_wiring.zig");
+const envelope = @import("envelope.zig");
 const light_proof = @import("../light_proof.zig");
 const mining = @import("../mining.zig");
 const runtime_mod = @import("../node/runtime.zig");
 
-fn makeRequest(method: []const u8, params: ?std.json.Value) !jsonrpc.envelope.RequestEnvelope {
+fn makeRequest(method: []const u8, params: ?std.json.Value) !envelope.Request {
     return .{
-        .jsonrpc = try std.testing.allocator.dupe(u8, "2.0"),
-        .id = .{ .integer = 1 },
-        .method = try std.testing.allocator.dupe(u8, method),
+        .id = .{ .number = 1 },
+        .method = method,
         .params = params,
     };
 }
@@ -20,7 +19,7 @@ fn dispatchQuantityRequest(
     handlers: *const dispatcher.HandlerRegistry,
     method: []const u8,
     quantity: []const u8,
-) !jsonrpc.envelope.ResponseEnvelope {
+) !dispatcher.Response {
     var params = std.json.Array.init(std.testing.allocator);
     defer params.deinit();
     try params.append(.{ .string = quantity });
@@ -66,14 +65,14 @@ fn expectInvalidParamsRpc(
     defer response.deinit(std.testing.allocator);
 
     try std.testing.expect(response.error_value != null);
-    try std.testing.expectEqual(@as(i32, jsonrpc.envelope.ErrorCode.INVALID_PARAMS), response.error_value.?.code);
+    try std.testing.expectEqual(@as(i32, dispatcher.ErrorCode.INVALID_PARAMS), response.error_value.?.code);
 }
 
 fn dispatchOneStringParam(
     handlers: *const dispatcher.HandlerRegistry,
     method: []const u8,
     value: []const u8,
-) !jsonrpc.envelope.ResponseEnvelope {
+) !dispatcher.Response {
     var params = std.json.Array.init(std.testing.allocator);
     defer params.deinit();
     try params.append(.{ .string = value });
@@ -348,7 +347,7 @@ test "installed dispatch wiring maps unsupported methods to method not found" {
     defer response.deinit(std.testing.allocator);
 
     try std.testing.expect(response.error_value != null);
-    try std.testing.expectEqual(@as(i32, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND), response.error_value.?.code);
+    try std.testing.expectEqual(@as(i32, dispatcher.ErrorCode.METHOD_NOT_FOUND), response.error_value.?.code);
 }
 
 fn testCheckpoint(byte: u8) [32]u8 {
@@ -425,7 +424,7 @@ fn initLightRuntime(proof_fixture: ?*LightProofFixture) !runtime_mod.NodeRuntime
     });
 }
 
-fn dispatchForTest(rt: *runtime_mod.NodeRuntime, method: []const u8, params: ?std.json.Value) !jsonrpc.envelope.ResponseEnvelope {
+fn dispatchForTest(rt: *runtime_mod.NodeRuntime, method: []const u8, params: ?std.json.Value) !dispatcher.Response {
     var handlers = dispatcher.HandlerRegistry{};
     dispatch_wiring.install(&handlers, rt);
 
@@ -490,7 +489,7 @@ test "zevm_lightSyncStatus is mode unsupported in trusted mode after param valid
     var params = std.json.Array.init(std.testing.allocator);
     defer params.deinit();
     try params.append(.null);
-    try expectErrorCode(&rt, "zevm_lightSyncStatus", .{ .array = params }, jsonrpc.envelope.ErrorCode.INVALID_PARAMS);
+    try expectErrorCode(&rt, "zevm_lightSyncStatus", .{ .array = params }, dispatcher.ErrorCode.INVALID_PARAMS);
 }
 
 test "light mode malformed proof read params fail before readiness" {
@@ -500,7 +499,7 @@ test "light mode malformed proof read params fail before readiness" {
     var params = std.json.Array.init(std.testing.allocator);
     defer params.deinit();
 
-    try expectErrorCode(&rt, "eth_getBalance", .{ .array = params }, jsonrpc.envelope.ErrorCode.INVALID_PARAMS);
+    try expectErrorCode(&rt, "eth_getBalance", .{ .array = params }, dispatcher.ErrorCode.INVALID_PARAMS);
 }
 
 test "light mode pending selector is mode unsupported before readiness" {
@@ -546,7 +545,7 @@ test "light mode proof reads and block number return not-ready after validation"
     var block_params = std.json.Array.init(std.testing.allocator);
     defer block_params.deinit();
     try block_params.append(.null);
-    try expectErrorCode(&rt, "eth_blockNumber", .{ .array = block_params }, jsonrpc.envelope.ErrorCode.INVALID_PARAMS);
+    try expectErrorCode(&rt, "eth_blockNumber", .{ .array = block_params }, dispatcher.ErrorCode.INVALID_PARAMS);
 }
 
 test "light mode retained window check runs after readiness" {
@@ -559,7 +558,7 @@ test "light mode retained window check runs after readiness" {
     try params.append(validAddress());
     try params.append(.{ .string = "0x2" });
 
-    try expectErrorCode(&rt, "eth_getBalance", .{ .array = params }, jsonrpc.envelope.ErrorCode.INVALID_PARAMS);
+    try expectErrorCode(&rt, "eth_getBalance", .{ .array = params }, dispatcher.ErrorCode.INVALID_PARAMS);
 }
 
 test "light mode malformed proof payload maps to -32015" {

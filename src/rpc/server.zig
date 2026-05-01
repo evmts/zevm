@@ -1,7 +1,7 @@
 const std = @import("std");
-const jsonrpc = @import("jsonrpc");
 const app_config = @import("../config.zig");
 const dispatcher = @import("dispatcher.zig");
+const envelope = @import("envelope.zig");
 const log = @import("../log.zig");
 
 pub const ServerConfig = app_config.RpcConfig;
@@ -264,17 +264,14 @@ fn handlePost(
     body: []const u8,
     handlers: *const dispatcher.HandlerRegistry,
 ) !?[]u8 {
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
-        return @as(?[]u8, try writeErrorResponse(allocator, null, jsonrpc.envelope.ErrorCode.PARSE_ERROR, "Parse error"));
+    var parsed_body = envelope.parseBody(allocator, body) catch |err| switch (err) {
+        error.ParseError => return @as(?[]u8, try writeErrorResponse(allocator, null, dispatcher.ErrorCode.PARSE_ERROR, "Parse error")),
+        error.InvalidRequest => return @as(?[]u8, try writeErrorResponse(allocator, null, dispatcher.ErrorCode.INVALID_REQUEST, "Invalid request")),
+        else => return err,
     };
-    defer parsed.deinit();
+    defer parsed_body.deinit(allocator);
 
-    var request_batch = jsonrpc.envelope.parseSingleOrBatch(allocator, body) catch {
-        return @as(?[]u8, try writeErrorResponse(allocator, null, jsonrpc.envelope.ErrorCode.INVALID_REQUEST, "Invalid Request"));
-    };
-    defer request_batch.deinit(allocator);
-
-    return switch (request_batch.kind) {
+    return switch (parsed_body) {
         .single => |request| handleSingleRequest(allocator, request, handlers),
         .batch => |batch| handleBatch(allocator, batch, handlers),
     };
@@ -282,11 +279,11 @@ fn handlePost(
 
 fn handleSingleRequest(
     allocator: std.mem.Allocator,
-    request: jsonrpc.envelope.RequestEnvelope,
+    request: envelope.Request,
     handlers: *const dispatcher.HandlerRegistry,
 ) !?[]u8 {
-    if (request.invalid) {
-        return @as(?[]u8, try writeErrorResponse(allocator, null, jsonrpc.envelope.ErrorCode.INVALID_REQUEST, "Invalid Request"));
+    if (request.invalid_request) {
+        return @as(?[]u8, try writeErrorResponse(allocator, request.id, dispatcher.ErrorCode.INVALID_REQUEST, "Invalid request"));
     }
 
     var response = try dispatcher.dispatch(allocator, request, handlers);
@@ -296,12 +293,12 @@ fn handleSingleRequest(
         return null;
     }
 
-    return @as(?[]u8, try stringifyResponse(allocator, response));
+    return @as(?[]u8, try dispatcher.stringifyResponse(allocator, response));
 }
 
 fn handleBatch(
     allocator: std.mem.Allocator,
-    batch: []jsonrpc.envelope.RequestEnvelope,
+    batch: []envelope.Request,
     handlers: *const dispatcher.HandlerRegistry,
 ) !?[]u8 {
     var response_bytes = std.ArrayList(u8).empty;
@@ -320,13 +317,13 @@ fn handleBatch(
             try response_bytes.append(allocator, ',');
         }
 
-        const item_bytes = if (request.invalid) blk: {
-            break :blk try writeErrorResponse(allocator, null, jsonrpc.envelope.ErrorCode.INVALID_REQUEST, "Invalid Request");
+        const item_bytes = if (request.invalid_request) blk: {
+            break :blk try writeErrorResponse(allocator, request.id, dispatcher.ErrorCode.INVALID_REQUEST, "Invalid request");
         } else blk: {
             var response = try dispatcher.dispatch(allocator, request, handlers);
             defer response.deinit(allocator);
 
-            break :blk try stringifyResponse(allocator, response);
+            break :blk try dispatcher.stringifyResponse(allocator, response);
         };
         defer allocator.free(item_bytes);
 
@@ -343,27 +340,15 @@ fn handleBatch(
     return @as(?[]u8, try response_bytes.toOwnedSlice(allocator));
 }
 
-fn isNotification(request: jsonrpc.envelope.RequestEnvelope) bool {
-    return !request.invalid and request.id == null;
+fn isNotification(request: envelope.Request) bool {
+    return !request.invalid_request and request.id == null;
 }
 
 fn writeErrorResponse(
     allocator: std.mem.Allocator,
-    id: ?jsonrpc.envelope.Id,
+    id: ?envelope.Id,
     code: i32,
     message: []const u8,
 ) ![]u8 {
-    var response = jsonrpc.envelope.ResponseEnvelope.makeError(id, code, message);
-    defer response.deinit(allocator);
-
-    return stringifyResponse(allocator, response);
-}
-
-fn stringifyResponse(allocator: std.mem.Allocator, response: jsonrpc.envelope.ResponseEnvelope) ![]u8 {
-    var writer = std.Io.Writer.Allocating.init(allocator);
-    defer writer.deinit();
-
-    try std.json.Stringify.value(response, .{}, &writer.writer);
-
-    return writer.toOwnedSlice();
+    return envelope.writeError(allocator, id, code, message);
 }

@@ -161,13 +161,13 @@ pub fn writeId(writer: anytype, id: ?Id) !void {
                 try std.json.Stringify.value(std.json.Value{ .string = text }, .{}, writer);
             },
             .null_value => {
-                try std.json.Stringify.value(std.json.Value.null, .{}, writer);
+                try writer.writeAll("null");
             },
         }
         return;
     }
 
-    try std.json.Stringify.value(std.json.Value.null, .{}, writer);
+    try writer.writeAll("null");
 }
 
 pub fn writeSuccess(allocator: std.mem.Allocator, id: ?Id, result: std.json.Value) ![]u8 {
