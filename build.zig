@@ -154,8 +154,13 @@ pub fn build(b: *std.Build) void {
         run_external_verify.addArgs(args);
     }
 
+    const preflight_step = b.step("preflight", "Validate sibling repos, pinned revisions, and Zig version");
+    const preflight_cmd = b.addSystemCommand(&.{"sh", "tools/preflight.sh"});
+    preflight_step.dependOn(&preflight_cmd.step);
+
     const verify_fast_step = b.step("verify-fast", "Run fast local verification");
     verify_fast_step.dependOn(test_step);
+    verify_fast_step.dependOn(preflight_step);
 
     const verify_step = b.step("verify", "Run fast checks and active external suite slices");
     run_external_verify.step.dependOn(verify_fast_step);

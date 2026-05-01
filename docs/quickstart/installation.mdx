@@ -56,6 +56,23 @@ If you want a pinned source build without running the full runbook automation:
 
 For canonical public reproducibility claims, do not stop at tuple pinning alone; complete the full [Release Metadata Runbook](../reference/release-metadata-runbook).
 
+## Preflight Build Inputs
+
+From the `zevm` repository root, run preflight first:
+
+```bash
+zig build preflight
+```
+
+Preflight fails when any sibling repo is missing, dirty, or not at the expected pinned commit, or when `zig version` mismatches the pinned tuple.
+
+Current candidate tuple:
+
+- `zevmGitRevision`: `28675c7280d54fcd5aa842b4852d7ecb55cc08c3`
+- `voltaireGitRevision`: `58d3c7b65dc8f313add502cae53ef0863fd143fb`
+- `guillotineMiniGitRevision`: `e2089da49faeafce03f03ba2a8276550855bd512`
+- `zigVersion`: `0.15.2`
+
 ## Build ZEVM
 
 From the `zevm` repository root:
