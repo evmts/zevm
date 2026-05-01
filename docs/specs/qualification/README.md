@@ -2,18 +2,35 @@
 
 `assertion-map.json` is the machine-readable phase-1 release qualification map required by `docs/specs/prd.md` section 3.5.
 
-Each record maps one shipped phase-1 surface to either a default `zig build test` assertion or a release-asset validation assertion. Records with incomplete coverage are not omitted or silently treated as passing; they are marked with `coverageStatus = "gap"` and include an owner ticket.
+Each record maps one shipped phase-1 surface to either a default `zig build test` assertion or a release-asset validation assertion.
 
-Run the structural check with:
+## Qualification Gate
+
+Run the release qualification gate locally (same command for CI):
 
 ```sh
-zig build qualification-check
+./scripts/release-qualification/run.sh
 ```
 
-The default check verifies schema shape, required fields, allowed categories, release-asset rows, and explicit gap metadata. It exits successfully when gaps are explicit so the map can be maintained before the release gate is fully closed.
-
-For a release-candidate gate that must fail while any explicit gaps remain, run:
+The gate executes:
 
 ```sh
+zig build test
 zig build qualification-check -- --require-covered
 ```
+
+It fails when:
+
+- Any shipped surface is unmapped or marked with non-covered status.
+- Listener/socket smoke assertions fail in the test graph.
+- Transport-path notification-only `204` checks fail.
+
+## Qualification Artifacts
+
+- Assertion map artifact: `docs/specs/qualification/assertion-map.json`
+- Release-asset validation rows (for metadata-backed release claims):
+  - `RELEASE_METADATA_RELEASE_TUPLE_JSON`
+  - `RELEASE_METADATA_LIGHT_DEFAULT_CHECKPOINTS_JSON`
+  - `RELEASE_METADATA_REQUIRED_ARTIFACTS_PRESENT_EXACTLY_ONCE`
+
+These rows are validated by `zig build qualification-check` and must remain covered for release-ready qualification.
