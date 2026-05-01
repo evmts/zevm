@@ -13,6 +13,17 @@ test "DEV_ACCOUNTS has exactly 10 entries" {
     try std.testing.expectEqual(@as(usize, 10), genesis.DEV_ACCOUNTS.len);
 }
 
+test "DEV_ACCOUNTS matches PRD managed dev-wallet table" {
+    const prd_spec = try std.fs.cwd().readFileAlloc(std.testing.allocator, "docs/specs/prd.md", 1024 * 1024);
+    defer std.testing.allocator.free(prd_spec);
+
+    for (&genesis.DEV_ACCOUNTS, 0..) |*account, index| {
+        const expected = try prdManagedAccount(prd_spec, index);
+        try std.testing.expect(primitives.Address.Address.equals(account.address, expected.address));
+        try std.testing.expectEqualSlices(u8, &expected.private_key, &account.private_key);
+    }
+}
+
 test "DEV_ACCOUNTS[0] address matches well-known Hardhat account 0" {
     const expected = primitives.Address.Address{ .bytes = .{
         0xf3, 0x9f, 0xd6, 0xe5, 0x1a, 0xad, 0x88, 0xf6,
@@ -41,6 +52,56 @@ test "all DEV_ACCOUNTS have unique addresses" {
             ));
         }
     }
+}
+
+const PrdDevAccount = struct {
+    address: primitives.Address.Address,
+    private_key: [32]u8,
+};
+
+fn prdManagedAccount(prd_spec: []const u8, index: usize) !PrdDevAccount {
+    var prefix_buf: [32]u8 = undefined;
+    const prefix = try std.fmt.bufPrint(&prefix_buf, "| `{d}` | `0x", .{index});
+    var lines = std.mem.splitScalar(u8, prd_spec, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, prefix)) continue;
+
+        var cells = std.mem.splitScalar(u8, line, '|');
+        _ = cells.next();
+        const index_text = try markdownCodeCell(cells.next() orelse return error.InvalidPrdWalletRow);
+        const parsed_index = try std.fmt.parseInt(usize, index_text, 10);
+        if (parsed_index != index) continue;
+
+        const address_hex = try markdownCodeCell(cells.next() orelse return error.InvalidPrdWalletRow);
+        const private_key_hex = try markdownCodeCell(cells.next() orelse return error.InvalidPrdWalletRow);
+        return .{
+            .address = try parseDocAddress(address_hex),
+            .private_key = try parseDocPrivateKey(private_key_hex),
+        };
+    }
+    return error.MissingPrdWalletAccount;
+}
+
+fn markdownCodeCell(cell: []const u8) ![]const u8 {
+    const trimmed = std.mem.trim(u8, cell, " \t");
+    if (trimmed.len < 2 or trimmed[0] != '`' or trimmed[trimmed.len - 1] != '`') {
+        return error.InvalidPrdWalletRow;
+    }
+    return trimmed[1 .. trimmed.len - 1];
+}
+
+fn parseDocAddress(hex: []const u8) !primitives.Address.Address {
+    if (hex.len != 42 or !std.mem.startsWith(u8, hex, "0x")) return error.InvalidPrdWalletAddress;
+    var bytes: [20]u8 = undefined;
+    _ = std.fmt.hexToBytes(&bytes, hex[2..]) catch return error.InvalidPrdWalletAddress;
+    return .{ .bytes = bytes };
+}
+
+fn parseDocPrivateKey(hex: []const u8) ![32]u8 {
+    if (hex.len != 66 or !std.mem.startsWith(u8, hex, "0x")) return error.InvalidPrdWalletPrivateKey;
+    var bytes: [32]u8 = undefined;
+    _ = std.fmt.hexToBytes(&bytes, hex[2..]) catch return error.InvalidPrdWalletPrivateKey;
+    return bytes;
 }
 
 // ============================================================================

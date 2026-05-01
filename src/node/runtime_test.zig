@@ -1,5 +1,6 @@
 const std = @import("std");
 const runtime = @import("runtime.zig");
+const genesis = @import("../genesis.zig");
 const mining = @import("../mining.zig");
 const primitives = @import("primitives");
 
@@ -10,6 +11,36 @@ test "NodeRuntime.init uses deterministic defaults" {
     try std.testing.expectEqual(@as(u64, 31337), rt.chain_id);
     try std.testing.expectEqual(@as(u64, 0), rt.head_block_number);
     try std.testing.expectEqual(runtime.DEFAULT_DEV_ACCOUNTS[0], rt.coinbase);
+}
+
+test "DEFAULT_DEV_ACCOUNTS matches genesis managed wallet addresses" {
+    try std.testing.expectEqual(genesis.DEV_ACCOUNTS.len, runtime.DEFAULT_DEV_ACCOUNTS.len);
+    for (&genesis.DEV_ACCOUNTS, 0..) |*account, index| {
+        try std.testing.expect(primitives.Address.Address.equals(
+            account.address,
+            runtime.DEFAULT_DEV_ACCOUNTS[index],
+        ));
+    }
+}
+
+test "NodeRuntime coinbase indexes use canonical managed accounts" {
+    for (0..runtime.DEFAULT_DEV_ACCOUNTS.len) |index| {
+        var rt = try runtime.NodeRuntime.init(std.testing.allocator, .{
+            .coinbase_index = @intCast(index),
+        });
+        defer rt.deinit();
+
+        try std.testing.expectEqual(runtime.DEFAULT_DEV_ACCOUNTS[index], rt.coinbase);
+    }
+}
+
+test "NodeRuntime signer scope includes every managed genesis account" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    for (&genesis.DEV_ACCOUNTS) |*account| {
+        try std.testing.expect(rt.canSignForAccount(account.address));
+    }
 }
 
 test "NodeRuntime.init seeds dev account balances" {
