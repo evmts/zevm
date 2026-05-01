@@ -8,6 +8,7 @@ const simulation = @import("simulation.zig");
 
 const RETURN_32_BYTE_42 = [_]u8{ 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
 const SSTORE_THEN_RETURN_42 = [_]u8{ 0x60, 0x01, 0x60, 0x00, 0x55, 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+const RETURN_REVERT_DEAD_BEEF = [_]u8{ 0x63, 0xde, 0xad, 0xbe, 0xef, 0x60, 0x00, 0x52, 0x60, 0x04, 0x60, 0x1c, 0xfd };
 const TARGET = "0x1000000000000000000000000000000000000001";
 const EXPECTED_32_BYTE_42 = "0x000000000000000000000000000000000000000000000000000000000000002a";
 
@@ -51,6 +52,24 @@ test "eth_call applies state overrides only inside simulation" {
 
     try std.testing.expectEqualStrings(EXPECTED_32_BYTE_42, result.string);
     try std.testing.expectEqual(@as(usize, 0), (try rt.getCode(target)).len);
+}
+
+test "eth_call returns revert data as hex result" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    const target = try parseAddress(TARGET);
+    try rt.setCode(target, &RETURN_REVERT_DEAD_BEEF);
+
+    var parsed = try parseJson(
+        \\[{"to":"0x1000000000000000000000000000000000000001"},"latest"]
+    );
+    defer parsed.deinit();
+
+    const result = try simulation.handleEthCall(std.testing.allocator, &rt, parsed.value);
+    defer std.testing.allocator.free(result.string);
+
+    try std.testing.expectEqualStrings("0xdeadbeef", result.string);
 }
 
 test "eth_estimateGas returns a quantity" {

@@ -47,6 +47,7 @@ const ParsedEstimateParams = struct {
 const ExecutionResult = struct {
     output: []u8,
     gas_used: u64,
+    success: bool,
 
     fn deinit(self: *ExecutionResult, allocator: std.mem.Allocator) void {
         allocator.free(self.output);
@@ -72,7 +73,7 @@ pub fn handleEthCall(
         try applyStateOverrides(allocator, rt, overrides);
     }
 
-    var result = try executeOnce(allocator, rt, parsed.tx, gasLimit(parsed.tx));
+    var result = try executeOnce(allocator, rt, parsed.tx, gasLimit(rt, parsed.tx));
     defer result.deinit(allocator);
 
     return hexBytes(allocator, result.output);
@@ -286,11 +287,12 @@ fn estimateGas(
     tx: TransactionRequest,
 ) !u64 {
     const intrinsic = tx_processor.intrinsicGas(tx.data, tx.to == null);
-    var high = gasLimit(tx);
+    var high = gasLimit(rt, tx);
     if (high < intrinsic) return error.ExecutionFailed;
 
     var high_result = try executeOnce(allocator, rt, tx, high);
-    high_result.deinit(allocator);
+    defer high_result.deinit(allocator);
+    if (!high_result.success) return error.ExecutionFailed;
 
     var low = intrinsic;
     while (low < high) {
@@ -303,6 +305,10 @@ fn estimateGas(
             else => return err,
         };
         attempt.deinit(allocator);
+        if (!attempt.success) {
+            low = mid + 1;
+            continue;
+        }
         high = mid;
     }
 
@@ -378,12 +384,12 @@ fn executeCall(
     defer owned.deinit(allocator);
 
     if (adapter.takeHostError() != null) return error.ExecutionFailed;
-    if (!owned.success) return error.ExecutionFailed;
 
     const gas_consumed = if (owned.gas_left > execution_gas) 0 else execution_gas - owned.gas_left;
     return .{
         .output = try allocator.dupe(u8, owned.output),
         .gas_used = intrinsic + gas_consumed,
+        .success = owned.success,
     };
 }
 
@@ -399,17 +405,17 @@ fn executeCreate(
 
     const result = evm.inner_create(tx.value, tx.data, execution_gas, null) catch return error.ExecutionFailed;
     if (adapter.takeHostError() != null) return error.ExecutionFailed;
-    if (!result.success) return error.ExecutionFailed;
 
     const gas_consumed = if (result.gas_left > execution_gas) 0 else execution_gas - result.gas_left;
     return .{
         .output = try allocator.dupe(u8, result.output),
         .gas_used = intrinsic + gas_consumed,
+        .success = result.success,
     };
 }
 
-fn gasLimit(tx: TransactionRequest) u64 {
-    return tx.gas orelse DEFAULT_SIMULATION_GAS_LIMIT;
+fn gasLimit(rt: *runtime.NodeRuntime, tx: TransactionRequest) u64 {
+    return tx.gas orelse rt.dev_runtime.config.block_gas_limit;
 }
 
 fn blockContext(rt: *const runtime.NodeRuntime) guillotine_mini.BlockContext {
@@ -420,7 +426,7 @@ fn blockContext(rt: *const runtime.NodeRuntime) guillotine_mini.BlockContext {
         .block_difficulty = 0,
         .block_prevrandao = 0,
         .block_coinbase = rt.coinbase,
-        .block_gas_limit = DEFAULT_SIMULATION_GAS_LIMIT,
+        .block_gas_limit = rt.dev_runtime.config.block_gas_limit,
         .block_base_fee = rt.base_fee,
         .blob_base_fee = rt.blob_base_fee,
     };

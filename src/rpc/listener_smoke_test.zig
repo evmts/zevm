@@ -156,6 +156,52 @@ test "trusted mode returns 204 for a notification over a real TCP listener" {
     try std.testing.expectEqual(@as(usize, 0), response.body.len);
 }
 
+test "trusted mode serves eth_call revert data over a real TCP listener" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, .{});
+    defer rt.deinit();
+    try rt.setCode(try parseAddress("0x1000000000000000000000000000000000000001"), &[_]u8{ 0x63, 0xde, 0xad, 0xbe, 0xef, 0x60, 0x00, 0x52, 0x60, 0x04, 0x60, 0x1c, 0xfd });
+
+    var handlers = dispatcher.HandlerRegistry{};
+    installHandlers(&rt, &handlers);
+    var listener = try server.TestListener.init(std.testing.allocator, "127.0.0.1", &handlers);
+    defer listener.deinit();
+    try listener.start();
+
+    var response = try postJson(listener.address(), "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x1000000000000000000000000000000000000001\"},\"latest\"]}");
+    defer response.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 200), response.status_code);
+
+    const parsed = try parseBody(response.body);
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("0xdeadbeef", (try objectField(parsed.value, "result")).string);
+}
+
+fn parseAddress(text: []const u8) !@import("primitives").Address {
+    if (text.len != 42 or text[0] != '0' or text[1] != 'x') return error.InvalidAddress;
+    var bytes: [20]u8 = undefined;
+    _ = std.fmt.hexToBytes(&bytes, text[2..]) catch return error.InvalidAddress;
+    return .{ .bytes = bytes };
+}
+
+test "trusted mode serves eth_estimateGas over a real TCP listener" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, .{});
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    installHandlers(&rt, &handlers);
+    var listener = try server.TestListener.init(std.testing.allocator, "127.0.0.1", &handlers);
+    defer listener.deinit();
+    try listener.start();
+
+    var response = try postJson(listener.address(), "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"eth_estimateGas\",\"params\":[{\"from\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"to\":\"0x70997970C51812dc3A010C7d01b50e0d17dc79C8\"}]}");
+    defer response.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 200), response.status_code);
+
+    const parsed = try parseBody(response.body);
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("0x5208", (try objectField(parsed.value, "result")).string);
+}
+
 test "light mode serves persisted checkpoint status over a real TCP listener" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
