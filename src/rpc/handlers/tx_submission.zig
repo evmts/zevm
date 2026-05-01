@@ -16,6 +16,7 @@ pub const TxSubmissionError = error{
     IntrinsicGasExceedsLimit,
     InitcodeTooLarge,
     PoolInsertFailed,
+    ReplacementUnderpriced,
     UnmanagedAccount,
     SigningFailed,
     MiningFailed,
@@ -119,7 +120,7 @@ pub fn handleSendRawTransaction(
         .r = decoded.r,
         .s = decoded.s,
     }) catch |err| switch (err) {
-        error.ReplacementUnderpriced => return TxSubmissionError.PoolInsertFailed,
+        error.ReplacementUnderpriced => return TxSubmissionError.ReplacementUnderpriced,
         error.OutOfMemory => return TxSubmissionError.OutOfMemory,
     };
 
@@ -226,7 +227,7 @@ pub fn handleSendTransaction(
         .r = tx.r,
         .s = tx.s,
     }) catch |err| switch (err) {
-        error.ReplacementUnderpriced => return TxSubmissionError.PoolInsertFailed,
+        error.ReplacementUnderpriced => return TxSubmissionError.ReplacementUnderpriced,
         error.OutOfMemory => return TxSubmissionError.OutOfMemory,
     };
 

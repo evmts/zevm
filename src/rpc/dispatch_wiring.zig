@@ -142,6 +142,7 @@ fn dispatchMethod(
             error.InvalidHexData,
             error.DecodeFailed,
             error.UnsupportedTxType,
+            error.ReplacementUnderpriced,
             => return error.InvalidParams,
             else => return err,
         };
@@ -156,6 +157,7 @@ fn dispatchMethod(
             error.DecodeFailed,
             error.UnsupportedTxType,
             error.SenderRecoveryFailed,
+            error.ReplacementUnderpriced,
             => return error.InvalidParams,
             else => return err,
         };
@@ -1011,10 +1013,42 @@ fn typedResultToJsonValue(allocator: std.mem.Allocator, result: anytype) !std.js
     defer writer.deinit();
 
     try std.json.Stringify.value(result, .{}, &writer.writer);
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, writer.written(), .{
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, writer.written(), .{
         .allocate = .alloc_always,
     });
-    return parsed.value;
+    defer parsed.deinit();
+    return cloneJsonValue(allocator, parsed.value);
+}
+
+fn cloneJsonValue(allocator: std.mem.Allocator, value: std.json.Value) !std.json.Value {
+    return switch (value) {
+        .null => .null,
+        .bool => |v| .{ .bool = v },
+        .integer => |v| .{ .integer = v },
+        .float => |v| .{ .float = v },
+        .number_string => |v| .{ .number_string = try allocator.dupe(u8, v) },
+        .string => |v| .{ .string = try allocator.dupe(u8, v) },
+        .array => |arr| blk: {
+            var out = std.json.Array.init(allocator);
+            errdefer out.deinit();
+            for (arr.items) |item| {
+                try out.append(try cloneJsonValue(allocator, item));
+            }
+            break :blk .{ .array = out };
+        },
+        .object => |obj| blk: {
+            var out = std.json.ObjectMap.init(allocator);
+            errdefer out.deinit();
+            var it = obj.iterator();
+            while (it.next()) |entry| {
+                const key = try allocator.dupe(u8, entry.key_ptr.*);
+                errdefer allocator.free(key);
+                const cloned = try cloneJsonValue(allocator, entry.value_ptr.*);
+                try out.put(key, cloned);
+            }
+            break :blk .{ .object = out };
+        },
+    };
 }
 
 fn parseSendRawTransactionParams(params: ?std.json.Value) !jsonrpc.eth.SendRawTransaction.Params {

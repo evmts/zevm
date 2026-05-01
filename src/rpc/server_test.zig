@@ -329,6 +329,7 @@ test "mixed batch omits notifications and preserves response order" {
     try std.testing.expectEqual(@as(i64, 7), (try getObjectField(items[1], "result")).integer);
 }
 
+
 test "id null is not treated as a notification" {
     const handlers = dispatcher.HandlerRegistry{
         .on_method = &successHandler,

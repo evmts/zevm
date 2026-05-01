@@ -6,6 +6,7 @@ const dispatch_wiring = @import("dispatch_wiring.zig");
 const light_proof = @import("../light_proof.zig");
 const mining = @import("../mining.zig");
 const runtime_mod = @import("../node/runtime.zig");
+const genesis = @import("../genesis.zig");
 
 fn makeRequest(method: []const u8, params: ?std.json.Value) !jsonrpc.envelope.RequestEnvelope {
     return .{
@@ -82,6 +83,77 @@ fn dispatchOneStringParam(
     defer request.deinit(std.testing.allocator);
 
     return dispatcher.dispatch(std.testing.allocator, request, handlers);
+}
+
+fn signLegacyRawHex(allocator: std.mem.Allocator) ![]u8 {
+    const unsigned_tx = primitives.Transaction.LegacyTransaction{
+        .nonce = 0,
+        .gas_price = runtime_mod.DEFAULT_GAS_PRICE,
+        .gas_limit = 21_000,
+        .to = runtime_mod.DEFAULT_DEV_ACCOUNTS[1],
+        .value = 1000,
+        .data = &[_]u8{},
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+    var signed = try primitives.Transaction.signLegacyTransaction(allocator, unsigned_tx, genesis.DEV_ACCOUNTS[0].private_key, runtime_mod.DEFAULT_CHAIN_ID);
+    const invalid_base = runtime_mod.DEFAULT_CHAIN_ID * 2 + 62;
+    const y_parity = if (signed.v >= invalid_base and signed.v <= invalid_base + 1) signed.v - invalid_base else if (signed.v >= 35) (signed.v - 35) % 2 else if (signed.v >= 27) signed.v - 27 else signed.v % 2;
+    signed.v = runtime_mod.DEFAULT_CHAIN_ID * 2 + 35 + y_parity;
+    const encoded = try primitives.Transaction.encodeLegacyForSigning(allocator, signed, runtime_mod.DEFAULT_CHAIN_ID);
+    defer allocator.free(encoded);
+    return primitives.Hex.bytesToHex(allocator, encoded);
+}
+
+test "dispatch wiring eth_sendRawTransaction returns tx hash" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+    rt.setMiningConfig(.manual);
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    const hex = try signLegacyRawHex(std.testing.allocator);
+    defer std.testing.allocator.free(hex);
+
+    var params = std.json.Array.init(std.testing.allocator);
+    defer params.deinit();
+    try params.append(.{ .string = hex });
+    var request = try makeRequest("eth_sendRawTransaction", .{ .array = params });
+    defer request.deinit(std.testing.allocator);
+    var response = try dispatcher.dispatch(std.testing.allocator, request, &handlers);
+    defer response.deinit(std.testing.allocator);
+    try std.testing.expect(response.error_value == null);
+    try std.testing.expect(response.result != null);
+    try std.testing.expect(response.result.? == .string);
+    try std.testing.expectEqual(@as(usize, 66), response.result.?.string.len);
+}
+
+test "dispatch wiring eth_sendTransaction returns tx hash for managed account" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+    rt.setMiningConfig(.manual);
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    var tx_obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer tx_obj.deinit();
+    try tx_obj.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try tx_obj.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try tx_obj.put("value", .{ .string = "0x3e8" });
+    try tx_obj.put("gas", .{ .string = "0x5208" });
+
+    var params = std.json.Array.init(std.testing.allocator);
+    defer params.deinit();
+    try params.append(.{ .object = tx_obj });
+    var request = try makeRequest("eth_sendTransaction", .{ .array = params });
+    defer request.deinit(std.testing.allocator);
+    var response = try dispatcher.dispatch(std.testing.allocator, request, &handlers);
+    defer response.deinit(std.testing.allocator);
+    try std.testing.expect(response.error_value == null);
+    try std.testing.expect(response.result != null);
+    try std.testing.expect(response.result.? == .string);
+    try std.testing.expectEqual(@as(usize, 66), response.result.?.string.len);
 }
 
 test "installed dispatch wiring reaches runtime-backed eth methods" {
