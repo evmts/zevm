@@ -484,3 +484,95 @@ test "sequential transactions increment nonce" {
     try std.testing.expectEqual(@as(u64, 2), try sm.getNonce(sender));
     try std.testing.expectEqual(@as(u256, 300), try sm.getBalance(recipient));
 }
+
+test "reverted execution discards emitted logs" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    const host = adapter.hostInterface();
+
+    const sender = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
+    const callee = primitives.Address{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 19 };
+
+    // Runtime: PUSH1 0x00 PUSH1 0x00 LOG0 PUSH1 0x00 PUSH1 0x00 REVERT
+    const code = [_]u8{ 0x60, 0x00, 0x60, 0x00, 0xa0, 0x60, 0x00, 0x60, 0x00, 0xfd };
+
+    try sm.setBalance(sender, 1_000_000_000_000);
+    try sm.setNonce(sender, 0);
+    try sm.setCode(callee, &code);
+
+    var receipt = try tx_processor.processTransaction(
+        std.testing.allocator,
+        &sm,
+        host,
+        sender,
+        makeLegacyTx(.{
+            .to = callee,
+            .value = 0,
+            .data = &[_]u8{},
+            .gas_limit = 100_000,
+            .gas_price = 1,
+            .nonce = 0,
+        }),
+        defaultBlockContext(),
+    );
+    defer receipt.deinit(std.testing.allocator);
+
+    try std.testing.expect(!receipt.status.?.success);
+    try std.testing.expectEqual(@as(usize, 0), receipt.logs.len);
+}
+
+test "subcall out-of-gas rolls back subcall logs" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    const host = adapter.hostInterface();
+
+    const sender = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
+    const caller = primitives.Address{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 19 };
+    const callee = primitives.Address{ .bytes = [_]u8{0x03} ++ [_]u8{0} ** 19 };
+
+    // Callee: emit LOG0 then loop forever to exhaust call gas.
+    const callee_code = [_]u8{ 0x5b, 0x60, 0x00, 0x60, 0x00, 0xa0, 0x60, 0x00, 0x56 };
+    // Caller: CALL callee with fixed gas, ignore return value, STOP.
+    const caller_code = [_]u8{
+        0x60, 0x00, // out size
+        0x60, 0x00, // out offset
+        0x60, 0x00, // in size
+        0x60, 0x00, // in offset
+        0x60, 0x00, // value
+        0x73, // PUSH20 callee address
+    } ++ callee.bytes ++ [_]u8{
+        0x61, 0x13, 0x88, // PUSH2 0x1388 (5000 gas)
+        0xf1, // CALL
+        0x50, // POP
+        0x00, // STOP
+    };
+
+    try sm.setBalance(sender, 1_000_000_000_000);
+    try sm.setNonce(sender, 0);
+    try sm.setCode(caller, &caller_code);
+    try sm.setCode(callee, &callee_code);
+
+    var receipt = try tx_processor.processTransaction(
+        std.testing.allocator,
+        &sm,
+        host,
+        sender,
+        makeLegacyTx(.{
+            .to = caller,
+            .value = 0,
+            .data = &[_]u8{},
+            .gas_limit = 200_000,
+            .gas_price = 1,
+            .nonce = 0,
+        }),
+        defaultBlockContext(),
+    );
+    defer receipt.deinit(std.testing.allocator);
+
+    try std.testing.expect(receipt.status.?.success);
+    try std.testing.expectEqual(@as(usize, 0), receipt.logs.len);
+}

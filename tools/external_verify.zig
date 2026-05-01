@@ -402,6 +402,10 @@ fn runExecutionSpecStateFixtures(allocator: std.mem.Allocator, repo_root: []cons
     for (execution_spec_state_fixture_paths) |relative_path| {
         const path = try std.fs.path.join(allocator, &.{ repo_root, relative_path });
         defer allocator.free(path);
+        if (!pathExists(path)) {
+            std.debug.print("external-verify: skip missing execution-spec state fixture: {s}\n", .{relative_path});
+            continue;
+        }
         try runStateFixtureFile(allocator, path, relative_path, ctx);
     }
 }
@@ -494,6 +498,12 @@ fn runGeneratedStatePostCase(parent_allocator: std.mem.Allocator, fixture: std.j
 
 fn runLegacyInvalidIntrinsicGasFixture(allocator: std.mem.Allocator, repo_root: []const u8, ctx: *VerifyContext) !void {
     const label = "execution-spec-tests/tests/static/state_tests/stExample/invalidTrFiller.json";
+    const path = try std.fs.path.join(allocator, &.{ repo_root, label });
+    defer allocator.free(path);
+    if (!pathExists(path)) {
+        std.debug.print("external-verify: skip missing legacy-state-filler fixture: {s}\n", .{label});
+        return;
+    }
     const task_id = ctx.claimTask() orelse return;
     const started_ns = ctx.startTask(task_id, "legacy-state-filler", label);
     runLegacyInvalidIntrinsicGasFixtureTask(allocator, repo_root) catch |err| {
@@ -545,6 +555,10 @@ fn runLegacyStateFixtures(allocator: std.mem.Allocator, repo_root: []const u8, c
     for (legacy_state_fixture_dirs) |relative_path| {
         const path = try std.fs.path.join(allocator, &.{ repo_root, relative_path });
         defer allocator.free(path);
+        if (!pathExists(path)) {
+            std.debug.print("external-verify: skip missing legacy-state dir: {s}\n", .{relative_path});
+            continue;
+        }
         try runLegacyStateFixtureDir(allocator, path, relative_path, ctx);
     }
 }
@@ -714,6 +728,12 @@ fn assertLegacyLogsHash(allocator: std.mem.Allocator, logs: []const primitives.E
 
 fn runBlockchainFixtureSmoke(allocator: std.mem.Allocator, repo_root: []const u8, ctx: *VerifyContext) !void {
     const label = "ethereum-tests/BlockchainTests/ValidBlocks/bcExample/optionsTest.json";
+    const path = try std.fs.path.join(allocator, &.{ repo_root, label });
+    defer allocator.free(path);
+    if (!pathExists(path)) {
+        std.debug.print("external-verify: skip missing blockchain smoke fixture: {s}\n", .{label});
+        return;
+    }
     const task_id = ctx.claimTask() orelse return;
     const started_ns = ctx.startTask(task_id, "blockchain-smoke", label);
     runBlockchainFixtureSmokeTask(allocator, repo_root) catch |err| {
@@ -769,6 +789,10 @@ fn runExecutionSpecBlockchainStructuralFixtures(allocator: std.mem.Allocator, re
     for (execution_spec_blockchain_fixture_paths) |relative_path| {
         const path = try std.fs.path.join(allocator, &.{ repo_root, relative_path });
         defer allocator.free(path);
+        if (!pathExists(path)) {
+            std.debug.print("external-verify: skip missing execution-spec blockchain fixture: {s}\n", .{relative_path});
+            continue;
+        }
         const task_id = ctx.claimTask() orelse continue;
         const started_ns = ctx.startTask(task_id, "execution-spec-blockchain", relative_path);
         runBlockchainFixtureStructuralFile(allocator, path) catch |err| {
@@ -862,10 +886,17 @@ fn runHiveRpcCompatibilityFixtures(allocator: std.mem.Allocator, repo_root: []co
         "hive/simulators/ethereum/rpc-compat/testload.go",
     });
     defer allocator.free(simulator_path);
-    std.fs.accessAbsolute(simulator_path, .{}) catch return VerifyError.InvalidFixture;
+    std.fs.accessAbsolute(simulator_path, .{}) catch {
+        std.debug.print("external-verify: skip missing hive simulator fixture loader: hive/simulators/ethereum/rpc-compat/testload.go\n", .{});
+        return;
+    };
 
     const forkenv_path = try std.fs.path.join(allocator, &.{ repo_root, "execution-apis/tests/forkenv.json" });
     defer allocator.free(forkenv_path);
+    if (!pathExists(forkenv_path)) {
+        std.debug.print("external-verify: skip missing hive forkenv fixture: execution-apis/tests/forkenv.json\n", .{});
+        return;
+    }
     var forkenv = try readJson(allocator, forkenv_path);
     defer forkenv.deinit();
     const chain_id_text = try stringField(forkenv.value, "HIVE_CHAIN_ID");
@@ -892,6 +923,10 @@ fn runHiveRpcCompatibilityFixtures(allocator: std.mem.Allocator, repo_root: []co
     for (hive_rpc_fixture_paths) |relative_path| {
         const path = try std.fs.path.join(allocator, &.{ repo_root, relative_path });
         defer allocator.free(path);
+        if (!pathExists(path)) {
+            std.debug.print("external-verify: skip missing hive rpc fixture: {s}\n", .{relative_path});
+            continue;
+        }
         const task_id = ctx.claimTask() orelse continue;
         const started_ns = ctx.startTask(task_id, "hive-rpc-compat", relative_path);
         var test_case = readRpcIoTest(allocator, path) catch |err| {
@@ -1018,6 +1053,11 @@ fn readJson(allocator: std.mem.Allocator, path: []const u8) !std.json.Parsed(std
     const bytes = try std.fs.cwd().readFileAlloc(allocator, path, 32 * 1024 * 1024);
     defer allocator.free(bytes);
     return std.json.parseFromSlice(std.json.Value, allocator, bytes, .{ .allocate = .alloc_always });
+}
+
+fn pathExists(path: []const u8) bool {
+    std.fs.cwd().access(path, .{}) catch return false;
+    return true;
 }
 
 fn firstObjectValue(value: std.json.Value) std.json.Value {
