@@ -87,6 +87,24 @@ pub fn build(b: *std.Build) void {
     }
     release_metadata_step.dependOn(&release_metadata_cmd.step);
 
+    const qualification_check_exe = b.addExecutable(.{
+        .name = "qualification-check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/qualification_check.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const qualification_check_step = b.step("qualification-check", "Validate release qualification assertion map");
+    const qualification_check_cmd = b.addRunArtifact(qualification_check_exe);
+    qualification_check_cmd.addArg("--map");
+    qualification_check_cmd.addFileArg(b.path("docs/specs/qualification/assertion-map.json"));
+    if (b.args) |args| {
+        qualification_check_cmd.addArgs(args);
+    }
+    qualification_check_step.dependOn(&qualification_check_cmd.step);
+
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
@@ -101,8 +119,18 @@ pub fn build(b: *std.Build) void {
     });
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
+    const qualification_check_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/qualification_check.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_qualification_check_tests = b.addRunArtifact(qualification_check_tests);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
+    test_step.dependOn(&run_qualification_check_tests.step);
 
     const external_verify_exe = b.addExecutable(.{
         .name = "external-verify",

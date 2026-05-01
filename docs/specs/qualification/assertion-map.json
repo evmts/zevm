@@ -1,0 +1,188 @@
+{
+  "schemaVersion": "zevm-release-qualification-map.v1",
+  "updated": "2026-04-30",
+  "prdSource": "docs/specs/prd.md#35-release-qualification-and-verification-acceptance-criteria",
+  "records": [
+    {
+      "surfaceId": "INSTALLATION_SOURCE_BUILD_GRAPH",
+      "surfaceSection": "PRD 3.3, 3.5",
+      "surfaceCategory": "release-asset",
+      "assertionType": "release-asset-validation",
+      "assertionIdentifier": "zig build; zig build test",
+      "expectedContractOutcome": "Candidate source state builds the zevm binary and default Zig test graph without ad-hoc dependency or path edits.",
+      "coverageStatus": "covered"
+    },
+    {
+      "surfaceId": "RELEASE_METADATA_RELEASE_TUPLE_JSON",
+      "surfaceSection": "PRD 3.4",
+      "surfaceCategory": "release-asset",
+      "assertionType": "release-asset-validation",
+      "assertionIdentifier": "src/release_metadata.zig:release tuple generator emits valid json",
+      "expectedContractOutcome": "release-tuple.json has the required URL-bound identifier, schema version, exact field set, pin tuple values, and commit identifier equality.",
+      "coverageStatus": "covered"
+    },
+    {
+      "surfaceId": "RELEASE_METADATA_LIGHT_DEFAULT_CHECKPOINTS_JSON",
+      "surfaceSection": "PRD 3.4, 5.5",
+      "surfaceCategory": "release-asset",
+      "assertionType": "release-asset-validation",
+      "assertionIdentifier": "src/release_metadata.zig:light default checkpoints generator emits valid json",
+      "expectedContractOutcome": "light-default-checkpoints.json has the required URL-bound identifier, schema version, exact field set, and 32-byte checkpoint defaults for mainnet, sepolia, and holesky.",
+      "coverageStatus": "covered"
+    },
+    {
+      "surfaceId": "RELEASE_METADATA_REQUIRED_ARTIFACTS_PRESENT_EXACTLY_ONCE",
+      "surfaceSection": "PRD 3.4",
+      "surfaceCategory": "release-asset",
+      "assertionType": "release-asset-validation",
+      "assertionIdentifier": "src/release_metadata.zig:asset name validator catches missing and duplicate required assets",
+      "expectedContractOutcome": "A metadata-backed release identifier is valid only when release-tuple.json and light-default-checkpoints.json are both present exactly once.",
+      "coverageStatus": "covered"
+    },
+    {
+      "surfaceId": "RELEASE_QUALIFICATION_ASSERTION_RECORD_FIELDS",
+      "surfaceSection": "PRD 3.5",
+      "surfaceCategory": "release-asset",
+      "assertionType": "release-asset-validation",
+      "assertionIdentifier": "zig build qualification-check",
+      "expectedContractOutcome": "Every qualification row carries the required surface, section, category, assertion type, assertion identifier, expected outcome, and explicit coverage status fields.",
+      "coverageStatus": "covered"
+    },
+    {
+      "surfaceId": "STARTUP_CONFIGURATION_RESOLUTION",
+      "surfaceSection": "PRD 5",
+      "surfaceCategory": "configuration",
+      "assertionType": "default-graph-test",
+      "assertionIdentifier": "src/config_test.zig",
+      "expectedContractOutcome": "CLI/config loading applies shared defaults, single-mode validation, mode-specific flag rejection, precedence, structured mining/fork validation, and light checkpoint input precedence.",
+      "coverageStatus": "covered"
+    },
+    {
+      "surfaceId": "STARTUP_FAILURE_BEFORE_LISTENER_BIND",
+      "surfaceSection": "PRD 5.7",
+      "surfaceCategory": "startup",
+      "assertionType": "default-graph-test",
+      "assertionIdentifier": "src/config_test.zig",
+      "expectedContractOutcome": "Invalid startup inputs fail during configuration resolution before the HTTP listener is treated as ready.",
+      "coverageStatus": "gap",
+      "gapReason": "Current tests cover configuration rejection but not a real listener-not-bound startup failure gate.",
+      "ownerTicket": ".smithers/tickets/016-implement-release-qualification-assertion-mapping-and-smoke-gates.md"
+    },
+    {
+      "surfaceId": "TRUSTED_RUNTIME_LIFECYCLE",
+      "surfaceSection": "PRD 4.1, 8, 9, 10, 11, 12",
+      "surfaceCategory": "runtime",
+      "assertionType": "default-graph-test",
+      "assertionIdentifier": "src/node/runtime_test.zig; src/mining_coordinator.zig; src/block_builder_test.zig",
+      "expectedContractOutcome": "Trusted mode owns writable local state, deterministic genesis/runtime defaults, snapshots/reset behavior, fork overlays, mining modes, and block environment controls.",
+      "coverageStatus": "covered"
+    },
+    {
+      "surfaceId": "LIGHT_RUNTIME_SYNC_LIFECYCLE",
+      "surfaceSection": "PRD 4.2, 5.3-5.7, 10",
+      "surfaceCategory": "runtime",
+      "assertionType": "default-graph-test",
+      "assertionIdentifier": "src/consensus_sync_test.zig; src/checkpoint_test.zig; src/consensus_verifier_test.zig",
+      "expectedContractOutcome": "Light mode resolves supported networks/checkpoints, applies consensus bootstrap/update checks, and reports sync status lifecycle fields.",
+      "coverageStatus": "covered"
+    },
+    {
+      "surfaceId": "RPC_HTTP_TRANSPORT_CONTRACT",
+      "surfaceSection": "PRD 6, 12; JSON-RPC contract 3-4",
+      "surfaceCategory": "transport",
+      "assertionType": "default-graph-test",
+      "assertionIdentifier": "src/rpc/server_test.zig",
+      "expectedContractOutcome": "HTTP JSON-RPC accepts only POST / with application/json, returns contract HTTP status codes, and handles notification-only requests with 204 empty bodies.",
+      "coverageStatus": "gap",
+      "gapReason": "Handler-level tests exist, but path validation, content-type 415, and notification-only 204 behavior are tracked separately for the shipping listener path.",
+      "ownerTicket": ".smithers/tickets/016-implement-release-qualification-assertion-mapping-and-smoke-gates.md"
+    },
+    {
+      "surfaceId": "RPC_SHIPPING_LISTENER_SMOKE_TRUSTED",
+      "surfaceSection": "PRD 3.5, 6, 12",
+      "surfaceCategory": "transport",
+      "assertionType": "default-graph-test",
+      "assertionIdentifier": "TODO:src/rpc/listener_smoke_test.zig trusted request flow",
+      "expectedContractOutcome": "A release verification test binds the real HTTP listener socket in trusted mode and completes a JSON-RPC request over TCP.",
+      "coverageStatus": "gap",
+      "gapReason": "Real listener/socket smoke coverage is not yet present in the default Zig test graph.",
+      "ownerTicket": ".smithers/tickets/016-implement-release-qualification-assertion-mapping-and-smoke-gates.md"
+    },
+    {
+      "surfaceId": "RPC_SHIPPING_LISTENER_SMOKE_LIGHT_CHECKPOINT_RESUME",
+      "surfaceSection": "PRD 3.5, 5.6, 6, 12",
+      "surfaceCategory": "transport",
+      "assertionType": "default-graph-test",
+      "assertionIdentifier": "TODO:src/rpc/listener_smoke_test.zig light checkpoint restart/resume flow",
+      "expectedContractOutcome": "A release verification test binds the real HTTP listener socket in light mode and validates startup plus restart/resume from a persisted checkpoint input path.",
+      "coverageStatus": "gap",
+      "gapReason": "Light-mode real listener startup and persisted-checkpoint resume smoke coverage is not yet present in the default Zig test graph.",
+      "ownerTicket": ".smithers/tickets/016-implement-release-qualification-assertion-mapping-and-smoke-gates.md"
+    },
+    {
+      "surfaceId": "RPC_ENVELOPE_AND_ERROR_TUPLES",
+      "surfaceSection": "PRD 6, 7; JSON-RPC contract 3-6",
+      "surfaceCategory": "transport",
+      "assertionType": "default-graph-test",
+      "assertionIdentifier": "src/rpc/envelope_test.zig; src/rpc/dispatcher_test.zig; src/rpc/router_test.zig",
+      "expectedContractOutcome": "JSON-RPC 2.0 request parsing, batch handling, ID preservation, method-not-found, invalid params, and error envelope semantics match the contract.",
+      "coverageStatus": "covered"
+    },
+    {
+      "surfaceId": "TRUSTED_CORE_READ_METHODS",
+      "surfaceSection": "PRD 3.1, 7; JSON-RPC contract 8.1",
+      "surfaceCategory": "method",
+      "assertionType": "default-graph-test",
+      "assertionIdentifier": "src/rpc/eth_handler_test.zig; src/rpc/handlers/eth_read_test.zig",
+      "expectedContractOutcome": "Trusted core read methods return chain ID, block number, account balance/code/storage/nonce, accounts, coinbase, gas price, blob base fee, and fee history according to phase-1 selectors and tuple rules.",
+      "coverageStatus": "covered"
+    },
+    {
+      "surfaceId": "TRUSTED_SIMULATION_AND_SUBMISSION_METHODS",
+      "surfaceSection": "PRD 3.1, 7; JSON-RPC contract 8.2-8.3",
+      "surfaceCategory": "method",
+      "assertionType": "default-graph-test",
+      "assertionIdentifier": "src/rpc/handlers/simulation_test.zig; src/rpc/handlers/tx_submission_test.zig; src/tx_processor_test.zig",
+      "expectedContractOutcome": "Trusted simulation and submission support eth_call, eth_estimateGas, eth_sendTransaction, and eth_sendRawTransaction while rejecting unsupported typed or dynamic transaction forms.",
+      "coverageStatus": "gap",
+      "gapReason": "Legacy transaction paths are covered, but the phase-1 typed-envelope rejection boundary is still being tightened through RPC-facing tests.",
+      "ownerTicket": ".smithers/tickets/016-implement-release-qualification-assertion-mapping-and-smoke-gates.md"
+    },
+    {
+      "surfaceId": "TRUSTED_BLOCK_RECEIPT_LOG_METHODS",
+      "surfaceSection": "PRD 3.1, 7, 10; JSON-RPC contract 8.4",
+      "surfaceCategory": "method",
+      "assertionType": "default-graph-test",
+      "assertionIdentifier": "src/rpc/block_queries_test.zig; src/rpc/handlers/block_query_handlers_test.zig; src/receipt_index_test.zig; src/log_index_test.zig",
+      "expectedContractOutcome": "Trusted canonical block, transaction, receipt, block receipt, and log query methods follow nullability, selector, index, ordering, and payload field contracts.",
+      "coverageStatus": "covered"
+    },
+    {
+      "surfaceId": "TRUSTED_DEV_CONTROL_METHODS",
+      "surfaceSection": "PRD 3.1, 8, 9, 10, 11; JSON-RPC contract 9-10",
+      "surfaceCategory": "method",
+      "assertionType": "default-graph-test",
+      "assertionIdentifier": "src/rpc/dev_handlers.zig; src/rpc/handlers/dev_erc20_test.zig; src/rpc/trusted_fork_handlers.zig",
+      "expectedContractOutcome": "Trusted dev-node controls mutate local accounts, storage, code, snapshots, impersonation, txpool, mining, time, coinbase, block gas, fee, and fork metadata inside the documented phase-1 boundaries.",
+      "coverageStatus": "covered"
+    },
+    {
+      "surfaceId": "LIGHT_PROOF_BACKED_READ_METHODS",
+      "surfaceSection": "PRD 3.1, 4.2, 7, 10; JSON-RPC contract 7.10, 8.1, 13",
+      "surfaceCategory": "method",
+      "assertionType": "default-graph-test",
+      "assertionIdentifier": "src/light_proof.zig; src/rpc/dispatch_wiring_test.zig; src/consensus_sync_test.zig",
+      "expectedContractOutcome": "Light mode exposes zevm_lightSyncStatus, eth_chainId, eth_blockNumber, and proof-backed balance/code/storage/nonce reads with readiness, retained-window, proof-verification, and mode-unsupported errors.",
+      "coverageStatus": "covered"
+    },
+    {
+      "surfaceId": "DEFERRED_UNSUPPORTED_METHOD_BOUNDARIES",
+      "surfaceSection": "PRD 3.2, 7, 13, 14",
+      "surfaceCategory": "method",
+      "assertionType": "default-graph-test",
+      "assertionIdentifier": "src/rpc/dispatcher_test.zig; src/rpc/handlers/simulation_test.zig",
+      "expectedContractOutcome": "Out-of-contract methods return method-not-found, and phase-1 light-mode unsupported trusted families return the documented mode-unsupported error.",
+      "coverageStatus": "covered"
+    }
+  ]
+}

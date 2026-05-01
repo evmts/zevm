@@ -39,6 +39,9 @@ export const FeatureGroups = {
     "RELEASE_METADATA_REQUIRED_ARTIFACTS_PRESENT_EXACTLY_ONCE",
     "RELEASE_METADATA_PUBLICATION_CI_VALIDATION_GATE",
     "RELEASE_QUALIFICATION_ASSERTION_RECORD_FIELDS",
+    "RELEASE_QUALIFICATION_MACHINE_READABLE_ASSERTION_MAP",
+    "RELEASE_QUALIFICATION_CHECK_COMMAND",
+    "RELEASE_QUALIFICATION_EXPLICIT_COVERAGE_GAPS",
   ],
 
   // Source: docs/specs/prd.md sections 5 and 5.8-5.9, docs/reference/configuration/overview.mdx, docs/reference/configuration/trusted-mode.mdx, docs/reference/configuration/light-mode.mdx
