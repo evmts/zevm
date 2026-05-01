@@ -3,7 +3,6 @@ const primitives = @import("primitives");
 const crypto = @import("crypto");
 const jsonrpc = @import("jsonrpc");
 const runtime = @import("../../node/runtime.zig");
-const genesis = @import("../../genesis.zig");
 
 pub const TxSubmissionError = error{
     InvalidHexData,
@@ -156,13 +155,6 @@ fn parseQuantityU64Value(value: std.json.Value) SendTransactionParseError!u64 {
     };
 }
 
-fn managedDevPrivateKey(address: primitives.Address) ?[32]u8 {
-    for (genesis.DEV_ACCOUNTS) |account| {
-        if (std.mem.eql(u8, &account.address.bytes, &address.bytes)) return account.private_key;
-    }
-    return null;
-}
-
 pub fn handleSendTransaction(
     allocator: std.mem.Allocator,
     rt: *runtime.NodeRuntime,
@@ -202,7 +194,7 @@ pub fn handleSendTransaction(
     const balance = rt.state.getBalance(request.from) catch return TxSubmissionError.StateError;
     if (balance < total_cost) return TxSubmissionError.InsufficientBalance;
 
-    if (managedDevPrivateKey(request.from)) |private_key| {
+    if (rt.managedAccountPrivateKey(request.from)) |private_key| {
         tx = primitives.Transaction.signLegacyTransaction(allocator, tx, private_key, rt.chain_id) catch return TxSubmissionError.SigningFailed;
     }
 

@@ -11,6 +11,7 @@ const host_adapter = @import("../host_adapter.zig");
 const dev_runtime_mod = @import("../rpc/dev_runtime.zig");
 const receipt_index_mod = @import("../receipt_index.zig");
 const log_index_mod = @import("../log_index.zig");
+const genesis = @import("../genesis.zig");
 const checkpoint = @import("../checkpoint.zig");
 const consensus_sync = @import("../consensus_sync.zig");
 const light_proof = @import("../light_proof.zig");
@@ -20,18 +21,7 @@ const guillotine_mini = @import("guillotine_mini");
 /// Hardhat/Anvil-style deterministic dev accounts.
 /// These are the same 10 accounts used by Hardhat/Anvil (derived from mnemonic
 /// "test test test test test test test test test test test junk").
-pub const DEFAULT_DEV_ACCOUNTS = [10]primitives.Address{
-    parseAddr("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"),
-    parseAddr("0x70997970C51812dc3A010C7d01b50e0d17dc79C8"),
-    parseAddr("0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"),
-    parseAddr("0x90F79bf6EB2c4f870365E785982E1f101E93b906"),
-    parseAddr("0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65"),
-    parseAddr("0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc"),
-    parseAddr("0x976EA74026E726554dB657fA54763abd0C3a0aa9"),
-    parseAddr("0x14dC79964da2C08b23698B3D3cc7Ca32193d9955"),
-    parseAddr("0x23618e81E3f5cdF7f54C3d65f7FBc0aBf5B21E8f"),
-    parseAddr("0xa0Ee7A142d267C1f36714E4a8F75612F20a79720"),
-};
+pub const DEFAULT_DEV_ACCOUNTS = genesis.DEV_ACCOUNT_ADDRESSES;
 
 /// Default initial balance: 10,000 ETH in wei
 pub const DEFAULT_BALANCE: u256 = 10_000 * 1_000_000_000_000_000_000;
@@ -144,6 +134,7 @@ pub const NodeConfig = struct {
     base_fee: u256 = DEFAULT_BASE_FEE,
     blob_base_fee: u256 = DEFAULT_BLOB_BASE_FEE,
     max_priority_fee: u256 = DEFAULT_MAX_PRIORITY_FEE,
+    block_gas_limit: u64 = dev_runtime_mod.DEFAULT_BLOCK_GAS_LIMIT,
     mining_config: mining.MiningConfig = mining.MiningConfig.default(),
     fork_url: ?[]const u8 = null,
     fork_block_number: ?u64 = null,
@@ -236,7 +227,9 @@ pub const NodeRuntime = struct {
     default_base_fee: u256,
     default_blob_base_fee: u256,
     default_max_priority_fee: u256,
+    default_block_gas_limit: u64,
     default_mining_config: mining.MiningConfig,
+    managed_accounts: []const genesis.DevAccount,
     coinbase: primitives.Address,
     head_block_number: u64,
     head_block_timestamp: u64,
@@ -268,7 +261,7 @@ pub const NodeRuntime = struct {
         if (config.fork_block_number != null and config.fork_url == null) {
             return error.InvalidForkConfig;
         }
-        if (config.coinbase_index >= DEFAULT_DEV_ACCOUNTS.len) {
+        if (config.coinbase_index >= genesis.DEV_ACCOUNTS.len) {
             return error.InvalidCoinbaseIndex;
         }
 
@@ -304,8 +297,8 @@ pub const NodeRuntime = struct {
         // Seed deterministic dev accounts as the local writable overlay.
         // Use initAccount to bypass fork backend reads — dev accounts are
         // unconditional local overrides regardless of remote state.
-        for (&DEFAULT_DEV_ACCOUNTS) |addr| {
-            try state.initAccount(addr, config.initial_balance);
+        for (&genesis.DEV_ACCOUNTS) |account| {
+            try state.initAccount(account.address, config.initial_balance);
         }
 
         var snapshots = std.AutoHashMap(u64, SnapshotEntry).init(allocator);
@@ -324,7 +317,9 @@ pub const NodeRuntime = struct {
             };
         } else null;
 
-        const default_coinbase = DEFAULT_DEV_ACCOUNTS[config.coinbase_index];
+        const default_coinbase = genesis.DEV_ACCOUNTS[config.coinbase_index].address;
+        var dev_runtime = dev_runtime_mod.DevRuntime.initWithCoinbase(default_coinbase);
+        dev_runtime.config.block_gas_limit = config.block_gas_limit;
 
         return .{
             .allocator = allocator,
@@ -337,7 +332,9 @@ pub const NodeRuntime = struct {
             .default_base_fee = config.base_fee,
             .default_blob_base_fee = config.blob_base_fee,
             .default_max_priority_fee = config.max_priority_fee,
+            .default_block_gas_limit = config.block_gas_limit,
             .default_mining_config = config.mining_config,
+            .managed_accounts = &genesis.DEV_ACCOUNTS,
             .coinbase = default_coinbase,
             .head_block_number = 0,
             .head_block_timestamp = 0,
@@ -349,7 +346,7 @@ pub const NodeRuntime = struct {
             .pool = txpool.TransactionPool.init(allocator),
             .time_offset = 0,
             .next_block_timestamp = null,
-            .dev_runtime = dev_runtime_mod.DevRuntime.initWithCoinbase(default_coinbase),
+            .dev_runtime = dev_runtime,
             .state = state,
             .blockchain = blockchain,
             .owned_block_bodies = .{},
@@ -658,9 +655,23 @@ pub const NodeRuntime = struct {
     }
 
     pub fn canSignForAccount(self: *const NodeRuntime, address: primitives.Address) bool {
-        return isManagedDevAccount(address) or
+        return self.isManagedDevAccount(address) or
             self.auto_impersonate_account or
             self.isImpersonatingAccount(address);
+    }
+
+    pub fn isManagedDevAccount(self: *const NodeRuntime, address: primitives.Address) bool {
+        for (self.managed_accounts) |account| {
+            if (std.mem.eql(u8, &account.address.bytes, &address.bytes)) return true;
+        }
+        return false;
+    }
+
+    pub fn managedAccountPrivateKey(self: *const NodeRuntime, address: primitives.Address) ?[32]u8 {
+        for (self.managed_accounts) |account| {
+            if (std.mem.eql(u8, &account.address.bytes, &address.bytes)) return account.private_key;
+        }
+        return null;
     }
 
     pub fn getBalance(self: *NodeRuntime, address: primitives.Address) !u256 {
@@ -861,6 +872,7 @@ pub const NodeRuntime = struct {
         self.time_offset = 0;
         self.next_block_timestamp = null;
         self.dev_runtime.resetConfig(self.default_coinbase);
+        self.dev_runtime.config.block_gas_limit = self.default_block_gas_limit;
         self.impersonated_accounts.clearRetainingCapacity();
         self.auto_impersonate_account = false;
         try self.resetQueryIndexes();
@@ -912,8 +924,8 @@ pub const NodeRuntime = struct {
         var new_state = try state_manager.StateManager.init(self.allocator, new_backend);
         errdefer new_state.deinit();
 
-        for (&DEFAULT_DEV_ACCOUNTS) |addr| {
-            try new_state.initAccount(addr, self.initial_balance);
+        for (&genesis.DEV_ACCOUNTS) |account| {
+            try new_state.initAccount(account.address, self.initial_balance);
         }
 
         self.state.deinit();
@@ -1165,14 +1177,14 @@ fn initBlockchainWithGenesis(
     var blockchain = try blockchain_mod.Blockchain.init(allocator, null);
     errdefer blockchain.deinit();
 
-    const genesis = try primitives.Block.genesis(chain_id, allocator);
-    try blockchain.putBlock(genesis);
-    try blockchain.setCanonicalHead(genesis.hash);
+    const genesis_block = try primitives.Block.genesis(chain_id, allocator);
+    try blockchain.putBlock(genesis_block);
+    try blockchain.setCanonicalHead(genesis_block.hash);
     return blockchain;
 }
 
 pub fn isManagedDevAccount(address: primitives.Address) bool {
-    for (&DEFAULT_DEV_ACCOUNTS) |managed| {
+    for (&genesis.DEV_ACCOUNT_ADDRESSES) |managed| {
         if (std.mem.eql(u8, &managed.bytes, &address.bytes)) return true;
     }
     return false;
@@ -1393,10 +1405,4 @@ fn stringifyJsonValue(allocator: std.mem.Allocator, value: std.json.Value) ![]u8
     defer writer.deinit();
     try std.json.Stringify.value(value, .{}, &writer.writer);
     return writer.toOwnedSlice();
-}
-
-fn parseAddr(comptime hex: *const [42]u8) primitives.Address {
-    var out: [20]u8 = undefined;
-    _ = std.fmt.hexToBytes(&out, hex[2..]) catch unreachable;
-    return .{ .bytes = out };
 }

@@ -68,6 +68,27 @@ test "NodeRuntime.init respects custom config" {
     try std.testing.expectEqual(@as(u256, 42), balance);
 }
 
+test "NodeRuntime.init applies configured block gas limit as trusted default" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, .{
+        .block_gas_limit = 21_000,
+    });
+    defer rt.deinit();
+
+    try std.testing.expectEqual(@as(u64, 21_000), rt.dev_runtime.config.block_gas_limit);
+
+    rt.dev_runtime.config.block_gas_limit = 40_000;
+    try rt.reset(.keep_current);
+    try std.testing.expectEqual(@as(u64, 21_000), rt.dev_runtime.config.block_gas_limit);
+}
+
+test "NodeRuntime exposes managed account private keys from runtime metadata" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    const private_key = rt.managedAccountPrivateKey(runtime.DEFAULT_DEV_ACCOUNTS[0]) orelse return error.ExpectedManagedPrivateKey;
+    try std.testing.expectEqualSlices(u8, &genesis.DEV_ACCOUNTS[0].private_key, &private_key);
+}
+
 test "NodeRuntime.init head block number starts at 0" {
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();

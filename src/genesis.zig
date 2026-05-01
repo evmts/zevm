@@ -101,6 +101,14 @@ pub const DEV_ACCOUNTS: [10]DevAccount = .{
     },
 };
 
+pub const DEV_ACCOUNT_ADDRESSES: [DEV_ACCOUNTS.len]primitives.Address.Address = blk: {
+    var addresses: [DEV_ACCOUNTS.len]primitives.Address.Address = undefined;
+    for (DEV_ACCOUNTS, 0..) |account, index| {
+        addresses[index] = account.address;
+    }
+    break :blk addresses;
+};
+
 pub const GenesisResult = struct {
     chain_id: u64,
     profile: GenesisProfile,

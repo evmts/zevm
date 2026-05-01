@@ -103,7 +103,7 @@ fn dispatchMethod(
         return addressString(allocator, rt.coinbase);
     }
     if (std.mem.eql(u8, method_name, "eth_accounts")) {
-        return accountsResponse(allocator);
+        return accountsResponse(allocator, rt);
     }
     if (std.mem.eql(u8, method_name, "eth_mining")) {
         return .{ .bool = std.meta.activeTag(rt.mining_config) != .manual };
@@ -1331,7 +1331,7 @@ fn writeHexLower(out: []u8, src: []const u8) void {
     }
 }
 
-fn accountsResponse(allocator: std.mem.Allocator) !std.json.Value {
+fn accountsResponse(allocator: std.mem.Allocator, rt: *const runtime_mod.NodeRuntime) !std.json.Value {
     var array = std.json.Array.init(allocator);
     errdefer {
         for (array.items) |*item| {
@@ -1339,8 +1339,8 @@ fn accountsResponse(allocator: std.mem.Allocator) !std.json.Value {
         }
         array.deinit();
     }
-    for (runtime_mod.DEFAULT_DEV_ACCOUNTS) |addr| {
-        try array.append(try addressString(allocator, addr));
+    for (rt.managed_accounts) |account| {
+        try array.append(try addressString(allocator, account.address));
     }
     return .{ .array = array };
 }

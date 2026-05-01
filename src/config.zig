@@ -49,6 +49,7 @@ pub const TrustedConfig = struct {
             .base_fee = self.base_fee,
             .blob_base_fee = self.blob_base_fee,
             .max_priority_fee = self.max_priority_fee_per_gas,
+            .block_gas_limit = self.block_gas_limit,
             .mining_config = self.mining_config,
             .fork_url = if (self.fork) |fork| fork.url else null,
             .fork_block_number = if (self.fork) |fork| fork.block_number else null,

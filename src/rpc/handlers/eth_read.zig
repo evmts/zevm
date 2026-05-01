@@ -132,12 +132,12 @@ pub fn handleEthCoinbase(
 
 pub fn handleEthAccounts(
     allocator: std.mem.Allocator,
-    _: *const runtime.NodeRuntime,
+    rt: *const runtime.NodeRuntime,
     _: jsonrpc.eth.Accounts.Params,
 ) !AccountsResult {
-    const addrs = try allocator.alloc(jsonrpc.types.Address, runtime.DEFAULT_DEV_ACCOUNTS.len);
-    for (runtime.DEFAULT_DEV_ACCOUNTS, 0..) |addr, i| {
-        addrs[i] = .{ .bytes = addr.bytes };
+    const addrs = try allocator.alloc(jsonrpc.types.Address, rt.managed_accounts.len);
+    for (rt.managed_accounts, 0..) |account, i| {
+        addrs[i] = .{ .bytes = account.address.bytes };
     }
     return .{ .value = addrs };
 }

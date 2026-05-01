@@ -138,6 +138,74 @@ test "trusted mode serves JSON-RPC over a real TCP listener" {
     try std.testing.expectEqualStrings("0x7a69", (try objectField(parsed.value, "result")).string);
 }
 
+test "trusted mode default startup serves core read methods over a real TCP listener" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, .{});
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    installHandlers(&rt, &handlers);
+    try std.testing.expect(handlers.on_method != null);
+
+    var listener = try server.TestListener.init(std.testing.allocator, "127.0.0.1", &handlers);
+    defer listener.deinit();
+    try listener.start();
+
+    {
+        var response = try postJson(listener.address(), "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_chainId\"}");
+        defer response.deinit(std.testing.allocator);
+
+        const parsed = try parseBody(response.body);
+        defer parsed.deinit();
+        try std.testing.expectEqualStrings("0x7a69", (try objectField(parsed.value, "result")).string);
+    }
+
+    {
+        var response = try postJson(listener.address(), "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"eth_blockNumber\"}");
+        defer response.deinit(std.testing.allocator);
+
+        const parsed = try parseBody(response.body);
+        defer parsed.deinit();
+        try std.testing.expectEqualStrings("0x0", (try objectField(parsed.value, "result")).string);
+    }
+
+    const first_account = blk: {
+        var response = try postJson(listener.address(), "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"eth_accounts\"}");
+        defer response.deinit(std.testing.allocator);
+
+        const parsed = try parseBody(response.body);
+        defer parsed.deinit();
+        const accounts = (try objectField(parsed.value, "result")).array.items;
+        try std.testing.expectEqual(runtime_mod.DEFAULT_DEV_ACCOUNTS.len, accounts.len);
+
+        const expected_first = try std.fmt.allocPrint(
+            std.testing.allocator,
+            "0x{s}",
+            .{std.fmt.bytesToHex(runtime_mod.DEFAULT_DEV_ACCOUNTS[0].bytes, .lower)},
+        );
+        defer std.testing.allocator.free(expected_first);
+        try std.testing.expectEqualStrings(expected_first, accounts[0].string);
+        break :blk try std.testing.allocator.dupe(u8, accounts[0].string);
+    };
+    defer std.testing.allocator.free(first_account);
+
+    const balance_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"eth_getBalance\",\"params\":[\"{s}\",\"latest\"]}}",
+        .{first_account},
+    );
+    defer std.testing.allocator.free(balance_request);
+
+    var balance_response = try postJson(listener.address(), balance_request);
+    defer balance_response.deinit(std.testing.allocator);
+
+    const balance_parsed = try parseBody(balance_response.body);
+    defer balance_parsed.deinit();
+
+    const expected_balance = try std.fmt.allocPrint(std.testing.allocator, "0x{x}", .{runtime_mod.DEFAULT_BALANCE});
+    defer std.testing.allocator.free(expected_balance);
+    try std.testing.expectEqualStrings(expected_balance, (try objectField(balance_parsed.value, "result")).string);
+}
+
 test "trusted mode returns 204 for a notification over a real TCP listener" {
     var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, .{});
     defer rt.deinit();
