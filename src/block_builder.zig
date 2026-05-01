@@ -196,6 +196,7 @@ pub fn buildBlockWithOptions(
     const receipts_root = try computeReceiptsRoot(allocator, receipts.items);
     const logs_bloom = aggregateLogsBloom(receipts.items);
     const requests_hash = if (hasAnyRequests(options.requests)) computeRequestsHash(options.requests) else null;
+    const computed_state_root = try computeStateRootFromStateManager(allocator, sm);
 
     sm.commit();
     block_committed = true;
@@ -219,11 +220,39 @@ pub fn buildBlockWithOptions(
         .transactions_root = transactions_root,
         .receipts_root = receipts_root,
         .withdrawals_root = withdrawals_root,
-        .state_root = options.state_root,
+        .state_root = options.state_root orelse computed_state_root,
         .logs_bloom = logs_bloom,
         .blob_gas_used = total_blob_gas_used,
         .requests_hash = requests_hash,
     };
+}
+
+pub fn computeStateRootFromStateManager(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+) ![32]u8 {
+    var accounts = @import("database/accounts.zig").Accounts.init(allocator);
+    defer accounts.deinit();
+
+    var it = sm.accountIterator();
+    while (it.next()) |entry| {
+        const address = entry.key_ptr.*;
+        const balance = try sm.getBalance(address);
+        const nonce = try sm.getNonce(address);
+        const code = try sm.getCode(address);
+
+        var code_hash = primitives.State.EMPTY_CODE_HASH;
+        if (code.len > 0) {
+            std.crypto.hash.sha3.Keccak256.hash(code, &code_hash, .{});
+        }
+        const account = primitives.AccountState.AccountState.from(.{
+            .nonce = nonce,
+            .balance = balance,
+            .code_hash = code_hash,
+        });
+        try accounts.put(allocator, address, &account);
+    }
+    return accounts.stateRoot() orelse primitives.State.EMPTY_TRIE_ROOT;
 }
 
 pub fn blockContextWithEnvironmentOverrides(
