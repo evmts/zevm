@@ -1,5 +1,6 @@
 const std = @import("std");
 const checkpoint = @import("../checkpoint.zig");
+const primitives = @import("primitives");
 const dispatcher = @import("dispatcher.zig");
 const dispatch_wiring = @import("dispatch_wiring.zig");
 const runtime_mod = @import("../node/runtime.zig");
@@ -136,6 +137,62 @@ test "trusted mode serves JSON-RPC over a real TCP listener" {
 
     try std.testing.expectEqual(@as(i64, 1), (try objectField(parsed.value, "id")).integer);
     try std.testing.expectEqualStrings("0x7a69", (try objectField(parsed.value, "result")).string);
+}
+
+test "trusted mode serves eth_getStorageAt success over a real TCP listener" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, .{});
+    defer rt.deinit();
+
+    const address = try primitives.Address.fromHex("0x0000000000000000000000000000000000000042");
+    try rt.setStorage(address, 1, 42);
+
+    var handlers = dispatcher.HandlerRegistry{};
+    installHandlers(&rt, &handlers);
+
+    var listener = try server.TestListener.init(std.testing.allocator, "127.0.0.1", &handlers);
+    defer listener.deinit();
+    try listener.start();
+
+    var response = try postJson(
+        listener.address(),
+        "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"eth_getStorageAt\",\"params\":[\"0x0000000000000000000000000000000000000042\",\"0x1\",\"latest\"]}",
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(u16, 200), response.status_code);
+
+    const parsed = try parseBody(response.body);
+    defer parsed.deinit();
+
+    try std.testing.expectEqualStrings(
+        "0x000000000000000000000000000000000000000000000000000000000000002a",
+        (try objectField(parsed.value, "result")).string,
+    );
+}
+
+test "trusted mode returns -32602 for malformed eth_getStorageAt slot over a real TCP listener" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, .{});
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    installHandlers(&rt, &handlers);
+
+    var listener = try server.TestListener.init(std.testing.allocator, "127.0.0.1", &handlers);
+    defer listener.deinit();
+    try listener.start();
+
+    var response = try postJson(
+        listener.address(),
+        "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"eth_getStorageAt\",\"params\":[\"0x0000000000000000000000000000000000000042\",\"0x01\",\"latest\"]}",
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(u16, 200), response.status_code);
+
+    const parsed = try parseBody(response.body);
+    defer parsed.deinit();
+    const err = try objectField(parsed.value, "error");
+    try std.testing.expectEqual(@as(i64, -32602), (try objectField(err, "code")).integer);
 }
 
 test "trusted mode returns 204 for a notification over a real TCP listener" {

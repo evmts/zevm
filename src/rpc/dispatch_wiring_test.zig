@@ -105,7 +105,7 @@ test "installed dispatch wiring reaches runtime-backed eth methods" {
 test "installed dispatch wiring reaches runtime-backed eth_feeHistory" {
     var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();
-    rt.head_block_number = 2;
+    try rt.mineBlocks(2, 0);
 
     var handlers = dispatcher.HandlerRegistry{};
     dispatch_wiring.install(&handlers, &rt);
@@ -153,7 +153,7 @@ test "installed dispatch wiring returns eth_getStorageAt as 32-byte data" {
     var params = std.json.Array.init(std.testing.allocator);
     defer params.deinit();
     try params.append(.{ .string = address_text });
-    try params.append(.{ .string = "0x01" });
+    try params.append(.{ .string = "0x1" });
     try params.append(.{ .string = "latest" });
 
     var request = try makeRequest("eth_getStorageAt", .{ .array = params });
@@ -168,6 +168,47 @@ test "installed dispatch wiring returns eth_getStorageAt as 32-byte data" {
         "0x000000000000000000000000000000000000000000000000000000000000002a",
         response.result.?.string,
     );
+}
+
+test "installed dispatch wiring rejects extra params for no-arg core reads" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    var params = std.json.Array.init(std.testing.allocator);
+    defer params.deinit();
+    try params.append(.{ .string = "0x1" });
+
+    try expectInvalidParamsRpc(&handlers, "eth_chainId", .{ .array = params });
+    try expectInvalidParamsRpc(&handlers, "eth_accounts", .{ .array = params });
+    try expectInvalidParamsRpc(&handlers, "eth_coinbase", .{ .array = params });
+    try expectInvalidParamsRpc(&handlers, "eth_gasPrice", .{ .array = params });
+}
+
+test "installed dispatch wiring rejects malformed core read selector and slot" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .string = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266" });
+        try params.append(.{ .string = "0x1111111111111111111111111111111111111111111111111111111111111111" });
+        try expectInvalidParamsRpc(&handlers, "eth_getBalance", .{ .array = params });
+    }
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .string = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266" });
+        try params.append(.{ .string = "0x01" });
+        try params.append(.{ .string = "latest" });
+        try expectInvalidParamsRpc(&handlers, "eth_getStorageAt", .{ .array = params });
+    }
 }
 
 test "installed dispatch wiring reaches hardhat state mutation aliases" {

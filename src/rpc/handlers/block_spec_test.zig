@@ -78,3 +78,26 @@ test "resolveBlockNumber: malformed hex returns InvalidBlockSpec" {
     defer rt.deinit();
     try std.testing.expectError(error.InvalidBlockSpec, block_spec.resolveBlockNumber(&rt, makeSpec("0xZZZ")));
 }
+
+test "resolveBlockNumber: hash selector returns InvalidBlockSpec" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    try std.testing.expectError(
+        error.InvalidBlockSpec,
+        block_spec.resolveBlockNumber(&rt, makeSpec("0x1111111111111111111111111111111111111111111111111111111111111111")),
+    );
+}
+
+test "resolveBlockNumber: object selector returns InvalidBlockSpec" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+
+    var selector = std.json.ObjectMap.init(std.testing.allocator);
+    defer selector.deinit();
+    try selector.put("blockNumber", .{ .string = "0x1" });
+
+    try std.testing.expectError(
+        error.InvalidBlockSpec,
+        block_spec.resolveBlockNumber(&rt, .{ .value = .{ .object = selector } }),
+    );
+}

@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const jsonrpc = @import("jsonrpc");
+const mining_coordinator = @import("../../mining_coordinator.zig");
 const runtime = @import("../../node/runtime.zig");
 const block_spec = @import("block_spec.zig");
 
@@ -63,6 +64,14 @@ pub const GetProofParams = struct {
 
 pub const AccountsResult = struct {
     value: []jsonrpc.types.Address,
+
+    pub fn jsonStringify(self: AccountsResult, jws: *std.json.Stringify) !void {
+        try jws.beginArray();
+        for (self.value) |address| {
+            try jws.write(address);
+        }
+        try jws.endArray();
+    }
 };
 
 pub fn handleEthChainId(
@@ -86,7 +95,7 @@ pub fn handleEthGetBalance(
     rt: *runtime.NodeRuntime,
     params: jsonrpc.eth.GetBalance.Params,
 ) !jsonrpc.eth.GetBalance.Result {
-    _ = try resolveBlockParam(rt, params.block);
+    try requireLiveStateHead(rt, params.block);
     const balance = try rt.getBalance(.{ .bytes = params.address.bytes });
     return .{ .value = try quantityHexU256(allocator, balance) };
 }
@@ -96,7 +105,7 @@ pub fn handleEthGetCode(
     rt: *runtime.NodeRuntime,
     params: jsonrpc.eth.GetCode.Params,
 ) !jsonrpc.eth.GetCode.Result {
-    _ = try resolveBlockParam(rt, params.block);
+    try requireLiveStateHead(rt, params.block);
     const code = try rt.getCode(.{ .bytes = params.address.bytes });
     return .{ .value = try dataHexBytes(allocator, code) };
 }
@@ -106,7 +115,7 @@ pub fn handleEthGetStorageAt(
     rt: *runtime.NodeRuntime,
     params: jsonrpc.eth.GetStorageAt.Params,
 ) !jsonrpc.eth.GetStorageAt.Result {
-    _ = try resolveBlockParam(rt, params.block);
+    try requireLiveStateHead(rt, params.block);
     const slot = parseQuantityToU256(params.storage_slot) catch return error.InvalidParams;
     const value = try rt.getStorage(.{ .bytes = params.address.bytes }, slot);
     return .{ .value = try dataHexU256(allocator, value) };
@@ -117,7 +126,7 @@ pub fn handleEthGetTransactionCount(
     rt: *runtime.NodeRuntime,
     params: jsonrpc.eth.GetTransactionCount.Params,
 ) !jsonrpc.eth.GetTransactionCount.Result {
-    _ = try resolveBlockParam(rt, params.block);
+    try requireLiveStateHead(rt, params.block);
     const nonce = try rt.getNonce(.{ .bytes = params.address.bytes });
     return .{ .value = try quantityHexU64(allocator, nonce) };
 }
@@ -132,11 +141,12 @@ pub fn handleEthCoinbase(
 
 pub fn handleEthAccounts(
     allocator: std.mem.Allocator,
-    _: *const runtime.NodeRuntime,
+    rt: *const runtime.NodeRuntime,
     _: jsonrpc.eth.Accounts.Params,
 ) !AccountsResult {
-    const addrs = try allocator.alloc(jsonrpc.types.Address, runtime.DEFAULT_DEV_ACCOUNTS.len);
-    for (runtime.DEFAULT_DEV_ACCOUNTS, 0..) |addr, i| {
+    const managed = rt.managedAccounts();
+    const addrs = try allocator.alloc(jsonrpc.types.Address, managed.len);
+    for (managed, 0..) |addr, i| {
         addrs[i] = .{ .bytes = addr.bytes };
     }
     return .{ .value = addrs };
@@ -174,11 +184,18 @@ pub fn handleEthFeeHistory(
     const range = try resolveFeeHistoryRange(rt, params);
 
     const base_fees = try allocator.alloc(jsonrpc.types.Quantity, range.count + 1);
-    for (base_fees) |*fee| {
-        fee.* = try quantityHexU256(allocator, rt.base_fee);
-    }
     const gas_ratios = try allocator.alloc(f64, range.count);
-    @memset(gas_ratios, 0.0);
+    var newest_sample: ?FeeHistoryBlockSample = null;
+
+    for (0..range.count) |i| {
+        const block_number = range.oldest + i;
+        const sample = try feeHistorySampleForBlock(rt, block_number);
+        newest_sample = sample;
+        base_fees[i] = try quantityHexU256(allocator, sample.base_fee_per_gas);
+        gas_ratios[i] = computeGasUsedRatio(sample.gas_used, sample.gas_limit);
+    }
+    const newest = newest_sample orelse return error.InvalidParams;
+    base_fees[range.count] = try quantityHexU256(allocator, nextBaseFeeForSample(newest));
 
     const rewards = if (params.reward_percentiles) |percentiles|
         try zeroRewards(allocator, range.count, percentiles.len)
@@ -221,22 +238,8 @@ pub fn handleEthFeeHistoryValue(
     rt: *const runtime.NodeRuntime,
     params: FeeHistoryParams,
 ) !std.json.Value {
-    const range = try resolveFeeHistoryRange(rt, params);
-
-    var obj = std.json.ObjectMap.init(allocator);
-    errdefer {
-        var cleanup = std.json.Value{ .object = obj };
-        deinitJsonValue(allocator, &cleanup);
-    }
-
-    try putOwnedJsonValue(&obj, allocator, "oldestBlock", try quantityValueHexU64(allocator, range.oldest));
-    try putOwnedJsonValue(&obj, allocator, "baseFeePerGas", try repeatedQuantityValueArray(allocator, range.count + 1, rt.base_fee));
-    try putOwnedJsonValue(&obj, allocator, "gasUsedRatio", try zeroRatioValueArray(allocator, range.count));
-    if (params.reward_percentiles) |percentiles| {
-        try putOwnedJsonValue(&obj, allocator, "reward", try zeroRewardsValue(allocator, range.count, percentiles.len));
-    }
-
-    return .{ .object = obj };
+    const result = try handleEthFeeHistory(allocator, rt, params);
+    return typedResultToJsonValue(allocator, result);
 }
 
 pub fn handleEthSyncing(
@@ -295,6 +298,12 @@ const FeeHistoryRange = struct {
     count: usize,
 };
 
+const FeeHistoryBlockSample = struct {
+    base_fee_per_gas: u256,
+    gas_used: u64,
+    gas_limit: u64,
+};
+
 fn resolveFeeHistoryRange(rt: *const runtime.NodeRuntime, params: FeeHistoryParams) !FeeHistoryRange {
     const requested_count = parseQuantityToU64(params.block_count) catch return error.InvalidParams;
     if (requested_count == 0) return error.InvalidParams;
@@ -311,6 +320,31 @@ fn resolveFeeHistoryRange(rt: *const runtime.NodeRuntime, params: FeeHistoryPara
         .oldest = newest - (returned_count - 1),
         .count = @intCast(returned_count),
     };
+}
+
+fn feeHistorySampleForBlock(rt: *const runtime.NodeRuntime, block_number: u64) !FeeHistoryBlockSample {
+    const blockchain = @constCast(&rt.blockchain);
+    const block = (try blockchain.getBlockByNumber(block_number)) orelse return error.InvalidParams;
+    return .{
+        .base_fee_per_gas = block.header.base_fee_per_gas orelse rt.base_fee,
+        .gas_used = block.header.gas_used,
+        .gas_limit = block.header.gas_limit,
+    };
+}
+
+fn computeGasUsedRatio(gas_used: u64, gas_limit: u64) f64 {
+    if (gas_limit == 0) return 0.0;
+    const used: f64 = @floatFromInt(gas_used);
+    const limit: f64 = @floatFromInt(gas_limit);
+    return used / limit;
+}
+
+fn nextBaseFeeForSample(sample: FeeHistoryBlockSample) u256 {
+    return mining_coordinator.calculateNextBaseFee(
+        sample.base_fee_per_gas,
+        sample.gas_used,
+        sample.gas_limit,
+    );
 }
 
 fn paramsArrayItems(params: ?std.json.Value) ![]const std.json.Value {
@@ -353,6 +387,11 @@ fn isQuantityHex(text: []const u8) bool {
 
 fn resolveBlockParam(rt: *const runtime.NodeRuntime, spec: jsonrpc.types.BlockSpec) !u64 {
     return block_spec.resolveBlockNumber(rt, spec) catch return error.InvalidParams;
+}
+
+fn requireLiveStateHead(rt: *const runtime.NodeRuntime, spec: jsonrpc.types.BlockSpec) !void {
+    const resolved = try resolveBlockParam(rt, spec);
+    if (resolved != rt.head_block_number) return error.PrunedHistory;
 }
 
 fn quantityHexU64(allocator: std.mem.Allocator, value: u64) !jsonrpc.types.Quantity {
@@ -541,6 +580,20 @@ fn putOwnedJsonValue(
     const owned_key = try allocator.dupe(u8, key);
     errdefer allocator.free(owned_key);
     try obj.put(owned_key, owned_value);
+}
+
+fn typedResultToJsonValue(allocator: std.mem.Allocator, result: anytype) !std.json.Value {
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+
+    var writer = std.Io.Writer.Allocating.init(scratch.allocator());
+    defer writer.deinit();
+
+    try std.json.Stringify.value(result, .{}, &writer.writer);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, writer.written(), .{
+        .allocate = .alloc_always,
+    });
+    return parsed.value;
 }
 
 fn deinitJsonValue(allocator: std.mem.Allocator, value: *std.json.Value) void {

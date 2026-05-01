@@ -244,6 +244,7 @@ pub const NodeRuntime = struct {
     base_fee: u256,
     blob_base_fee: u256,
     max_priority_fee: u256,
+    managed_accounts: [DEFAULT_DEV_ACCOUNTS.len]primitives.Address,
     mining_config: mining.MiningConfig,
     pool: txpool.TransactionPool,
     time_offset: i128,
@@ -345,6 +346,7 @@ pub const NodeRuntime = struct {
             .base_fee = config.base_fee,
             .blob_base_fee = config.blob_base_fee,
             .max_priority_fee = config.max_priority_fee,
+            .managed_accounts = DEFAULT_DEV_ACCOUNTS,
             .mining_config = config.mining_config,
             .pool = txpool.TransactionPool.init(allocator),
             .time_offset = 0,
@@ -657,8 +659,19 @@ pub const NodeRuntime = struct {
         return self.impersonated_accounts.get(address) orelse false;
     }
 
+    pub fn managedAccounts(self: *const NodeRuntime) []const primitives.Address {
+        return self.managed_accounts[0..];
+    }
+
+    pub fn isManagedAccount(self: *const NodeRuntime, address: primitives.Address) bool {
+        for (self.managedAccounts()) |managed| {
+            if (std.mem.eql(u8, &managed.bytes, &address.bytes)) return true;
+        }
+        return false;
+    }
+
     pub fn canSignForAccount(self: *const NodeRuntime, address: primitives.Address) bool {
-        return isManagedDevAccount(address) or
+        return self.isManagedAccount(address) or
             self.auto_impersonate_account or
             self.isImpersonatingAccount(address);
     }

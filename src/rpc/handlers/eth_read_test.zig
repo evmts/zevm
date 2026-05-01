@@ -128,9 +128,11 @@ test "eth_accounts returns 10 dev accounts" {
     const result = try eth_read.handleEthAccounts(std.testing.allocator, &rt, .{});
     defer std.testing.allocator.free(result.value);
 
-    try std.testing.expectEqual(@as(usize, 10), result.value.len);
-    try std.testing.expectEqual(runtime.DEFAULT_DEV_ACCOUNTS[0].bytes, result.value[0].bytes);
-    try std.testing.expectEqual(runtime.DEFAULT_DEV_ACCOUNTS[9].bytes, result.value[9].bytes);
+    const managed = rt.managedAccounts();
+    try std.testing.expectEqual(managed.len, result.value.len);
+    for (managed, 0..) |addr, i| {
+        try std.testing.expectEqual(addr.bytes, result.value[i].bytes);
+    }
 }
 
 // --- AC: eth_gasPrice returns valid hex quantity ---
@@ -189,6 +191,7 @@ test "eth_feeHistory returns correct shape" {
     defer arena.deinit();
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();
+    try rt.mineBlocks(2, 0);
 
     const result = try eth_read.handleEthFeeHistory(
         arena.allocator(),
@@ -203,6 +206,9 @@ test "eth_feeHistory returns correct shape" {
     try std.testing.expectEqual(@as(usize, 2), result.base_fee_per_gas.len);
     try std.testing.expectEqual(@as(usize, 1), result.gas_used_ratio.len);
     try std.testing.expectEqual(@as(f64, 0.0), result.gas_used_ratio[0]);
+    const latest_base_fee = try quantityString(result.base_fee_per_gas[0]);
+    const next_base_fee = try quantityString(result.base_fee_per_gas[1]);
+    try std.testing.expect(!std.mem.eql(u8, latest_base_fee, next_base_fee));
 }
 
 test "eth_feeHistory truncates large count and genesis range" {
@@ -210,7 +216,7 @@ test "eth_feeHistory truncates large count and genesis range" {
     defer arena.deinit();
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();
-    rt.head_block_number = 3;
+    try rt.mineBlocks(3, 0);
 
     const result = try eth_read.handleEthFeeHistory(
         arena.allocator(),
@@ -231,7 +237,7 @@ test "eth_feeHistory includes reward when empty percentiles are provided" {
     defer arena.deinit();
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();
-    rt.head_block_number = 2;
+    try rt.mineBlocks(2, 0);
 
     const percentiles = [_]f64{};
     const result = try eth_read.handleEthFeeHistory(
@@ -279,11 +285,65 @@ test "eth_feeHistory validates reward percentiles" {
     ));
 }
 
+test "eth_getStorageAt rejects malformed slot quantity" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    try std.testing.expectError(error.InvalidParams, eth_read.handleEthGetStorageAt(
+        arena.allocator(),
+        &rt,
+        .{
+            .address = .{ .bytes = runtime.DEFAULT_DEV_ACCOUNTS[0].bytes },
+            .storage_slot = .{ .value = .{ .string = "0x01" } },
+            .block = makeBlockSpec("latest"),
+        },
+    ));
+}
+
+test "eth_getBalance rejects hash block selector" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    try std.testing.expectError(error.InvalidParams, eth_read.handleEthGetBalance(
+        arena.allocator(),
+        &rt,
+        .{
+            .address = .{ .bytes = runtime.DEFAULT_DEV_ACCOUNTS[0].bytes },
+            .block = .{ .value = .{ .string = "0x1111111111111111111111111111111111111111111111111111111111111111" } },
+        },
+    ));
+}
+
+test "eth_getBalance rejects non-head numeric selector in phase-1 trusted reads" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+    rt.head_block_number = 5;
+
+    try std.testing.expectError(error.PrunedHistory, eth_read.handleEthGetBalance(
+        arena.allocator(),
+        &rt,
+        .{
+            .address = .{ .bytes = runtime.DEFAULT_DEV_ACCOUNTS[0].bytes },
+            .block = .{ .value = .{ .string = "0x4" } },
+        },
+    ));
+}
+
 // --- Helper ---
 
+fn quantityString(q: jsonrpc.types.Quantity) ![]const u8 {
+    return switch (q.value) {
+        .string => |s| s,
+        else => error.ExpectedString,
+    };
+}
+
 fn expectQuantityStr(q: jsonrpc.types.Quantity, expected: []const u8) !void {
-    switch (q.value) {
-        .string => |s| try std.testing.expectEqualStrings(expected, s),
-        else => return error.ExpectedString,
-    }
+    try std.testing.expectEqualStrings(expected, try quantityString(q));
 }

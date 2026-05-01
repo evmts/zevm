@@ -12,6 +12,7 @@ pub const RuntimeErrorCode = struct {
     pub const LIGHT_NOT_READY: i32 = -32011;
     pub const PROOF_VERIFY_FAILED: i32 = -32014;
     pub const MALFORMED_PROOF: i32 = -32015;
+    pub const PRUNED_HISTORY: i32 = 4444;
 };
 
 pub fn dispatch(allocator: std.mem.Allocator, request: jsonrpc.envelope.RequestEnvelope, handlers: *const HandlerRegistry) !jsonrpc.envelope.ResponseEnvelope {
@@ -46,6 +47,9 @@ pub fn dispatch(allocator: std.mem.Allocator, request: jsonrpc.envelope.RequestE
         },
         error.ProofVerifyFailed => {
             return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.PROOF_VERIFY_FAILED, "Proof verification failed");
+        },
+        error.PrunedHistory => {
+            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.PRUNED_HISTORY, "Requested block is outside locally available state history");
         },
         else => {
             if (builtin.mode == .Debug or isTestBuild()) {
