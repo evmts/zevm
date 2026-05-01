@@ -26,6 +26,18 @@ ZEVM expects this directory shape by default:
 
 If you use a different layout, update dependency paths in `build.zig.zon`.
 
+## Git Worktree Checkout
+
+If you build ZEVM from `zevm/.worktrees/<worktree-name>`, the same `../voltaire` and `../guillotine-mini` paths must still resolve from that worktree root.
+
+From the worktree root, run:
+
+```bash
+./tools/ensure-local-sibling-layout.sh
+```
+
+This script creates `.worktrees/voltaire` and `.worktrees/guillotine-mini` links to the canonical sibling checkouts under the shared workspace parent.
+
 ## Clone And Set Up Sibling Repos
 
 From a shared parent directory, clone all required repos as siblings:

@@ -20,12 +20,15 @@ git clone git@github.com:evmts/zevm.git
 git clone git@github.com:evmts/voltaire.git
 git clone git@github.com:evmts/guillotine-mini.git
 cd zevm
+./tools/ensure-local-sibling-layout.sh
 zig build
 ```
 
 The binary is installed to `./zig-out/bin/zevm`.
 
 For pinned release tuples and per-mode setup, see [docs/quickstart/installation.mdx](./docs/quickstart/installation.mdx).
+
+If you build from a ZEVM git worktree path (`zevm/.worktrees/<name>`), run `./tools/ensure-local-sibling-layout.sh` once inside that worktree root before `zig build`. This keeps `../voltaire` and `../guillotine-mini` resolvable from the worktree checkout.
 
 ## Some notes
 
