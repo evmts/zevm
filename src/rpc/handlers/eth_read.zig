@@ -86,7 +86,7 @@ pub fn handleEthGetBalance(
     rt: *runtime.NodeRuntime,
     params: jsonrpc.eth.GetBalance.Params,
 ) !jsonrpc.eth.GetBalance.Result {
-    _ = try resolveBlockParam(rt, params.block);
+    try requireLiveStateRead(rt, params.block);
     const balance = try rt.getBalance(.{ .bytes = params.address.bytes });
     return .{ .value = try quantityHexU256(allocator, balance) };
 }
@@ -96,7 +96,7 @@ pub fn handleEthGetCode(
     rt: *runtime.NodeRuntime,
     params: jsonrpc.eth.GetCode.Params,
 ) !jsonrpc.eth.GetCode.Result {
-    _ = try resolveBlockParam(rt, params.block);
+    try requireLiveStateRead(rt, params.block);
     const code = try rt.getCode(.{ .bytes = params.address.bytes });
     return .{ .value = try dataHexBytes(allocator, code) };
 }
@@ -106,7 +106,7 @@ pub fn handleEthGetStorageAt(
     rt: *runtime.NodeRuntime,
     params: jsonrpc.eth.GetStorageAt.Params,
 ) !jsonrpc.eth.GetStorageAt.Result {
-    _ = try resolveBlockParam(rt, params.block);
+    try requireLiveStateRead(rt, params.block);
     const slot = parseQuantityToU256(params.storage_slot) catch return error.InvalidParams;
     const value = try rt.getStorage(.{ .bytes = params.address.bytes }, slot);
     return .{ .value = try dataHexU256(allocator, value) };
@@ -117,7 +117,7 @@ pub fn handleEthGetTransactionCount(
     rt: *runtime.NodeRuntime,
     params: jsonrpc.eth.GetTransactionCount.Params,
 ) !jsonrpc.eth.GetTransactionCount.Result {
-    _ = try resolveBlockParam(rt, params.block);
+    try requireLiveStateRead(rt, params.block);
     const nonce = try rt.getNonce(.{ .bytes = params.address.bytes });
     return .{ .value = try quantityHexU64(allocator, nonce) };
 }
@@ -132,11 +132,12 @@ pub fn handleEthCoinbase(
 
 pub fn handleEthAccounts(
     allocator: std.mem.Allocator,
-    _: *const runtime.NodeRuntime,
+    rt: *const runtime.NodeRuntime,
     _: jsonrpc.eth.Accounts.Params,
 ) !AccountsResult {
-    const addrs = try allocator.alloc(jsonrpc.types.Address, runtime.DEFAULT_DEV_ACCOUNTS.len);
-    for (runtime.DEFAULT_DEV_ACCOUNTS, 0..) |addr, i| {
+    const managed = rt.managedAccounts();
+    const addrs = try allocator.alloc(jsonrpc.types.Address, managed.len);
+    for (managed, 0..) |addr, i| {
         addrs[i] = .{ .bytes = addr.bytes };
     }
     return .{ .value = addrs };
@@ -353,6 +354,11 @@ fn isQuantityHex(text: []const u8) bool {
 
 fn resolveBlockParam(rt: *const runtime.NodeRuntime, spec: jsonrpc.types.BlockSpec) !u64 {
     return block_spec.resolveBlockNumber(rt, spec) catch return error.InvalidParams;
+}
+
+fn requireLiveStateRead(rt: *const runtime.NodeRuntime, spec: jsonrpc.types.BlockSpec) !void {
+    const block_number = try resolveBlockParam(rt, spec);
+    if (block_number != rt.head_block_number) return error.PrunedHistory;
 }
 
 fn quantityHexU64(allocator: std.mem.Allocator, value: u64) !jsonrpc.types.Quantity {

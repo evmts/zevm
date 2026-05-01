@@ -4,6 +4,7 @@
   "fast": {
     "command": "zig build verify-fast",
     "steps": [
+      "zig build",
       "zig build test"
     ]
   },

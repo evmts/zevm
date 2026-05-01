@@ -14,6 +14,7 @@ test "eth_chainId returns configured chain id" {
     defer arena.deinit();
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();
+    rt.head_block_number = 5;
 
     const result = try eth_read.handleEthChainId(arena.allocator(), &rt, .{});
     try expectQuantityStr(result.value, "0x7a69"); // 31337
@@ -36,7 +37,6 @@ test "eth_blockNumber returns current head number" {
     defer arena.deinit();
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();
-
     const result = try eth_read.handleEthBlockNumber(arena.allocator(), &rt, .{});
     try expectQuantityStr(result.value, "0x0");
 }
@@ -46,6 +46,7 @@ test "eth_blockNumber reflects updated head" {
     defer arena.deinit();
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();
+    rt.head_block_number = 5;
     rt.head_block_number = 42;
 
     const result = try eth_read.handleEthBlockNumber(arena.allocator(), &rt, .{});
@@ -59,6 +60,7 @@ test "eth_getBalance returns dev account balance at latest" {
     defer arena.deinit();
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();
+    rt.head_block_number = 5;
 
     const result = try eth_read.handleEthGetBalance(
         arena.allocator(),
@@ -90,6 +92,7 @@ test "eth_getBalance returns 0 for unknown address" {
     try expectQuantityStr(result.value, "0x0");
 }
 
+
 // --- AC: eth_getTransactionCount reads nonce ---
 
 test "eth_getTransactionCount returns 0 for fresh account" {
@@ -108,6 +111,7 @@ test "eth_getTransactionCount returns 0 for fresh account" {
     );
     try expectQuantityStr(result.value, "0x0");
 }
+
 
 // --- AC: eth_coinbase returns coinbase address ---
 

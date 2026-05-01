@@ -30,6 +30,7 @@ pub const log = log_mod;
 test {
     _ = @import("log.zig");
     _ = @import("database/root.zig");
+    _ = @import("database/database_test.zig");
     _ = @import("host_adapter_test.zig");
     _ = @import("tx_processor_test.zig");
     _ = @import("block_builder_test.zig");

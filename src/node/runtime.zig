@@ -663,6 +663,10 @@ pub const NodeRuntime = struct {
             self.isImpersonatingAccount(address);
     }
 
+    pub fn managedAccounts(_: *const NodeRuntime) []const primitives.Address {
+        return DEFAULT_DEV_ACCOUNTS[0..];
+    }
+
     pub fn getBalance(self: *NodeRuntime, address: primitives.Address) !u256 {
         while (true) {
             return self.state.getBalance(address) catch |err| switch (err) {
