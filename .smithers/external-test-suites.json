@@ -93,6 +93,12 @@
       "name": "hive-rpc-compat",
       "path": "hive/simulators/ethereum/rpc-compat",
       "status": "partial",
+      "modes": {
+        "transcriptReplay": "zig build verify",
+        "hiveSmoke": "zig build hive-smoke",
+        "hiveFull": "zig build hive-full",
+        "hiveSimulatorCompatLifecycle": "zig build hive-full"
+      },
       "activeCases": [
         "execution-apis/tests/eth_chainId/get-chain-id.io",
         "execution-apis/tests/eth_blobBaseFee/get-current-blobfee.io",
@@ -104,9 +110,8 @@
         "execution-apis/tests/net_version/get-network-id.io"
       ],
       "remaining": [
-        "materialize the execution-apis chain.rlp/genesis/head forkchoice setup in ZEVM",
-        "map hive client lifecycle onto the zevm binary",
-        "run every rpc-compat .io transcript, including block, receipt, log, call, estimate, and sendRawTransaction methods"
+        "materialize execution-apis chain.rlp/genesis/head forkchoice setup in ZEVM runtime state so block/receipt/log/call/estimate/sendRawTransaction can graduate from out-of-contract classification",
+        "replace transcript-only orchestration with direct hive simulator process orchestration once hive + execution-apis repositories are present in CI image"
       ]
     }
   ]

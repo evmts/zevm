@@ -18,5 +18,20 @@
       "execution-spec-tests: generated blockchain fixture structural walk for 10 JSON fixtures",
       "hive rpc-compat: parse and run execution-apis .io cases for chain/network identity, blob base fee, syncing, and unknown-account reads"
     ]
+  },
+  "hiveSmoke": {
+    "command": "zig build hive-smoke",
+    "includes": [
+      "verify-fast",
+      "hive rpc-compat smoke lifecycle with execution-apis forkenv chain-id, lifecycle artifact checks (genesis/chain.rlp/headfcu), and curated phase-1 .io transcript subset"
+    ]
+  },
+  "hiveFull": {
+    "command": "zig build hive-full",
+    "includes": [
+      "verify-fast",
+      "hive rpc-compat full lifecycle inventory by discovering all execution-apis/tests/**/*.io files",
+      "reports pass/fail and classifies phase-1 out-of-contract transcripts with per-area reasons (block, receipt, logs, call, estimate, transaction submission)"
+    ]
   }
 }

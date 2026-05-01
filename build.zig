@@ -160,4 +160,20 @@ pub fn build(b: *std.Build) void {
     const verify_step = b.step("verify", "Run fast checks and active external suite slices");
     run_external_verify.step.dependOn(verify_fast_step);
     verify_step.dependOn(&run_external_verify.step);
+
+    const run_hive_smoke = b.addRunArtifact(external_verify_exe);
+    run_hive_smoke.addDirectoryArg(b.path("."));
+    run_hive_smoke.addArtifactArg(exe);
+    run_hive_smoke.addArg("--hive-mode=smoke");
+    const hive_smoke_step = b.step("hive-smoke", "Run Hive rpc-compat smoke transcripts through ZEVM lifecycle");
+    run_hive_smoke.step.dependOn(verify_fast_step);
+    hive_smoke_step.dependOn(&run_hive_smoke.step);
+
+    const run_hive_full = b.addRunArtifact(external_verify_exe);
+    run_hive_full.addDirectoryArg(b.path("."));
+    run_hive_full.addArtifactArg(exe);
+    run_hive_full.addArg("--hive-mode=full");
+    const hive_full_step = b.step("hive-full", "Run full Hive rpc-compat transcript inventory through ZEVM lifecycle");
+    run_hive_full.step.dependOn(verify_fast_step);
+    hive_full_step.dependOn(&run_hive_full.step);
 }
