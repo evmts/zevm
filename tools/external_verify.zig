@@ -55,6 +55,7 @@ const legacy_state_fixture_dirs = [_][]const u8{
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP3607",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stExample",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stHomesteadSpecific",
+    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stLogTests",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stMemExpandingEIP150Calls",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stPreCompiledContracts",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stRecursiveCreate",
@@ -77,7 +78,7 @@ const hive_rpc_fixture_paths = [_][]const u8{
 };
 
 // TODO(external-verify): execution-spec-tests/fixtures is absent in this checkout; when it is populated, walk fixtures/state_tests and fixtures/blockchain_tests directly.
-// TODO(external-verify): continue legacy state expansion with another GeneralStateTests directory and keep state-root/logs assertions enabled.
+// TODO(external-verify): expand legacy state coverage — next safe candidates: stShift, stExtCodeHash, stCreate2.
 // TODO(external-verify): activate the remaining rpc-compat .io files after importing execution-apis genesis.json, chain.rlp, and headfcu.json into the ZEVM runtime.
 
 const VerifyOptions = struct {
@@ -376,12 +377,13 @@ pub fn main() !void {
     };
 
     progress.done.store(true, .release);
-    std.debug.print("external-verify: complete discovered={d} selected={d} skipped={d} unsupported={d} completed={d} elapsed_ms={d}\n", .{
+    std.debug.print("external-verify: complete discovered={d} selected={d} completed={d} quarantined={d} failed={d} shard_skipped={d} elapsed_ms={d}\n", .{
         progress.discovered.load(.monotonic),
         progress.selected.load(.monotonic),
-        progress.skipped.load(.monotonic),
-        progress.unsupported.load(.monotonic),
         progress.completed.load(.monotonic),
+        progress.unsupported.load(.monotonic),
+        progress.failed.load(.monotonic),
+        progress.skipped.load(.monotonic),
         timer.read() / std.time.ns_per_ms,
     });
     printMemoryDiagnostics("external-verify: final diagnostics", gpa.total_requested_bytes);

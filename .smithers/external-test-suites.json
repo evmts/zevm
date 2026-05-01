@@ -1,6 +1,6 @@
 {
   "schemaVersion": "zevm-external-test-suites.v1",
-  "updated": "2026-04-29",
+  "updated": "2026-04-30",
   "suites": [
     {
       "name": "ethereum-tests-state",
@@ -22,6 +22,7 @@
         "LegacyTests/Cancun/GeneralStateTests/stEIP3607/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stExample/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stHomesteadSpecific/*.json",
+        "LegacyTests/Cancun/GeneralStateTests/stLogTests/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stMemExpandingEIP150Calls/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stPreCompiledContracts/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stRecursiveCreate/*.json",
@@ -31,9 +32,19 @@
         "LegacyTests/Cancun/GeneralStateTests/stStaticFlagEnabled/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stTransitionTest/*.json"
       ],
+      "quarantined": [
+        {
+          "path": "LegacyTests/Cancun/GeneralStateTests/stPreCompiledContracts/modexpTests.json",
+          "reason": "MODEXP oversized-length vectors require full arbitrary-precision big-integer precompile semantics; currently unimplemented",
+          "unquarantine": "implement full MODEXP big-integer length semantics and verify all post cases pass"
+        }
+      ],
       "remaining": [
-        "complete MODEXP oversized-length semantics and unquarantine LegacyTests/Cancun/GeneralStateTests/stPreCompiledContracts/modexpTests.json",
-        "walk all GeneralStateTests directories and all post indexes"
+        "walk all GeneralStateTests directories not yet in activeCases; next safe candidates: stShift, stExtCodeHash, stCreate2, stCallCreateCallCodeTest",
+        "walk stPreCompiledContracts2 after auditing which vectors require unimplemented precompiles",
+        "walk stBadOpcode, stZeroCallsTest, stZeroCallsRevert, stNonZeroCallsTest",
+        "walk stZeroKnowledge and stZeroKnowledge2 after confirming pairing precompile coverage",
+        "walk stTimeConsuming and stQuadraticComplexityTest under a separate slow-verify step"
       ]
     },
     {
