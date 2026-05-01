@@ -23,6 +23,17 @@ Publication-time validation gate for canonical claims:
 - `shasum` for `sha256` provenance hashing
 - `date` for UTC manifest timestamps
 
+## Canonical Local Generation + Validation
+
+Use these repository scripts for non-interactive candidate checks:
+
+```bash
+./scripts/release-metadata/generate.sh --release-identifier vX.Y.Z --out-dir .ops/release-metadata/vX.Y.Z
+./scripts/release-metadata/validate.sh --release-identifier vX.Y.Z --in-dir .ops/release-metadata/vX.Y.Z
+```
+
+`validate.sh` fails fast when either required artifact is missing or when file schema/version/identifier/value invariants do not match the candidate tuple for that release input.
+
 ## 1. Select A Release Identifier
 
 Select one GitHub release identifier and use it consistently for all metadata and checkouts.

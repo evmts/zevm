@@ -33,7 +33,9 @@ pub const LightDefaultCheckpoints = struct {
 };
 
 pub const CliOptions = struct {
+    mode: enum { generate, validate } = .generate,
     out_dir: []const u8 = "zig-out/release",
+    in_dir: []const u8 = "zig-out/release",
     release_identifier: ?[]const u8 = null,
 };
 
@@ -60,7 +62,7 @@ pub fn main() !void {
     runMain() catch |err| {
         if (err == error.InvalidArgs) {
             std.debug.print(
-                "usage: release-metadata [--out-dir PATH] [--release-identifier IDENTIFIER]\n",
+                "usage: release-metadata [--validate] [--out-dir PATH] [--in-dir PATH] [--release-identifier IDENTIFIER]\n",
                 .{},
             );
         }
@@ -77,7 +79,10 @@ fn runMain() !void {
     defer std.process.argsFree(allocator, args);
 
     const options = try parseArgs(args);
-    try generateReleaseMetadataFiles(allocator, options);
+    switch (options.mode) {
+        .generate => try generateReleaseMetadataFiles(allocator, options),
+        .validate => try validateReleaseMetadataFiles(allocator, options),
+    }
 }
 
 pub fn parseArgs(args: []const [:0]u8) ReleaseMetadataError!CliOptions {
@@ -85,10 +90,16 @@ pub fn parseArgs(args: []const [:0]u8) ReleaseMetadataError!CliOptions {
     var index: usize = 1;
     while (index < args.len) {
         const arg: []const u8 = args[index];
-        if (std.mem.eql(u8, arg, "--out-dir")) {
+        if (std.mem.eql(u8, arg, "--validate")) {
+            options.mode = .validate;
+        } else if (std.mem.eql(u8, arg, "--out-dir")) {
             index += 1;
             if (index >= args.len) return error.InvalidArgs;
             options.out_dir = args[index];
+        } else if (std.mem.eql(u8, arg, "--in-dir")) {
+            index += 1;
+            if (index >= args.len) return error.InvalidArgs;
+            options.in_dir = args[index];
         } else if (std.mem.eql(u8, arg, "--release-identifier")) {
             index += 1;
             if (index >= args.len) return error.InvalidArgs;
@@ -677,4 +688,49 @@ test "release identifier and hash validators enforce formats" {
     try std.testing.expect(!isGitRevision("0123456789ABCDEF0123456789ABCDEF01234567"));
     try std.testing.expect(isCheckpointHash("0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
     try std.testing.expect(!isCheckpointHash("abcdefABCDEF0123456789abcdefABCDEF0123456789abcdefABCDEF0123456789"));
+}
+
+pub fn validateReleaseMetadataFiles(
+    allocator: std.mem.Allocator,
+    options: CliOptions,
+) !void {
+    const zevm_revision = try captureGitRevision(allocator, ".");
+    defer allocator.free(zevm_revision);
+    const voltaire_revision = try captureGitRevision(allocator, "../voltaire");
+    defer allocator.free(voltaire_revision);
+    const guillotine_mini_revision = try captureGitRevision(allocator, "../guillotine-mini");
+    defer allocator.free(guillotine_mini_revision);
+
+    var generated_release_identifier: ?[]u8 = null;
+    defer if (generated_release_identifier) |value| allocator.free(value);
+
+    const release_identifier = options.release_identifier orelse blk: {
+        generated_release_identifier = try releaseIdentifierFromRevision(allocator, zevm_revision);
+        break :blk generated_release_identifier.?;
+    };
+
+    const tuple = ReleaseTuple{
+        .releaseIdentifier = release_identifier,
+        .zevmGitRevision = zevm_revision,
+        .voltaireGitRevision = voltaire_revision,
+        .guillotineMiniGitRevision = guillotine_mini_revision,
+        .zigVersion = builtin.zig_version_string,
+    };
+    const checkpoints = LightDefaultCheckpoints{
+        .releaseIdentifier = release_identifier,
+        .defaults = default_checkpoints,
+    };
+
+    const tuple_path = try std.fs.path.join(allocator, &.{ options.in_dir, release_tuple_filename });
+    defer allocator.free(tuple_path);
+    const checkpoints_path = try std.fs.path.join(allocator, &.{ options.in_dir, light_default_checkpoints_filename });
+    defer allocator.free(checkpoints_path);
+
+    const tuple_json = try std.fs.cwd().readFileAlloc(allocator, tuple_path, 1024 * 1024);
+    defer allocator.free(tuple_json);
+    const checkpoints_json = try std.fs.cwd().readFileAlloc(allocator, checkpoints_path, 1024 * 1024);
+    defer allocator.free(checkpoints_json);
+
+    try validateReleaseTupleJson(allocator, tuple_json, tuple);
+    try validateLightDefaultCheckpointsJson(allocator, checkpoints_json, checkpoints);
 }

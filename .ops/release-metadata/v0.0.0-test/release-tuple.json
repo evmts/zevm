@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "zevm-release-tuple.v1",
+  "releaseIdentifier": "v0.0.0-test",
+  "zevmGitRevision": "28675c7280d54fcd5aa842b4852d7ecb55cc08c3",
+  "voltaireGitRevision": "58d3c7b65dc8f313add502cae53ef0863fd143fb",
+  "guillotineMiniGitRevision": "e2089da49faeafce03f03ba2a8276550855bd512",
+  "zigVersion": "0.15.2"
+}
