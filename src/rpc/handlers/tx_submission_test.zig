@@ -314,3 +314,188 @@ test "eth_sendTransaction unmanaged account returns error" {
     const result = tx_submission.handleSendTransaction(std.testing.allocator, &rt, params);
     try std.testing.expectError(tx_submission.TxSubmissionError.UnmanagedAccount, result);
 }
+
+// --- Phase 1 boundary: typed envelope rejection -------------------------
+//
+// Phase 1 accepts only legacy RLP envelopes on the public RPC surface.
+// Every EIP-2718 typed envelope (type bytes 0x01..=0x7f) must reject cleanly
+// with `UnsupportedTxType`, which the dispatcher maps to JSON-RPC -32602.
+
+fn submitRawWithLeadingByte(rt: *runtime.NodeRuntime, leading: u8) tx_submission.TxSubmissionError!jsonrpc.eth.SendRawTransaction.Result {
+    // Body shape is irrelevant: rejection happens on the type-byte check
+    // before any RLP decoding, so a single leading byte plus a placeholder
+    // suffix is enough to exercise the boundary.
+    const payload = [_]u8{ leading, 0xc0 };
+    const hex = try primitives.Hex.bytesToHex(std.testing.allocator, &payload);
+    defer std.testing.allocator.free(hex);
+    return tx_submission.handleSendRawTransaction(std.testing.allocator, rt, makeRawTxParams(hex));
+}
+
+test "eth_sendRawTransaction rejects EIP-2930 typed envelope (0x01)" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    const result = submitRawWithLeadingByte(&rt, 0x01);
+    try std.testing.expectError(tx_submission.TxSubmissionError.UnsupportedTxType, result);
+}
+
+test "eth_sendRawTransaction rejects EIP-1559 typed envelope (0x02)" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    const result = submitRawWithLeadingByte(&rt, 0x02);
+    try std.testing.expectError(tx_submission.TxSubmissionError.UnsupportedTxType, result);
+}
+
+test "eth_sendRawTransaction rejects EIP-4844 typed envelope (0x03)" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    const result = submitRawWithLeadingByte(&rt, 0x03);
+    try std.testing.expectError(tx_submission.TxSubmissionError.UnsupportedTxType, result);
+}
+
+test "eth_sendRawTransaction rejects EIP-7702 typed envelope (0x04)" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    const result = submitRawWithLeadingByte(&rt, 0x04);
+    try std.testing.expectError(tx_submission.TxSubmissionError.UnsupportedTxType, result);
+}
+
+test "eth_sendRawTransaction rejects unknown type byte (0x7f)" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    const result = submitRawWithLeadingByte(&rt, 0x7f);
+    try std.testing.expectError(tx_submission.TxSubmissionError.UnsupportedTxType, result);
+}
+
+test "eth_sendRawTransaction rejects RLP-string leading byte (0x80)" {
+    // 0x80..=0xbf is RLP string territory and is not a valid top-level tx
+    // encoding. It must not be silently accepted as a typed-envelope nor as
+    // a legacy list; surface it as a decode failure.
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    const result = submitRawWithLeadingByte(&rt, 0x80);
+    try std.testing.expectError(tx_submission.TxSubmissionError.DecodeFailed, result);
+}
+
+test "eth_sendTransaction rejects 'type' field" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    rt.setMiningConfig(.manual);
+
+    var obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try obj.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try obj.put("value", .{ .string = "0x3e8" });
+    try obj.put("type", .{ .string = "0x2" });
+
+    const params = jsonrpc.eth.SendTransaction.Params{
+        .transaction = .{ .value = .{ .object = obj } },
+    };
+    const result = tx_submission.handleSendTransaction(std.testing.allocator, &rt, params);
+    try std.testing.expectError(tx_submission.TxSubmissionError.UnsupportedTxType, result);
+}
+
+test "eth_sendTransaction rejects EIP-1559 dynamic-fee fields" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    rt.setMiningConfig(.manual);
+
+    var obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try obj.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try obj.put("value", .{ .string = "0x3e8" });
+    try obj.put("maxFeePerGas", .{ .string = "0x3b9aca00" });
+    try obj.put("maxPriorityFeePerGas", .{ .string = "0x77359400" });
+
+    const params = jsonrpc.eth.SendTransaction.Params{
+        .transaction = .{ .value = .{ .object = obj } },
+    };
+    const result = tx_submission.handleSendTransaction(std.testing.allocator, &rt, params);
+    try std.testing.expectError(tx_submission.TxSubmissionError.UnsupportedTxType, result);
+}
+
+test "eth_sendTransaction rejects EIP-2930 access-list field" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    rt.setMiningConfig(.manual);
+
+    var access_list = std.json.Array.init(std.testing.allocator);
+    defer access_list.deinit();
+
+    var obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try obj.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try obj.put("value", .{ .string = "0x3e8" });
+    try obj.put("accessList", .{ .array = access_list });
+
+    const params = jsonrpc.eth.SendTransaction.Params{
+        .transaction = .{ .value = .{ .object = obj } },
+    };
+    const result = tx_submission.handleSendTransaction(std.testing.allocator, &rt, params);
+    try std.testing.expectError(tx_submission.TxSubmissionError.UnsupportedTxType, result);
+}
+
+test "eth_sendTransaction rejects EIP-4844 blob fields" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    rt.setMiningConfig(.manual);
+
+    var blob_hashes = std.json.Array.init(std.testing.allocator);
+    defer blob_hashes.deinit();
+
+    var obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try obj.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try obj.put("maxFeePerBlobGas", .{ .string = "0x1" });
+    try obj.put("blobVersionedHashes", .{ .array = blob_hashes });
+
+    const params = jsonrpc.eth.SendTransaction.Params{
+        .transaction = .{ .value = .{ .object = obj } },
+    };
+    const result = tx_submission.handleSendTransaction(std.testing.allocator, &rt, params);
+    try std.testing.expectError(tx_submission.TxSubmissionError.UnsupportedTxType, result);
+}
+
+test "eth_sendTransaction rejects EIP-7702 authorization-list field" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    rt.setMiningConfig(.manual);
+
+    var auth_list = std.json.Array.init(std.testing.allocator);
+    defer auth_list.deinit();
+
+    var obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try obj.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try obj.put("value", .{ .string = "0x3e8" });
+    try obj.put("authorizationList", .{ .array = auth_list });
+
+    const params = jsonrpc.eth.SendTransaction.Params{
+        .transaction = .{ .value = .{ .object = obj } },
+    };
+    const result = tx_submission.handleSendTransaction(std.testing.allocator, &rt, params);
+    try std.testing.expectError(tx_submission.TxSubmissionError.UnsupportedTxType, result);
+}
+
+test "eth_sendTransaction rejects chainId field" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    rt.setMiningConfig(.manual);
+
+    var obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try obj.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try obj.put("value", .{ .string = "0x3e8" });
+    try obj.put("chainId", .{ .string = "0x7a69" });
+
+    const params = jsonrpc.eth.SendTransaction.Params{
+        .transaction = .{ .value = .{ .object = obj } },
+    };
+    const result = tx_submission.handleSendTransaction(std.testing.allocator, &rt, params);
+    try std.testing.expectError(tx_submission.TxSubmissionError.UnsupportedTxType, result);
+}
