@@ -141,7 +141,7 @@ const agents = {
   },
 };
 
-export default smithers((ctx) => {
+export default smithers((ctx: any) => {
   return (
     <Workflow name="zevm-slop-factory">
       <SuperRalph

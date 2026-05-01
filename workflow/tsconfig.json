@@ -8,10 +8,12 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
     "types": ["bun-types", "@types/mdx", "@types/react"],
     "paths": {
       "smithers-orchestrator": ["/Users/williamcory/smithers/src/index.ts"],
       "smithers-orchestrator/*": ["/Users/williamcory/smithers/src/*"]
     }
-  }
+  },
+  "include": ["**/*.ts", "**/*.tsx", "types.local-deps.d.ts"]
 }

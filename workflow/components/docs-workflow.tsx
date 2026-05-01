@@ -247,7 +247,7 @@ const reviewAgent = SMOKE_MODE
       systemPrompt: REVIEW_SYSTEM_PROMPT,
     });
 
-export default smithers((ctx) => {
+export default smithers((ctx: any) => {
   const latestReview = ctx.latest("review", "cold-review");
   const latestFix = ctx.latest("docsPass", "fix-findings");
   const latestImplementation = ctx.latest("docsPass", "implementation");
