@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build-and-fast-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout zevm
+        uses: actions/checkout@v4
+
+      - name: Checkout voltaire sibling
+        uses: actions/checkout@v4
+        with:
+          repository: evmts/voltaire
+          path: ../voltaire
+
+      - name: Checkout guillotine-mini sibling
+        uses: actions/checkout@v4
+        with:
+          repository: evmts/guillotine-mini
+          path: ../guillotine-mini
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Cache Zig build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/zig
+            .zig-cache
+          key: zig-${{ runner.os }}-${{ hashFiles('build.zig', 'build.zig.zon') }}
+
+      - name: Preflight sibling dependencies
+        run: ./tools/ci/preflight.sh dev
+
+      - name: Build
+        run: zig build
+
+      - name: Fast verification
+        run: zig build verify-fast
+
+      - name: Qualification check (report gaps, non-blocking)
+        continue-on-error: true
+        run: zig build qualification-check -- --require-covered

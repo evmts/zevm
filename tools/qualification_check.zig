@@ -97,7 +97,7 @@ pub fn main() !void {
     runMain() catch |err| {
         if (err == error.InvalidArgs) {
             std.debug.print(
-                "usage: qualification-check [--map PATH] [--require-covered]\n",
+                "usage: qualification-check [--map PATH] [--require-covered|--fail-on-gap]\n",
                 .{},
             );
         } else {
@@ -138,7 +138,7 @@ pub fn parseArgs(args: []const [:0]u8) QualificationError!Options {
             index += 1;
             if (index >= args.len) return error.InvalidArgs;
             options.map_path = args[index];
-        } else if (std.mem.eql(u8, arg, "--require-covered")) {
+        } else if (std.mem.eql(u8, arg, "--require-covered") or std.mem.eql(u8, arg, "--fail-on-gap")) {
             options.require_covered = true;
         } else {
             return error.InvalidArgs;

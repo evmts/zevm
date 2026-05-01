@@ -1,0 +1,81 @@
+name: Release Qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tuple_url:
+        description: URL to release-tuple.json for pin validation (optional for ad-hoc runs)
+        required: false
+        type: string
+  schedule:
+    - cron: '0 9 * * *'
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout zevm
+        uses: actions/checkout@v4
+
+      - name: Checkout voltaire sibling
+        uses: actions/checkout@v4
+        with:
+          repository: evmts/voltaire
+          path: ../voltaire
+
+      - name: Checkout guillotine-mini sibling
+        uses: actions/checkout@v4
+        with:
+          repository: evmts/guillotine-mini
+          path: ../guillotine-mini
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Cache Zig build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/zig
+            .zig-cache
+          key: zig-${{ runner.os }}-${{ hashFiles('build.zig', 'build.zig.zon') }}
+
+      - name: Fetch release tuple
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tuple_url != '' }}
+        run: curl -fsSL "${{ inputs.release_tuple_url }}" -o release-tuple.json
+
+      - name: Materialize tuple for scheduled verification
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.release_tuple_url == '') }}
+        run: |
+          cat > release-tuple.json <<EOF
+          {
+            "schemaVersion": "zevm-release-tuple.v1",
+            "releaseIdentifier": "scheduled-${{ github.run_id }}",
+            "zevmGitRevision": "$(git rev-parse HEAD)",
+            "voltaireGitRevision": "$(git -C ../voltaire rev-parse HEAD)",
+            "guillotineMiniGitRevision": "$(git -C ../guillotine-mini rev-parse HEAD)",
+            "zigVersion": "$(zig version)"
+          }
+          EOF
+
+      - name: Preflight (release mode)
+        env:
+          RELEASE_TUPLE_PATH: release-tuple.json
+        run: ./tools/ci/preflight.sh release
+
+      - name: Build
+        run: zig build
+
+      - name: Qualification check (fail on gaps)
+        run: zig build qualification-check -- --fail-on-gap
+
+      - name: External verification suite
+        run: zig build verify
+
+      - name: Fail on generated artifact drift
+        run: |
+          git update-index -q --refresh
+          git diff --exit-code
+          git diff --cached --exit-code
