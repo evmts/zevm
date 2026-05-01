@@ -602,7 +602,7 @@ pub const NodeRuntime = struct {
                 adapter.hostInterface(),
                 block_options,
             );
-            _ = &result;
+            defer result.deinit(self.allocator);
 
             const block_hash = try self.persistMinedBlock(block_ctx, block_excess_blob_gas, &result, ready);
 

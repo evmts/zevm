@@ -236,7 +236,7 @@ pub const MiningCoordinator = struct {
     current_excess_blob_gas: u64,
     current_blob_gas_used: u64,
     next_prevrandao: u256,
-    mined_blocks: std.ArrayList(block_builder.BlockResult),
+    mined_block_numbers: std.ArrayList(u64),
 
     pub fn init() MiningCoordinator {
         return .{
@@ -252,16 +252,13 @@ pub const MiningCoordinator = struct {
             .current_excess_blob_gas = 0,
             .current_blob_gas_used = 0,
             .next_prevrandao = 0,
-            .mined_blocks = .{},
+            .mined_block_numbers = .{},
         };
     }
 
     pub fn deinit(self: *MiningCoordinator, allocator: std.mem.Allocator) void {
         self.pending_txs.deinit(allocator);
-        for (self.mined_blocks.items) |*b| {
-            b.deinit(allocator);
-        }
-        self.mined_blocks.deinit(allocator);
+        self.mined_block_numbers.deinit(allocator);
     }
 
     pub fn setMode(self: *MiningCoordinator, mode: MiningMode) void {
@@ -302,7 +299,8 @@ pub const MiningCoordinator = struct {
         try self.pending_txs.append(allocator, tx);
         if (self.mode == .auto) {
             var adapter = host_adapter.HostAdapter{ .state = sm };
-            _ = try self.mineBlock(allocator, sm, adapter.hostInterface());
+            var mined = try self.mineBlock(allocator, sm, adapter.hostInterface());
+            mined.deinit(allocator);
         }
     }
 
@@ -354,8 +352,7 @@ pub const MiningCoordinator = struct {
         self.current_block_number += 1;
         self.current_timestamp = block_ctx.block_timestamp +| 1;
 
-        const result_copy = result;
-        try self.mined_blocks.append(allocator, result_copy);
+        try self.mined_block_numbers.append(allocator, result.block_number);
 
         return result;
     }
@@ -521,7 +518,7 @@ test "MiningCoordinator submitTx queues in manual mode" {
     try mc.submitTx(std.testing.allocator, &sm, makeTestTx(sender, recipient, 0));
 
     try std.testing.expectEqual(@as(usize, 1), mc.pending_txs.items.len);
-    try std.testing.expectEqual(@as(usize, 0), mc.mined_blocks.items.len);
+    try std.testing.expectEqual(@as(usize, 0), mc.mined_block_numbers.items.len);
 }
 
 test "MiningCoordinator submitTx mines immediately in auto mode" {
@@ -541,7 +538,7 @@ test "MiningCoordinator submitTx mines immediately in auto mode" {
 
     // Auto mode should have drained pending and produced a block
     try std.testing.expectEqual(@as(usize, 0), mc.pending_txs.items.len);
-    try std.testing.expectEqual(@as(usize, 1), mc.mined_blocks.items.len);
+    try std.testing.expectEqual(@as(usize, 1), mc.mined_block_numbers.items.len);
 }
 
 test "MiningCoordinator mineBlock drains pending pool" {
@@ -565,10 +562,10 @@ test "MiningCoordinator mineBlock drains pending pool" {
     try std.testing.expectEqual(@as(usize, 1), mc.pending_txs.items.len);
 
     var result = try mc.mineBlock(std.testing.allocator, &sm, host);
-    _ = &result;
+    defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 0), mc.pending_txs.items.len);
-    try std.testing.expectEqual(@as(usize, 1), mc.mined_blocks.items.len);
+    try std.testing.expectEqual(@as(usize, 1), mc.mined_block_numbers.items.len);
     try std.testing.expectEqual(@as(u64, 2), mc.current_block_number);
 }
 
@@ -589,7 +586,7 @@ test "MiningCoordinator mineBlocks handles timestamp intervals" {
     try mc.mineBlocks(std.testing.allocator, &sm, host, 3, 10);
 
     try std.testing.expectEqual(initial_block + 3, mc.current_block_number);
-    try std.testing.expectEqual(@as(usize, 3), mc.mined_blocks.items.len);
+    try std.testing.expectEqual(@as(usize, 3), mc.mined_block_numbers.items.len);
 
     // First block uses initial timestamp, second +10, third +10
     // After 3 blocks: initial + 1 (from first mineBlock) + 10-1 + 1 (second) + 10-1 + 1 (third)
