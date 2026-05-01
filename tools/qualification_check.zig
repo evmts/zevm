@@ -82,6 +82,7 @@ pub const QualificationError = error{
     InvalidDate,
     InvalidSchemaVersion,
     InvalidSurfaceId,
+    StaleTodoIdentifier,
     MalformedJson,
     MalformedUtf8,
     MissingField,
@@ -97,7 +98,7 @@ pub fn main() !void {
     runMain() catch |err| {
         if (err == error.InvalidArgs) {
             std.debug.print(
-                "usage: qualification-check [--map PATH] [--require-covered]\n",
+                "usage: qualification-check [--map PATH] [--require-covered|--fail-on-gap]\n",
                 .{},
             );
         } else {
@@ -138,7 +139,7 @@ pub fn parseArgs(args: []const [:0]u8) QualificationError!Options {
             index += 1;
             if (index >= args.len) return error.InvalidArgs;
             options.map_path = args[index];
-        } else if (std.mem.eql(u8, arg, "--require-covered")) {
+        } else if (std.mem.eql(u8, arg, "--require-covered") or std.mem.eql(u8, arg, "--fail-on-gap")) {
             options.require_covered = true;
         } else {
             return error.InvalidArgs;
@@ -250,7 +251,7 @@ fn validateRecord(
     if (indexOf(coverage_statuses[0..], coverage_status) == null) return error.InvalidCoverageStatus;
 
     if (std.mem.eql(u8, coverage_status, "covered")) {
-        if (std.mem.startsWith(u8, assertion_identifier, "TODO:")) return error.InvalidCoverageStatus;
+        if (std.mem.startsWith(u8, assertion_identifier, "TODO:")) return error.StaleTodoIdentifier;
         report.covered_records += 1;
     } else {
         _ = requireNonEmptyStringField(object, "gapReason") catch return error.MissingGapReason;
@@ -391,5 +392,15 @@ test "qualification map validator can fail on explicit gaps" {
     try std.testing.expectError(
         error.ExplicitGapRemaining,
         validateMapJson(std.testing.allocator, json, .{ .require_covered = true }),
+    );
+}
+
+test "qualification map validator rejects stale TODO identifiers on covered rows" {
+    const json =
+        "{" ++ "\"schemaVersion\":\"zevm-release-qualification-map.v1\"," ++ "\"updated\":\"2026-04-30\"," ++ "\"prdSource\":\"docs/specs/prd.md#35-release-qualification-and-verification-acceptance-criteria\"," ++ "\"records\":[" ++ "{\"surfaceId\":\"STARTUP_SURFACE\",\"surfaceSection\":\"PRD 5\",\"surfaceCategory\":\"startup\",\"assertionType\":\"default-graph-test\",\"assertionIdentifier\":\"src/config_test.zig\",\"expectedContractOutcome\":\"startup behavior is asserted\",\"coverageStatus\":\"covered\"}," ++ "{\"surfaceId\":\"CONFIGURATION_SURFACE\",\"surfaceSection\":\"PRD 5\",\"surfaceCategory\":\"configuration\",\"assertionType\":\"default-graph-test\",\"assertionIdentifier\":\"src/config_test.zig\",\"expectedContractOutcome\":\"configuration behavior is asserted\",\"coverageStatus\":\"covered\"}," ++ "{\"surfaceId\":\"RUNTIME_SURFACE\",\"surfaceSection\":\"PRD 4\",\"surfaceCategory\":\"runtime\",\"assertionType\":\"default-graph-test\",\"assertionIdentifier\":\"src/node/runtime_test.zig\",\"expectedContractOutcome\":\"runtime behavior is asserted\",\"coverageStatus\":\"covered\"}," ++ "{\"surfaceId\":\"TRANSPORT_SURFACE\",\"surfaceSection\":\"PRD 6\",\"surfaceCategory\":\"transport\",\"assertionType\":\"default-graph-test\",\"assertionIdentifier\":\"TODO:listener smoke\",\"expectedContractOutcome\":\"transport behavior is asserted\",\"coverageStatus\":\"covered\"}," ++ "{\"surfaceId\":\"METHOD_SURFACE\",\"surfaceSection\":\"PRD 7\",\"surfaceCategory\":\"method\",\"assertionType\":\"default-graph-test\",\"assertionIdentifier\":\"src/rpc/dispatcher_test.zig\",\"expectedContractOutcome\":\"method behavior is asserted\",\"coverageStatus\":\"covered\"}," ++ "{\"surfaceId\":\"RELEASE_METADATA_RELEASE_TUPLE_JSON\",\"surfaceSection\":\"PRD 3.4\",\"surfaceCategory\":\"release-asset\",\"assertionType\":\"release-asset-validation\",\"assertionIdentifier\":\"src/release_metadata.zig\",\"expectedContractOutcome\":\"release tuple is validated\",\"coverageStatus\":\"covered\"}," ++ "{\"surfaceId\":\"RELEASE_METADATA_LIGHT_DEFAULT_CHECKPOINTS_JSON\",\"surfaceSection\":\"PRD 3.4\",\"surfaceCategory\":\"release-asset\",\"assertionType\":\"release-asset-validation\",\"assertionIdentifier\":\"src/release_metadata.zig\",\"expectedContractOutcome\":\"light defaults are validated\",\"coverageStatus\":\"covered\"}" ++ "]" ++ "}";
+
+    try std.testing.expectError(
+        error.StaleTodoIdentifier,
+        validateMapJson(std.testing.allocator, json, .{}),
     );
 }
