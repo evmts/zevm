@@ -1,23 +1,26 @@
 #!/usr/bin/env bun
 
-import { existsSync, lstatSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { mdxPlugin, runWorkflow } from "smithers-orchestrator";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const ROOT_DIR = resolve(__dirname, "..");
 const WORKFLOW_ENTRY = resolve(ROOT_DIR, "docs/workflows/docs.tsx");
 const NODE_MODULES = resolve(__dirname, "node_modules");
-const SMITHERS_NODE_MODULES = resolve(ROOT_DIR, "docs/references/smithers/node_modules");
+const smithersRequire = createRequire(import.meta.resolve("smithers-orchestrator"));
+const { Effect } = smithersRequire("effect");
 
 const args = new Set(process.argv.slice(2));
 const smoke = args.has("--smoke");
 const reviewOnly = args.has("--review-only");
 
 let tempDir: string | null = null;
-let linkedSmithersNodeModules = false;
+let exitCode = 0;
 
 process.env.NODE_PATH = [NODE_MODULES, process.env.NODE_PATH]
   .filter(Boolean)
@@ -34,28 +37,9 @@ if (reviewOnly) {
   process.env.ZEVM_DOCS_SKIP_IMPLEMENTATION = "1";
 }
 
-if (!existsSync(SMITHERS_NODE_MODULES)) {
-  symlinkSync(NODE_MODULES, SMITHERS_NODE_MODULES, "dir");
-  linkedSmithersNodeModules = true;
-} else if (
-  lstatSync(SMITHERS_NODE_MODULES).isSymbolicLink() &&
-  linkedSmithersNodeModules
-) {
-  linkedSmithersNodeModules = true;
-} else if (
-  lstatSync(SMITHERS_NODE_MODULES).isSymbolicLink() &&
-  !linkedSmithersNodeModules
-) {
-  // Respect an existing symlink created outside this runner.
-} else {
-  // A real node_modules directory under docs/references/smithers is valid.
-}
-
-const { mdxPlugin, runWorkflow } = await import("../docs/references/smithers/src/index.ts");
-
 mdxPlugin();
 
-const workflowModule = await import("../docs/workflows/docs.tsx");
+const workflowModule = await import(pathToFileURL(WORKFLOW_ENTRY).href);
 const workflow = workflowModule.default;
 
 try {
@@ -67,29 +51,27 @@ try {
     .filter(Boolean)
     .join(" ");
   console.log(mode);
-  const result = await runWorkflow(workflow, {
+  const result = await Effect.runPromise(runWorkflow(workflow, {
     input: {},
     runId: smoke ? "zevm-docs-smoke" : undefined,
     rootDir: ROOT_DIR,
     workflowPath: WORKFLOW_ENTRY,
     maxConcurrency: 1,
-  });
+  }));
 
   console.log(JSON.stringify(result, null, 2));
 
   if (result.status !== "finished") {
-    process.exitCode = 1;
+    exitCode = 1;
   }
 } finally {
   try {
     (workflow.db as any)?.$client?.close?.();
   } catch {}
 
-  if (linkedSmithersNodeModules) {
-    rmSync(SMITHERS_NODE_MODULES, { force: true, recursive: true });
-  }
-
   if (tempDir) {
     rmSync(tempDir, { force: true, recursive: true });
   }
 }
+
+process.exit(exitCode);

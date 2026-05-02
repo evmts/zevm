@@ -85,10 +85,10 @@ const target = getTarget();
 const agents = {
   "amp-deep": {
     agent: new AmpAgent({
-      mode: "deep",
+      id: "zevm-workflow-amp-deep",
       systemPrompt: SYSTEM_PROMPT,
       cwd: REPO_ROOT,
-      label: "zevm-workflow",
+      extraArgs: ["--mode", "deep"],
       timeoutMs: 60 * 60 * 1000,
     }),
     description:
@@ -108,9 +108,9 @@ const agents = {
   },
   amp: {
     agent: new AmpAgent({
+      id: "zevm-workflow-amp",
       systemPrompt: SYSTEM_PROMPT,
       cwd: REPO_ROOT,
-      label: "zevm-workflow",
       timeoutMs: 60 * 60 * 1000,
     }),
     description:

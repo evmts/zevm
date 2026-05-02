@@ -10,8 +10,7 @@
     "skipLibCheck": true,
     "types": ["bun-types", "@types/mdx", "@types/react"],
     "paths": {
-      "smithers-orchestrator": ["/Users/williamcory/smithers/src/index.ts"],
-      "smithers-orchestrator/*": ["/Users/williamcory/smithers/src/*"]
+      "super-ralph": ["./types/super-ralph.d.ts"]
     }
   }
 }

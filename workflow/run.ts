@@ -53,15 +53,11 @@ console.log(`Root directory: ${ROOT_DIR}`);
 console.log(`Workflow max concurrency: ${maxConcurrency}`);
 console.log("Press Ctrl+C to stop.\n");
 
-// Find Smithers CLI
-const smithersCli = existsSync(join(__dirname, "node_modules/smithers-orchestrator/src/cli/index.ts"))
-  ? join(__dirname, "node_modules/smithers-orchestrator/src/cli/index.ts")
-  : existsSync(join(process.env.HOME || "", "smithers/src/cli/index.ts"))
-    ? join(process.env.HOME || "", "smithers/src/cli/index.ts")
-    : null;
-
-if (!smithersCli) {
+// Use the package-managed CLI so workflow startup is tied to the lockfile.
+const smithersCli = join(__dirname, "node_modules/.bin/smithers");
+if (!existsSync(smithersCli)) {
   console.error("error: smithers CLI not found");
+  console.error("run `bun install --frozen-lockfile` in workflow/ first");
   process.exit(1);
 }
 
@@ -81,7 +77,7 @@ if (existsSync(dbFile)) {
 // Resume existing run (preserves discovered tickets etc.) or start fresh
 if (resumeRunId) {
   console.log(`Resuming run: ${resumeRunId}`);
-  await $`bun run ${smithersCli} resume components/workflow.tsx --run-id ${resumeRunId} --root ${ROOT_DIR} --max-concurrency ${maxConcurrency} --hot`.cwd(__dirname);
+  await $`${smithersCli} resume components/workflow.tsx --run-id ${resumeRunId} --root ${ROOT_DIR} --max-concurrency ${maxConcurrency} --hot`.cwd(__dirname);
 } else {
-  await $`bun run ${smithersCli} run components/workflow.tsx --root ${ROOT_DIR} --max-concurrency ${maxConcurrency} --hot`.cwd(__dirname);
+  await $`${smithersCli} run components/workflow.tsx --root ${ROOT_DIR} --max-concurrency ${maxConcurrency} --hot`.cwd(__dirname);
 }

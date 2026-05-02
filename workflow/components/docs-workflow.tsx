@@ -1,10 +1,10 @@
-/** @jsxImportSource ../../docs/references/smithers/src */
+/** @jsxImportSource smithers-orchestrator */
 import {
   createSmithers,
   CodexAgent,
   Loop,
   Sequence,
-} from "../../docs/references/smithers/src/index";
+} from "smithers-orchestrator";
 import { z } from "zod";
 import ImplementationPrompt from "../prompts/ImplementationPrompt.mdx";
 import ColdReviewPrompt from "../prompts/ColdReviewPrompt.mdx";
@@ -145,7 +145,7 @@ function createSmokeAgent(kind: "implementation" | "review" | "fix") {
   return {
     id: `smoke-${kind}`,
     tools: {},
-    async generate(args: { prompt: string }) {
+    async generate(args?: { prompt?: unknown; [key: string]: unknown }) {
       if (kind === "implementation") {
         return {
           output: {
@@ -175,7 +175,8 @@ function createSmokeAgent(kind: "implementation" | "review" | "fix") {
         };
       }
 
-      const roundMatch = args.prompt.match(/Review round:\s*(\d+)/i);
+      const prompt = typeof args?.prompt === "string" ? args.prompt : "";
+      const roundMatch = prompt.match(/Review round:\s*(\d+)/i);
       const reviewRound = roundMatch ? Number.parseInt(roundMatch[1] ?? "0", 10) : 0;
 
       if (reviewRound >= 1) {
