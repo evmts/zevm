@@ -59,6 +59,31 @@ Field contract:
 | `code` | yes | `HexData` | non-null |
 | `storage` | yes | object mapping `Bytes32` -> `Bytes32` | non-null (empty object allowed) |
 
+### `StateBlob`
+
+`zevm_dumpState` returns `HexData` whose bytes are UTF-8 JSON:
+
+```json
+{
+  "version": 1,
+  "accounts": {
+    "0x0000000000000000000000000000000000000000": {
+      "balance": "0x0",
+      "nonce": "0x0",
+      "code": "0x",
+      "storage": {}
+    }
+  }
+}
+```
+
+Rules:
+
+- `version` must be integer `1`
+- `accounts` maps `Address` to `AccountState`
+- dump output is sorted by address for stable blobs
+- load replaces the local account/code/storage state-manager caches; it does not change fork config, chain metadata, mining config, pending txs, snapshots, receipts, logs, or canonical blocks
+
 ### `NodeMetadata`
 
 ```json

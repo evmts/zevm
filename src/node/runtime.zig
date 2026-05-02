@@ -218,6 +218,7 @@ const SnapshotEntry = struct {
     pool: txpool.TransactionPool,
     time_offset: i128,
     next_block_timestamp: ?u64,
+    block_timestamp_interval: ?u64,
     dev_config: dev_runtime_mod.NodeDevConfig,
     fork_config: ?ForkConfig,
     impersonated_accounts: std.AutoHashMap(primitives.Address, bool),
@@ -251,6 +252,7 @@ pub const NodeRuntime = struct {
     pool: txpool.TransactionPool,
     time_offset: i128,
     next_block_timestamp: ?u64,
+    block_timestamp_interval: ?u64,
     dev_runtime: dev_runtime_mod.DevRuntime,
     state: state_manager.StateManager,
     blockchain: blockchain_mod.Blockchain,
@@ -352,6 +354,7 @@ pub const NodeRuntime = struct {
             .pool = txpool.TransactionPool.init(allocator),
             .time_offset = 0,
             .next_block_timestamp = null,
+            .block_timestamp_interval = null,
             .dev_runtime = dev_runtime_mod.DevRuntime.initWithCoinbaseAndBlockGasLimit(
                 default_coinbase,
                 config.block_gas_limit,
@@ -545,11 +548,20 @@ pub const NodeRuntime = struct {
         self.dev_runtime.config.next_block_timestamp = timestamp;
     }
 
+    pub fn setBlockTimestampInterval(self: *NodeRuntime, seconds: u64) void {
+        self.block_timestamp_interval = seconds;
+    }
+
+    pub fn removeBlockTimestampInterval(self: *NodeRuntime) void {
+        self.block_timestamp_interval = null;
+    }
+
     pub fn nextBlockTimestamp(self: *NodeRuntime, parent_timestamp: u64) !u64 {
         const minimum = std.math.add(u64, parent_timestamp, 1) catch return error.InvalidParams;
         if (self.next_block_timestamp) |timestamp| {
             if (timestamp < minimum) return error.InvalidParams;
             self.next_block_timestamp = null;
+            self.dev_runtime.config.next_block_timestamp = null;
             return timestamp;
         }
         return @max(minimum, self.effectiveCurrentTime());
@@ -573,7 +585,10 @@ pub const NodeRuntime = struct {
         const had_next_block_timestamp = self.next_block_timestamp != null;
         const first_timestamp = try self.nextBlockTimestamp(self.head_block_timestamp);
         errdefer {
-            if (had_next_block_timestamp) self.next_block_timestamp = first_timestamp;
+            if (had_next_block_timestamp) {
+                self.next_block_timestamp = first_timestamp;
+                self.dev_runtime.config.next_block_timestamp = first_timestamp;
+            }
         }
 
         var coordinator = miningCoordinatorFromRuntime(self);
@@ -626,6 +641,29 @@ pub const NodeRuntime = struct {
         if (coordinator.current_base_fee_per_gas) |base_fee| {
             self.base_fee = base_fee;
         }
+    }
+
+    pub fn mineBlocksWithTimestampInterval(self: *NodeRuntime, count: u64, explicit_interval: ?u64) !void {
+        if (explicit_interval) |interval| {
+            return self.mineBlocks(count, interval);
+        }
+        const interval = self.block_timestamp_interval orelse return self.mineBlocks(count, 0);
+        if (count == 0) return;
+
+        const had_next_block_timestamp = self.next_block_timestamp != null;
+        if (!had_next_block_timestamp) {
+            const step = @max(interval, 1);
+            const next_timestamp = std.math.add(u64, self.head_block_timestamp, step) catch return error.InvalidParams;
+            self.setNextBlockTimestamp(next_timestamp);
+        }
+
+        self.mineBlocks(count, interval) catch |err| {
+            if (!had_next_block_timestamp) {
+                self.next_block_timestamp = null;
+                self.dev_runtime.config.next_block_timestamp = null;
+            }
+            return err;
+        };
     }
 
     fn executionTransactionFromPooled(pooled: txpool.PooledTransaction) tx_processor.ExecutionTx {
@@ -778,6 +816,7 @@ pub const NodeRuntime = struct {
             .pool = pool_copy,
             .time_offset = self.time_offset,
             .next_block_timestamp = self.next_block_timestamp,
+            .block_timestamp_interval = self.block_timestamp_interval,
             .dev_config = self.dev_runtime.config,
             .fork_config = fork_copy,
             .impersonated_accounts = impersonated_copy,
@@ -815,6 +854,7 @@ pub const NodeRuntime = struct {
         pool_assigned = true;
         self.time_offset = entry.time_offset;
         self.next_block_timestamp = entry.next_block_timestamp;
+        self.block_timestamp_interval = entry.block_timestamp_interval;
         self.dev_runtime.config = entry.dev_config;
 
         try self.restoreForkStateFromSnapshot(entry.fork_config);
@@ -868,6 +908,7 @@ pub const NodeRuntime = struct {
         self.pool.clear();
         self.time_offset = 0;
         self.next_block_timestamp = null;
+        self.block_timestamp_interval = null;
         self.dev_runtime.resetConfig(self.default_coinbase);
         self.impersonated_accounts.clearRetainingCapacity();
         self.auto_impersonate_account = false;

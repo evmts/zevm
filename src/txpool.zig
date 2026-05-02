@@ -160,6 +160,28 @@ pub const TransactionPool = struct {
         }
     }
 
+    pub fn removeByHash(self: *TransactionPool, hash: [32]u8) bool {
+        var index: usize = 0;
+        while (index < self.transactions.items.len) : (index += 1) {
+            const tx = self.transactions.items[index];
+            if (!sameHash(tx.hash, hash)) continue;
+
+            self.allocator.free(tx.input);
+            self.allocator.free(tx.raw);
+            _ = self.transactions.orderedRemove(index);
+            return true;
+        }
+        return false;
+    }
+
+    pub fn removeManyByHash(self: *TransactionPool, hashes: []const [32]u8) usize {
+        var removed: usize = 0;
+        for (hashes) |hash| {
+            if (self.removeByHash(hash)) removed += 1;
+        }
+        return removed;
+    }
+
     fn isPending(self: *const TransactionPool, sender: primitives.Address, nonce: u64) bool {
         var next_nonce = self.baseNonce(sender);
         while (next_nonce <= nonce) : (next_nonce += 1) {
@@ -208,9 +230,13 @@ pub const TransactionPool = struct {
 
 fn containsHash(hashes: []const [32]u8, hash: [32]u8) bool {
     for (hashes) |candidate| {
-        if (std.mem.eql(u8, &candidate, &hash)) return true;
+        if (sameHash(candidate, hash)) return true;
     }
     return false;
+}
+
+fn sameHash(a: [32]u8, b: [32]u8) bool {
+    return std.mem.eql(u8, &a, &b);
 }
 
 fn sameAddress(a: primitives.Address, b: primitives.Address) bool {

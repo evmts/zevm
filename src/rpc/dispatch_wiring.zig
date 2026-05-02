@@ -309,6 +309,22 @@ fn dispatchMethod(
     if (methodIs(method_name, &.{ "zevm_setRpcUrl", "anvil_setRpcUrl" })) {
         return trusted_fork_handlers.handleZevmSetRpcUrl(allocator, rt, params);
     }
+    if (std.mem.eql(u8, method_name, "zevm_getAccount")) {
+        const args = try parseGetAccountArgs(params);
+        return accountStateValue(allocator, rt, args.address);
+    }
+    if (std.mem.eql(u8, method_name, "zevm_setAccount")) {
+        try setAccountFromParams(allocator, rt, params);
+        return .{ .bool = true };
+    }
+    if (methodIs(method_name, &.{ "zevm_dumpState", "anvil_dumpState" })) {
+        try validateNoParams(params);
+        return dumpStateValue(allocator, rt);
+    }
+    if (methodIs(method_name, &.{ "zevm_loadState", "anvil_loadState" })) {
+        try loadStateFromParams(allocator, rt, params);
+        return .{ .bool = true };
+    }
     if (methodIs(method_name, &.{ "zevm_setBalance", "anvil_setBalance", "hardhat_setBalance", "zevm_deal", "anvil_deal" })) {
         const args = try parseAddrU256Args(params);
         try rt.setBalance(args.address, args.value);
@@ -354,7 +370,7 @@ fn dispatchMethod(
         rt.chain_id = try parseSingleQuantityU64Arg(params);
         return .{ .bool = true };
     }
-    if (methodIs(method_name, &.{ "zevm_setBlockGasLimit", "anvil_setBlockGasLimit", "hardhat_setBlockGasLimit", "evm_setBlockGasLimit" })) {
+    if (methodIs(method_name, &.{ "zevm_setBlockGasLimit", "anvil_setBlockGasLimit", "evm_setBlockGasLimit" })) {
         const items = try paramsArrayItems(params);
         if (items.len != 1) return error.InvalidParams;
         rt.dev_runtime.config.block_gas_limit = try parseU64Json(items[0]);
@@ -370,16 +386,17 @@ fn dispatchMethod(
         rt.gas_price = try parseSingleQuantityU256Arg(params);
         return .{ .bool = true };
     }
-    if (methodIs(method_name, &.{ "zevm_setNextBlockTimestamp", "anvil_setNextBlockTimestamp", "hardhat_setNextBlockTimestamp", "evm_setNextBlockTimestamp" })) {
+    if (methodIs(method_name, &.{ "zevm_setNextBlockTimestamp", "anvil_setNextBlockTimestamp", "evm_setNextBlockTimestamp" })) {
         rt.setNextBlockTimestamp(try parseTimeControlQuantity(params));
         return .{ .bool = true };
     }
-    if (methodIs(method_name, &.{ "zevm_setBlobBaseFee", "anvil_setBlobBaseFee", "hardhat_setBlobBaseFee" })) {
-        const items = try paramsArrayItems(params);
-        if (items.len != 1) return error.InvalidParams;
-        const blob_base_fee = try parseU256Json(items[0]);
-        rt.dev_runtime.config.blob_base_fee = blob_base_fee;
-        rt.blob_base_fee = blob_base_fee;
+    if (methodIs(method_name, &.{ "zevm_setBlockTimestampInterval", "anvil_setBlockTimestampInterval" })) {
+        rt.setBlockTimestampInterval(try parseTimeControlQuantity(params));
+        return .{ .bool = true };
+    }
+    if (methodIs(method_name, &.{ "zevm_removeBlockTimestampInterval", "anvil_removeBlockTimestampInterval" })) {
+        try validateNoParams(params);
+        rt.removeBlockTimestampInterval();
         return .{ .bool = true };
     }
     if (methodIs(method_name, &.{ "zevm_impersonateAccount", "anvil_impersonateAccount", "hardhat_impersonateAccount" })) {
@@ -393,9 +410,6 @@ fn dispatchMethod(
         return .{ .bool = true };
     }
     if (methodIs(method_name, &.{
-        "zevm_setAutoImpersonateAccount",
-        "anvil_setAutoImpersonateAccount",
-        "hardhat_setAutoImpersonateAccount",
         "zevm_autoImpersonateAccount",
         "anvil_autoImpersonateAccount",
     })) {
@@ -407,7 +421,7 @@ fn dispatchMethod(
         const seconds = try parseTimeControlQuantity(params);
         return hexQuantity(allocator, try rt.increaseTime(seconds));
     }
-    if (methodIs(method_name, &.{ "zevm_setTime", "anvil_setTime", "evm_setTime" })) {
+    if (methodIs(method_name, &.{ "zevm_setTime", "anvil_setTime" })) {
         const timestamp = try parseTimeControlQuantity(params);
         return hexQuantity(allocator, try rt.setTime(timestamp));
     }
@@ -420,8 +434,24 @@ fn dispatchMethod(
     }
     if (methodIs(method_name, &.{ "zevm_mine", "anvil_mine", "evm_mine", "hardhat_mine" })) {
         const args = try parseMineArgs(params);
-        try rt.mineBlocks(args.count, args.interval_seconds);
+        try rt.mineBlocksWithTimestampInterval(args.count, args.interval_seconds);
         return .{ .bool = true };
+    }
+    if (methodIs(method_name, &.{ "zevm_mineDetailed", "anvil_mineDetailed" })) {
+        return mineDetailedValue(allocator, rt, params);
+    }
+    if (methodIs(method_name, &.{ "zevm_dropTransaction", "anvil_dropTransaction", "hardhat_dropTransaction" })) {
+        const hash = try parseSingleHashArg(params);
+        return .{ .bool = rt.pool.removeByHash(hash) };
+    }
+    if (methodIs(method_name, &.{ "zevm_dropAllTransactions", "anvil_dropAllTransactions" })) {
+        try validateNoParams(params);
+        const removed = rt.pool.items().len;
+        rt.pool.clear();
+        return hexQuantity(allocator, removed);
+    }
+    if (methodIs(method_name, &.{ "zevm_removePoolTransactions", "anvil_removePoolTransactions" })) {
+        return hexQuantity(allocator, try removePoolTransactions(rt, params));
     }
     if (methodIs(method_name, &.{ "zevm_getAutomine", "anvil_getAutomine", "hardhat_getAutomine" })) {
         try validateNoParams(params);
@@ -669,6 +699,12 @@ fn isLightModeUnsupportedMethod(method_name: []const u8) bool {
         "zevm_setBalance",
         "anvil_setBalance",
         "hardhat_setBalance",
+        "zevm_getAccount",
+        "zevm_setAccount",
+        "zevm_dumpState",
+        "anvil_dumpState",
+        "zevm_loadState",
+        "anvil_loadState",
         "zevm_deal",
         "anvil_deal",
         "zevm_addBalance",
@@ -693,7 +729,6 @@ fn isLightModeUnsupportedMethod(method_name: []const u8) bool {
         "anvil_setChainId",
         "zevm_setBlockGasLimit",
         "anvil_setBlockGasLimit",
-        "hardhat_setBlockGasLimit",
         "evm_setBlockGasLimit",
         "zevm_setNextBlockBaseFeePerGas",
         "anvil_setNextBlockBaseFeePerGas",
@@ -701,18 +736,12 @@ fn isLightModeUnsupportedMethod(method_name: []const u8) bool {
         "zevm_setMinGasPrice",
         "anvil_setMinGasPrice",
         "hardhat_setMinGasPrice",
-        "zevm_setBlobBaseFee",
-        "anvil_setBlobBaseFee",
-        "hardhat_setBlobBaseFee",
         "zevm_impersonateAccount",
         "anvil_impersonateAccount",
         "hardhat_impersonateAccount",
         "zevm_stopImpersonatingAccount",
         "anvil_stopImpersonatingAccount",
         "hardhat_stopImpersonatingAccount",
-        "zevm_setAutoImpersonateAccount",
-        "anvil_setAutoImpersonateAccount",
-        "hardhat_setAutoImpersonateAccount",
         "zevm_autoImpersonateAccount",
         "anvil_autoImpersonateAccount",
         "zevm_increaseTime",
@@ -720,11 +749,13 @@ fn isLightModeUnsupportedMethod(method_name: []const u8) bool {
         "evm_increaseTime",
         "zevm_setTime",
         "anvil_setTime",
-        "evm_setTime",
         "zevm_setNextBlockTimestamp",
         "anvil_setNextBlockTimestamp",
         "evm_setNextBlockTimestamp",
-        "hardhat_setNextBlockTimestamp",
+        "zevm_setBlockTimestampInterval",
+        "anvil_setBlockTimestampInterval",
+        "zevm_removeBlockTimestampInterval",
+        "anvil_removeBlockTimestampInterval",
         "zevm_snapshot",
         "anvil_snapshot",
         "evm_snapshot",
@@ -735,6 +766,15 @@ fn isLightModeUnsupportedMethod(method_name: []const u8) bool {
         "anvil_mine",
         "evm_mine",
         "hardhat_mine",
+        "zevm_mineDetailed",
+        "anvil_mineDetailed",
+        "zevm_dropTransaction",
+        "anvil_dropTransaction",
+        "hardhat_dropTransaction",
+        "zevm_dropAllTransactions",
+        "anvil_dropAllTransactions",
+        "zevm_removePoolTransactions",
+        "anvil_removePoolTransactions",
         "zevm_getAutomine",
         "anvil_getAutomine",
         "hardhat_getAutomine",
@@ -775,6 +815,8 @@ fn validateLightUnsupportedParams(
         "txpool_content",
         "txpool_status",
         "txpool_inspect",
+        "zevm_dumpState",
+        "anvil_dumpState",
         "zevm_getAutomine",
         "anvil_getAutomine",
         "hardhat_getAutomine",
@@ -785,11 +827,26 @@ fn validateLightUnsupportedParams(
         "hardhat_metadata",
         "zevm_nodeInfo",
         "anvil_nodeInfo",
+        "zevm_removeBlockTimestampInterval",
+        "anvil_removeBlockTimestampInterval",
     })) {
         return validateNoParams(params);
     }
     if (methodIs(method_name, &.{ "zevm_deal", "anvil_deal", "zevm_addBalance", "anvil_addBalance" })) {
         _ = try parseAddrU256Args(params);
+        return;
+    }
+    if (std.mem.eql(u8, method_name, "zevm_getAccount")) {
+        _ = try parseGetAccountArgs(params);
+        return;
+    }
+    if (std.mem.eql(u8, method_name, "zevm_setAccount")) {
+        try validateSetAccountParams(params);
+        return;
+    }
+    if (methodIs(method_name, &.{ "zevm_loadState", "anvil_loadState" })) {
+        const bytes = try parseSingleHexDataBytesArg(allocator, params);
+        allocator.free(bytes);
         return;
     }
     if (methodIs(method_name, &.{ "zevm_setChainId", "anvil_setChainId" })) {
@@ -798,6 +855,26 @@ fn validateLightUnsupportedParams(
     }
     if (methodIs(method_name, &.{ "zevm_setMinGasPrice", "anvil_setMinGasPrice", "hardhat_setMinGasPrice" })) {
         _ = try parseSingleQuantityU256Arg(params);
+        return;
+    }
+    if (methodIs(method_name, &.{ "zevm_setBlockTimestampInterval", "anvil_setBlockTimestampInterval" })) {
+        _ = try parseTimeControlQuantity(params);
+        return;
+    }
+    if (methodIs(method_name, &.{ "zevm_dropTransaction", "anvil_dropTransaction", "hardhat_dropTransaction" })) {
+        _ = try parseSingleHashArg(params);
+        return;
+    }
+    if (methodIs(method_name, &.{ "zevm_dropAllTransactions", "anvil_dropAllTransactions" })) {
+        try validateNoParams(params);
+        return;
+    }
+    if (methodIs(method_name, &.{ "zevm_removePoolTransactions", "anvil_removePoolTransactions" })) {
+        try validateHashArrayArg(params);
+        return;
+    }
+    if (methodIs(method_name, &.{ "zevm_mine", "anvil_mine", "evm_mine", "hardhat_mine", "zevm_mineDetailed", "anvil_mineDetailed" })) {
+        _ = try parseMineArgs(params);
         return;
     }
     if (std.mem.eql(u8, method_name, "web3_sha3")) {
@@ -962,6 +1039,10 @@ const AddrBlockArgs = struct {
     address: primitives.Address,
 };
 
+const GetAccountArgs = struct {
+    address: primitives.Address,
+};
+
 const StorageArgs = struct {
     address: primitives.Address,
     slot: u256,
@@ -990,7 +1071,7 @@ const StorageSetArgs = struct {
 
 const MineArgs = struct {
     count: u64,
-    interval_seconds: u64,
+    interval_seconds: ?u64,
 };
 
 fn paramsArrayItems(params: ?std.json.Value) ![]const std.json.Value {
@@ -1001,6 +1082,13 @@ fn parseAddrAndBlockArgs(params: ?std.json.Value) !AddrBlockArgs {
     const items = try paramsArrayItems(params);
     if (items.len != 2) return error.InvalidParams;
     try validateBlockSpecJson(items[1]);
+    return .{ .address = try parseAddressJson(items[0]) };
+}
+
+fn parseGetAccountArgs(params: ?std.json.Value) !GetAccountArgs {
+    const items = try paramsArrayItems(params);
+    if (items.len != 1 and items.len != 2) return error.InvalidParams;
+    if (items.len == 2) try validateBlockSpecJson(items[1]);
     return .{ .address = try parseAddressJson(items[0]) };
 }
 
@@ -1067,6 +1155,12 @@ fn parseSingleAddressArg(params: ?std.json.Value) !primitives.Address {
     return parseAddressJson(items[0]);
 }
 
+fn parseSingleHashArg(params: ?std.json.Value) ![32]u8 {
+    const items = try paramsArrayItems(params);
+    if (items.len != 1) return error.InvalidParams;
+    return rpc_parse.parseHash32Value(items[0]);
+}
+
 fn parseSingleBoolArg(params: ?std.json.Value) !bool {
     const items = try paramsArrayItems(params);
     if (items.len != 1) return error.InvalidParams;
@@ -1094,14 +1188,41 @@ fn parseMineArgs(params: ?std.json.Value) !MineArgs {
     if (items.len == 0) {
         return .{
             .count = 1,
-            .interval_seconds = 0,
+            .interval_seconds = null,
         };
     }
 
     return .{
         .count = try parseQuantityU64Json(items[0]),
-        .interval_seconds = if (items.len == 2) try parseQuantityU64Json(items[1]) else 0,
+        .interval_seconds = if (items.len == 2) try parseQuantityU64Json(items[1]) else null,
     };
+}
+
+fn validateHashArrayArg(params: ?std.json.Value) !void {
+    const items = try paramsArrayItems(params);
+    if (items.len != 1) return error.InvalidParams;
+    const hashes = switch (items[0]) {
+        .array => |array| array.items,
+        else => return error.InvalidParams,
+    };
+    for (hashes) |hash_value| {
+        _ = try rpc_parse.parseHash32Value(hash_value);
+    }
+}
+
+fn removePoolTransactions(rt: *runtime_mod.NodeRuntime, params: ?std.json.Value) !usize {
+    const items = try paramsArrayItems(params);
+    if (items.len != 1) return error.InvalidParams;
+    const hashes = switch (items[0]) {
+        .array => |array| array.items,
+        else => return error.InvalidParams,
+    };
+
+    var removed: usize = 0;
+    for (hashes) |hash_value| {
+        if (rt.pool.removeByHash(try rpc_parse.parseHash32Value(hash_value))) removed += 1;
+    }
+    return removed;
 }
 
 fn parseSetAutomineArgs(params: ?std.json.Value) !bool {
@@ -1142,10 +1263,10 @@ fn typedResultToJsonValue(allocator: std.mem.Allocator, result: anytype) !std.js
     defer writer.deinit();
 
     try std.json.Stringify.value(result, .{}, &writer.writer);
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, writer.written(), .{
+    // ResponseEnvelope owns and recursively frees result values.
+    return try std.json.parseFromSliceLeaky(std.json.Value, allocator, writer.written(), .{
         .allocate = .alloc_always,
     });
-    return parsed.value;
 }
 
 fn parseSendRawTransactionParams(params: ?std.json.Value) !jsonrpc.eth.SendRawTransaction.Params {
@@ -1412,6 +1533,364 @@ fn accountsResponse(allocator: std.mem.Allocator) !std.json.Value {
         try array.append(try addressString(allocator, addr));
     }
     return .{ .array = array };
+}
+
+fn accountStateValue(
+    allocator: std.mem.Allocator,
+    rt: *runtime_mod.NodeRuntime,
+    address: primitives.Address,
+) !std.json.Value {
+    const account = try rt.state.journaled_state.getAccount(address);
+    const code = try rt.getCode(address);
+
+    var obj = std.json.ObjectMap.init(allocator);
+    errdefer {
+        var value = std.json.Value{ .object = obj };
+        deinitJsonValue(allocator, &value);
+    }
+
+    try putOwnedJson(&obj, allocator, "balance", try hexU256(allocator, account.balance));
+    try putOwnedJson(&obj, allocator, "nonce", try hexQuantity(allocator, account.nonce));
+    try putOwnedJson(&obj, allocator, "code", try hexBytes(allocator, code));
+    try putOwnedJson(&obj, allocator, "storage", try accountStorageValue(allocator, rt, address));
+    return .{ .object = obj };
+}
+
+fn accountStorageValue(
+    allocator: std.mem.Allocator,
+    rt: *runtime_mod.NodeRuntime,
+    address: primitives.Address,
+) !std.json.Value {
+    var obj = std.json.ObjectMap.init(allocator);
+    errdefer {
+        var value = std.json.Value{ .object = obj };
+        deinitJsonValue(allocator, &value);
+    }
+
+    if (rt.state.journaled_state.storage_cache.cache.getPtr(address)) |slots| {
+        var iterator = slots.iterator();
+        while (iterator.next()) |entry| {
+            const key_value = try dataHexU256(allocator, entry.key_ptr.*);
+            const key = key_value.string;
+            errdefer allocator.free(key);
+            try obj.put(key, try dataHexU256(allocator, entry.value_ptr.*));
+        }
+    }
+
+    return .{ .object = obj };
+}
+
+fn setAccountFromParams(
+    allocator: std.mem.Allocator,
+    rt: *runtime_mod.NodeRuntime,
+    params: ?std.json.Value,
+) !void {
+    const items = try paramsArrayItems(params);
+    if (items.len != 2) return error.InvalidParams;
+    const address = try parseAddressJson(items[0]);
+    const account_obj = switch (items[1]) {
+        .object => |object| object,
+        else => return error.InvalidParams,
+    };
+
+    try rt.state.checkpoint();
+    var committed = false;
+    defer if (!committed) rt.state.revert();
+
+    try replaceAccountFromObject(allocator, rt, address, account_obj);
+    rt.state.commit();
+    committed = true;
+}
+
+fn replaceAccountFromObject(
+    allocator: std.mem.Allocator,
+    rt: *runtime_mod.NodeRuntime,
+    address: primitives.Address,
+    account_obj: std.json.ObjectMap,
+) !void {
+    try validateAccountStateObject(account_obj);
+
+    const balance = try parseU256Json(account_obj.get("balance").?);
+    const nonce = try parseU64Json(account_obj.get("nonce").?);
+    const code = switch (account_obj.get("code").?) {
+        .string => |text| try hexStringToBytes(allocator, text),
+        else => return error.InvalidParams,
+    };
+    defer allocator.free(code);
+    const storage_obj = account_obj.get("storage").?.object;
+
+    try rt.setBalance(address, balance);
+    try rt.setNonce(address, nonce);
+    try rt.setCode(address, code);
+    clearAccountStorage(rt, address);
+
+    var storage_iterator = storage_obj.iterator();
+    while (storage_iterator.next()) |entry| {
+        const slot = try parseBytes32StringAsU256(entry.key_ptr.*);
+        const value = try parseBytes32ValueAsU256(entry.value_ptr.*);
+        try rt.setStorage(address, slot, value);
+    }
+}
+
+fn validateSetAccountParams(params: ?std.json.Value) !void {
+    const items = try paramsArrayItems(params);
+    if (items.len != 2) return error.InvalidParams;
+    _ = try parseAddressJson(items[0]);
+    const account_obj = switch (items[1]) {
+        .object => |object| object,
+        else => return error.InvalidParams,
+    };
+    try validateAccountStateObject(account_obj);
+}
+
+fn validateAccountStateObject(account_obj: std.json.ObjectMap) !void {
+    var has_balance = false;
+    var has_nonce = false;
+    var has_code = false;
+    var has_storage = false;
+
+    var iterator = account_obj.iterator();
+    while (iterator.next()) |entry| {
+        const key = entry.key_ptr.*;
+        if (std.mem.eql(u8, key, "balance")) {
+            has_balance = true;
+            _ = try parseU256Json(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "nonce")) {
+            has_nonce = true;
+            _ = try parseU64Json(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "code")) {
+            switch (entry.value_ptr.*) {
+                .string => |text| try validateHexData(text),
+                else => return error.InvalidParams,
+            }
+            has_code = true;
+        } else if (std.mem.eql(u8, key, "storage")) {
+            const storage_obj = switch (entry.value_ptr.*) {
+                .object => |object| object,
+                else => return error.InvalidParams,
+            };
+            var storage_iterator = storage_obj.iterator();
+            while (storage_iterator.next()) |storage_entry| {
+                _ = try parseBytes32StringAsU256(storage_entry.key_ptr.*);
+                _ = try parseBytes32ValueAsU256(storage_entry.value_ptr.*);
+            }
+            has_storage = true;
+        } else {
+            return error.InvalidParams;
+        }
+    }
+
+    if (!has_balance or !has_nonce or !has_code or !has_storage) return error.InvalidParams;
+}
+
+fn clearAccountStorage(rt: *runtime_mod.NodeRuntime, address: primitives.Address) void {
+    if (rt.state.journaled_state.storage_cache.cache.fetchRemove(address)) |entry| {
+        var slots = entry.value;
+        slots.deinit();
+    }
+}
+
+fn parseBytes32StringAsU256(text: []const u8) !u256 {
+    const bytes = try rpc_parse.parseHash32String(text);
+    return std.mem.readInt(u256, &bytes, .big);
+}
+
+fn parseBytes32ValueAsU256(value: std.json.Value) !u256 {
+    const bytes = try rpc_parse.parseHash32Value(value);
+    return std.mem.readInt(u256, &bytes, .big);
+}
+
+fn dumpStateValue(allocator: std.mem.Allocator, rt: *runtime_mod.NodeRuntime) !std.json.Value {
+    var dump_json = try stateDumpJsonValue(allocator, rt);
+    defer deinitJsonValue(allocator, &dump_json);
+
+    var writer: std.Io.Writer.Allocating = .init(allocator);
+    defer writer.deinit();
+    try std.json.Stringify.value(dump_json, .{}, &writer.writer);
+    return hexBytes(allocator, writer.written());
+}
+
+fn stateDumpJsonValue(allocator: std.mem.Allocator, rt: *runtime_mod.NodeRuntime) !std.json.Value {
+    var obj = std.json.ObjectMap.init(allocator);
+    errdefer {
+        var value = std.json.Value{ .object = obj };
+        deinitJsonValue(allocator, &value);
+    }
+
+    try putOwnedJson(&obj, allocator, "version", .{ .integer = 1 });
+    try putOwnedJson(&obj, allocator, "accounts", try stateDumpAccountsValue(allocator, rt));
+    return .{ .object = obj };
+}
+
+fn stateDumpAccountsValue(allocator: std.mem.Allocator, rt: *runtime_mod.NodeRuntime) !std.json.Value {
+    const addresses = try collectDumpAddresses(allocator, rt);
+    defer allocator.free(addresses);
+
+    var obj = std.json.ObjectMap.init(allocator);
+    errdefer {
+        var value = std.json.Value{ .object = obj };
+        deinitJsonValue(allocator, &value);
+    }
+
+    for (addresses) |address| {
+        const key_value = try addressString(allocator, address);
+        const key = key_value.string;
+        errdefer allocator.free(key);
+        try obj.put(key, try accountStateValue(allocator, rt, address));
+    }
+
+    return .{ .object = obj };
+}
+
+fn collectDumpAddresses(allocator: std.mem.Allocator, rt: *runtime_mod.NodeRuntime) ![]primitives.Address {
+    var seen = std.AutoHashMap(primitives.Address, void).init(allocator);
+    defer seen.deinit();
+
+    var addresses = std.ArrayList(primitives.Address){};
+    errdefer addresses.deinit(allocator);
+
+    var account_iterator = rt.state.journaled_state.account_cache.cache.keyIterator();
+    while (account_iterator.next()) |address| {
+        try appendDumpAddress(allocator, &seen, &addresses, address.*);
+    }
+
+    var contract_iterator = rt.state.journaled_state.contract_cache.cache.keyIterator();
+    while (contract_iterator.next()) |address| {
+        try appendDumpAddress(allocator, &seen, &addresses, address.*);
+    }
+
+    var storage_iterator = rt.state.journaled_state.storage_cache.cache.keyIterator();
+    while (storage_iterator.next()) |address| {
+        try appendDumpAddress(allocator, &seen, &addresses, address.*);
+    }
+
+    std.mem.sort(primitives.Address, addresses.items, {}, addressLessThan);
+    return try addresses.toOwnedSlice(allocator);
+}
+
+fn appendDumpAddress(
+    allocator: std.mem.Allocator,
+    seen: *std.AutoHashMap(primitives.Address, void),
+    addresses: *std.ArrayList(primitives.Address),
+    address: primitives.Address,
+) !void {
+    const entry = try seen.getOrPut(address);
+    if (entry.found_existing) return;
+    try addresses.append(allocator, address);
+}
+
+fn addressLessThan(_: void, a: primitives.Address, b: primitives.Address) bool {
+    return std.mem.order(u8, &a.bytes, &b.bytes) == .lt;
+}
+
+fn loadStateFromParams(
+    allocator: std.mem.Allocator,
+    rt: *runtime_mod.NodeRuntime,
+    params: ?std.json.Value,
+) !void {
+    const bytes = try parseSingleHexDataBytesArg(allocator, params);
+    defer allocator.free(bytes);
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{
+        .allocate = .alloc_always,
+    }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidParams,
+    };
+    defer parsed.deinit();
+
+    try loadStateFromValue(allocator, rt, parsed.value);
+}
+
+fn loadStateFromValue(
+    allocator: std.mem.Allocator,
+    rt: *runtime_mod.NodeRuntime,
+    value: std.json.Value,
+) !void {
+    const root = switch (value) {
+        .object => |object| object,
+        else => return error.InvalidParams,
+    };
+    const version = switch (root.get("version") orelse return error.InvalidParams) {
+        .integer => |integer| integer,
+        else => return error.InvalidParams,
+    };
+    if (version != 1) return error.InvalidParams;
+
+    const accounts = switch (root.get("accounts") orelse return error.InvalidParams) {
+        .object => |object| object,
+        else => return error.InvalidParams,
+    };
+
+    try rt.state.checkpoint();
+    var committed = false;
+    defer if (!committed) rt.state.revert();
+
+    clearLocalState(rt);
+
+    var iterator = accounts.iterator();
+    while (iterator.next()) |entry| {
+        const address = try parseAddressString(entry.key_ptr.*);
+        const account_obj = switch (entry.value_ptr.*) {
+            .object => |object| object,
+            else => return error.InvalidParams,
+        };
+        try replaceAccountFromObject(allocator, rt, address, account_obj);
+    }
+
+    rt.state.commit();
+    committed = true;
+}
+
+fn parseSingleHexDataBytesArg(allocator: std.mem.Allocator, params: ?std.json.Value) ![]u8 {
+    const items = try paramsArrayItems(params);
+    if (items.len != 1) return error.InvalidParams;
+    return switch (items[0]) {
+        .string => |text| hexStringToBytes(allocator, text),
+        else => error.InvalidParams,
+    };
+}
+
+fn clearLocalState(rt: *runtime_mod.NodeRuntime) void {
+    rt.state.journaled_state.account_cache.clear();
+    rt.state.journaled_state.storage_cache.clear();
+    rt.state.journaled_state.contract_cache.clear();
+}
+
+fn mineDetailedValue(allocator: std.mem.Allocator, rt: *runtime_mod.NodeRuntime, params: ?std.json.Value) !std.json.Value {
+    const args = try parseMineArgs(params);
+    const start_block = rt.head_block_number;
+    try rt.mineBlocksWithTimestampInterval(args.count, args.interval_seconds);
+
+    var array = std.json.Array.init(allocator);
+    errdefer {
+        for (array.items) |*item| {
+            deinitJsonValue(allocator, item);
+        }
+        array.deinit();
+    }
+
+    var number = start_block;
+    while (number < rt.head_block_number) {
+        number += 1;
+        const block = (try rt.blockchain.getBlockByNumber(number)) orelse return error.MinedBlockMissing;
+        try array.append(try minedBlockSummaryValue(allocator, block));
+    }
+
+    return .{ .array = array };
+}
+
+fn minedBlockSummaryValue(allocator: std.mem.Allocator, block: primitives.Block.Block) !std.json.Value {
+    var obj = std.json.ObjectMap.init(allocator);
+    errdefer {
+        var value = std.json.Value{ .object = obj };
+        deinitJsonValue(allocator, &value);
+    }
+
+    try putOwnedJson(&obj, allocator, "number", try hexQuantity(allocator, block.header.number));
+    try putOwnedJson(&obj, allocator, "hash", try hexHash32(allocator, block.hash));
+    try putOwnedJson(&obj, allocator, "timestamp", try hexQuantity(allocator, block.header.timestamp));
+    return .{ .object = obj };
 }
 
 fn metadataValue(allocator: std.mem.Allocator, rt: *const runtime_mod.NodeRuntime) !std.json.Value {

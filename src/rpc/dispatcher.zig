@@ -144,6 +144,12 @@ fn isLocallyHandledMethod(method_name: []const u8) bool {
         std.mem.eql(u8, method_name, "zevm_setBalance") or
         std.mem.eql(u8, method_name, "anvil_setBalance") or
         std.mem.eql(u8, method_name, "hardhat_setBalance") or
+        std.mem.eql(u8, method_name, "zevm_getAccount") or
+        std.mem.eql(u8, method_name, "zevm_setAccount") or
+        std.mem.eql(u8, method_name, "zevm_dumpState") or
+        std.mem.eql(u8, method_name, "anvil_dumpState") or
+        std.mem.eql(u8, method_name, "zevm_loadState") or
+        std.mem.eql(u8, method_name, "anvil_loadState") or
         std.mem.eql(u8, method_name, "zevm_deal") or
         std.mem.eql(u8, method_name, "anvil_deal") or
         std.mem.eql(u8, method_name, "zevm_addBalance") or
@@ -168,7 +174,6 @@ fn isLocallyHandledMethod(method_name: []const u8) bool {
         std.mem.eql(u8, method_name, "anvil_setChainId") or
         std.mem.eql(u8, method_name, "zevm_setBlockGasLimit") or
         std.mem.eql(u8, method_name, "anvil_setBlockGasLimit") or
-        std.mem.eql(u8, method_name, "hardhat_setBlockGasLimit") or
         std.mem.eql(u8, method_name, "evm_setBlockGasLimit") or
         std.mem.eql(u8, method_name, "zevm_setNextBlockBaseFeePerGas") or
         std.mem.eql(u8, method_name, "anvil_setNextBlockBaseFeePerGas") or
@@ -176,18 +181,12 @@ fn isLocallyHandledMethod(method_name: []const u8) bool {
         std.mem.eql(u8, method_name, "zevm_setMinGasPrice") or
         std.mem.eql(u8, method_name, "anvil_setMinGasPrice") or
         std.mem.eql(u8, method_name, "hardhat_setMinGasPrice") or
-        std.mem.eql(u8, method_name, "zevm_setBlobBaseFee") or
-        std.mem.eql(u8, method_name, "anvil_setBlobBaseFee") or
-        std.mem.eql(u8, method_name, "hardhat_setBlobBaseFee") or
         std.mem.eql(u8, method_name, "zevm_impersonateAccount") or
         std.mem.eql(u8, method_name, "anvil_impersonateAccount") or
         std.mem.eql(u8, method_name, "hardhat_impersonateAccount") or
         std.mem.eql(u8, method_name, "zevm_stopImpersonatingAccount") or
         std.mem.eql(u8, method_name, "anvil_stopImpersonatingAccount") or
         std.mem.eql(u8, method_name, "hardhat_stopImpersonatingAccount") or
-        std.mem.eql(u8, method_name, "zevm_setAutoImpersonateAccount") or
-        std.mem.eql(u8, method_name, "anvil_setAutoImpersonateAccount") or
-        std.mem.eql(u8, method_name, "hardhat_setAutoImpersonateAccount") or
         std.mem.eql(u8, method_name, "zevm_autoImpersonateAccount") or
         std.mem.eql(u8, method_name, "anvil_autoImpersonateAccount") or
         std.mem.eql(u8, method_name, "zevm_increaseTime") or
@@ -195,11 +194,13 @@ fn isLocallyHandledMethod(method_name: []const u8) bool {
         std.mem.eql(u8, method_name, "evm_increaseTime") or
         std.mem.eql(u8, method_name, "zevm_setTime") or
         std.mem.eql(u8, method_name, "anvil_setTime") or
-        std.mem.eql(u8, method_name, "evm_setTime") or
         std.mem.eql(u8, method_name, "zevm_setNextBlockTimestamp") or
         std.mem.eql(u8, method_name, "anvil_setNextBlockTimestamp") or
         std.mem.eql(u8, method_name, "evm_setNextBlockTimestamp") or
-        std.mem.eql(u8, method_name, "hardhat_setNextBlockTimestamp") or
+        std.mem.eql(u8, method_name, "zevm_setBlockTimestampInterval") or
+        std.mem.eql(u8, method_name, "anvil_setBlockTimestampInterval") or
+        std.mem.eql(u8, method_name, "zevm_removeBlockTimestampInterval") or
+        std.mem.eql(u8, method_name, "anvil_removeBlockTimestampInterval") or
         std.mem.eql(u8, method_name, "zevm_snapshot") or
         std.mem.eql(u8, method_name, "anvil_snapshot") or
         std.mem.eql(u8, method_name, "evm_snapshot") or
@@ -210,6 +211,15 @@ fn isLocallyHandledMethod(method_name: []const u8) bool {
         std.mem.eql(u8, method_name, "anvil_mine") or
         std.mem.eql(u8, method_name, "evm_mine") or
         std.mem.eql(u8, method_name, "hardhat_mine") or
+        std.mem.eql(u8, method_name, "zevm_mineDetailed") or
+        std.mem.eql(u8, method_name, "anvil_mineDetailed") or
+        std.mem.eql(u8, method_name, "zevm_dropTransaction") or
+        std.mem.eql(u8, method_name, "anvil_dropTransaction") or
+        std.mem.eql(u8, method_name, "hardhat_dropTransaction") or
+        std.mem.eql(u8, method_name, "zevm_dropAllTransactions") or
+        std.mem.eql(u8, method_name, "anvil_dropAllTransactions") or
+        std.mem.eql(u8, method_name, "zevm_removePoolTransactions") or
+        std.mem.eql(u8, method_name, "anvil_removePoolTransactions") or
         std.mem.eql(u8, method_name, "zevm_getAutomine") or
         std.mem.eql(u8, method_name, "anvil_getAutomine") or
         std.mem.eql(u8, method_name, "hardhat_getAutomine") or

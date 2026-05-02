@@ -205,10 +205,43 @@ test "NodeRuntime nextBlockTimestamp consumes one-shot override" {
     rt.setNextBlockTimestamp(100);
     try std.testing.expectEqual(@as(u64, 100), try rt.nextBlockTimestamp(99));
     try std.testing.expectEqual(@as(?u64, null), rt.next_block_timestamp);
+    try std.testing.expect(rt.dev_runtime.config.next_block_timestamp == null);
 
     rt.setNextBlockTimestamp(100);
     try std.testing.expectError(error.InvalidParams, rt.nextBlockTimestamp(100));
     try std.testing.expectEqual(@as(?u64, 100), rt.next_block_timestamp);
+    try std.testing.expectEqual(@as(?u64, 100), rt.dev_runtime.config.next_block_timestamp);
+}
+
+test "NodeRuntime mineBlocks consumes next block timestamp override once" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    rt.setNextBlockTimestamp(100);
+    try rt.mineBlocks(2, 3);
+
+    const block_1 = (try rt.blockchain.getBlockByNumber(1)).?;
+    const block_2 = (try rt.blockchain.getBlockByNumber(2)).?;
+    try std.testing.expectEqual(@as(u64, 100), block_1.header.timestamp);
+    try std.testing.expectEqual(@as(u64, 103), block_2.header.timestamp);
+    try std.testing.expectEqual(@as(?u64, null), rt.next_block_timestamp);
+    try std.testing.expect(rt.dev_runtime.config.next_block_timestamp == null);
+}
+
+test "NodeRuntime configured block timestamp interval controls explicit mining" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    rt.setBlockTimestampInterval(7);
+    try rt.mineBlocksWithTimestampInterval(2, null);
+
+    const block_1 = (try rt.blockchain.getBlockByNumber(1)).?;
+    const block_2 = (try rt.blockchain.getBlockByNumber(2)).?;
+    try std.testing.expectEqual(@as(u64, 7), block_1.header.timestamp);
+    try std.testing.expectEqual(@as(u64, 14), block_2.header.timestamp);
+
+    rt.removeBlockTimestampInterval();
+    try std.testing.expectEqual(@as(?u64, null), rt.block_timestamp_interval);
 }
 
 test "NodeRuntime snapshot and reset preserve time controls" {
@@ -217,18 +250,22 @@ test "NodeRuntime snapshot and reset preserve time controls" {
 
     _ = try rt.increaseTime(10);
     rt.setNextBlockTimestamp(100);
+    rt.setBlockTimestampInterval(7);
     const snap = try rt.snapshot();
 
     _ = try rt.increaseTime(5);
     rt.setNextBlockTimestamp(200);
+    rt.setBlockTimestampInterval(9);
 
     try std.testing.expect(try rt.revertToSnapshot(snap));
     try std.testing.expectEqual(@as(i128, 10), rt.time_offset);
     try std.testing.expectEqual(@as(?u64, 100), rt.next_block_timestamp);
+    try std.testing.expectEqual(@as(?u64, 7), rt.block_timestamp_interval);
 
     try rt.reset(.keep_current);
     try std.testing.expectEqual(@as(i128, 0), rt.time_offset);
     try std.testing.expectEqual(@as(?u64, null), rt.next_block_timestamp);
+    try std.testing.expectEqual(@as(?u64, null), rt.block_timestamp_interval);
 }
 
 const MockForkResolver = struct {

@@ -657,6 +657,37 @@ Field contract:
 | `code` | yes | `HexData` | non-null |
 | `storage` | yes | object mapping `Bytes32` -> `Bytes32` | non-null (empty object allowed) |
 
+`StateBlob`:
+
+`zevm_dumpState` returns `HexData` whose decoded bytes are UTF-8 JSON with this shape:
+
+```json
+{
+  "version": 1,
+  "accounts": {
+    "0x0000000000000000000000000000000000000000": {
+      "balance": "0x0",
+      "nonce": "0x0",
+      "code": "0x",
+      "storage": {}
+    }
+  }
+}
+```
+
+Field contract:
+
+| Field | Required | Type | Nullability / rule |
+| --- | --- | --- | --- |
+| `version` | yes | integer | must be `1` |
+| `accounts` | yes | object mapping `Address` -> `AccountState` | non-null; empty object allowed |
+
+Rules:
+
+- dump output is sorted by address for stable blobs
+- `zevm_loadState` replaces local account/code/storage state-manager caches with the blob contents
+- `zevm_loadState` does not mutate fork config, chain metadata, mining config, pending txs, snapshots, receipts, logs, or canonical blocks
+
 `MinedBlockSummary`:
 
 ```json

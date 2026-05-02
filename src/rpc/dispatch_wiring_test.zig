@@ -84,6 +84,440 @@ fn dispatchOneStringParam(
     return dispatcher.dispatch(std.testing.allocator, request, handlers);
 }
 
+fn addPooledTransaction(rt: *runtime_mod.NodeRuntime, sender: primitives.Address, hash: [32]u8) !void {
+    try rt.pool.setNonce(sender, 0);
+    try rt.pool.add(std.testing.allocator, .{
+        .sender = sender,
+        .nonce = 0,
+        .gas_limit = 21_000,
+        .max_fee_per_gas = runtime_mod.DEFAULT_GAS_PRICE,
+        .hash = hash,
+    });
+}
+
+const ContractMethodInventory = std.StringHashMap(void);
+const contract_method_prefixes = [_][]const u8{
+    "eth_",
+    "web3_",
+    "net_",
+    "txpool_",
+    "zevm_",
+    "anvil_",
+    "hardhat_",
+    "evm_",
+};
+
+fn collectContractMethodInventory(allocator: std.mem.Allocator, methods: *ContractMethodInventory) !void {
+    const docs = try std.fs.cwd().readFileAlloc(allocator, "docs/specs/json-rpc-contract.md", 2 * 1024 * 1024);
+
+    try collectMethodsFromSection(methods, docs, "## 8. Trusted-Mode Standard Methods", "## 12. Deferred Trusted Helpers");
+    try collectMethodsFromSection(methods, docs, "## 13. Light-Mode Methods", "## 14. Unsupported Public Surface");
+}
+
+fn collectSourceMethodInventory(allocator: std.mem.Allocator, methods: *ContractMethodInventory) !void {
+    const dispatcher_source = try std.fs.cwd().readFileAlloc(allocator, "src/rpc/dispatcher.zig", 512 * 1024);
+    const wiring_source = try std.fs.cwd().readFileAlloc(allocator, "src/rpc/dispatch_wiring.zig", 1024 * 1024);
+
+    try collectQuotedMethodTokens(methods, dispatcher_source);
+    try collectQuotedMethodTokens(methods, wiring_source);
+}
+
+fn collectMethodsFromSection(
+    methods: *ContractMethodInventory,
+    docs: []const u8,
+    start_marker: []const u8,
+    end_marker: []const u8,
+) !void {
+    const start = std.mem.indexOf(u8, docs, start_marker) orelse return error.ContractSectionMissing;
+    const end = std.mem.indexOfPos(u8, docs, start + start_marker.len, end_marker) orelse return error.ContractSectionMissing;
+    try collectMethodTokens(methods, docs[start..end]);
+}
+
+fn collectQuotedMethodTokens(methods: *ContractMethodInventory, source: []const u8) !void {
+    var cursor: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, source, cursor, '"')) |start| {
+        const end = std.mem.indexOfScalarPos(u8, source, start + 1, '"') orelse return error.MalformedStringLiteral;
+        const text = source[start + 1 .. end];
+        if (isConcreteMethodName(text) and !methods.contains(text)) try methods.put(text, {});
+        cursor = end + 1;
+    }
+}
+
+fn isConcreteMethodName(text: []const u8) bool {
+    if (methodPrefixAt(text) == null) return false;
+    for (text) |char| {
+        if (!isMethodNameChar(char)) return false;
+    }
+    return true;
+}
+
+fn collectMethodTokens(methods: *ContractMethodInventory, text: []const u8) !void {
+    var index: usize = 0;
+    while (index < text.len) {
+        if (index != 0 and isMethodNameChar(text[index - 1])) {
+            index += 1;
+            continue;
+        }
+
+        const prefix = methodPrefixAt(text[index..]) orelse {
+            index += 1;
+            continue;
+        };
+        var end = index + prefix.len;
+        while (end < text.len and isMethodNameChar(text[end])) : (end += 1) {}
+
+        if (end > index + prefix.len) {
+            const method = text[index..end];
+            if (!methods.contains(method)) try methods.put(method, {});
+        }
+        index = end;
+    }
+}
+
+fn methodPrefixAt(text: []const u8) ?[]const u8 {
+    for (contract_method_prefixes) |prefix| {
+        if (std.mem.startsWith(u8, text, prefix)) return prefix;
+    }
+    return null;
+}
+
+fn isMethodNameChar(char: u8) bool {
+    return std.ascii.isAlphanumeric(char) or char == '_';
+}
+
+fn expectInventoriesEqual(contract_methods: *ContractMethodInventory, source_methods: *ContractMethodInventory) !void {
+    var missing_from_source: usize = 0;
+    var contract_it = contract_methods.keyIterator();
+    while (contract_it.next()) |method| {
+        if (!source_methods.contains(method.*)) {
+            std.debug.print("documented JSON-RPC method is not routed: {s}\n", .{method.*});
+            missing_from_source += 1;
+        }
+    }
+
+    var missing_from_contract: usize = 0;
+    var source_it = source_methods.keyIterator();
+    while (source_it.next()) |method| {
+        if (!contract_methods.contains(method.*)) {
+            std.debug.print("routed JSON-RPC method is not documented in the phase-1 contract: {s}\n", .{method.*});
+            missing_from_contract += 1;
+        }
+    }
+
+    if (missing_from_source != 0 or missing_from_contract != 0) return error.JsonRpcContractInventoryMismatch;
+}
+
+fn expectContractMethodRouted(mode: enum { trusted, light }, method: []const u8) !void {
+    var params_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer params_arena.deinit();
+
+    var rt = switch (mode) {
+        .trusted => try runtime_mod.NodeRuntime.init(std.testing.allocator, null),
+        .light => try initLightRuntime(null),
+    };
+    defer rt.deinit();
+
+    const params = try contractProbeParams(params_arena.allocator(), method);
+    var response = try dispatchForTest(&rt, method, params);
+    defer response.deinit(std.testing.allocator);
+
+    if (response.error_value) |err| {
+        if (err.code == jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND) {
+            std.debug.print("documented JSON-RPC method fell through in {s} mode: {s}\n", .{ @tagName(mode), method });
+            return error.DocumentedMethodNotRouted;
+        }
+    }
+}
+
+fn contractProbeParams(allocator: std.mem.Allocator, method: []const u8) !?std.json.Value {
+    if (methodIs(method, &.{
+        "eth_chainId",
+        "eth_blockNumber",
+        "eth_gasPrice",
+        "eth_maxPriorityFeePerGas",
+        "eth_blobBaseFee",
+        "eth_coinbase",
+        "eth_accounts",
+        "eth_mining",
+        "eth_syncing",
+        "eth_protocolVersion",
+        "web3_clientVersion",
+        "net_version",
+        "net_listening",
+        "net_peerCount",
+        "txpool_content",
+        "txpool_status",
+        "txpool_inspect",
+        "zevm_dumpState",
+        "anvil_dumpState",
+        "zevm_getAutomine",
+        "anvil_getAutomine",
+        "hardhat_getAutomine",
+        "zevm_getIntervalMining",
+        "anvil_getIntervalMining",
+        "zevm_mine",
+        "anvil_mine",
+        "hardhat_mine",
+        "evm_mine",
+        "zevm_mineDetailed",
+        "anvil_mineDetailed",
+        "zevm_dropAllTransactions",
+        "anvil_dropAllTransactions",
+        "zevm_snapshot",
+        "anvil_snapshot",
+        "evm_snapshot",
+        "zevm_removeBlockTimestampInterval",
+        "anvil_removeBlockTimestampInterval",
+        "zevm_reset",
+        "anvil_reset",
+        "hardhat_reset",
+        "zevm_metadata",
+        "anvil_metadata",
+        "hardhat_metadata",
+        "zevm_nodeInfo",
+        "anvil_nodeInfo",
+        "zevm_lightSyncStatus",
+    })) return null;
+
+    if (methodIs(method, &.{ "eth_getBalance", "eth_getCode", "eth_getTransactionCount" })) {
+        return try arrayParams(allocator, &.{ addressValue(), .{ .string = "latest" } });
+    }
+    if (std.mem.eql(u8, method, "eth_getStorageAt")) {
+        return try arrayParams(allocator, &.{ addressValue(), bytes32Value(), .{ .string = "latest" } });
+    }
+    if (std.mem.eql(u8, method, "eth_feeHistory")) {
+        return try arrayParams(allocator, &.{ .{ .string = "0x1" }, .{ .string = "latest" } });
+    }
+    if (std.mem.eql(u8, method, "web3_sha3")) {
+        return try arrayParams(allocator, &.{.{ .string = "0x" }});
+    }
+    if (std.mem.eql(u8, method, "eth_call")) {
+        return try arrayParams(allocator, &.{ try transactionRequestValue(allocator), .{ .string = "latest" } });
+    }
+    if (std.mem.eql(u8, method, "eth_estimateGas")) {
+        return try arrayParams(allocator, &.{try transactionRequestValue(allocator)});
+    }
+    if (std.mem.eql(u8, method, "eth_sendTransaction")) {
+        return try arrayParams(allocator, &.{try transactionRequestValue(allocator)});
+    }
+    if (std.mem.eql(u8, method, "eth_sendRawTransaction")) {
+        return try arrayParams(allocator, &.{.{ .string = "0x" }});
+    }
+    if (std.mem.eql(u8, method, "eth_getBlockByNumber")) {
+        return try arrayParams(allocator, &.{ .{ .string = "latest" }, .{ .bool = false } });
+    }
+    if (std.mem.eql(u8, method, "eth_getBlockByHash")) {
+        return try arrayParams(allocator, &.{ hash32Value(), .{ .bool = false } });
+    }
+    if (methodIs(method, &.{ "eth_getBlockTransactionCountByHash", "eth_getTransactionByHash", "eth_getTransactionReceipt" })) {
+        return try arrayParams(allocator, &.{hash32Value()});
+    }
+    if (std.mem.eql(u8, method, "eth_getBlockTransactionCountByNumber")) {
+        return try arrayParams(allocator, &.{.{ .string = "latest" }});
+    }
+    if (std.mem.eql(u8, method, "eth_getTransactionByBlockHashAndIndex")) {
+        return try arrayParams(allocator, &.{ hash32Value(), .{ .string = "0x0" } });
+    }
+    if (std.mem.eql(u8, method, "eth_getTransactionByBlockNumberAndIndex")) {
+        return try arrayParams(allocator, &.{ .{ .string = "latest" }, .{ .string = "0x0" } });
+    }
+    if (std.mem.eql(u8, method, "eth_getBlockReceipts")) {
+        return try arrayParams(allocator, &.{.{ .string = "latest" }});
+    }
+    if (std.mem.eql(u8, method, "eth_getLogs")) {
+        return try arrayParams(allocator, &.{try emptyObjectValue(allocator)});
+    }
+    if (std.mem.eql(u8, method, "zevm_getAccount")) {
+        return try arrayParams(allocator, &.{addressValue()});
+    }
+    if (std.mem.eql(u8, method, "zevm_setAccount")) {
+        return try arrayParams(allocator, &.{ addressValue(), try accountStateValueForProbe(allocator) });
+    }
+    if (methodIs(method, &.{ "zevm_loadState", "anvil_loadState" })) {
+        return try arrayParams(allocator, &.{.{ .string = "0x7b2276657273696f6e223a312c226163636f756e7473223a7b7d7d" }});
+    }
+    if (methodIs(method, &.{
+        "zevm_setBalance",
+        "anvil_setBalance",
+        "hardhat_setBalance",
+        "zevm_deal",
+        "anvil_deal",
+        "zevm_addBalance",
+        "anvil_addBalance",
+        "zevm_setNonce",
+        "anvil_setNonce",
+        "hardhat_setNonce",
+    })) {
+        return try arrayParams(allocator, &.{ addressValue(), .{ .string = "0x1" } });
+    }
+    if (methodIs(method, &.{ "zevm_setCode", "anvil_setCode", "hardhat_setCode" })) {
+        return try arrayParams(allocator, &.{ addressValue(), .{ .string = "0x" } });
+    }
+    if (methodIs(method, &.{ "zevm_setStorageAt", "anvil_setStorageAt", "hardhat_setStorageAt" })) {
+        return try arrayParams(allocator, &.{ addressValue(), bytes32Value(), bytes32Value() });
+    }
+    if (methodIs(method, &.{ "zevm_dealErc20", "anvil_dealErc20" })) {
+        return try arrayParams(allocator, &.{ tokenValue(), addressValue(), .{ .string = "0x1" } });
+    }
+    if (methodIs(method, &.{ "zevm_setErc20Allowance", "anvil_setErc20Allowance" })) {
+        return try arrayParams(allocator, &.{ tokenValue(), addressValue(), spenderValue(), .{ .string = "0x1" } });
+    }
+    if (methodIs(method, &.{
+        "zevm_setCoinbase",
+        "anvil_setCoinbase",
+        "hardhat_setCoinbase",
+        "zevm_impersonateAccount",
+        "anvil_impersonateAccount",
+        "hardhat_impersonateAccount",
+        "zevm_stopImpersonatingAccount",
+        "anvil_stopImpersonatingAccount",
+        "hardhat_stopImpersonatingAccount",
+    })) {
+        return try arrayParams(allocator, &.{addressValue()});
+    }
+    if (methodIs(method, &.{
+        "zevm_setChainId",
+        "anvil_setChainId",
+        "zevm_setBlockGasLimit",
+        "anvil_setBlockGasLimit",
+        "evm_setBlockGasLimit",
+        "zevm_setNextBlockBaseFeePerGas",
+        "anvil_setNextBlockBaseFeePerGas",
+        "hardhat_setNextBlockBaseFeePerGas",
+        "zevm_setMinGasPrice",
+        "anvil_setMinGasPrice",
+        "hardhat_setMinGasPrice",
+        "zevm_increaseTime",
+        "anvil_increaseTime",
+        "evm_increaseTime",
+        "zevm_setTime",
+        "anvil_setTime",
+        "zevm_setNextBlockTimestamp",
+        "anvil_setNextBlockTimestamp",
+        "evm_setNextBlockTimestamp",
+        "zevm_setBlockTimestampInterval",
+        "anvil_setBlockTimestampInterval",
+        "zevm_setIntervalMining",
+        "anvil_setIntervalMining",
+        "evm_setIntervalMining",
+        "zevm_revert",
+        "anvil_revert",
+        "evm_revert",
+    })) {
+        return try arrayParams(allocator, &.{.{ .string = "0x1" }});
+    }
+    if (methodIs(method, &.{
+        "zevm_setAutomine",
+        "anvil_setAutomine",
+        "evm_setAutomine",
+        "zevm_autoImpersonateAccount",
+        "anvil_autoImpersonateAccount",
+    })) {
+        return try arrayParams(allocator, &.{.{ .bool = true }});
+    }
+    if (methodIs(method, &.{ "zevm_setRpcUrl", "anvil_setRpcUrl" })) {
+        return try arrayParams(allocator, &.{.{ .string = "https://example.invalid" }});
+    }
+    if (methodIs(method, &.{ "zevm_dropTransaction", "anvil_dropTransaction", "hardhat_dropTransaction" })) {
+        return try arrayParams(allocator, &.{hash32Value()});
+    }
+    if (methodIs(method, &.{ "zevm_removePoolTransactions", "anvil_removePoolTransactions" })) {
+        var hashes = std.json.Array.init(allocator);
+        try hashes.append(hash32Value());
+        return try arrayParams(allocator, &.{.{ .array = hashes }});
+    }
+
+    std.debug.print("missing JSON-RPC contract probe params for method: {s}\n", .{method});
+    return error.MissingContractProbeParams;
+}
+
+fn arrayParams(allocator: std.mem.Allocator, values: []const std.json.Value) !std.json.Value {
+    var array = std.json.Array.init(allocator);
+    for (values) |value| try array.append(value);
+    return .{ .array = array };
+}
+
+fn emptyObjectValue(allocator: std.mem.Allocator) !std.json.Value {
+    return .{ .object = std.json.ObjectMap.init(allocator) };
+}
+
+fn transactionRequestValue(allocator: std.mem.Allocator) !std.json.Value {
+    var object = std.json.ObjectMap.init(allocator);
+    try object.put("from", .{ .string = managedAddressText() });
+    try object.put("to", addressValue());
+    try object.put("gas", .{ .string = "0x5208" });
+    try object.put("gasPrice", .{ .string = "0x3b9aca00" });
+    try object.put("value", .{ .string = "0x0" });
+    try object.put("data", .{ .string = "0x" });
+    return .{ .object = object };
+}
+
+fn accountStateValueForProbe(allocator: std.mem.Allocator) !std.json.Value {
+    var object = std.json.ObjectMap.init(allocator);
+    try object.put("balance", .{ .string = "0x1" });
+    try object.put("nonce", .{ .string = "0x0" });
+    try object.put("code", .{ .string = "0x" });
+    try object.put("storage", try emptyObjectValue(allocator));
+    return .{ .object = object };
+}
+
+fn addressValue() std.json.Value {
+    return .{ .string = "0x0000000000000000000000000000000000000042" };
+}
+
+fn tokenValue() std.json.Value {
+    return .{ .string = "0x0000000000000000000000000000000000001000" };
+}
+
+fn spenderValue() std.json.Value {
+    return .{ .string = "0x0000000000000000000000000000000000001001" };
+}
+
+fn managedAddressText() []const u8 {
+    return "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266";
+}
+
+fn hash32Value() std.json.Value {
+    return .{ .string = "0x0000000000000000000000000000000000000000000000000000000000000000" };
+}
+
+fn bytes32Value() std.json.Value {
+    return .{ .string = "0x0000000000000000000000000000000000000000000000000000000000000000" };
+}
+
+fn methodIs(method_name: []const u8, comptime names: []const []const u8) bool {
+    inline for (names) |name| {
+        if (std.mem.eql(u8, method_name, name)) return true;
+    }
+    return false;
+}
+
+test "canonical JSON-RPC method inventory matches dispatcher wiring" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var contract_methods = ContractMethodInventory.init(arena.allocator());
+    var source_methods = ContractMethodInventory.init(arena.allocator());
+    try collectContractMethodInventory(arena.allocator(), &contract_methods);
+    try collectSourceMethodInventory(arena.allocator(), &source_methods);
+
+    try expectInventoriesEqual(&contract_methods, &source_methods);
+}
+
+test "canonical JSON-RPC methods never fall through routing" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var contract_methods = ContractMethodInventory.init(arena.allocator());
+    try collectContractMethodInventory(arena.allocator(), &contract_methods);
+
+    var it = contract_methods.keyIterator();
+    while (it.next()) |method| {
+        try expectContractMethodRouted(.trusted, method.*);
+        try expectContractMethodRouted(.light, method.*);
+    }
+}
+
 test "installed dispatch wiring reaches runtime-backed eth methods" {
     var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();
@@ -317,6 +751,104 @@ test "installed dispatch wiring reaches hardhat state mutation aliases" {
     try std.testing.expectEqual(@as(u256, 42), balance);
 }
 
+test "installed dispatch wiring handles full account get and set" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    const address = "0x0000000000000000000000000000000000000042";
+    const parsed_address = try parseTestAddress(address);
+    const storage_key = "0x0000000000000000000000000000000000000000000000000000000000000001";
+    const storage_value = "0x000000000000000000000000000000000000000000000000000000000000002a";
+
+    var storage = std.json.ObjectMap.init(std.testing.allocator);
+    defer storage.deinit();
+    try storage.put(storage_key, .{ .string = storage_value });
+
+    var account = std.json.ObjectMap.init(std.testing.allocator);
+    defer account.deinit();
+    try account.put("balance", .{ .string = "0x2a" });
+    try account.put("nonce", .{ .string = "0x3" });
+    try account.put("code", .{ .string = "0x6001" });
+    try account.put("storage", .{ .object = storage });
+
+    var set_params = std.json.Array.init(std.testing.allocator);
+    defer set_params.deinit();
+    try set_params.append(.{ .string = address });
+    try set_params.append(.{ .object = account });
+
+    try expectBoolRpc(&handlers, "zevm_setAccount", .{ .array = set_params });
+
+    try std.testing.expectEqual(@as(u256, 42), try rt.getBalance(parsed_address));
+    try std.testing.expectEqual(@as(u64, 3), try rt.getNonce(parsed_address));
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x60, 0x01 }, try rt.getCode(parsed_address));
+    try std.testing.expectEqual(@as(u256, 42), try rt.getStorage(parsed_address, 1));
+
+    var get_params = std.json.Array.init(std.testing.allocator);
+    defer get_params.deinit();
+    try get_params.append(.{ .string = address });
+    try get_params.append(.{ .string = "latest" });
+
+    var get_request = try makeRequest("zevm_getAccount", .{ .array = get_params });
+    defer get_request.deinit(std.testing.allocator);
+    var get_response = try dispatcher.dispatch(std.testing.allocator, get_request, &handlers);
+    defer get_response.deinit(std.testing.allocator);
+
+    try std.testing.expect(get_response.error_value == null);
+    const result = get_response.result.?;
+    try std.testing.expectEqualStrings("0x2a", (try getObjectField(result, "balance")).string);
+    try std.testing.expectEqualStrings("0x3", (try getObjectField(result, "nonce")).string);
+    try std.testing.expectEqualStrings("0x6001", (try getObjectField(result, "code")).string);
+
+    const storage_result = try getObjectField(result, "storage");
+    try std.testing.expectEqualStrings(storage_value, (try getObjectField(storage_result, storage_key)).string);
+}
+
+test "installed dispatch wiring dumps and loads local state" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    const address_text = "0x0000000000000000000000000000000000000042";
+    const address = try parseTestAddress(address_text);
+    try rt.setBalance(address, 42);
+    try rt.setNonce(address, 3);
+    try rt.setCode(address, &[_]u8{ 0x60, 0x01 });
+    try rt.setStorage(address, 1, 42);
+
+    var dump_request = try makeRequest("anvil_dumpState", null);
+    defer dump_request.deinit(std.testing.allocator);
+    var dump_response = try dispatcher.dispatch(std.testing.allocator, dump_request, &handlers);
+    defer dump_response.deinit(std.testing.allocator);
+    try std.testing.expect(dump_response.error_value == null);
+    const dump_blob = dump_response.result.?.string;
+
+    try rt.setBalance(address, 999);
+    try rt.setNonce(address, 9);
+    try rt.setCode(address, &[_]u8{0x00});
+    try rt.setStorage(address, 1, 7);
+
+    var load_params = std.json.Array.init(std.testing.allocator);
+    defer load_params.deinit();
+    try load_params.append(.{ .string = dump_blob });
+
+    var load_request = try makeRequest("zevm_loadState", .{ .array = load_params });
+    defer load_request.deinit(std.testing.allocator);
+    var load_response = try dispatcher.dispatch(std.testing.allocator, load_request, &handlers);
+    defer load_response.deinit(std.testing.allocator);
+    try std.testing.expect(load_response.error_value == null);
+    try std.testing.expect(load_response.result.?.bool);
+
+    try std.testing.expectEqual(@as(u256, 42), try rt.getBalance(address));
+    try std.testing.expectEqual(@as(u64, 3), try rt.getNonce(address));
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x60, 0x01 }, try rt.getCode(address));
+    try std.testing.expectEqual(@as(u256, 42), try rt.getStorage(address, 1));
+}
+
 test "installed dispatch wiring reaches impersonation aliases" {
     var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();
@@ -352,7 +884,7 @@ test "installed dispatch wiring reaches impersonation aliases" {
         defer params.deinit();
         try params.append(.{ .bool = true });
 
-        try expectBoolRpc(&handlers, "zevm_setAutoImpersonateAccount", .{ .array = params });
+        try expectBoolRpc(&handlers, "zevm_autoImpersonateAccount", .{ .array = params });
         try std.testing.expect(rt.canSignForAccount(parsed));
     }
 
@@ -383,7 +915,7 @@ test "installed dispatch wiring reaches time-control aliases" {
     const target_hex = try std.fmt.allocPrint(std.testing.allocator, "0x{x}", .{target});
     defer std.testing.allocator.free(target_hex);
 
-    var set_time_response = try dispatchOneStringParam(&handlers, "evm_setTime", target_hex);
+    var set_time_response = try dispatchOneStringParam(&handlers, "zevm_setTime", target_hex);
     defer set_time_response.deinit(std.testing.allocator);
     try std.testing.expect(set_time_response.error_value == null);
     try std.testing.expectEqualStrings(target_hex, set_time_response.result.?.string);
@@ -408,12 +940,6 @@ test "installed dispatch wiring reaches time-control aliases" {
     try std.testing.expect(anvil_next_response.error_value == null);
     try std.testing.expect(anvil_next_response.result.?.bool);
     try std.testing.expectEqual(@as(?u64, 12345), rt.next_block_timestamp);
-
-    var hardhat_next_response = try dispatchOneStringParam(&handlers, "hardhat_setNextBlockTimestamp", "0x303a");
-    defer hardhat_next_response.deinit(std.testing.allocator);
-    try std.testing.expect(hardhat_next_response.error_value == null);
-    try std.testing.expect(hardhat_next_response.result.?.bool);
-    try std.testing.expectEqual(@as(?u64, 12346), rt.next_block_timestamp);
 }
 
 test "installed dispatch wiring stores block environment override aliases" {
@@ -435,24 +961,206 @@ test "installed dispatch wiring stores block environment override aliases" {
     try std.testing.expect(base_fee_response.result.?.bool);
     try std.testing.expectEqual(@as(u256, 2), rt.dev_runtime.config.next_block_base_fee_per_gas.?);
 
-    var timestamp_response = try dispatchQuantityRequest(&handlers, "hardhat_setNextBlockTimestamp", "0x4d2");
+    var timestamp_response = try dispatchQuantityRequest(&handlers, "anvil_setNextBlockTimestamp", "0x4d2");
     defer timestamp_response.deinit(std.testing.allocator);
     try std.testing.expect(timestamp_response.error_value == null);
     try std.testing.expect(timestamp_response.result.?.bool);
     try std.testing.expectEqual(@as(u64, 1234), rt.dev_runtime.config.next_block_timestamp.?);
-
-    var blob_fee_response = try dispatchQuantityRequest(&handlers, "anvil_setBlobBaseFee", "0x7");
-    defer blob_fee_response.deinit(std.testing.allocator);
-    try std.testing.expect(blob_fee_response.error_value == null);
-    try std.testing.expect(blob_fee_response.result.?.bool);
-    try std.testing.expectEqual(@as(u256, 7), rt.dev_runtime.config.blob_base_fee.?);
 
     var blob_read = try makeRequest("eth_blobBaseFee", null);
     defer blob_read.deinit(std.testing.allocator);
     var blob_read_response = try dispatcher.dispatch(std.testing.allocator, blob_read, &handlers);
     defer blob_read_response.deinit(std.testing.allocator);
     try std.testing.expect(blob_read_response.error_value == null);
-    try std.testing.expectEqualStrings("0x7", blob_read_response.result.?.string);
+    try std.testing.expectEqualStrings("0x1", blob_read_response.result.?.string);
+}
+
+test "undocumented compatibility aliases return method not found" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    const methods = [_][]const u8{
+        "hardhat_setBlockGasLimit",
+        "zevm_setBlobBaseFee",
+        "anvil_setBlobBaseFee",
+        "hardhat_setBlobBaseFee",
+        "zevm_setAutoImpersonateAccount",
+        "anvil_setAutoImpersonateAccount",
+        "hardhat_setAutoImpersonateAccount",
+        "evm_setTime",
+        "hardhat_setNextBlockTimestamp",
+    };
+
+    for (methods) |method| {
+        try expectErrorCode(&rt, method, null, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND);
+    }
+}
+
+test "installed dispatch wiring updates minimum gas price aliases" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    var set_response = try dispatchQuantityRequest(&handlers, "hardhat_setMinGasPrice", "0x2a");
+    defer set_response.deinit(std.testing.allocator);
+    try std.testing.expect(set_response.error_value == null);
+    try std.testing.expect(set_response.result.?.bool);
+    try std.testing.expectEqual(@as(u256, 42), rt.gas_price);
+
+    var read_request = try makeRequest("eth_gasPrice", null);
+    defer read_request.deinit(std.testing.allocator);
+    var read_response = try dispatcher.dispatch(std.testing.allocator, read_request, &handlers);
+    defer read_response.deinit(std.testing.allocator);
+    try std.testing.expect(read_response.error_value == null);
+    try std.testing.expectEqualStrings("0x2a", read_response.result.?.string);
+}
+
+test "installed dispatch wiring removes txpool transactions" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    const hash_a = [_]u8{0xaa} ** 32;
+    const hash_b = [_]u8{0xbb} ** 32;
+    const hash_c = [_]u8{0xcc} ** 32;
+    const missing_hash = [_]u8{0xdd} ** 32;
+    const hash_a_hex = try primitives.Hex.bytesToHex(std.testing.allocator, &hash_a);
+    defer std.testing.allocator.free(hash_a_hex);
+    const hash_b_hex = try primitives.Hex.bytesToHex(std.testing.allocator, &hash_b);
+    defer std.testing.allocator.free(hash_b_hex);
+    const hash_c_hex = try primitives.Hex.bytesToHex(std.testing.allocator, &hash_c);
+    defer std.testing.allocator.free(hash_c_hex);
+    const missing_hash_hex = try primitives.Hex.bytesToHex(std.testing.allocator, &missing_hash);
+    defer std.testing.allocator.free(missing_hash_hex);
+
+    try addPooledTransaction(&rt, runtime_mod.DEFAULT_DEV_ACCOUNTS[0], hash_a);
+    try addPooledTransaction(&rt, runtime_mod.DEFAULT_DEV_ACCOUNTS[1], hash_b);
+    try std.testing.expectEqual(@as(usize, 2), rt.pool.items().len);
+
+    var drop_response = try dispatchOneStringParam(&handlers, "hardhat_dropTransaction", hash_a_hex);
+    defer drop_response.deinit(std.testing.allocator);
+    try std.testing.expect(drop_response.error_value == null);
+    try std.testing.expect(drop_response.result.?.bool);
+    try std.testing.expectEqual(@as(usize, 1), rt.pool.items().len);
+
+    var missing_drop_response = try dispatchOneStringParam(&handlers, "zevm_dropTransaction", missing_hash_hex);
+    defer missing_drop_response.deinit(std.testing.allocator);
+    try std.testing.expect(missing_drop_response.error_value == null);
+    try std.testing.expect(!missing_drop_response.result.?.bool);
+    try std.testing.expectEqual(@as(usize, 1), rt.pool.items().len);
+
+    try addPooledTransaction(&rt, runtime_mod.DEFAULT_DEV_ACCOUNTS[2], hash_c);
+
+    var hashes = std.json.Array.init(std.testing.allocator);
+    defer hashes.deinit();
+    try hashes.append(.{ .string = hash_b_hex });
+    try hashes.append(.{ .string = missing_hash_hex });
+    try hashes.append(.{ .string = hash_c_hex });
+
+    var remove_params = std.json.Array.init(std.testing.allocator);
+    defer remove_params.deinit();
+    try remove_params.append(.{ .array = hashes });
+
+    var remove_request = try makeRequest("anvil_removePoolTransactions", .{ .array = remove_params });
+    defer remove_request.deinit(std.testing.allocator);
+    var remove_response = try dispatcher.dispatch(std.testing.allocator, remove_request, &handlers);
+    defer remove_response.deinit(std.testing.allocator);
+    try std.testing.expect(remove_response.error_value == null);
+    try std.testing.expectEqualStrings("0x2", remove_response.result.?.string);
+    try std.testing.expectEqual(@as(usize, 0), rt.pool.items().len);
+
+    try addPooledTransaction(&rt, runtime_mod.DEFAULT_DEV_ACCOUNTS[0], hash_a);
+    try addPooledTransaction(&rt, runtime_mod.DEFAULT_DEV_ACCOUNTS[1], hash_b);
+
+    var drop_all_request = try makeRequest("anvil_dropAllTransactions", null);
+    defer drop_all_request.deinit(std.testing.allocator);
+    var drop_all_response = try dispatcher.dispatch(std.testing.allocator, drop_all_request, &handlers);
+    defer drop_all_response.deinit(std.testing.allocator);
+    try std.testing.expect(drop_all_response.error_value == null);
+    try std.testing.expectEqualStrings("0x2", drop_all_response.result.?.string);
+    try std.testing.expectEqual(@as(usize, 0), rt.pool.items().len);
+}
+
+test "installed dispatch wiring returns detailed mining summaries" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    var params = std.json.Array.init(std.testing.allocator);
+    defer params.deinit();
+    try params.append(.{ .string = "0x2" });
+    try params.append(.{ .string = "0x3" });
+
+    var request = try makeRequest("anvil_mineDetailed", .{ .array = params });
+    defer request.deinit(std.testing.allocator);
+    var response = try dispatcher.dispatch(std.testing.allocator, request, &handlers);
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expect(response.error_value == null);
+    const result = response.result.?;
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 2), result.array.items.len);
+    try std.testing.expectEqual(@as(u64, 2), rt.head_block_number);
+
+    const block_1 = (try rt.blockchain.getBlockByNumber(1)).?;
+    const block_2 = (try rt.blockchain.getBlockByNumber(2)).?;
+    const block_1_hash = try primitives.Hex.bytesToHex(std.testing.allocator, &block_1.hash);
+    defer std.testing.allocator.free(block_1_hash);
+    const block_2_hash = try primitives.Hex.bytesToHex(std.testing.allocator, &block_2.hash);
+    defer std.testing.allocator.free(block_2_hash);
+    const block_1_timestamp = try std.fmt.allocPrint(std.testing.allocator, "0x{x}", .{block_1.header.timestamp});
+    defer std.testing.allocator.free(block_1_timestamp);
+    const block_2_timestamp = try std.fmt.allocPrint(std.testing.allocator, "0x{x}", .{block_2.header.timestamp});
+    defer std.testing.allocator.free(block_2_timestamp);
+
+    try std.testing.expectEqualStrings("0x1", (try getObjectField(result.array.items[0], "number")).string);
+    try std.testing.expectEqualStrings(block_1_hash, (try getObjectField(result.array.items[0], "hash")).string);
+    try std.testing.expectEqualStrings(block_1_timestamp, (try getObjectField(result.array.items[0], "timestamp")).string);
+    try std.testing.expectEqualStrings("0x2", (try getObjectField(result.array.items[1], "number")).string);
+    try std.testing.expectEqualStrings(block_2_hash, (try getObjectField(result.array.items[1], "hash")).string);
+    try std.testing.expectEqualStrings(block_2_timestamp, (try getObjectField(result.array.items[1], "timestamp")).string);
+}
+
+test "installed dispatch wiring applies block timestamp interval controls" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    var set_response = try dispatchQuantityRequest(&handlers, "anvil_setBlockTimestampInterval", "0x7");
+    defer set_response.deinit(std.testing.allocator);
+    try std.testing.expect(set_response.error_value == null);
+    try std.testing.expect(set_response.result.?.bool);
+    try std.testing.expectEqual(@as(?u64, 7), rt.block_timestamp_interval);
+
+    var mine_params = std.json.Array.init(std.testing.allocator);
+    defer mine_params.deinit();
+    try mine_params.append(.{ .string = "0x2" });
+
+    var mine_request = try makeRequest("zevm_mineDetailed", .{ .array = mine_params });
+    defer mine_request.deinit(std.testing.allocator);
+    var mine_response = try dispatcher.dispatch(std.testing.allocator, mine_request, &handlers);
+    defer mine_response.deinit(std.testing.allocator);
+    try std.testing.expect(mine_response.error_value == null);
+
+    const result = mine_response.result.?;
+    try std.testing.expectEqualStrings("0x7", (try getObjectField(result.array.items[0], "timestamp")).string);
+    try std.testing.expectEqualStrings("0xe", (try getObjectField(result.array.items[1], "timestamp")).string);
+
+    var remove_request = try makeRequest("anvil_removeBlockTimestampInterval", null);
+    defer remove_request.deinit(std.testing.allocator);
+    var remove_response = try dispatcher.dispatch(std.testing.allocator, remove_request, &handlers);
+    defer remove_response.deinit(std.testing.allocator);
+    try std.testing.expect(remove_response.error_value == null);
+    try std.testing.expect(remove_response.result.?.bool);
+    try std.testing.expectEqual(@as(?u64, null), rt.block_timestamp_interval);
 }
 
 test "installed dispatch wiring maps unsupported methods to method not found" {
@@ -993,6 +1701,36 @@ test "installed dispatch wiring rejects malformed mining params" {
         try params.append(.{ .integer = 1 });
 
         try expectInvalidParamsRpc(&handlers, "anvil_mine", .{ .array = params });
+    }
+}
+
+test "installed dispatch wiring rejects structurally invalid fork URLs" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, .{
+        .fork_url = "https://rpc.example",
+    });
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .string = "https://" });
+
+        try expectInvalidParamsRpc(&handlers, "zevm_setRpcUrl", .{ .array = params });
+    }
+
+    {
+        var cfg_obj = std.json.ObjectMap.init(std.testing.allocator);
+        defer cfg_obj.deinit();
+        try cfg_obj.put("url", .{ .string = "http://" });
+
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .object = cfg_obj });
+
+        try expectInvalidParamsRpc(&handlers, "zevm_reset", .{ .array = params });
     }
 }
 
