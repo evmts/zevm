@@ -15,6 +15,7 @@ pub const TxSubmissionError = error{
     NonceMismatch,
     InsufficientBalance,
     IntrinsicGasExceedsLimit,
+    GasPriceBelowMinimum,
     InitcodeTooLarge,
     PoolInsertFailed,
     UnmanagedAccount,
@@ -94,6 +95,7 @@ pub fn handleSendRawTransaction(
     const intrinsic = computeLegacyIntrinsicGas(is_create, decoded.data);
     if (intrinsic > decoded.gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
     if (decoded.gas_limit > rt.dev_runtime.config.block_gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
+    if (decoded.gas_price < rt.gas_price) return TxSubmissionError.GasPriceBelowMinimum;
 
     // Balance covers value + max gas cost.
     const max_gas_cost = decoded.gas_price * @as(u256, decoded.gas_limit);
@@ -182,6 +184,7 @@ pub fn handleSendTransaction(
     if (current_nonce != nonce) return TxSubmissionError.NonceMismatch;
 
     const gas_price = request.gas_price orelse rt.gas_price;
+    if (gas_price < rt.gas_price) return TxSubmissionError.GasPriceBelowMinimum;
     var tx = primitives.Transaction.LegacyTransaction{
         .nonce = nonce,
         .gas_price = gas_price,
