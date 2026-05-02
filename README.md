@@ -20,6 +20,7 @@ git clone git@github.com:evmts/zevm.git
 git clone git@github.com:evmts/voltaire.git
 git clone git@github.com:evmts/guillotine-mini.git
 cd zevm
+zig build dependency-preflight -- --zig-version 0.15.2
 zig build
 ```
 
@@ -41,7 +42,7 @@ Product contract: [docs/specs/prd.md](./docs/specs/prd.md) and [docs/specs/json-
 zig build test
 ```
 
-Tests and source code are the only source of truth for what is and isn't implemented; the specs in `docs/` describe the eventual contract, not current status.
+The canonical specs in `docs/specs/prd.md` and `docs/specs/json-rpc-contract.md` define the phase-1 public contract. If implementation or tests diverge from those specs, treat that as release-blocking unless the behavior is explicitly moved to deferred or out-of-contract docs.
 
 Behavior changes are docs-first: update `docs/specs/prd.md` and `docs/specs/json-rpc-contract.md` before landing code. The full process is in [docs/specs/docs-first-process.md](./docs/specs/docs-first-process.md).
 

@@ -53,10 +53,21 @@ const coverage_statuses = [_][]const u8{
     "blocked",
 };
 
+const allowed_gate_commands = [_][]const u8{
+    "zig build",
+    "zig build test",
+    "zig build verify-fast",
+    "zig build verify",
+    "zig build qualification-check",
+    "zig build qualification-check -- --require-covered",
+};
+
 const release_asset_surface_ids = [_][]const u8{
     "RELEASE_METADATA_RELEASE_TUPLE_JSON",
     "RELEASE_METADATA_LIGHT_DEFAULT_CHECKPOINTS_JSON",
 };
+
+const legacy_gap_prefix = "TO" ++ "DO:";
 
 pub const Options = struct {
     map_path: []const u8 = default_map_path,
@@ -77,6 +88,7 @@ pub const QualificationError = error{
     ExplicitGapRemaining,
     InvalidArgs,
     InvalidAssertionType,
+    InvalidAssertionEvidence,
     InvalidCategory,
     InvalidCoverageStatus,
     InvalidDate,
@@ -84,12 +96,15 @@ pub const QualificationError = error{
     InvalidSurfaceId,
     MalformedJson,
     MalformedUtf8,
+    MissingAssertionFile,
+    MissingAssertionTest,
     MissingField,
     MissingGapReason,
     MissingOwnerTicket,
     MissingRequiredCategory,
     MissingRequiredReleaseAssetMapping,
     UnexpectedField,
+    UnsupportedAssertionCommand,
     ValueMismatch,
 };
 
@@ -196,7 +211,7 @@ pub fn validateMapJson(
             else => return error.ValueMismatch,
         };
 
-        try validateRecord(record, &report, &category_seen, &release_asset_seen);
+        try validateRecord(allocator, record, &report, &category_seen, &release_asset_seen);
 
         const surface_id = try getStringField(record, "surfaceId");
         var prior_index: usize = 0;
@@ -224,11 +239,12 @@ pub fn validateMapJson(
 }
 
 fn validateRecord(
+    allocator: std.mem.Allocator,
     object: std.json.ObjectMap,
     report: *Report,
     category_seen: *[categories.len]bool,
     release_asset_seen: *[release_asset_surface_ids.len]bool,
-) QualificationError!void {
+) !void {
     try requireFields(object, required_record_fields[0..]);
     try rejectUnexpectedFields(object, allowed_record_fields[0..]);
 
@@ -250,7 +266,8 @@ fn validateRecord(
     if (indexOf(coverage_statuses[0..], coverage_status) == null) return error.InvalidCoverageStatus;
 
     if (std.mem.eql(u8, coverage_status, "covered")) {
-        if (std.mem.startsWith(u8, assertion_identifier, "TODO:")) return error.InvalidCoverageStatus;
+        if (std.mem.startsWith(u8, assertion_identifier, legacy_gap_prefix)) return error.InvalidCoverageStatus;
+        try validateCoveredAssertionEvidence(allocator, assertion_identifier);
         report.covered_records += 1;
     } else {
         _ = requireNonEmptyStringField(object, "gapReason") catch return error.MissingGapReason;
@@ -269,6 +286,94 @@ fn validateRecord(
             }
         }
     }
+}
+
+fn validateCoveredAssertionEvidence(
+    allocator: std.mem.Allocator,
+    assertion_identifier: []const u8,
+) !void {
+    var current_file: ?[]const u8 = null;
+    var saw_evidence = false;
+    var parts = std.mem.splitScalar(u8, assertion_identifier, ';');
+    while (parts.next()) |raw_part| {
+        const part = std.mem.trim(u8, raw_part, " \t\r\n");
+        if (part.len == 0) return error.InvalidAssertionEvidence;
+
+        if (isAllowedGateCommand(part)) {
+            current_file = null;
+            saw_evidence = true;
+            continue;
+        }
+        if (std.mem.startsWith(u8, part, "zig build")) return error.UnsupportedAssertionCommand;
+
+        if (std.mem.indexOfScalar(u8, part, ':')) |colon_index| {
+            const file_path = std.mem.trim(u8, part[0..colon_index], " \t\r\n");
+            const test_name = std.mem.trim(u8, part[colon_index + 1 ..], " \t\r\n");
+            if (file_path.len == 0 or test_name.len == 0) return error.InvalidAssertionEvidence;
+            try validateFileReference(file_path);
+            try validateZigTestName(allocator, file_path, test_name);
+            current_file = file_path;
+            saw_evidence = true;
+            continue;
+        }
+
+        if (isRepoRelativePath(part)) {
+            try validateFileReference(part);
+            current_file = part;
+            saw_evidence = true;
+            continue;
+        }
+
+        const file_path = current_file orelse return error.InvalidAssertionEvidence;
+        try validateZigTestName(allocator, file_path, part);
+        saw_evidence = true;
+    }
+
+    if (!saw_evidence) return error.InvalidAssertionEvidence;
+}
+
+fn isAllowedGateCommand(command: []const u8) bool {
+    for (allowed_gate_commands) |allowed| {
+        if (std.mem.eql(u8, command, allowed)) return true;
+    }
+    return false;
+}
+
+fn validateFileReference(file_path: []const u8) QualificationError!void {
+    if (!isRepoRelativePath(file_path)) return error.InvalidAssertionEvidence;
+    std.fs.cwd().access(file_path, .{}) catch return error.MissingAssertionFile;
+}
+
+fn validateZigTestName(
+    allocator: std.mem.Allocator,
+    file_path: []const u8,
+    test_name: []const u8,
+) !void {
+    if (!std.mem.endsWith(u8, file_path, ".zig")) return error.InvalidAssertionEvidence;
+
+    const bytes = std.fs.cwd().readFileAlloc(allocator, file_path, 4 * 1024 * 1024) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.MissingAssertionFile,
+    };
+    defer allocator.free(bytes);
+
+    const test_pattern = try std.fmt.allocPrint(allocator, "test \"{s}\"", .{test_name});
+    defer allocator.free(test_pattern);
+
+    if (std.mem.indexOf(u8, bytes, test_pattern) == null) return error.MissingAssertionTest;
+}
+
+fn isRepoRelativePath(value: []const u8) bool {
+    if (value.len == 0) return false;
+    if (std.fs.path.isAbsolute(value)) return false;
+    if (std.mem.indexOf(u8, value, "\\") != null) return false;
+    if (std.mem.indexOf(u8, value, "..") != null) return false;
+    if (std.mem.startsWith(u8, value, "zig build")) return false;
+    return std.mem.indexOfScalar(u8, value, '/') != null or
+        std.mem.endsWith(u8, value, ".zig") or
+        std.mem.endsWith(u8, value, ".json") or
+        std.mem.endsWith(u8, value, ".md") or
+        std.mem.endsWith(u8, value, ".mdx");
 }
 
 fn parseJsonValue(
@@ -376,7 +481,7 @@ test "qualification map validator rejects malformed category" {
 
 test "qualification map validator requires gap metadata" {
     const json =
-        "{" ++ "\"schemaVersion\":\"zevm-release-qualification-map.v1\"," ++ "\"updated\":\"2026-04-30\"," ++ "\"prdSource\":\"docs/specs/prd.md#35-release-qualification-and-verification-acceptance-criteria\"," ++ "\"records\":[" ++ "{\"surfaceId\":\"GAP_SURFACE\",\"surfaceSection\":\"PRD 6\",\"surfaceCategory\":\"transport\",\"assertionType\":\"default-graph-test\",\"assertionIdentifier\":\"TODO:listener smoke\",\"expectedContractOutcome\":\"socket smoke exists\",\"coverageStatus\":\"gap\"}" ++ "]" ++ "}";
+        "{" ++ "\"schemaVersion\":\"zevm-release-qualification-map.v1\"," ++ "\"updated\":\"2026-04-30\"," ++ "\"prdSource\":\"docs/specs/prd.md#35-release-qualification-and-verification-acceptance-criteria\"," ++ "\"records\":[" ++ "{\"surfaceId\":\"GAP_SURFACE\",\"surfaceSection\":\"PRD 6\",\"surfaceCategory\":\"transport\",\"assertionType\":\"default-graph-test\",\"assertionIdentifier\":\"" ++ legacy_gap_prefix ++ "listener smoke\",\"expectedContractOutcome\":\"socket smoke exists\",\"coverageStatus\":\"gap\"}" ++ "]" ++ "}";
 
     try std.testing.expectError(
         error.MissingGapReason,
@@ -386,10 +491,40 @@ test "qualification map validator requires gap metadata" {
 
 test "qualification map validator can fail on explicit gaps" {
     const json =
-        "{" ++ "\"schemaVersion\":\"zevm-release-qualification-map.v1\"," ++ "\"updated\":\"2026-04-30\"," ++ "\"prdSource\":\"docs/specs/prd.md#35-release-qualification-and-verification-acceptance-criteria\"," ++ "\"records\":[" ++ "{\"surfaceId\":\"STARTUP_SURFACE\",\"surfaceSection\":\"PRD 5\",\"surfaceCategory\":\"startup\",\"assertionType\":\"default-graph-test\",\"assertionIdentifier\":\"src/config_test.zig\",\"expectedContractOutcome\":\"startup behavior is asserted\",\"coverageStatus\":\"covered\"}," ++ "{\"surfaceId\":\"CONFIGURATION_SURFACE\",\"surfaceSection\":\"PRD 5\",\"surfaceCategory\":\"configuration\",\"assertionType\":\"default-graph-test\",\"assertionIdentifier\":\"src/config_test.zig\",\"expectedContractOutcome\":\"configuration behavior is asserted\",\"coverageStatus\":\"covered\"}," ++ "{\"surfaceId\":\"RUNTIME_SURFACE\",\"surfaceSection\":\"PRD 4\",\"surfaceCategory\":\"runtime\",\"assertionType\":\"default-graph-test\",\"assertionIdentifier\":\"src/node/runtime_test.zig\",\"expectedContractOutcome\":\"runtime behavior is asserted\",\"coverageStatus\":\"covered\"}," ++ "{\"surfaceId\":\"TRANSPORT_SURFACE\",\"surfaceSection\":\"PRD 6\",\"surfaceCategory\":\"transport\",\"assertionType\":\"default-graph-test\",\"assertionIdentifier\":\"TODO:listener smoke\",\"expectedContractOutcome\":\"transport behavior is asserted\",\"coverageStatus\":\"gap\",\"gapReason\":\"listener smoke missing\",\"ownerTicket\":\"ticket.md\"}," ++ "{\"surfaceId\":\"METHOD_SURFACE\",\"surfaceSection\":\"PRD 7\",\"surfaceCategory\":\"method\",\"assertionType\":\"default-graph-test\",\"assertionIdentifier\":\"src/rpc/dispatcher_test.zig\",\"expectedContractOutcome\":\"method behavior is asserted\",\"coverageStatus\":\"covered\"}," ++ "{\"surfaceId\":\"RELEASE_METADATA_RELEASE_TUPLE_JSON\",\"surfaceSection\":\"PRD 3.4\",\"surfaceCategory\":\"release-asset\",\"assertionType\":\"release-asset-validation\",\"assertionIdentifier\":\"src/release_metadata.zig\",\"expectedContractOutcome\":\"release tuple is validated\",\"coverageStatus\":\"covered\"}," ++ "{\"surfaceId\":\"RELEASE_METADATA_LIGHT_DEFAULT_CHECKPOINTS_JSON\",\"surfaceSection\":\"PRD 3.4\",\"surfaceCategory\":\"release-asset\",\"assertionType\":\"release-asset-validation\",\"assertionIdentifier\":\"src/release_metadata.zig\",\"expectedContractOutcome\":\"light defaults are validated\",\"coverageStatus\":\"covered\"}" ++ "]" ++ "}";
+        "{" ++ "\"schemaVersion\":\"zevm-release-qualification-map.v1\"," ++ "\"updated\":\"2026-04-30\"," ++ "\"prdSource\":\"docs/specs/prd.md#35-release-qualification-and-verification-acceptance-criteria\"," ++ "\"records\":[" ++ "{\"surfaceId\":\"STARTUP_SURFACE\",\"surfaceSection\":\"PRD 5\",\"surfaceCategory\":\"startup\",\"assertionType\":\"default-graph-test\",\"assertionIdentifier\":\"src/config_test.zig\",\"expectedContractOutcome\":\"startup behavior is asserted\",\"coverageStatus\":\"covered\"}," ++ "{\"surfaceId\":\"CONFIGURATION_SURFACE\",\"surfaceSection\":\"PRD 5\",\"surfaceCategory\":\"configuration\",\"assertionType\":\"default-graph-test\",\"assertionIdentifier\":\"src/config_test.zig\",\"expectedContractOutcome\":\"configuration behavior is asserted\",\"coverageStatus\":\"covered\"}," ++ "{\"surfaceId\":\"RUNTIME_SURFACE\",\"surfaceSection\":\"PRD 4\",\"surfaceCategory\":\"runtime\",\"assertionType\":\"default-graph-test\",\"assertionIdentifier\":\"src/node/runtime_test.zig\",\"expectedContractOutcome\":\"runtime behavior is asserted\",\"coverageStatus\":\"covered\"}," ++ "{\"surfaceId\":\"TRANSPORT_SURFACE\",\"surfaceSection\":\"PRD 6\",\"surfaceCategory\":\"transport\",\"assertionType\":\"default-graph-test\",\"assertionIdentifier\":\"" ++ legacy_gap_prefix ++ "listener smoke\",\"expectedContractOutcome\":\"transport behavior is asserted\",\"coverageStatus\":\"gap\",\"gapReason\":\"listener smoke missing\",\"ownerTicket\":\"ticket.md\"}," ++ "{\"surfaceId\":\"METHOD_SURFACE\",\"surfaceSection\":\"PRD 7\",\"surfaceCategory\":\"method\",\"assertionType\":\"default-graph-test\",\"assertionIdentifier\":\"src/rpc/dispatcher_test.zig\",\"expectedContractOutcome\":\"method behavior is asserted\",\"coverageStatus\":\"covered\"}," ++ "{\"surfaceId\":\"RELEASE_METADATA_RELEASE_TUPLE_JSON\",\"surfaceSection\":\"PRD 3.4\",\"surfaceCategory\":\"release-asset\",\"assertionType\":\"release-asset-validation\",\"assertionIdentifier\":\"src/release_metadata.zig\",\"expectedContractOutcome\":\"release tuple is validated\",\"coverageStatus\":\"covered\"}," ++ "{\"surfaceId\":\"RELEASE_METADATA_LIGHT_DEFAULT_CHECKPOINTS_JSON\",\"surfaceSection\":\"PRD 3.4\",\"surfaceCategory\":\"release-asset\",\"assertionType\":\"release-asset-validation\",\"assertionIdentifier\":\"src/release_metadata.zig\",\"expectedContractOutcome\":\"light defaults are validated\",\"coverageStatus\":\"covered\"}" ++ "]" ++ "}";
 
     try std.testing.expectError(
         error.ExplicitGapRemaining,
         validateMapJson(std.testing.allocator, json, .{ .require_covered = true }),
+    );
+}
+
+test "qualification map validator rejects covered row with missing evidence file" {
+    const json =
+        "{" ++ "\"schemaVersion\":\"zevm-release-qualification-map.v1\"," ++ "\"updated\":\"2026-04-30\"," ++ "\"prdSource\":\"docs/specs/prd.md#35-release-qualification-and-verification-acceptance-criteria\"," ++ "\"records\":[" ++ "{\"surfaceId\":\"MISSING_EVIDENCE\",\"surfaceSection\":\"PRD 5\",\"surfaceCategory\":\"startup\",\"assertionType\":\"default-graph-test\",\"assertionIdentifier\":\"src/not_a_real_test_file.zig\",\"expectedContractOutcome\":\"missing evidence fails\",\"coverageStatus\":\"covered\"}" ++ "]" ++ "}";
+
+    try std.testing.expectError(
+        error.MissingAssertionFile,
+        validateMapJson(std.testing.allocator, json, .{}),
+    );
+}
+
+test "qualification map validator rejects covered row with missing named test" {
+    const json =
+        "{" ++ "\"schemaVersion\":\"zevm-release-qualification-map.v1\"," ++ "\"updated\":\"2026-04-30\"," ++ "\"prdSource\":\"docs/specs/prd.md#35-release-qualification-and-verification-acceptance-criteria\"," ++ "\"records\":[" ++ "{\"surfaceId\":\"MISSING_NAMED_TEST\",\"surfaceSection\":\"PRD 5\",\"surfaceCategory\":\"startup\",\"assertionType\":\"default-graph-test\",\"assertionIdentifier\":\"src/config_test.zig:this test is intentionally absent\",\"expectedContractOutcome\":\"missing named tests fail\",\"coverageStatus\":\"covered\"}" ++ "]" ++ "}";
+
+    try std.testing.expectError(
+        error.MissingAssertionTest,
+        validateMapJson(std.testing.allocator, json, .{}),
+    );
+}
+
+test "qualification map validator rejects covered row with unsupported gate command" {
+    const json =
+        "{" ++ "\"schemaVersion\":\"zevm-release-qualification-map.v1\"," ++ "\"updated\":\"2026-04-30\"," ++ "\"prdSource\":\"docs/specs/prd.md#35-release-qualification-and-verification-acceptance-criteria\"," ++ "\"records\":[" ++ "{\"surfaceId\":\"BAD_COMMAND\",\"surfaceSection\":\"PRD 3.5\",\"surfaceCategory\":\"release-asset\",\"assertionType\":\"release-asset-validation\",\"assertionIdentifier\":\"zig build pretend\",\"expectedContractOutcome\":\"unsupported commands fail\",\"coverageStatus\":\"covered\"}" ++ "]" ++ "}";
+
+    try std.testing.expectError(
+        error.UnsupportedAssertionCommand,
+        validateMapJson(std.testing.allocator, json, .{}),
     );
 }

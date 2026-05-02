@@ -78,9 +78,9 @@ const hive_rpc_fixture_paths = [_][]const u8{
     "execution-apis/tests/net_version/get-network-id.io",
 };
 
-// TODO(external-verify): execution-spec-tests/fixtures is absent in this checkout; when it is populated, walk fixtures/state_tests and fixtures/blockchain_tests directly.
-// TODO(external-verify): expand legacy state coverage — next candidates: stExtCodeHash after fixing dynamicAccountOverwriteEmpty, stCreate2 after fixing CREATE2_FirstByte_loop, then stCallCreateCallCodeTest.
-// TODO(external-verify): activate the remaining rpc-compat .io files after importing execution-apis genesis.json, chain.rlp, and headfcu.json into the ZEVM runtime.
+// External fixture expansion remains tracked by release-readiness tickets:
+// state/block fixture discovery, broader legacy-state coverage, and the
+// remaining rpc-compat .io lifecycle inputs are not complete yet.
 
 const VerifyOptions = struct {
     shard_index: usize = 0,

@@ -10,10 +10,12 @@ Run the structural check with:
 zig build qualification-check
 ```
 
-The default check verifies schema shape, required fields, allowed categories, release-asset rows, and explicit gap metadata. It exits successfully when gaps are explicit so the map can be maintained before the release gate is fully closed.
+The default check verifies schema shape, required fields, allowed categories, release-asset rows, explicit gap metadata, and covered-row evidence references. Covered rows must point to allowed gate commands, existing repo-relative files, or named Zig tests that exist in those files. It exits successfully when gaps are explicit so the map can be maintained before the release gate is fully closed.
 
 For a release-candidate gate that must fail while any explicit gaps remain, run:
 
 ```sh
 zig build qualification-check -- --require-covered
 ```
+
+`qualification-check` validates evidence references; it does not replace the behavioral execution performed by `zig build test`, `zig build verify-fast`, `zig build verify`, or the Hive gates.

@@ -107,7 +107,7 @@
       "surfaceSection": "PRD 3.5, 5.6, 6, 12",
       "surfaceCategory": "transport",
       "assertionType": "default-graph-test",
-      "assertionIdentifier": "src/rpc/listener_smoke_test.zig:light mode serves persisted checkpoint status over a real TCP listener",
+      "assertionIdentifier": "src/rpc/listener_smoke_test.zig:light mode restarts from persisted checkpoint over a real TCP listener",
       "expectedContractOutcome": "A release verification test binds the real HTTP listener socket in light mode and validates startup plus restart/resume from a persisted checkpoint input path.",
       "coverageStatus": "covered"
     },
@@ -116,7 +116,7 @@
       "surfaceSection": "PRD 6, 7; JSON-RPC contract 3-6",
       "surfaceCategory": "transport",
       "assertionType": "default-graph-test",
-      "assertionIdentifier": "src/rpc/envelope_test.zig; src/rpc/dispatcher_test.zig; src/rpc/router_test.zig",
+      "assertionIdentifier": "src/rpc/server_test.zig; src/rpc/dispatcher_test.zig; src/rpc/dispatch_wiring_test.zig",
       "expectedContractOutcome": "JSON-RPC 2.0 request parsing, batch handling, ID preservation, method-not-found, invalid params, and error envelope semantics match the contract.",
       "coverageStatus": "covered"
     },
@@ -125,7 +125,7 @@
       "surfaceSection": "PRD 3.1, 7; JSON-RPC contract 8.1",
       "surfaceCategory": "method",
       "assertionType": "default-graph-test",
-      "assertionIdentifier": "src/rpc/eth_handler_test.zig; src/rpc/handlers/eth_read_test.zig",
+      "assertionIdentifier": "src/rpc/handlers/eth_read_test.zig; src/rpc/dispatch_wiring_test.zig",
       "expectedContractOutcome": "Trusted core read methods return chain ID, block number, account balance/code/storage/nonce, accounts, coinbase, gas price, blob base fee, and fee history according to phase-1 selectors and tuple rules.",
       "coverageStatus": "covered"
     },
