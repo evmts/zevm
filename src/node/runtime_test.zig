@@ -583,3 +583,29 @@ test "setRpcUrl requires fork mode to be enabled" {
 
     try std.testing.expectError(error.ForkNotEnabled, rt.setRpcUrl("https://rpc.example"));
 }
+
+test "fork URL validation rejects unusable HTTP URLs" {
+    const invalid_urls = [_][]const u8{
+        "",
+        "ftp://rpc.example",
+        "https://",
+        "http://",
+        "https://rpc example",
+        "https://rpc.example\n",
+    };
+
+    for (invalid_urls) |url| {
+        try std.testing.expectError(
+            error.InvalidForkUrl,
+            runtime.NodeRuntime.init(std.testing.allocator, .{ .fork_url = url }),
+        );
+    }
+
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, .{
+        .fork_url = "https://rpc.example",
+    });
+    defer rt.deinit();
+
+    try std.testing.expectError(error.InvalidForkUrl, rt.setRpcUrl("https://"));
+    try std.testing.expectEqualStrings("https://rpc.example", rt.fork_config.?.url);
+}

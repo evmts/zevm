@@ -1293,9 +1293,18 @@ fn selectStartupCheckpoint(
 
 fn validateForkUrl(url: []const u8) !void {
     if (url.len == 0) return error.InvalidForkUrl;
-    if (!std.mem.startsWith(u8, url, "http://") and !std.mem.startsWith(u8, url, "https://")) {
+
+    for (url) |byte| {
+        if (byte <= ' ' or byte == 0x7f) return error.InvalidForkUrl;
+    }
+
+    const uri = std.Uri.parse(url) catch return error.InvalidForkUrl;
+    if (!std.mem.eql(u8, uri.scheme, "http") and !std.mem.eql(u8, uri.scheme, "https")) {
         return error.InvalidForkUrl;
     }
+
+    const host = uri.host orelse return error.InvalidForkUrl;
+    if (host.isEmpty()) return error.InvalidForkUrl;
 }
 
 fn allocForkConfig(allocator: std.mem.Allocator, fork: ?ForkConfig) !?ForkConfig {
