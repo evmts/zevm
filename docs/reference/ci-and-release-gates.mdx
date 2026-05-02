@@ -47,6 +47,8 @@ zig build verify
 
 This is the required CI path for release-candidate confidence. It currently verifies the active official suite coverage and quarantine policy recorded in `.smithers/external-test-suites.json`; it is not a claim that every Hive simulator or every Ethereum fixture directory is already fully active.
 
+Those same tag, manual, and scheduled workflows also run the Hive RPC compat smoke job described below.
+
 ## Hive RPC Compat Smoke
 
 For the CI-friendly Hive lifecycle smoke, run:
@@ -56,6 +58,8 @@ bun tools/hive_rpc_compat_smoke.ts
 ```
 
 The script builds a local `zevm/hive-client:local` image from this checkout, mounts `../voltaire` and `../guillotine-mini` as Docker build contexts, builds the Hive runner, and runs ZEVM through `ethereum/rpc-compat` for the active transcript subset. The client wrapper provides the Hive-required HTTP JSON-RPC port `8545` and a minimal Engine API `8551` response for the simulator's initial forkchoice update.
+
+CI runs this same command in the `Hive RPC Compat Smoke` job for tag pushes, manual dispatches, and the weekly scheduled workflow.
 
 This smoke does not import Hive `genesis.json` or `chain.rlp` into ZEVM yet. Full rpc-compat coverage remains gated on materializing that fixture chain in ZEVM and expanding beyond the active transcript subset.
 
