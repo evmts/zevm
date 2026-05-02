@@ -33,10 +33,10 @@ RUN zig build -Doptimize=ReleaseSafe
 FROM alpine:3.20
 RUN apk add --no-cache bash ca-certificates jq python3
 COPY --from=builder /src/zevm/zig-out/bin/zevm /usr/local/bin/zevm
-COPY tools/hive/zevm-client/engine_stub.py /engine_stub.py
+COPY tools/hive/zevm-client/engine_compat.py /engine_compat.py
 COPY tools/hive/zevm-client/zevm-hive.sh /zevm-hive.sh
 COPY tools/hive/zevm-client/enode.sh /hive-bin/enode.sh
-RUN chmod +x /zevm-hive.sh /engine_stub.py /hive-bin/enode.sh && \
+RUN chmod +x /zevm-hive.sh /engine_compat.py /hive-bin/enode.sh && \
     echo "zevm hive-client local" > /version.txt
 
 EXPOSE 8545 8551

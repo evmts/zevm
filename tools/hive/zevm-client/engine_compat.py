@@ -4,7 +4,7 @@ import json
 
 
 class EngineHandler(BaseHTTPRequestHandler):
-    server_version = "zevm-engine-stub/0.1"
+    server_version = "zevm-engine-compat/0.1"
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0"))

@@ -4,7 +4,7 @@ set -euo pipefail
 chain_id="${HIVE_CHAIN_ID:-31337}"
 blob_base_fee="${ZEVM_HIVE_BLOB_BASE_FEE:-1}"
 
-python3 /engine_stub.py &
+python3 /engine_compat.py &
 engine_pid="$!"
 zevm_pid=""
 
@@ -27,7 +27,7 @@ PY
     break
   fi
   if ! kill -0 "$engine_pid" >/dev/null 2>&1; then
-    echo "engine stub exited before accepting connections" >&2
+    echo "engine compatibility service exited before accepting connections" >&2
     exit 1
   fi
   sleep 0.1
