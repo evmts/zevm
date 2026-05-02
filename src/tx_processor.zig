@@ -4,6 +4,7 @@ const state_manager = @import("state-manager");
 const guillotine_mini = @import("guillotine_mini");
 const host_adapter = @import("host_adapter.zig");
 const tx_encoding = @import("transaction_encoding.zig");
+const hardfork_schedule = @import("hardfork_schedule.zig");
 const INTRINSIC_GAS: u64 = 21_000;
 const CALLDATA_ZERO_BYTE_GAS: u64 = 4;
 const CALLDATA_NONZERO_BYTE_GAS: u64 = 16;
@@ -63,12 +64,12 @@ pub fn intrinsicGasForFork(data: []const u8, is_create: bool, hardfork: guilloti
     return gas;
 }
 
-/// Pin the EVM hardfork from block context. Defaults to CANCUN when no
-/// chain-specific mapping is wired in. Once we add full mainnet activation
-/// tables, branch on chain_id + block_number/timestamp here.
+/// Resolve the EVM hardfork from the block context. Mainnet uses the shared
+/// activation schedule; local dev chains preserve the existing Cancun baseline
+/// until per-chain fork config is threaded into NodeRuntime.
 pub fn resolveHardfork(block_ctx: guillotine_mini.BlockContext) guillotine_mini.Hardfork {
-    _ = block_ctx;
-    return .CANCUN;
+    if (block_ctx.chain_id != 1) return .CANCUN;
+    return hardfork_schedule.resolveHardfork(block_ctx.block_number, block_ctx.block_timestamp);
 }
 
 fn transactionTypeSupported(receipt_type: primitives.Receipt.TransactionType, hardfork: guillotine_mini.Hardfork) bool {

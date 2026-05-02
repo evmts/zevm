@@ -30,8 +30,8 @@ fn makeLegacyTx(params: struct {
 fn defaultBlockContext() guillotine_mini.BlockContext {
     return .{
         .chain_id = 1,
-        .block_number = 1,
-        .block_timestamp = 1000,
+        .block_number = 19_426_587,
+        .block_timestamp = 1_710_338_135,
         .block_difficulty = 0,
         .block_prevrandao = 0,
         .block_coinbase = primitives.Address{ .bytes = [_]u8{0xCB} ++ [_]u8{0} ** 19 },
@@ -56,6 +56,68 @@ test "intrinsic gas calculation" {
     try std.testing.expectEqual(@as(u64, 21_000 + 16 + 4 + 16), tx_processor.intrinsicGas(&[_]u8{ 0x01, 0x00, 0x02 }, false));
     try std.testing.expectEqual(@as(u64, 21_000 + 32_000 + 8 + 16 * 100), tx_processor.intrinsicGasForFork(&([_]u8{0x01} ** 100), true, .CANCUN));
     try std.testing.expectEqual(@as(u64, 21_000 + 32_000 + 16 * 100), tx_processor.intrinsicGasForFork(&([_]u8{0x01} ** 100), true, .LONDON));
+}
+
+test "resolveHardfork follows block number and timestamp schedule" {
+    var ctx = defaultBlockContext();
+
+    ctx.block_number = 0;
+    ctx.block_timestamp = 0;
+    try std.testing.expectEqual(guillotine_mini.Hardfork.FRONTIER, tx_processor.resolveHardfork(ctx));
+
+    ctx.block_number = 12_965_000;
+    ctx.block_timestamp = 0;
+    try std.testing.expectEqual(guillotine_mini.Hardfork.LONDON, tx_processor.resolveHardfork(ctx));
+
+    ctx.block_number = 15_537_394;
+    ctx.block_timestamp = 1_681_338_455;
+    try std.testing.expectEqual(guillotine_mini.Hardfork.SHANGHAI, tx_processor.resolveHardfork(ctx));
+
+    ctx.block_timestamp = 1_710_338_135;
+    try std.testing.expectEqual(guillotine_mini.Hardfork.CANCUN, tx_processor.resolveHardfork(ctx));
+
+    ctx.block_timestamp = 1_746_612_311;
+    try std.testing.expectEqual(guillotine_mini.Hardfork.PRAGUE, tx_processor.resolveHardfork(ctx));
+
+    ctx.chain_id = 31337;
+    ctx.block_number = 0;
+    ctx.block_timestamp = 0;
+    try std.testing.expectEqual(guillotine_mini.Hardfork.CANCUN, tx_processor.resolveHardfork(ctx));
+}
+
+test "processTransaction uses block-context hardfork for intrinsic gas" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    const sender = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
+    const recipient = primitives.Address{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 19 };
+
+    try sm.setBalance(sender, 1_000_000_000_000);
+    try sm.setNonce(sender, 0);
+
+    var frontier_ctx = defaultBlockContext();
+    frontier_ctx.block_number = 0;
+    frontier_ctx.block_timestamp = 0;
+
+    const result = tx_processor.processTransaction(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        sender,
+        makeLegacyTx(.{
+            .to = recipient,
+            .value = 0,
+            .data = &[_]u8{0x01},
+            .gas_limit = 21_016,
+            .gas_price = 0,
+            .nonce = 0,
+        }),
+        frontier_ctx,
+    );
+
+    try std.testing.expectError(tx_processor.TxError.IntrinsicGasExceedsLimit, result);
+    try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(sender));
 }
 
 test "process simple ETH transfer" {
