@@ -3,6 +3,7 @@ const primitives = @import("primitives");
 const blockchain_mod = @import("blockchain");
 const receipt_index_mod = @import("../receipt_index.zig");
 const log_index_mod = @import("../log_index.zig");
+const tx_encoding = @import("../transaction_encoding.zig");
 
 // ============================================================================
 // Response Types
@@ -253,10 +254,8 @@ fn receiptsForBlockHash(
 
 /// Look up a transaction by hash. We don't carry a structured tx index; instead,
 /// the receipt index tracks each mined tx. We use the receipt to locate the
-/// containing block + index, then synthesize a TxResponse using receipt-derived
-/// fields. Fields that require RLP-decoding the raw tx bytes (nonce, value,
-/// input, gasPrice, signature components, chain id, access list, etc.) cannot
-/// be recovered without a transaction decoder; those are returned as 0/empty.
+/// containing block + index, then hydrate a TxResponse from the raw transaction
+/// bytes where the envelope is a supported legacy transaction.
 pub fn getTransactionByHash(
     allocator: std.mem.Allocator,
     bc: *blockchain_mod.Blockchain,
@@ -272,6 +271,7 @@ pub fn getTransactionByHash(
 }
 
 pub fn getTransactionByBlockHashAndIndex(
+    allocator: std.mem.Allocator,
     bc: *blockchain_mod.Blockchain,
     block_hash: [32]u8,
     index: u64,
@@ -280,7 +280,8 @@ pub fn getTransactionByBlockHashAndIndex(
     if (index >= block.body.transactions.len) return null;
     if (index > std.math.maxInt(u32)) return null;
     const tx_index: usize = @intCast(index);
-    return txResponseFromRaw(
+    return try txResponseFromRaw(
+        allocator,
         block.body.transactions[tx_index].raw,
         block.hash,
         block.header.number,
@@ -289,6 +290,7 @@ pub fn getTransactionByBlockHashAndIndex(
 }
 
 pub fn getTransactionByBlockNumberAndIndex(
+    allocator: std.mem.Allocator,
     bc: *blockchain_mod.Blockchain,
     tag: []const u8,
     index: u64,
@@ -298,7 +300,8 @@ pub fn getTransactionByBlockNumberAndIndex(
     if (index >= block.body.transactions.len) return null;
     if (index > std.math.maxInt(u32)) return null;
     const tx_index: usize = @intCast(index);
-    return txResponseFromRaw(
+    return try txResponseFromRaw(
+        allocator,
         block.body.transactions[tx_index].raw,
         block.hash,
         block.header.number,
@@ -350,7 +353,7 @@ fn blockToResponse(
     const txs: TransactionList = if (full_txs) blk: {
         const full = try allocator.alloc(TxResponse, block.body.transactions.len);
         for (block.body.transactions, 0..) |tx_data, i| {
-            full[i] = txResponseFromRaw(tx_data.raw, block.hash, block.header.number, @intCast(i));
+            full[i] = try txResponseFromRaw(allocator, tx_data.raw, block.hash, block.header.number, @intCast(i));
         }
         break :blk .{ .full = full };
     } else blk: {
@@ -389,11 +392,18 @@ fn blockToResponse(
 }
 
 fn txResponseFromRaw(
+    allocator: std.mem.Allocator,
     raw: []const u8,
     block_hash: [32]u8,
     block_number: u64,
     index: u32,
-) TxResponse {
+) !TxResponse {
+    if (detectTxTypeField(raw) == 0 and raw.len > 0 and raw[0] >= 0xc0) {
+        if (tx_encoding.decodeLegacyEnvelope(raw)) |tx| {
+            return txResponseFromLegacy(allocator, raw, tx, block_hash, block_number, index, null);
+        } else |_| {}
+    }
+
     return .{
         .hash = computeTxHash(raw),
         .blockHash = block_hash,
@@ -426,18 +436,30 @@ fn txResponseFromReceipt(
     receipt: primitives.Receipt.Receipt,
     block: ?primitives.Block.Block,
 ) !TxResponse {
-    var input_bytes: []const u8 = &.{};
+    var raw_type_field: ?u8 = null;
     if (block) |b| {
         const idx: usize = @intCast(receipt.transaction_index);
         if (idx < b.body.transactions.len) {
-            // Best-effort: expose the raw envelope as input. A future tx
-            // decoder can split this into nonce/value/input/signature.
             const raw = b.body.transactions[idx].raw;
-            input_bytes = try allocator.dupe(u8, raw);
+            const detected_type = detectTxTypeField(raw);
+            raw_type_field = detected_type;
+            if (detected_type == 0 and raw.len > 0 and raw[0] >= 0xc0) {
+                if (tx_encoding.decodeLegacyEnvelope(raw)) |tx| {
+                    return txResponseFromLegacy(
+                        allocator,
+                        raw,
+                        tx,
+                        receipt.block_hash,
+                        receipt.block_number,
+                        receipt.transaction_index,
+                        receipt.sender,
+                    );
+                } else |_| {}
+            }
         }
     }
 
-    const type_field = txTypeToU8(receipt.type);
+    const type_field = raw_type_field orelse txTypeToU8(receipt.type);
     const tx_response = TxResponse{
         .hash = receipt.transaction_hash,
         .blockHash = receipt.block_hash,
@@ -448,7 +470,7 @@ fn txResponseFromReceipt(
         .nonce = 0,
         .gas = @intCast(@min(receipt.gas_used, @as(u256, std.math.maxInt(u64)))),
         .value = 0,
-        .input = input_bytes,
+        .input = &.{},
         .type_field = type_field,
         .chain_id = null,
         .gas_price = if (type_field == 0 or type_field == 1) receipt.effective_gas_price else null,
@@ -466,6 +488,45 @@ fn txResponseFromReceipt(
     return tx_response;
 }
 
+fn txResponseFromLegacy(
+    allocator: std.mem.Allocator,
+    raw: []const u8,
+    tx: primitives.Transaction.LegacyTransaction,
+    block_hash: [32]u8,
+    block_number: u64,
+    index: u32,
+    fallback_sender: ?primitives.Address.Address,
+) !TxResponse {
+    const sender = tx_encoding.recoverLegacySender(allocator, tx) catch
+        (fallback_sender orelse primitives.Address.ZERO_ADDRESS);
+
+    return .{
+        .hash = computeTxHash(raw),
+        .blockHash = block_hash,
+        .blockNumber = block_number,
+        .transactionIndex = index,
+        .from = sender,
+        .to = tx.to,
+        .nonce = tx.nonce,
+        .gas = tx.gas_limit,
+        .value = tx.value,
+        .input = tx.data,
+        .type_field = 0,
+        .chain_id = tx_encoding.legacyChainId(tx),
+        .gas_price = tx.gas_price,
+        .max_fee_per_gas = null,
+        .max_priority_fee_per_gas = null,
+        .max_fee_per_blob_gas = null,
+        .blob_versioned_hashes = null,
+        .access_list = null,
+        .authorization_list = null,
+        .v = tx.v,
+        .r = tx_encoding.bytes32ToU256(tx.r),
+        .s = tx_encoding.bytes32ToU256(tx.s),
+        .y_parity = tx_encoding.legacyRecoveryId(tx.v),
+    };
+}
+
 fn detectTxTypeField(raw: []const u8) u8 {
     if (raw.len == 0) return 0;
     const first = raw[0];
@@ -474,7 +535,7 @@ fn detectTxTypeField(raw: []const u8) u8 {
         0x02 => 2,
         0x03 => 3,
         0x04 => 4,
-        else => 0, // legacy (RLP list prefix >= 0xc0)
+        else => if (first <= 0x7f) first else 0, // legacy is an RLP list prefix >= 0xc0
     };
 }
 

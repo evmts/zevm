@@ -5,6 +5,8 @@ const blockchain_mod = @import("blockchain");
 const block_queries = @import("block_queries.zig");
 const receipt_index_mod = @import("../receipt_index.zig");
 const log_index_mod = @import("../log_index.zig");
+const genesis_mod = @import("../genesis.zig");
+const tx_encoding = @import("../transaction_encoding.zig");
 
 fn setupBlockchain(allocator: std.mem.Allocator) !blockchain_mod.Blockchain {
     var bc = try blockchain_mod.Blockchain.init(allocator, null);
@@ -28,6 +30,87 @@ fn addBlock(allocator: std.mem.Allocator, bc: *blockchain_mod.Blockchain, parent
     try bc.putBlock(block);
     try bc.setCanonicalHead(block.hash);
     return block;
+}
+
+fn makeSignedLegacyTx(
+    allocator: std.mem.Allocator,
+    nonce: u64,
+    gas_price: u256,
+    gas_limit: u64,
+    to: ?primitives.Address,
+    value: u256,
+    data: []const u8,
+    chain_id: u64,
+) !primitives.Transaction.LegacyTransaction {
+    const unsigned = primitives.Transaction.LegacyTransaction{
+        .nonce = nonce,
+        .gas_price = gas_price,
+        .gas_limit = gas_limit,
+        .to = to,
+        .value = value,
+        .data = data,
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+    return tx_encoding.signLegacyTransaction(allocator, unsigned, genesis_mod.DEV_ACCOUNTS[0].private_key, chain_id);
+}
+
+fn addBlockWithRawTransactions(
+    allocator: std.mem.Allocator,
+    bc: *blockchain_mod.Blockchain,
+    parent_hash: [32]u8,
+    number: u64,
+    txs: []const primitives.BlockBody.TransactionData,
+) !primitives.Block.Block {
+    var header = primitives.BlockHeader.BlockHeader{
+        .parent_hash = parent_hash,
+        .number = number,
+        .timestamp = number * 12,
+        .gas_limit = 30_000_000,
+        .base_fee_per_gas = 1_000_000_000,
+    };
+    _ = &header;
+    const body = primitives.BlockBody.BlockBody{
+        .transactions = txs,
+        .ommers = &.{},
+        .withdrawals = null,
+    };
+    const block = try primitives.Block.from(&header, &body, allocator);
+    try bc.putBlock(block);
+    try bc.setCanonicalHead(block.hash);
+    return block;
+}
+
+fn expectHydratedLegacyTx(
+    tx: block_queries.TxResponse,
+    raw: []const u8,
+    signed: primitives.Transaction.LegacyTransaction,
+    sender: primitives.Address,
+    block_hash: [32]u8,
+    block_number: u64,
+    index: u32,
+) !void {
+    const expected_hash = tx_encoding.transactionHash(raw);
+    const actual_block_hash = tx.blockHash.?;
+    try testing.expectEqualSlices(u8, &expected_hash, &tx.hash);
+    try testing.expectEqualSlices(u8, &block_hash, &actual_block_hash);
+    try testing.expectEqual(block_number, tx.blockNumber.?);
+    try testing.expectEqual(index, tx.transactionIndex.?);
+    try testing.expectEqual(sender, tx.from);
+    try testing.expectEqual(signed.to.?, tx.to.?);
+    try testing.expectEqual(signed.nonce, tx.nonce);
+    try testing.expectEqual(signed.gas_limit, tx.gas);
+    try testing.expectEqual(signed.value, tx.value);
+    try testing.expectEqualSlices(u8, signed.data, tx.input);
+    try testing.expectEqual(@as(u8, 0), tx.type_field);
+    try testing.expectEqual(tx_encoding.legacyChainId(signed).?, tx.chain_id.?);
+    try testing.expectEqual(signed.gas_price, tx.gas_price.?);
+    try testing.expectEqual(@as(?u256, null), tx.max_fee_per_gas);
+    try testing.expectEqual(@as(u256, signed.v), tx.v.?);
+    try testing.expectEqual(tx_encoding.bytes32ToU256(signed.r), tx.r.?);
+    try testing.expectEqual(tx_encoding.bytes32ToU256(signed.s), tx.s.?);
+    try testing.expectEqual(tx_encoding.legacyRecoveryId(signed.v), tx.y_parity.?);
 }
 
 // ============================================================================
@@ -149,6 +232,83 @@ test "getBlockTransactionCountByHash: returns correct count" {
     const result = try block_queries.getBlockTxCountByHash(&bc, genesis.hash);
     try testing.expect(result != null);
     try testing.expectEqual(@as(u64, 0), result.?);
+}
+
+test "transaction queries hydrate signed legacy raw transaction fields" {
+    const allocator = testing.allocator;
+    var bc = try setupBlockchain(allocator);
+    defer bc.deinit();
+    var ri = receipt_index_mod.ReceiptIndex.init(allocator);
+    defer ri.deinit(allocator);
+
+    const genesis = (try bc.getBlockByNumber(0)).?;
+    const sender = genesis_mod.DEV_ACCOUNTS[0].address;
+    const recipient = genesis_mod.DEV_ACCOUNTS[1].address;
+    const input = [_]u8{ 0xde, 0xad, 0xbe, 0xef };
+    const signed = try makeSignedLegacyTx(
+        allocator,
+        7,
+        2_000_000_000,
+        50_000,
+        recipient,
+        1234,
+        &input,
+        31337,
+    );
+    const raw = try tx_encoding.encodeLegacyTransactionEnvelope(allocator, signed);
+    defer allocator.free(raw);
+    const tx_hash = tx_encoding.transactionHash(raw);
+
+    const txs = try allocator.alloc(primitives.BlockBody.TransactionData, 1);
+    defer allocator.free(txs);
+    txs[0] = .{ .raw = raw };
+
+    const block = try addBlockWithRawTransactions(allocator, &bc, genesis.hash, 1, txs);
+
+    const by_index = (try block_queries.getTransactionByBlockHashAndIndex(allocator, &bc, block.hash, 0)).?;
+    try expectHydratedLegacyTx(by_index, raw, signed, sender, block.hash, 1, 0);
+
+    const by_number = (try block_queries.getTransactionByBlockNumberAndIndex(allocator, &bc, "0x1", 0)).?;
+    try expectHydratedLegacyTx(by_number, raw, signed, sender, block.hash, 1, 0);
+
+    var receipt = try makeTestReceipt(allocator, tx_hash, block.hash, 1, true);
+    defer receipt.deinit(allocator);
+    receipt.sender = sender;
+    receipt.to = recipient;
+    receipt.effective_gas_price = signed.gas_price;
+    try ri.putBlockReceipts(allocator, block.hash, &[_]primitives.Receipt.Receipt{receipt});
+
+    const by_hash = (try block_queries.getTransactionByHash(allocator, &bc, &ri, tx_hash)).?;
+    try expectHydratedLegacyTx(by_hash, raw, signed, sender, block.hash, 1, 0);
+}
+
+test "transaction query for typed raw envelope degrades without legacy field hydration" {
+    const allocator = testing.allocator;
+    var bc = try setupBlockchain(allocator);
+    defer bc.deinit();
+
+    const genesis = (try bc.getBlockByNumber(0)).?;
+    const typed_raw = [_]u8{ 0x02, 0xc0 };
+    const txs = try allocator.alloc(primitives.BlockBody.TransactionData, 1);
+    defer allocator.free(txs);
+    txs[0] = .{ .raw = &typed_raw };
+
+    const block = try addBlockWithRawTransactions(allocator, &bc, genesis.hash, 1, txs);
+
+    const tx = (try block_queries.getTransactionByBlockHashAndIndex(allocator, &bc, block.hash, 0)).?;
+    const typed_hash = tx_encoding.transactionHash(&typed_raw);
+    try testing.expectEqual(@as(u8, 2), tx.type_field);
+    try testing.expectEqualSlices(u8, &typed_hash, &tx.hash);
+    try testing.expectEqual(primitives.Address.ZERO_ADDRESS, tx.from);
+    try testing.expectEqual(@as(?primitives.Address, null), tx.to);
+    try testing.expectEqual(@as(u64, 0), tx.nonce);
+    try testing.expectEqual(@as(u64, 0), tx.gas);
+    try testing.expectEqual(@as(u256, 0), tx.value);
+    try testing.expectEqual(@as(usize, 0), tx.input.len);
+    try testing.expectEqual(@as(?u256, null), tx.gas_price);
+    try testing.expectEqual(@as(?u256, null), tx.v);
+    try testing.expectEqual(@as(?u256, null), tx.r);
+    try testing.expectEqual(@as(?u256, null), tx.s);
 }
 
 // ============================================================================

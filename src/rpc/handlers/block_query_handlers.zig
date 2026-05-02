@@ -263,6 +263,7 @@ pub fn handleGetTransactionByBlockHashAndIndex(
 ) !jsonrpc.eth.GetTransactionByBlockHashAndIndex.Result {
     const index = parseQuantityToU64(params.transaction_index) catch return error.InvalidParams;
     const internal = block_queries.getTransactionByBlockHashAndIndex(
+        allocator,
         ctx.blockchain,
         params.block_hash.bytes,
         index,
@@ -287,6 +288,7 @@ pub fn handleGetTransactionByBlockNumberAndIndex(
 
     const index = parseQuantityToU64(params.transaction_index) catch return error.InvalidParams;
     const internal = block_queries.getTransactionByBlockNumberAndIndex(
+        allocator,
         ctx.blockchain,
         tag,
         index,
