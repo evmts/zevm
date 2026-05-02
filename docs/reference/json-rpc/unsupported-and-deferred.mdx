@@ -56,6 +56,11 @@ Not part of the current contract:
 - `eth_accounts`, `eth_coinbase`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_blobBaseFee`, and `eth_feeHistory` are trusted-only
 - in light mode, well-formed requests to those methods return JSON-RPC `-32010` (unsupported in active mode)
 
+### Mode-gated trusted-only compatibility utilities
+
+- `web3_clientVersion`, `web3_sha3`, `net_version`, `net_listening`, `net_peerCount`, `eth_mining`, `eth_syncing`, `eth_protocolVersion`, `txpool_content`, `txpool_status`, and `txpool_inspect` are trusted-only compatibility methods
+- in light mode, well-formed requests to those methods return JSON-RPC `-32010` (unsupported in active mode)
+
 ### Error-mapping summary
 
 - deferred/out-of-contract method inventories on this page map to JSON-RPC `-32601`

@@ -609,6 +609,24 @@ Query selector behavior:
 - `eth_getTransactionByHash` is canonical-mined only and returns `null` for txpool-only pending entries
 - `eth_getTransactionReceipt` is mined-only and returns `null` until inclusion
 
+### 8.5 Compatibility utility and txpool methods
+
+These methods are intentionally exposed in trusted mode as compatibility helpers. They are trusted-only in phase 1; in light mode, well-formed requests return `-32010`.
+
+| Method | Exact params | Exact result | Errors |
+| --- | --- | --- | --- |
+| `web3_clientVersion` | `[]` or omitted | implementation version string | `-32602` for non-empty params |
+| `web3_sha3` | `[HexData]` | Keccak-256 `Hash32` | `-32602` for malformed hex data |
+| `net_version` | `[]` or omitted | decimal chain-id string | `-32602` for non-empty params |
+| `net_listening` | `[]` or omitted | `true` | `-32602` for non-empty params |
+| `net_peerCount` | `[]` or omitted | `QuantityHex` peer count; phase-1 trusted mode returns `0x0` | `-32602` for non-empty params |
+| `eth_mining` | `[]` or omitted | boolean; `true` when mining mode is not manual | `-32602` for non-empty params |
+| `eth_syncing` | `[]` or omitted | `false` in trusted mode | `-32602` for non-empty params |
+| `eth_protocolVersion` | `[]` or omitted | protocol version string; phase-1 trusted mode returns `0x41` | `-32602` for non-empty params |
+| `txpool_content` | `[]` or omitted | geth-style pending/queued txpool content object | `-32602` for non-empty params |
+| `txpool_status` | `[]` or omitted | object with `pending` and `queued` `QuantityHex` counts | `-32602` for non-empty params |
+| `txpool_inspect` | `[]` or omitted | geth-style pending/queued summary object | `-32602` for non-empty params |
+
 ## 9. Trusted-Mode `zevm_*` Methods
 
 ### 9.1 Alias rule

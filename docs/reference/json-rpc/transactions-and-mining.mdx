@@ -78,6 +78,14 @@ Rules:
 - `zevm_dropTransaction` returns `false` when tx is absent
 - `zevm_setIntervalMining(["0x0"])` disables interval mining
 
+Trusted txpool introspection compatibility methods:
+
+| Method | Exact params | Exact result |
+| --- | --- | --- |
+| `txpool_content` | `[]` or omitted | geth-style pending/queued txpool content object |
+| `txpool_status` | `[]` or omitted | object with `pending` and `queued` `QuantityHex` counts |
+| `txpool_inspect` | `[]` or omitted | geth-style pending/queued summary object |
+
 `MinedBlockSummary`:
 
 ```json

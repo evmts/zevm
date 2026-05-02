@@ -157,7 +157,9 @@ Startup policy context:
 - Core reads: `eth_chainId`, `eth_blockNumber`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getTransactionCount`, `eth_accounts`, `eth_coinbase`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_blobBaseFee`, `eth_feeHistory`
 - Simulation: `eth_call`, `eth_estimateGas`
 - Submission: `eth_sendTransaction`, `eth_sendRawTransaction`
+- Compatibility utilities: `web3_clientVersion`, `web3_sha3`, `net_version`, `net_listening`, `net_peerCount`, `eth_mining`, `eth_syncing`, `eth_protocolVersion`
 - Mining/txpool controls: trusted `zevm_*` mining and txpool controls (plus accepted aliases)
+- Txpool introspection: `txpool_content`, `txpool_status`, `txpool_inspect`
 - Block-environment/time/reset/fork-source controls: trusted `zevm_*` block-environment/time/reset/fork-source controls (plus accepted aliases)
 - Queries: `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getBlockTransactionCountByNumber`, `eth_getBlockTransactionCountByHash`, `eth_getTransactionByHash`, `eth_getTransactionByBlockNumberAndIndex`, `eth_getTransactionByBlockHashAndIndex`, `eth_getTransactionReceipt`, `eth_getBlockReceipts`, `eth_getLogs`
 - Account/state/chain-id/snapshot/impersonation/funding/metadata controls: trusted `zevm_*` account/state/chain-id/snapshot/impersonation/funding/metadata controls (plus accepted aliases)

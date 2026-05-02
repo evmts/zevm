@@ -102,6 +102,74 @@ test "installed dispatch wiring reaches runtime-backed eth methods" {
     try std.testing.expectEqualStrings("0x7a69", response.result.?.string);
 }
 
+test "installed dispatch wiring exposes trusted compatibility utility methods" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    {
+        var response = try dispatchForTest(&rt, "web3_clientVersion", null);
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expectEqualStrings("zevm/0.1.0", response.result.?.string);
+    }
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .string = "0x" });
+
+        var response = try dispatchForTest(&rt, "web3_sha3", .{ .array = params });
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expectEqualStrings(
+            "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+            response.result.?.string,
+        );
+    }
+
+    {
+        var response = try dispatchForTest(&rt, "net_version", null);
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expectEqualStrings("31337", response.result.?.string);
+    }
+
+    {
+        var response = try dispatchForTest(&rt, "net_listening", null);
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expect(response.result.?.bool);
+    }
+
+    {
+        var response = try dispatchForTest(&rt, "net_peerCount", null);
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expectEqualStrings("0x0", response.result.?.string);
+    }
+
+    {
+        var response = try dispatchForTest(&rt, "eth_mining", null);
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expect(response.result.?.bool);
+    }
+
+    {
+        var response = try dispatchForTest(&rt, "eth_syncing", null);
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expect(!response.result.?.bool);
+    }
+
+    {
+        var response = try dispatchForTest(&rt, "eth_protocolVersion", null);
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expectEqualStrings("0x41", response.result.?.string);
+    }
+}
+
 test "installed dispatch wiring keeps independent runtime contexts" {
     var rt_a = try runtime_mod.NodeRuntime.init(std.testing.allocator, .{ .chain_id = 1 });
     defer rt_a.deinit();
@@ -504,6 +572,13 @@ fn validAddress() std.json.Value {
     return .{ .string = "0x0000000000000000000000000000000000000042" };
 }
 
+fn parseTestAddress(text: []const u8) !primitives.Address {
+    if (text.len != 42 or text[0] != '0' or text[1] != 'x') return error.InvalidAddress;
+    var bytes: [20]u8 = undefined;
+    _ = std.fmt.hexToBytes(&bytes, text[2..]) catch return error.InvalidAddress;
+    return .{ .bytes = bytes };
+}
+
 fn setLightExecutionHead(rt: *runtime_mod.NodeRuntime, block_number: u64, state_root: [32]u8) void {
     if (rt.light) |*light| {
         light.engine.store.optimistic_header.execution.block_number = block_number;
@@ -725,12 +800,26 @@ test "installed dispatch wiring handles automine aliases" {
     dispatch_wiring.install(&handlers, &rt);
 
     {
+        var response = try dispatchForTest(&rt, "zevm_getAutomine", null);
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expect(response.result.?.bool);
+    }
+
+    {
         var params = std.json.Array.init(std.testing.allocator);
         defer params.deinit();
         try params.append(.{ .bool = false });
 
         try expectBoolRpc(&handlers, "evm_setAutomine", .{ .array = params });
         try std.testing.expectEqual(mining.MiningConfigType.manual, std.meta.activeTag(rt.mining_config));
+    }
+
+    {
+        var response = try dispatchForTest(&rt, "hardhat_getAutomine", null);
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expect(!response.result.?.bool);
     }
 
     {
@@ -751,6 +840,13 @@ test "installed dispatch wiring handles interval mining aliases" {
     dispatch_wiring.install(&handlers, &rt);
 
     {
+        var response = try dispatchForTest(&rt, "zevm_getIntervalMining", null);
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expectEqualStrings("0x0", response.result.?.string);
+    }
+
+    {
         var params = std.json.Array.init(std.testing.allocator);
         defer params.deinit();
         try params.append(.{ .string = "0xc" });
@@ -764,12 +860,80 @@ test "installed dispatch wiring handles interval mining aliases" {
     }
 
     {
+        var response = try dispatchForTest(&rt, "anvil_getIntervalMining", null);
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expectEqualStrings("0xc", response.result.?.string);
+    }
+
+    {
         var params = std.json.Array.init(std.testing.allocator);
         defer params.deinit();
         try params.append(.{ .string = "0x0" });
 
         try expectBoolRpc(&handlers, "anvil_setIntervalMining", .{ .array = params });
         try std.testing.expectEqual(mining.MiningConfigType.manual, std.meta.activeTag(rt.mining_config));
+    }
+}
+
+test "installed dispatch wiring handles state and metadata helper aliases" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(validAddress());
+        try params.append(.{ .string = "0x2a" });
+
+        try expectBoolRpc(&handlers, "zevm_deal", .{ .array = params });
+        try std.testing.expectEqual(@as(u256, 42), try rt.getBalance(try parseTestAddress("0x0000000000000000000000000000000000000042")));
+    }
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(validAddress());
+        try params.append(.{ .string = "0x8" });
+
+        try expectBoolRpc(&handlers, "anvil_addBalance", .{ .array = params });
+        try std.testing.expectEqual(@as(u256, 50), try rt.getBalance(try parseTestAddress("0x0000000000000000000000000000000000000042")));
+    }
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .string = "0x539" });
+
+        try expectBoolRpc(&handlers, "anvil_setChainId", .{ .array = params });
+        try std.testing.expectEqual(@as(u64, 1337), rt.chain_id);
+    }
+
+    {
+        var response = try dispatchForTest(&rt, "zevm_metadata", null);
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        const object = response.result.?.object;
+        try std.testing.expectEqualStrings("trusted", (try objectField(&object, "mode")).string);
+        try std.testing.expectEqualStrings("0x539", (try objectField(&object, "chainId")).string);
+        try std.testing.expect(!(try objectField(&object, "forking")).bool);
+    }
+
+    {
+        var response = try dispatchForTest(&rt, "anvil_nodeInfo", null);
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        const object = response.result.?.object;
+        try std.testing.expectEqualStrings("0x539", (try objectField(&object, "chainId")).string);
+        try std.testing.expectEqualStrings("0x0", (try objectField(&object, "blockNumber")).string);
+        try std.testing.expectEqual(@as(usize, 10), (try objectField(&object, "managedAccounts")).array.items.len);
+        const mining_object = (try objectField(&object, "mining")).object;
+        try std.testing.expectEqualStrings("auto", (try objectField(&mining_object, "type")).string);
+        const fork_object = (try objectField(&object, "fork")).object;
+        try std.testing.expect(!(try objectField(&fork_object, "enabled")).bool);
     }
 }
 
