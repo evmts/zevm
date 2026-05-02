@@ -2,6 +2,7 @@ const std = @import("std");
 const primitives = @import("primitives");
 const beacon_api = @import("beacon_api.zig");
 const consensus_verifier = @import("consensus_verifier.zig");
+const light_default_checkpoints = @import("light_default_checkpoints.zig");
 const log = @import("log.zig");
 
 const MAX_REQUEST_LIGHT_CLIENT_UPDATES: u8 = 128;
@@ -23,7 +24,7 @@ pub const NetworkConfig = struct {
             .genesis_time = 1606824023,
             .genesis_validators_root = parseHex32("4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95"),
             .fork_config = primitives.ForkConfig.ForkConfig.mainnet(),
-            .default_checkpoint = parseHex32("9b41a80f58c52068a00e8535b8d6704769c7577a5fd506af5e0c018687991d55"),
+            .default_checkpoint = parseHex32(light_default_checkpoints.mainnet_hex),
             .consensus_rpc = rpc_url,
             .max_checkpoint_age = DEFAULT_MAX_CHECKPOINT_AGE_SECONDS,
             .strict_checkpoint_age = false,
@@ -36,7 +37,7 @@ pub const NetworkConfig = struct {
             .genesis_time = 1655733600,
             .genesis_validators_root = parseHex32("d8ea171f3c94aea21ebc42a1ed61052acf3f9209c00e4efbaaddac09ed9b8078"),
             .fork_config = primitives.ForkConfig.ForkConfig.sepolia(),
-            .default_checkpoint = parseHex32("4065c2509eaa15dbe60e1f80cff5205a532aa95aaa1d73c1c286f7f8535555d4"),
+            .default_checkpoint = parseHex32(light_default_checkpoints.sepolia_hex),
             .consensus_rpc = rpc_url,
             .max_checkpoint_age = DEFAULT_MAX_CHECKPOINT_AGE_SECONDS,
             .strict_checkpoint_age = false,
@@ -49,7 +50,7 @@ pub const NetworkConfig = struct {
             .genesis_time = 1695902400,
             .genesis_validators_root = parseHex32("9143aa7c615a7f7115e2b6aac319c03529df8242ae705fba9df39b79c59fa8b1"),
             .fork_config = primitives.ForkConfig.ForkConfig.holesky(),
-            .default_checkpoint = parseHex32("e1f575f0b691404fe82cce68a09c2c98af197816de14ce53c0fe9f9bd02d2399"),
+            .default_checkpoint = parseHex32(light_default_checkpoints.holesky_hex),
             .consensus_rpc = rpc_url,
             .max_checkpoint_age = DEFAULT_MAX_CHECKPOINT_AGE_SECONDS,
             .strict_checkpoint_age = false,
@@ -58,6 +59,18 @@ pub const NetworkConfig = struct {
 };
 
 pub const SyncStatus = enum { syncing, synced, err };
+
+pub const CheckpointStartupContext = struct {
+    source: []const u8,
+};
+
+pub const CheckpointAgeInfo = struct {
+    checkpoint_time_seconds: u64,
+    startup_time_seconds: u64,
+    age_seconds: u64,
+    max_checkpoint_age_seconds: u64,
+    stale: bool,
+};
 
 pub const ConsensusSyncEngine = struct {
     store: primitives.LightClientUpdate.LightClientStore,
@@ -78,6 +91,7 @@ pub const ConsensusSyncEngine = struct {
         self: *ConsensusSyncEngine,
         allocator: std.mem.Allocator,
         checkpoint: [32]u8,
+        startup_context: CheckpointStartupContext,
     ) !void {
         self.setStatus(.syncing);
         errdefer self.setStatus(.err);
@@ -88,7 +102,7 @@ pub const ConsensusSyncEngine = struct {
         const checkpoint_hex = std.fmt.bytesToHex(checkpoint, .lower);
         log.info(.consensus_sync, "light checkpoint resolved checkpoint=0x{s}", .{checkpoint_hex[0..]});
 
-        try self.bootstrap(allocator, checkpoint);
+        try self.bootstrap(allocator, checkpoint, startup_context);
 
         const updates = try self.getUpdates(allocator);
         defer allocator.free(updates);
@@ -149,15 +163,29 @@ pub const ConsensusSyncEngine = struct {
         self: *ConsensusSyncEngine,
         allocator: std.mem.Allocator,
         checkpoint: [32]u8,
+        startup_context: CheckpointStartupContext,
     ) !void {
         const api = beacon_api.BeaconApi{ .endpoint_url = self.config.consensus_rpc };
         const bootstrap_update = try api.getBootstrap(allocator, checkpoint);
 
-        if (!self.isValidCheckpoint(bootstrap_update.header.beacon.slot)) {
+        const age_info = self.checkpointAgeInfo(bootstrap_update.header.beacon.slot);
+        if (age_info.stale) {
             if (self.config.strict_checkpoint_age) {
                 return error.CheckpointTooOld;
             }
-            log.warn(.consensus_sync, "checkpoint too old; consider syncing with a newer checkpoint", .{});
+            const checkpoint_hex = std.fmt.bytesToHex(checkpoint, .lower);
+            log.warn(
+                .consensus_sync,
+                "checkpoint too old checkpoint=0x{s} checkpointSource={s} checkpointTimeSeconds={} startupTimeSeconds={} age={} maxCheckpointAgeSeconds={} strictCheckpointAge=false",
+                .{
+                    checkpoint_hex[0..],
+                    startup_context.source,
+                    age_info.checkpoint_time_seconds,
+                    age_info.startup_time_seconds,
+                    age_info.age_seconds,
+                    age_info.max_checkpoint_age_seconds,
+                },
+            );
         }
 
         try consensus_verifier.verifyBootstrap(
@@ -273,11 +301,21 @@ pub const ConsensusSyncEngine = struct {
     }
 
     pub fn isValidCheckpoint(self: *ConsensusSyncEngine, slot: u64) bool {
+        return !self.checkpointAgeInfo(slot).stale;
+    }
+
+    pub fn checkpointAgeInfo(self: *ConsensusSyncEngine, slot: u64) CheckpointAgeInfo {
         const slot_timestamp = self.slotTimestamp(slot);
         const current_slot_timestamp = self.slotTimestamp(self.expectedCurrentSlot());
 
         const age = current_slot_timestamp -| slot_timestamp;
-        return age < self.config.max_checkpoint_age;
+        return .{
+            .checkpoint_time_seconds = slot_timestamp,
+            .startup_time_seconds = current_slot_timestamp,
+            .age_seconds = age,
+            .max_checkpoint_age_seconds = self.config.max_checkpoint_age,
+            .stale = age > self.config.max_checkpoint_age,
+        };
     }
 
     pub fn slotTimestamp(self: *ConsensusSyncEngine, slot: u64) u64 {

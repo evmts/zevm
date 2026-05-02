@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const light_default_checkpoints = @import("light_default_checkpoints.zig");
 
 pub const release_tuple_schema_version = "zevm-release-tuple.v1";
 pub const light_default_checkpoints_schema_version = "zevm-light-default-checkpoints.v1";
@@ -8,9 +9,9 @@ pub const release_tuple_filename = "release-tuple.json";
 pub const light_default_checkpoints_filename = "light-default-checkpoints.json";
 
 pub const default_checkpoints = CheckpointDefaults{
-    .mainnet = "0x1111111111111111111111111111111111111111111111111111111111111111",
-    .sepolia = "0x2222222222222222222222222222222222222222222222222222222222222222",
-    .holesky = "0x3333333333333333333333333333333333333333333333333333333333333333",
+    .mainnet = light_default_checkpoints.mainnet_prefixed,
+    .sepolia = light_default_checkpoints.sepolia_prefixed,
+    .holesky = light_default_checkpoints.holesky_prefixed,
 };
 
 pub const ReleaseTuple = struct {
@@ -512,11 +513,7 @@ const test_tuple = ReleaseTuple{
 
 const test_checkpoints = LightDefaultCheckpoints{
     .releaseIdentifier = test_tuple.releaseIdentifier,
-    .defaults = CheckpointDefaults{
-        .mainnet = "0x1111111111111111111111111111111111111111111111111111111111111111",
-        .sepolia = "0x2222222222222222222222222222222222222222222222222222222222222222",
-        .holesky = "0x3333333333333333333333333333333333333333333333333333333333333333",
-    },
+    .defaults = default_checkpoints,
 };
 
 test "release tuple generator emits valid json" {
@@ -531,6 +528,12 @@ test "light default checkpoints generator emits valid json" {
     defer std.testing.allocator.free(json);
 
     try validateLightDefaultCheckpointsJson(std.testing.allocator, json, test_checkpoints);
+}
+
+test "light default checkpoints use shared runtime constants" {
+    try std.testing.expectEqualStrings(light_default_checkpoints.mainnet_prefixed, default_checkpoints.mainnet);
+    try std.testing.expectEqualStrings(light_default_checkpoints.sepolia_prefixed, default_checkpoints.sepolia);
+    try std.testing.expectEqualStrings(light_default_checkpoints.holesky_prefixed, default_checkpoints.holesky);
 }
 
 test "release tuple validator catches malformed json utf8 duplicate missing and extra fields" {
@@ -600,7 +603,7 @@ test "light default checkpoints validator catches malformed defaults" {
         error.MissingField,
         validateLightDefaultCheckpointsJson(
             std.testing.allocator,
-            "{" ++ "\"schemaVersion\":\"zevm-light-default-checkpoints.v1\"," ++ "\"releaseIdentifier\":\"commit-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"," ++ "\"defaults\":{\"mainnet\":\"0x1111111111111111111111111111111111111111111111111111111111111111\"}" ++ "}",
+            "{" ++ "\"schemaVersion\":\"zevm-light-default-checkpoints.v1\"," ++ "\"releaseIdentifier\":\"commit-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"," ++ "\"defaults\":{\"mainnet\":\"0x9b41a80f58c52068a00e8535b8d6704769c7577a5fd506af5e0c018687991d55\"}" ++ "}",
             test_checkpoints,
         ),
     );
@@ -608,7 +611,7 @@ test "light default checkpoints validator catches malformed defaults" {
         error.DuplicateField,
         validateLightDefaultCheckpointsJson(
             std.testing.allocator,
-            "{" ++ "\"schemaVersion\":\"zevm-light-default-checkpoints.v1\"," ++ "\"releaseIdentifier\":\"commit-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"," ++ "\"defaults\":{" ++ "\"mainnet\":\"0x1111111111111111111111111111111111111111111111111111111111111111\"," ++ "\"mainnet\":\"0x1111111111111111111111111111111111111111111111111111111111111111\"," ++ "\"sepolia\":\"0x2222222222222222222222222222222222222222222222222222222222222222\"," ++ "\"holesky\":\"0x3333333333333333333333333333333333333333333333333333333333333333\"" ++ "}}",
+            "{" ++ "\"schemaVersion\":\"zevm-light-default-checkpoints.v1\"," ++ "\"releaseIdentifier\":\"commit-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"," ++ "\"defaults\":{" ++ "\"mainnet\":\"0x9b41a80f58c52068a00e8535b8d6704769c7577a5fd506af5e0c018687991d55\"," ++ "\"mainnet\":\"0x9b41a80f58c52068a00e8535b8d6704769c7577a5fd506af5e0c018687991d55\"," ++ "\"sepolia\":\"0x4065c2509eaa15dbe60e1f80cff5205a532aa95aaa1d73c1c286f7f8535555d4\"," ++ "\"holesky\":\"0xe1f575f0b691404fe82cce68a09c2c98af197816de14ce53c0fe9f9bd02d2399\"" ++ "}}",
             test_checkpoints,
         ),
     );
@@ -616,7 +619,7 @@ test "light default checkpoints validator catches malformed defaults" {
         error.MalformedCheckpointHash,
         validateLightDefaultCheckpointsJson(
             std.testing.allocator,
-            "{" ++ "\"schemaVersion\":\"zevm-light-default-checkpoints.v1\"," ++ "\"releaseIdentifier\":\"commit-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"," ++ "\"defaults\":{" ++ "\"mainnet\":\"0x1\"," ++ "\"sepolia\":\"0x2222222222222222222222222222222222222222222222222222222222222222\"," ++ "\"holesky\":\"0x3333333333333333333333333333333333333333333333333333333333333333\"" ++ "}}",
+            "{" ++ "\"schemaVersion\":\"zevm-light-default-checkpoints.v1\"," ++ "\"releaseIdentifier\":\"commit-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"," ++ "\"defaults\":{" ++ "\"mainnet\":\"0x1\"," ++ "\"sepolia\":\"0x4065c2509eaa15dbe60e1f80cff5205a532aa95aaa1d73c1c286f7f8535555d4\"," ++ "\"holesky\":\"0xe1f575f0b691404fe82cce68a09c2c98af197816de14ce53c0fe9f9bd02d2399\"" ++ "}}",
             test_checkpoints,
         ),
     );
@@ -627,7 +630,7 @@ test "light default checkpoints validator catches schema identifier and value mi
         error.SchemaVersionMismatch,
         validateLightDefaultCheckpointsJson(
             std.testing.allocator,
-            "{" ++ "\"schemaVersion\":\"wrong\"," ++ "\"releaseIdentifier\":\"commit-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"," ++ "\"defaults\":{" ++ "\"mainnet\":\"0x1111111111111111111111111111111111111111111111111111111111111111\"," ++ "\"sepolia\":\"0x2222222222222222222222222222222222222222222222222222222222222222\"," ++ "\"holesky\":\"0x3333333333333333333333333333333333333333333333333333333333333333\"" ++ "}}",
+            "{" ++ "\"schemaVersion\":\"wrong\"," ++ "\"releaseIdentifier\":\"commit-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"," ++ "\"defaults\":{" ++ "\"mainnet\":\"0x9b41a80f58c52068a00e8535b8d6704769c7577a5fd506af5e0c018687991d55\"," ++ "\"sepolia\":\"0x4065c2509eaa15dbe60e1f80cff5205a532aa95aaa1d73c1c286f7f8535555d4\"," ++ "\"holesky\":\"0xe1f575f0b691404fe82cce68a09c2c98af197816de14ce53c0fe9f9bd02d2399\"" ++ "}}",
             test_checkpoints,
         ),
     );
@@ -635,7 +638,7 @@ test "light default checkpoints validator catches schema identifier and value mi
         error.ReleaseIdentifierMismatch,
         validateLightDefaultCheckpointsJson(
             std.testing.allocator,
-            "{" ++ "\"schemaVersion\":\"zevm-light-default-checkpoints.v1\"," ++ "\"releaseIdentifier\":\"v1.0.0\"," ++ "\"defaults\":{" ++ "\"mainnet\":\"0x1111111111111111111111111111111111111111111111111111111111111111\"," ++ "\"sepolia\":\"0x2222222222222222222222222222222222222222222222222222222222222222\"," ++ "\"holesky\":\"0x3333333333333333333333333333333333333333333333333333333333333333\"" ++ "}}",
+            "{" ++ "\"schemaVersion\":\"zevm-light-default-checkpoints.v1\"," ++ "\"releaseIdentifier\":\"v1.0.0\"," ++ "\"defaults\":{" ++ "\"mainnet\":\"0x9b41a80f58c52068a00e8535b8d6704769c7577a5fd506af5e0c018687991d55\"," ++ "\"sepolia\":\"0x4065c2509eaa15dbe60e1f80cff5205a532aa95aaa1d73c1c286f7f8535555d4\"," ++ "\"holesky\":\"0xe1f575f0b691404fe82cce68a09c2c98af197816de14ce53c0fe9f9bd02d2399\"" ++ "}}",
             test_checkpoints,
         ),
     );
@@ -643,7 +646,7 @@ test "light default checkpoints validator catches schema identifier and value mi
         error.ValueMismatch,
         validateLightDefaultCheckpointsJson(
             std.testing.allocator,
-            "{" ++ "\"schemaVersion\":\"zevm-light-default-checkpoints.v1\"," ++ "\"releaseIdentifier\":\"commit-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"," ++ "\"defaults\":{" ++ "\"mainnet\":\"0x4444444444444444444444444444444444444444444444444444444444444444\"," ++ "\"sepolia\":\"0x2222222222222222222222222222222222222222222222222222222222222222\"," ++ "\"holesky\":\"0x3333333333333333333333333333333333333333333333333333333333333333\"" ++ "}}",
+            "{" ++ "\"schemaVersion\":\"zevm-light-default-checkpoints.v1\"," ++ "\"releaseIdentifier\":\"commit-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"," ++ "\"defaults\":{" ++ "\"mainnet\":\"0x4444444444444444444444444444444444444444444444444444444444444444\"," ++ "\"sepolia\":\"0x4065c2509eaa15dbe60e1f80cff5205a532aa95aaa1d73c1c286f7f8535555d4\"," ++ "\"holesky\":\"0xe1f575f0b691404fe82cce68a09c2c98af197816de14ce53c0fe9f9bd02d2399\"" ++ "}}",
             test_checkpoints,
         ),
     );

@@ -13,13 +13,14 @@ Run these from the `zevm/` checkout with `../voltaire` and `../guillotine-mini` 
 
 ```bash
 zig build
+zig build dependency-preflight -- --zig-version 0.15.2
 zig build verify-fast
 zig build qualification-check
 zig build qualification-check -- --require-covered
 zig build verify
 ```
 
-`zig build verify-fast` runs the default unit/integration test graph. `zig build verify` runs `verify-fast` and the active official external suite slices described by `.smithers/active-tests.json` and `.smithers/external-test-suites.json`.
+`zig build dependency-preflight` validates the sibling `../voltaire` and `../guillotine-mini` worktrees, rejects dirty dependency checkouts by default, reports their full commit IDs, and can validate expected dependency revisions with `--voltaire-revision` and `--guillotine-mini-revision`. `zig build test` also runs the test-graph checker, which fails if any `src/**/*_test.zig` file is not reachable from `src/root.zig`. `zig build verify-fast` runs that default unit/integration test graph. `zig build qualification-check` validates the release qualification map schema and covered-row evidence references, but it does not execute the referenced behavioral tests by itself. `zig build verify` runs `verify-fast` and the active official external suite slices described by `.smithers/active-tests.json` and `.smithers/external-test-suites.json`.
 
 ## Pull Request And Main Branch Gates
 
@@ -28,6 +29,7 @@ The root `CI` workflow runs these checks for pull requests and pushes to `main`:
 - check out `zevm`, `voltaire`, and `guillotine-mini` as sibling directories
 - install Zig `0.15.2`
 - install Rust/Cargo and Perl for Voltaire's Rust crypto archive
+- run `zig build dependency-preflight -- --zig-version "$ZIG_VERSION"`
 - run `zig build`
 - run `zig build verify-fast`
 - run `zig build qualification-check`
@@ -67,6 +69,9 @@ When a GitHub release is published, CI validates the release metadata publicatio
 - both assets use the published release tag as `releaseIdentifier`
 - `release-tuple.json.zevmGitRevision` equals the checked-out release tag commit
 - tuple dependency revisions are 40-hex commit identifiers
+- Voltaire and Guillotine Mini are checked out at the exact tuple revisions
+- Zig is installed at the exact tuple `zigVersion`
+- `zig build verify-fast` and `zig build qualification-check -- --require-covered` pass against the materialized tuple
 - default light-mode checkpoints are 32-byte `0x` hashes for `mainnet`, `sepolia`, and `holesky`
 
 If any item fails, the release metadata is invalid for canonical reproducibility claims.

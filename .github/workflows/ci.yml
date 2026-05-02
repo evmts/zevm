@@ -58,10 +58,7 @@ jobs:
 
       - name: Verify sibling dependency layout
         working-directory: zevm
-        run: |
-          test -d ../voltaire/.git
-          test -d ../guillotine-mini/.git
-          test "$(zig version)" = "$ZIG_VERSION"
+        run: zig build dependency-preflight -- --zig-version "$ZIG_VERSION"
 
       - name: Build
         working-directory: zevm
@@ -148,6 +145,7 @@ jobs:
         with:
           ref: ${{ github.event.release.tag_name }}
           path: zevm
+          submodules: recursive
 
       - name: Download required release metadata assets
         working-directory: zevm
@@ -186,7 +184,14 @@ jobs:
             and (.guillotineMiniGitRevision | test("^[0-9a-fA-F]{40}$"))
             and (.zigVersion | type == "string" and length > 0)
           ' "$ARTIFACT_DIR/release-tuple.json" > /dev/null
-          jq -e --arg rid "$RELEASE_IDENTIFIER" '
+          EXPECTED_MAINNET="0x$(sed -n 's/^pub const mainnet_hex = "\(.*\)";$/\1/p' src/light_default_checkpoints.zig)"
+          EXPECTED_SEPOLIA="0x$(sed -n 's/^pub const sepolia_hex = "\(.*\)";$/\1/p' src/light_default_checkpoints.zig)"
+          EXPECTED_HOLESKY="0x$(sed -n 's/^pub const holesky_hex = "\(.*\)";$/\1/p' src/light_default_checkpoints.zig)"
+          jq -e \
+            --arg rid "$RELEASE_IDENTIFIER" \
+            --arg expected_mainnet "$EXPECTED_MAINNET" \
+            --arg expected_sepolia "$EXPECTED_SEPOLIA" \
+            --arg expected_holesky "$EXPECTED_HOLESKY" '
             (type == "object")
             and ((keys | sort) == ["defaults", "releaseIdentifier", "schemaVersion"])
             and (.schemaVersion == "zevm-light-default-checkpoints.v1")
@@ -196,4 +201,49 @@ jobs:
             and (.defaults.mainnet | test("^0x[0-9a-fA-F]{64}$"))
             and (.defaults.sepolia | test("^0x[0-9a-fA-F]{64}$"))
             and (.defaults.holesky | test("^0x[0-9a-fA-F]{64}$"))
+            and (.defaults.mainnet == $expected_mainnet)
+            and (.defaults.sepolia == $expected_sepolia)
+            and (.defaults.holesky == $expected_holesky)
           ' "$ARTIFACT_DIR/light-default-checkpoints.json" > /dev/null
+
+      - name: Extract release tuple pins
+        id: release_tuple
+        working-directory: zevm
+        run: |
+          ARTIFACT_DIR=.ops/release-metadata/"$RELEASE_IDENTIFIER"
+          echo "zevm_revision=$(jq -r '.zevmGitRevision' "$ARTIFACT_DIR/release-tuple.json")" >> "$GITHUB_OUTPUT"
+          echo "voltaire_revision=$(jq -r '.voltaireGitRevision' "$ARTIFACT_DIR/release-tuple.json")" >> "$GITHUB_OUTPUT"
+          echo "guillotine_mini_revision=$(jq -r '.guillotineMiniGitRevision' "$ARTIFACT_DIR/release-tuple.json")" >> "$GITHUB_OUTPUT"
+          echo "zig_version=$(jq -r '.zigVersion' "$ARTIFACT_DIR/release-tuple.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout Voltaire tuple revision
+        uses: actions/checkout@v4
+        with:
+          repository: evmts/voltaire
+          ref: ${{ steps.release_tuple.outputs.voltaire_revision }}
+          path: voltaire
+
+      - name: Checkout Guillotine Mini tuple revision
+        uses: actions/checkout@v4
+        with:
+          repository: evmts/guillotine-mini
+          ref: ${{ steps.release_tuple.outputs.guillotine_mini_revision }}
+          path: guillotine-mini
+
+      - name: Set up tuple Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ steps.release_tuple.outputs.zig_version }}
+
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cargo perl rustc
+
+      - name: Verify materialized release tuple
+        working-directory: zevm
+        run: |
+          test "$(git rev-parse HEAD)" = "${{ steps.release_tuple.outputs.zevm_revision }}"
+          test "$(git -C ../voltaire rev-parse HEAD)" = "${{ steps.release_tuple.outputs.voltaire_revision }}"
+          test "$(git -C ../guillotine-mini rev-parse HEAD)" = "${{ steps.release_tuple.outputs.guillotine_mini_revision }}"
+          test "$(zig version)" = "${{ steps.release_tuple.outputs.zig_version }}"
+          zig build verify-fast
+          zig build qualification-check -- --require-covered

@@ -7,6 +7,7 @@ const mining_coordinator = @import("../mining_coordinator.zig");
 const block_builder = @import("../block_builder.zig");
 const tx_processor = @import("../tx_processor.zig");
 const txpool = @import("../txpool.zig");
+const genesis = @import("../genesis.zig");
 const host_adapter = @import("../host_adapter.zig");
 const dev_runtime_mod = @import("../rpc/dev_runtime.zig");
 const receipt_index_mod = @import("../receipt_index.zig");
@@ -21,18 +22,15 @@ const guillotine_mini = @import("guillotine_mini");
 /// Hardhat/Anvil-style deterministic dev accounts.
 /// These are the same 10 accounts used by Hardhat/Anvil (derived from mnemonic
 /// "test test test test test test test test test test test junk").
-pub const DEFAULT_DEV_ACCOUNTS = [10]primitives.Address{
-    parseAddr("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"),
-    parseAddr("0x70997970C51812dc3A010C7d01b50e0d17dc79C8"),
-    parseAddr("0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"),
-    parseAddr("0x90F79bf6EB2c4f870365E785982E1f101E93b906"),
-    parseAddr("0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65"),
-    parseAddr("0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc"),
-    parseAddr("0x976EA74026E726554dB657fA54763abd0C3a0aa9"),
-    parseAddr("0x14dC79964da2C08b23698B3D3cc7Ca32193d9955"),
-    parseAddr("0x23618e81E3f5cdF7f54C3d65f7FBc0aBf5B21E8f"),
-    parseAddr("0xa0Ee7A142d267C1f36714E4a8F75612F20a79720"),
-};
+pub const DEFAULT_DEV_ACCOUNTS = devAccountAddresses();
+
+fn devAccountAddresses() [genesis.DEV_ACCOUNTS.len]primitives.Address {
+    var addresses: [genesis.DEV_ACCOUNTS.len]primitives.Address = undefined;
+    for (genesis.DEV_ACCOUNTS, 0..) |account, index| {
+        addresses[index] = account.address;
+    }
+    return addresses;
+}
 
 /// Default initial balance: 10,000 ETH in wei
 pub const DEFAULT_BALANCE: u256 = 10_000 * 1_000_000_000_000_000_000;
@@ -419,7 +417,9 @@ pub const NodeRuntime = struct {
 
     pub fn startLightSync(self: *NodeRuntime) !void {
         const light = if (self.light) |*state| state else return error.NotLightMode;
-        try light.engine.sync(self.allocator, light.startup_checkpoint);
+        try light.engine.sync(self.allocator, light.startup_checkpoint, .{
+            .source = light.checkpoint_source.name(),
+        });
         light.safe_slot = light.engine.safeSlot();
         self.head_block_number = light.engine.store.optimistic_header.execution.block_number;
     }
@@ -1172,9 +1172,9 @@ fn initBlockchainWithGenesis(
     var blockchain = try blockchain_mod.Blockchain.init(allocator, null);
     errdefer blockchain.deinit();
 
-    const genesis = try primitives.Block.genesis(chain_id, allocator);
-    try blockchain.putBlock(genesis);
-    try blockchain.setCanonicalHead(genesis.hash);
+    const genesis_block = try primitives.Block.genesis(chain_id, allocator);
+    try blockchain.putBlock(genesis_block);
+    try blockchain.setCanonicalHead(genesis_block.hash);
     return blockchain;
 }
 
@@ -1400,10 +1400,4 @@ fn stringifyJsonValue(allocator: std.mem.Allocator, value: std.json.Value) ![]u8
     defer writer.deinit();
     try std.json.Stringify.value(value, .{}, &writer.writer);
     return writer.toOwnedSlice();
-}
-
-fn parseAddr(comptime hex: *const [42]u8) primitives.Address {
-    var out: [20]u8 = undefined;
-    _ = std.fmt.hexToBytes(&out, hex[2..]) catch unreachable;
-    return .{ .bytes = out };
 }

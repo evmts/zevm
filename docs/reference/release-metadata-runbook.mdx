@@ -190,7 +190,15 @@ jq -e --arg rid "$RELEASE_IDENTIFIER" '
 Validate `light-default-checkpoints.json` contract fields and values:
 
 ```bash
-jq -e --arg rid "$RELEASE_IDENTIFIER" '
+EXPECTED_MAINNET="0x$(sed -n 's/^pub const mainnet_hex = "\(.*\)";$/\1/p' src/light_default_checkpoints.zig)"
+EXPECTED_SEPOLIA="0x$(sed -n 's/^pub const sepolia_hex = "\(.*\)";$/\1/p' src/light_default_checkpoints.zig)"
+EXPECTED_HOLESKY="0x$(sed -n 's/^pub const holesky_hex = "\(.*\)";$/\1/p' src/light_default_checkpoints.zig)"
+
+jq -e \
+  --arg rid "$RELEASE_IDENTIFIER" \
+  --arg expected_mainnet "$EXPECTED_MAINNET" \
+  --arg expected_sepolia "$EXPECTED_SEPOLIA" \
+  --arg expected_holesky "$EXPECTED_HOLESKY" '
   (type == "object")
   and ((keys | sort) == ["defaults", "releaseIdentifier", "schemaVersion"])
   and (.schemaVersion == "zevm-light-default-checkpoints.v1")
@@ -200,6 +208,9 @@ jq -e --arg rid "$RELEASE_IDENTIFIER" '
   and (.defaults.mainnet | test("^0x[0-9a-fA-F]{64}$"))
   and (.defaults.sepolia | test("^0x[0-9a-fA-F]{64}$"))
   and (.defaults.holesky | test("^0x[0-9a-fA-F]{64}$"))
+  and (.defaults.mainnet == $expected_mainnet)
+  and (.defaults.sepolia == $expected_sepolia)
+  and (.defaults.holesky == $expected_holesky)
 ' "$ARTIFACT_DIR/light-default-checkpoints.json" > /dev/null
 ```
 
@@ -216,14 +227,14 @@ Sample payload:
   "schemaVersion": "zevm-light-default-checkpoints.v1",
   "releaseIdentifier": "vX.Y.Z",
   "defaults": {
-    "mainnet": "0x1111111111111111111111111111111111111111111111111111111111111111",
-    "sepolia": "0x2222222222222222222222222222222222222222222222222222222222222222",
-    "holesky": "0x3333333333333333333333333333333333333333333333333333333333333333"
+    "mainnet": "0x9b41a80f58c52068a00e8535b8d6704769c7577a5fd506af5e0c018687991d55",
+    "sepolia": "0x4065c2509eaa15dbe60e1f80cff5205a532aa95aaa1d73c1c286f7f8535555d4",
+    "holesky": "0xe1f575f0b691404fe82cce68a09c2c98af197816de14ce53c0fe9f9bd02d2399"
   }
 }
 ```
 
-Placeholder note: `vX.Y.Z` and the repeated checkpoint hashes above are example-only values; use fetched artifacts for your selected `RELEASE_IDENTIFIER`.
+The checkpoint hashes above are the baked defaults from `src/light_default_checkpoints.zig`; update this sample in the same change as runtime default checkpoint changes.
 
 Operator interpretation of `defaults` entries:
 
@@ -258,6 +269,16 @@ test "$(git -C voltaire rev-parse HEAD)" = "$VOLTAIRE_REVISION"
 test "$(git -C guillotine-mini rev-parse HEAD)" = "$GUILLOTINE_MINI_REVISION"
 test "$(zig version)" = "$PINNED_ZIG_VERSION"
 ```
+
+Then run the release reproducibility gate from the materialized ZEVM checkout:
+
+```bash
+cd zevm
+zig build verify-fast
+zig build qualification-check -- --require-covered
+```
+
+If any checkout, `zig version`, build, or qualification command fails, the tuple is not valid reproducibility evidence for canonical release claims.
 
 ## 5. Record Provenance In An Operator Manifest
 

@@ -58,6 +58,31 @@ test "isValidCheckpoint returns false for an old slot" {
     try std.testing.expect(!engine.isValidCheckpoint(old_slot));
 }
 
+test "isValidCheckpoint treats age equal to max age as valid" {
+    var engine = consensus_sync.ConsensusSyncEngine.init(testConfig(0, 120));
+    const current_slot = engine.expectedCurrentSlot();
+    const boundary_slot = current_slot - 10;
+
+    const info = engine.checkpointAgeInfo(boundary_slot);
+    try std.testing.expectEqual(@as(u64, 120), info.age_seconds);
+    try std.testing.expectEqual(@as(u64, 120), info.max_checkpoint_age_seconds);
+    try std.testing.expect(!info.stale);
+    try std.testing.expect(engine.isValidCheckpoint(boundary_slot));
+}
+
+test "checkpointAgeInfo records stale startup warning fields" {
+    var engine = consensus_sync.ConsensusSyncEngine.init(testConfig(1_000, 119));
+    const current_slot = engine.expectedCurrentSlot();
+    const checkpoint_slot = current_slot - 10;
+
+    const info = engine.checkpointAgeInfo(checkpoint_slot);
+    try std.testing.expectEqual(engine.slotTimestamp(checkpoint_slot), info.checkpoint_time_seconds);
+    try std.testing.expectEqual(engine.slotTimestamp(current_slot), info.startup_time_seconds);
+    try std.testing.expectEqual(@as(u64, 120), info.age_seconds);
+    try std.testing.expectEqual(@as(u64, 119), info.max_checkpoint_age_seconds);
+    try std.testing.expect(info.stale);
+}
+
 test "ConsensusSyncEngine initialization has expected defaults" {
     var engine = consensus_sync.ConsensusSyncEngine.init(testConfig(0, 1_209_600));
 
