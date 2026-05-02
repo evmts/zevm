@@ -104,6 +104,30 @@ test "eth_sendRawTransaction rejects insufficient balance" {
     try std.testing.expectError(tx_submission.TxSubmissionError.InsufficientBalance, result);
 }
 
+test "eth_sendRawTransaction rejects gas price below runtime minimum" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    rt.gas_price = runtime.DEFAULT_GAS_PRICE + 1;
+
+    const encoded = try signTestLegacyTx(
+        std.testing.allocator,
+        0,
+        runtime.DEFAULT_GAS_PRICE,
+        21_000,
+        runtime.DEFAULT_DEV_ACCOUNTS[1],
+        1000,
+        runtime.DEFAULT_CHAIN_ID,
+        genesis.DEV_ACCOUNTS[0].private_key,
+    );
+    defer std.testing.allocator.free(encoded);
+
+    const hex = try bytesToHexAlloc(std.testing.allocator, encoded);
+    defer std.testing.allocator.free(hex);
+
+    const result = tx_submission.handleSendRawTransaction(std.testing.allocator, &rt, makeRawTxParams(hex));
+    try std.testing.expectError(tx_submission.TxSubmissionError.GasPriceBelowMinimum, result);
+}
+
 test "eth_sendRawTransaction rejects intrinsic gas > gasLimit" {
     var rt = try makeRuntime();
     defer rt.deinit();
@@ -281,6 +305,27 @@ test "eth_sendTransaction managed account signs and returns hash" {
     );
     defer std.testing.allocator.free(signing_preimage);
     try std.testing.expect(!std.mem.eql(u8, signing_preimage, pooled.raw));
+}
+
+test "eth_sendTransaction rejects explicit gas price below runtime minimum" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    rt.setMiningConfig(.manual);
+    rt.gas_price = runtime.DEFAULT_GAS_PRICE + 1;
+
+    var obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try obj.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try obj.put("gasPrice", .{ .string = "0x3b9aca00" });
+    try obj.put("gas", .{ .string = "0x5208" });
+
+    const params = jsonrpc.eth.SendTransaction.Params{
+        .transaction = .{ .value = .{ .object = obj } },
+    };
+
+    const result = tx_submission.handleSendTransaction(std.testing.allocator, &rt, params);
+    try std.testing.expectError(tx_submission.TxSubmissionError.GasPriceBelowMinimum, result);
 }
 
 test "eth_sendTransaction accepts matching data aliases without leaking parser buffers" {
