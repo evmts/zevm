@@ -1,0 +1,43 @@
+# syntax=docker/dockerfile:1.7
+
+ARG ZIG_VERSION=0.15.2
+
+FROM alpine:3.20 AS builder
+ARG TARGETARCH
+ARG ZIG_VERSION
+
+RUN apk add --no-cache bash build-base ca-certificates cargo curl git linux-headers perl rust xz
+RUN set -eu; \
+    case "$TARGETARCH" in \
+      amd64) zig_arch=x86_64 ;; \
+      arm64) zig_arch=aarch64 ;; \
+      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-${zig_arch}-linux-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz; \
+    mkdir -p /opt/zig; \
+    tar -C /opt/zig --strip-components=1 -xf /tmp/zig.tar.xz; \
+    ln -s /opt/zig/zig /usr/local/bin/zig; \
+    zig version
+
+COPY --from=voltaire . /src/voltaire
+RUN cd /src/voltaire && cargo build --release
+COPY --from=guillotine-mini . /src/guillotine-mini
+
+WORKDIR /src/zevm
+COPY build.zig build.zig.zon LICENSE README.md ./
+COPY src ./src
+COPY tools ./tools
+COPY docs/specs/qualification ./docs/specs/qualification
+RUN zig build -Doptimize=ReleaseSafe
+
+FROM alpine:3.20
+RUN apk add --no-cache bash ca-certificates jq python3
+COPY --from=builder /src/zevm/zig-out/bin/zevm /usr/local/bin/zevm
+COPY tools/hive/zevm-client/engine_stub.py /engine_stub.py
+COPY tools/hive/zevm-client/zevm-hive.sh /zevm-hive.sh
+COPY tools/hive/zevm-client/enode.sh /hive-bin/enode.sh
+RUN chmod +x /zevm-hive.sh /engine_stub.py /hive-bin/enode.sh && \
+    echo "zevm hive-client local" > /version.txt
+
+EXPOSE 8545 8551
+ENTRYPOINT ["/zevm-hive.sh"]
