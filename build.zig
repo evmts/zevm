@@ -9,6 +9,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const voltaire_rust_crypto = b.addSystemCommand(&[_][]const u8{ "cargo", "build", "--release" });
+    voltaire_rust_crypto.setName("voltaire-rust-crypto");
+    voltaire_rust_crypto.setCwd(voltaire.path("."));
     const primitives_mod = voltaire.module("primitives");
     const state_manager_mod = voltaire.module("state-manager");
     const blockchain_mod = voltaire.module("blockchain");
@@ -69,6 +72,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    exe.step.dependOn(&voltaire_rust_crypto.step);
+    linkRustSupport(exe, target);
     b.installArtifact(exe);
 
     const release_metadata_exe = b.addExecutable(.{
@@ -117,6 +122,8 @@ pub fn build(b: *std.Build) void {
     const mod_tests = b.addTest(.{
         .root_module = mod,
     });
+    mod_tests.step.dependOn(&voltaire_rust_crypto.step);
+    linkRustSupport(mod_tests, target);
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
     const qualification_check_tests = b.addTest(.{
@@ -147,6 +154,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    external_verify_exe.step.dependOn(&voltaire_rust_crypto.step);
+    linkRustSupport(external_verify_exe, target);
     const run_external_verify = b.addRunArtifact(external_verify_exe);
     run_external_verify.addDirectoryArg(b.path("."));
     run_external_verify.addArtifactArg(exe);
@@ -160,4 +169,10 @@ pub fn build(b: *std.Build) void {
     const verify_step = b.step("verify", "Run fast checks and active external suite slices");
     run_external_verify.step.dependOn(verify_fast_step);
     verify_step.dependOn(&run_external_verify.step);
+}
+
+fn linkRustSupport(compile: *std.Build.Step.Compile, target: std.Build.ResolvedTarget) void {
+    if (target.result.os.tag == .linux) {
+        compile.linkSystemLibrary("gcc_s");
+    }
 }

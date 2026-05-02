@@ -11,7 +11,7 @@ ZEVM is a Zig Ethereum client with two runtime modes: a writable local dev node 
 > - [`voltaire`](https://github.com/evmts/voltaire) — path dependency for primitives, state, and JSON-RPC types
 > - [`guillotine-mini`](https://github.com/evmts/guillotine-mini) — path dependency for the EVM interpreter
 >
-> Requires Zig `0.15.2` or newer.
+> Requires Zig `0.15.2` or newer plus Rust/Cargo for Voltaire's Rust crypto archive.
 
 ### Build from source
 
