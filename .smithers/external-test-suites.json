@@ -28,6 +28,7 @@
         "LegacyTests/Cancun/GeneralStateTests/stRecursiveCreate/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stSLoadTest/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stSelfBalance/*.json",
+        "LegacyTests/Cancun/GeneralStateTests/stShift/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stStackTests/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stStaticFlagEnabled/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stTransitionTest/*.json"
@@ -40,7 +41,9 @@
         }
       ],
       "remaining": [
-        "walk all GeneralStateTests directories not yet in activeCases; next safe candidates: stShift, stExtCodeHash, stCreate2, stCallCreateCallCodeTest",
+        "walk stExtCodeHash after fixing dynamicAccountOverwriteEmpty Cancun state-root mismatch exposed by external verification",
+        "walk stCreate2 after fixing CREATE2_FirstByte_loop Cancun/Shanghai state-root mismatch exposed by external verification",
+        "walk all GeneralStateTests directories not yet in activeCases; next safe candidates after stCreate2: stCallCreateCallCodeTest, stBadOpcode, stZeroCallsTest",
         "walk stPreCompiledContracts2 after auditing which vectors require unimplemented precompiles",
         "walk stBadOpcode, stZeroCallsTest, stZeroCallsRevert, stNonZeroCallsTest",
         "walk stZeroKnowledge and stZeroKnowledge2 after confirming pairing precompile coverage",

@@ -61,6 +61,7 @@ const legacy_state_fixture_dirs = [_][]const u8{
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stRecursiveCreate",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stSLoadTest",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stSelfBalance",
+    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stShift",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stStackTests",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stStaticFlagEnabled",
     "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stTransitionTest",
@@ -78,7 +79,7 @@ const hive_rpc_fixture_paths = [_][]const u8{
 };
 
 // TODO(external-verify): execution-spec-tests/fixtures is absent in this checkout; when it is populated, walk fixtures/state_tests and fixtures/blockchain_tests directly.
-// TODO(external-verify): expand legacy state coverage — next safe candidates: stShift, stExtCodeHash, stCreate2.
+// TODO(external-verify): expand legacy state coverage — next candidates: stExtCodeHash after fixing dynamicAccountOverwriteEmpty, stCreate2 after fixing CREATE2_FirstByte_loop, then stCallCreateCallCodeTest.
 // TODO(external-verify): activate the remaining rpc-compat .io files after importing execution-apis genesis.json, chain.rlp, and headfcu.json into the ZEVM runtime.
 
 const VerifyOptions = struct {
@@ -86,6 +87,9 @@ const VerifyOptions = struct {
     shard_total: usize = 1,
     timeout_seconds: u64 = 30,
     progress_every: usize = 100,
+    match: ?[]const u8 = null,
+    extra_legacy_state_dir: ?[]const u8 = null,
+    dump_state_on_mismatch: bool = false,
 };
 
 const ProgressState = struct {
@@ -133,7 +137,8 @@ const VerifyContext = struct {
     progress: *ProgressState,
     timer: *std.time.Timer,
 
-    fn claimTask(self: *VerifyContext) ?usize {
+    fn claimTask(self: *VerifyContext, label: []const u8) ?usize {
+        if (!self.matchesLabel(label)) return null;
         const zero_based = self.progress.discovered.fetchAdd(1, .monotonic);
         if (zero_based % self.options.shard_total != self.options.shard_index) {
             _ = self.progress.skipped.fetchAdd(1, .monotonic);
@@ -141,6 +146,11 @@ const VerifyContext = struct {
         }
         _ = self.progress.selected.fetchAdd(1, .monotonic);
         return zero_based + 1;
+    }
+
+    fn matchesLabel(self: *const VerifyContext, label: []const u8) bool {
+        const pattern = self.options.match orelse return true;
+        return std.mem.indexOf(u8, label, pattern) != null;
     }
 
     fn startTask(self: *VerifyContext, task_id: usize, suite: []const u8, label: []const u8) u64 {
@@ -234,6 +244,20 @@ fn parseVerifyOptions(allocator: std.mem.Allocator, args: []const []const u8) !V
             options.progress_every = try parseUsizeText(args[index]);
         } else if (std.mem.startsWith(u8, arg, "--progress-every=")) {
             options.progress_every = try parseUsizeText(arg["--progress-every=".len..]);
+        } else if (std.mem.eql(u8, arg, "--match")) {
+            index += 1;
+            if (index >= args.len) return VerifyError.MissingArgument;
+            options.match = args[index];
+        } else if (std.mem.startsWith(u8, arg, "--match=")) {
+            options.match = arg["--match=".len..];
+        } else if (std.mem.eql(u8, arg, "--legacy-state-dir")) {
+            index += 1;
+            if (index >= args.len) return VerifyError.MissingArgument;
+            options.extra_legacy_state_dir = args[index];
+        } else if (std.mem.startsWith(u8, arg, "--legacy-state-dir=")) {
+            options.extra_legacy_state_dir = arg["--legacy-state-dir=".len..];
+        } else if (std.mem.eql(u8, arg, "--dump-state-on-mismatch")) {
+            options.dump_state_on_mismatch = true;
         } else {
             return VerifyError.InvalidArgument;
         }
@@ -358,6 +382,15 @@ pub fn main() !void {
         options.timeout_seconds,
         options.progress_every,
     });
+    if (options.match) |pattern| {
+        std.debug.print("external-verify: match=\"{s}\"\n", .{pattern});
+    }
+    if (options.extra_legacy_state_dir) |relative_path| {
+        std.debug.print("external-verify: extra_legacy_state_dir=\"{s}\"\n", .{relative_path});
+    }
+    if (options.dump_state_on_mismatch) {
+        std.debug.print("external-verify: dump_state_on_mismatch=true\n", .{});
+    }
 
     const timeout_ns = options.timeout_seconds * std.time.ns_per_s;
     const watchdog = try std.Thread.spawn(.{}, watchdogMain, .{ &progress, timeout_ns });
@@ -375,6 +408,8 @@ pub fn main() !void {
         printMemoryDiagnostics("external-verify: final diagnostics", gpa.total_requested_bytes);
         return err;
     };
+
+    if (options.match != null and progress.selected.load(.monotonic) == 0) return VerifyError.InvalidFixture;
 
     progress.done.store(true, .release);
     std.debug.print("external-verify: complete discovered={d} selected={d} completed={d} quarantined={d} failed={d} shard_skipped={d} elapsed_ms={d}\n", .{
@@ -436,14 +471,14 @@ fn runGeneratedStateFixture(
         if (post_cases != .array) return VerifyError.InvalidFixture;
 
         for (post_cases.array.items, 0..) |post_case, post_index| {
-            if (ctx.claimTask()) |task_id| {
-                const task_label = try std.fmt.allocPrint(allocator, "{s} :: {s} :: {s} post={d}", .{
-                    label_path,
-                    fixture_name,
-                    fork_entry.key_ptr.*,
-                    post_index,
-                });
-                defer allocator.free(task_label);
+            const task_label = try std.fmt.allocPrint(allocator, "{s} :: {s} :: {s} post={d}", .{
+                label_path,
+                fixture_name,
+                fork_entry.key_ptr.*,
+                post_index,
+            });
+            defer allocator.free(task_label);
+            if (ctx.claimTask(task_label)) |task_id| {
                 const started_ns = ctx.startTask(task_id, "execution-spec-state", task_label);
                 runGeneratedStatePostCase(allocator, fixture, post_case, hardfork) catch |err| {
                     ctx.failTask(task_id, "execution-spec-state", task_label, started_ns, err);
@@ -494,7 +529,7 @@ fn runGeneratedStatePostCase(parent_allocator: std.mem.Allocator, fixture: std.j
 
 fn runLegacyInvalidIntrinsicGasFixture(allocator: std.mem.Allocator, repo_root: []const u8, ctx: *VerifyContext) !void {
     const label = "execution-spec-tests/tests/static/state_tests/stExample/invalidTrFiller.json";
-    const task_id = ctx.claimTask() orelse return;
+    const task_id = ctx.claimTask(label) orelse return;
     const started_ns = ctx.startTask(task_id, "legacy-state-filler", label);
     runLegacyInvalidIntrinsicGasFixtureTask(allocator, repo_root) catch |err| {
         ctx.failTask(task_id, "legacy-state-filler", label, started_ns, err);
@@ -547,6 +582,16 @@ fn runLegacyStateFixtures(allocator: std.mem.Allocator, repo_root: []const u8, c
         defer allocator.free(path);
         try runLegacyStateFixtureDir(allocator, path, relative_path, ctx);
     }
+    if (ctx.options.extra_legacy_state_dir) |relative_path| {
+        const path = try resolveRepoPath(allocator, repo_root, relative_path);
+        defer allocator.free(path);
+        try runLegacyStateFixtureDir(allocator, path, relative_path, ctx);
+    }
+}
+
+fn resolveRepoPath(allocator: std.mem.Allocator, repo_root: []const u8, path: []const u8) ![]u8 {
+    if (std.fs.path.isAbsolute(path)) return allocator.dupe(u8, path);
+    return std.fs.path.join(allocator, &.{ repo_root, path });
 }
 
 fn runLegacyStateFixtureDir(allocator: std.mem.Allocator, path: []const u8, label_path: []const u8, ctx: *VerifyContext) !void {
@@ -613,21 +658,21 @@ fn runLegacyCancunStateFixture(
         if (post_cases != .array) return VerifyError.InvalidFixture;
 
         for (post_cases.array.items, 0..) |post_case, post_index| {
-            if (ctx.claimTask()) |task_id| {
-                const task_label = try std.fmt.allocPrint(allocator, "{s} :: {s} :: {s} post={d}", .{
-                    label_path,
-                    fixture_name,
-                    fork_entry.key_ptr.*,
-                    post_index,
-                });
-                defer allocator.free(task_label);
+            const task_label = try std.fmt.allocPrint(allocator, "{s} :: {s} :: {s} post={d}", .{
+                label_path,
+                fixture_name,
+                fork_entry.key_ptr.*,
+                post_index,
+            });
+            defer allocator.free(task_label);
+            if (ctx.claimTask(task_label)) |task_id| {
                 if (legacyPostCaseSkipReason(label_path, fixture_name)) |reason| {
                     ctx.skipTask(task_id, "legacy-state", task_label, reason);
                     ran += 1;
                     continue;
                 }
                 const started_ns = ctx.startTask(task_id, "legacy-state", task_label);
-                runLegacyStatePostCase(allocator, fixture, post_case, hardfork) catch |err| {
+                runLegacyStatePostCase(allocator, fixture, post_case, hardfork, ctx.options.dump_state_on_mismatch) catch |err| {
                     ctx.failTask(task_id, "legacy-state", task_label, started_ns, err);
                     return err;
                 };
@@ -648,7 +693,13 @@ fn legacyPostCaseSkipReason(label_path: []const u8, fixture_name: []const u8) ?[
     return null;
 }
 
-fn runLegacyStatePostCase(parent_allocator: std.mem.Allocator, fixture: std.json.Value, post_case: std.json.Value, hardfork: guillotine_mini.Hardfork) !void {
+fn runLegacyStatePostCase(
+    parent_allocator: std.mem.Allocator,
+    fixture: std.json.Value,
+    post_case: std.json.Value,
+    hardfork: guillotine_mini.Hardfork,
+    dump_state_on_mismatch: bool,
+) !void {
     var arena = std.heap.ArenaAllocator.init(parent_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -675,7 +726,7 @@ fn runLegacyStatePostCase(parent_allocator: std.mem.Allocator, fixture: std.json
 
     if (post_case.object.get("expectException")) |expected_exception| {
         try expectFixtureTxError(allocator, expected_exception, receipt_result);
-        try assertLegacyStateRoot(allocator, &sm, hardfork, block_ctx.block_coinbase, try field(fixture, "pre"), post_case, indexes);
+        try assertLegacyStateRoot(allocator, &sm, hardfork, block_ctx.block_coinbase, try field(fixture, "pre"), post_case, indexes, dump_state_on_mismatch);
         try assertLegacyLogsHash(allocator, &.{}, post_case);
         return;
     }
@@ -683,7 +734,7 @@ fn runLegacyStatePostCase(parent_allocator: std.mem.Allocator, fixture: std.json
     var receipt = try receipt_result;
     defer receipt.deinit(allocator);
 
-    try assertLegacyStateRoot(allocator, &sm, hardfork, block_ctx.block_coinbase, try field(fixture, "pre"), post_case, indexes);
+    try assertLegacyStateRoot(allocator, &sm, hardfork, block_ctx.block_coinbase, try field(fixture, "pre"), post_case, indexes, dump_state_on_mismatch);
     try assertLegacyLogsHash(allocator, receipt.logs, post_case);
 }
 
@@ -695,6 +746,7 @@ fn assertLegacyStateRoot(
     pre_state: std.json.Value,
     post_case: std.json.Value,
     indexes: TransactionIndexes,
+    dump_state_on_mismatch: bool,
 ) !void {
     const actual_state_root = try computeStateRoot(allocator, sm, hardfork, block_coinbase, pre_state);
     const expected_state_root = try parseHashValue(try field(post_case, "hash"));
@@ -702,7 +754,77 @@ fn assertLegacyStateRoot(
         const actual_hex = std.fmt.bytesToHex(actual_state_root, .lower);
         const expected_hex = std.fmt.bytesToHex(expected_state_root, .lower);
         std.debug.print("legacy state root mismatch fork={s} indexes(data={}, gas={}, value={}) actual=0x{s} expected=0x{s}\n", .{ hardfork.toString(), indexes.data, indexes.gas, indexes.value, &actual_hex, &expected_hex });
+        if (dump_state_on_mismatch) dumpStateForMismatch(allocator, sm, hardfork, block_coinbase, pre_state) catch {};
         return VerifyError.UnexpectedState;
+    }
+}
+
+fn dumpStateForMismatch(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+    hardfork: guillotine_mini.Hardfork,
+    block_coinbase: primitives.Address,
+    pre_state: std.json.Value,
+) !void {
+    var it = sm.accountIterator();
+    while (it.next()) |entry| {
+        const address = entry.key_ptr.*;
+        const balance = try sm.getBalance(address);
+        const nonce = try sm.getNonce(address);
+        const code = try sm.getCode(address);
+        var code_hash = primitives.State.EMPTY_CODE_HASH;
+        if (code.len > 0) std.crypto.hash.sha3.Keccak256.hash(code, &code_hash, .{});
+        const storage_root = try computeStorageRoot(allocator, sm, address);
+        const addr_hex = std.fmt.bytesToHex(address.bytes, .lower);
+        const code_hash_hex = std.fmt.bytesToHex(code_hash, .lower);
+        const storage_root_hex = std.fmt.bytesToHex(storage_root, .lower);
+        std.debug.print("state account=0x{s} nonce={d} balance=0x{x} code_len={d} code_hash=0x{s} storage_root=0x{s}\n", .{ &addr_hex, nonce, balance, code.len, &code_hash_hex, &storage_root_hex });
+    }
+    var storage_it = sm.journaled_state.storage_cache.cache.iterator();
+    while (storage_it.next()) |entry| {
+        const address = entry.key_ptr.*;
+        const addr_hex = std.fmt.bytesToHex(address.bytes, .lower);
+        var slots = entry.value_ptr.*;
+        var slot_it = slots.iterator();
+        while (slot_it.next()) |slot_entry| {
+            std.debug.print("state storage=0x{s} slot=0x{x} value=0x{x}\n", .{ &addr_hex, slot_entry.key_ptr.*, slot_entry.value_ptr.* });
+        }
+    }
+    try dumpStateRootHypotheses(allocator, sm, hardfork, block_coinbase, pre_state);
+}
+
+fn dumpStateRootHypotheses(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+    hardfork: guillotine_mini.Hardfork,
+    block_coinbase: primitives.Address,
+    pre_state: std.json.Value,
+) !void {
+    try sm.checkpoint();
+    sm.setBalance(block_coinbase, 0) catch {};
+    const no_coinbase_root = try computeStateRoot(allocator, sm, hardfork, block_coinbase, pre_state);
+    sm.revert();
+    const no_coinbase_hex = std.fmt.bytesToHex(no_coinbase_root, .lower);
+    std.debug.print("state root hypothesis=no-coinbase-fee root=0x{s}\n", .{&no_coinbase_hex});
+
+    var storage_addresses = std.ArrayList(primitives.Address){};
+    defer storage_addresses.deinit(allocator);
+    var storage_it = sm.journaled_state.storage_cache.cache.iterator();
+    while (storage_it.next()) |entry| {
+        try storage_addresses.append(allocator, entry.key_ptr.*);
+    }
+
+    for (storage_addresses.items) |address| {
+        try sm.checkpoint();
+        if (sm.journaled_state.storage_cache.cache.fetchRemove(address)) |removed| {
+            var slots = removed.value;
+            slots.deinit();
+        }
+        const root = try computeStateRoot(allocator, sm, hardfork, block_coinbase, pre_state);
+        sm.revert();
+        const addr_hex = std.fmt.bytesToHex(address.bytes, .lower);
+        const root_hex = std.fmt.bytesToHex(root, .lower);
+        std.debug.print("state root hypothesis=clear-storage address=0x{s} root=0x{s}\n", .{ &addr_hex, &root_hex });
     }
 }
 
@@ -714,7 +836,7 @@ fn assertLegacyLogsHash(allocator: std.mem.Allocator, logs: []const primitives.E
 
 fn runBlockchainFixtureSmoke(allocator: std.mem.Allocator, repo_root: []const u8, ctx: *VerifyContext) !void {
     const label = "ethereum-tests/BlockchainTests/ValidBlocks/bcExample/optionsTest.json";
-    const task_id = ctx.claimTask() orelse return;
+    const task_id = ctx.claimTask(label) orelse return;
     const started_ns = ctx.startTask(task_id, "blockchain-smoke", label);
     runBlockchainFixtureSmokeTask(allocator, repo_root) catch |err| {
         ctx.failTask(task_id, "blockchain-smoke", label, started_ns, err);
@@ -769,7 +891,7 @@ fn runExecutionSpecBlockchainStructuralFixtures(allocator: std.mem.Allocator, re
     for (execution_spec_blockchain_fixture_paths) |relative_path| {
         const path = try std.fs.path.join(allocator, &.{ repo_root, relative_path });
         defer allocator.free(path);
-        const task_id = ctx.claimTask() orelse continue;
+        const task_id = ctx.claimTask(relative_path) orelse continue;
         const started_ns = ctx.startTask(task_id, "execution-spec-blockchain", relative_path);
         runBlockchainFixtureStructuralFile(allocator, path) catch |err| {
             ctx.failTask(task_id, "execution-spec-blockchain", relative_path, started_ns, err);
@@ -892,7 +1014,7 @@ fn runHiveRpcCompatibilityFixtures(allocator: std.mem.Allocator, repo_root: []co
     for (hive_rpc_fixture_paths) |relative_path| {
         const path = try std.fs.path.join(allocator, &.{ repo_root, relative_path });
         defer allocator.free(path);
-        const task_id = ctx.claimTask() orelse continue;
+        const task_id = ctx.claimTask(relative_path) orelse continue;
         const started_ns = ctx.startTask(task_id, "hive-rpc-compat", relative_path);
         var test_case = readRpcIoTest(allocator, path) catch |err| {
             ctx.failTask(task_id, "hive-rpc-compat", relative_path, started_ns, err);
