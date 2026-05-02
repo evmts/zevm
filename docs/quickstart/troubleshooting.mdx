@@ -28,6 +28,29 @@ journalctl -u zevm.service -b --no-pager
 
 When startup fails before listener bind (or warns about non-strict stale checkpoint policy), check captured `stderr` first.
 
+## RPC Request Logs
+
+Runtime JSON-RPC request telemetry is emitted on process `stderr` as JSON log records with `scope = "rpc"`.
+The record `message` uses stable key-value fields:
+
+```text
+rpc_request method=eth_blockNumber id_present=true batch_size=1 status=success error_code=null duration_us=123 mode=trusted
+```
+
+Fields:
+
+| Field | Meaning |
+| --- | --- |
+| `method` | JSON-RPC method name, or `<parse>` / `<invalid>` when no valid method exists |
+| `id_present` | whether the request had a JSON-RPC `id` and expects a response |
+| `batch_size` | `1` for single requests, batch item count for batch requests, or `0` for parse/envelope failures |
+| `status` | `success`, `error`, or `notification` |
+| `error_code` | JSON-RPC error code, or `null` |
+| `duration_us` | server-side request handling duration in microseconds |
+| `mode` | active runtime mode: `trusted`, `light`, or `unknown` |
+
+Request params and raw request bodies are not logged by default.
+
 ## Build And Startup Issues
 
 | Symptom | Likely cause | Fix |

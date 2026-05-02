@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const jsonrpc = @import("jsonrpc");
 const app_config = @import("../config.zig");
 const dispatcher = @import("dispatcher.zig");
@@ -23,6 +24,16 @@ pub const TestHttpRequest = struct {
     target: []const u8 = "/",
     content_type: ?[]const u8 = "application/json",
     body: []const u8 = "",
+};
+
+pub const RequestTelemetryFields = struct {
+    method: []const u8,
+    id_present: bool,
+    batch_size: usize,
+    status: []const u8,
+    error_code: ?i32,
+    duration_ns: i128,
+    mode: []const u8,
 };
 
 const json_content_type_header = std.http.Header{
@@ -264,12 +275,31 @@ fn handlePost(
     body: []const u8,
     handlers: *const dispatcher.HandlerRegistry,
 ) !?[]u8 {
+    const start_ns = std.time.nanoTimestamp();
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+        logRequestTelemetry(allocator, .{
+            .method = "<parse>",
+            .id_present = false,
+            .batch_size = 0,
+            .status = "error",
+            .error_code = jsonrpc.envelope.ErrorCode.PARSE_ERROR,
+            .duration_ns = elapsedSince(start_ns),
+            .mode = activeModeName(handlers),
+        });
         return @as(?[]u8, try writeErrorResponse(allocator, null, jsonrpc.envelope.ErrorCode.PARSE_ERROR, "Parse error"));
     };
     defer parsed.deinit();
 
     var request_batch = jsonrpc.envelope.parseSingleOrBatch(allocator, body) catch {
+        logRequestTelemetry(allocator, .{
+            .method = "<invalid>",
+            .id_present = false,
+            .batch_size = 0,
+            .status = "error",
+            .error_code = jsonrpc.envelope.ErrorCode.INVALID_REQUEST,
+            .duration_ns = elapsedSince(start_ns),
+            .mode = activeModeName(handlers),
+        });
         return @as(?[]u8, try writeErrorResponse(allocator, null, jsonrpc.envelope.ErrorCode.INVALID_REQUEST, "Invalid Request"));
     };
     defer request_batch.deinit(allocator);
@@ -285,7 +315,17 @@ fn handleSingleRequest(
     request: jsonrpc.envelope.RequestEnvelope,
     handlers: *const dispatcher.HandlerRegistry,
 ) !?[]u8 {
+    const start_ns = std.time.nanoTimestamp();
     if (request.invalid) {
+        logRequestTelemetry(allocator, .{
+            .method = "<invalid>",
+            .id_present = request.id != null,
+            .batch_size = 1,
+            .status = "error",
+            .error_code = jsonrpc.envelope.ErrorCode.INVALID_REQUEST,
+            .duration_ns = elapsedSince(start_ns),
+            .mode = activeModeName(handlers),
+        });
         return @as(?[]u8, try writeErrorResponse(allocator, null, jsonrpc.envelope.ErrorCode.INVALID_REQUEST, "Invalid Request"));
     }
 
@@ -293,10 +333,29 @@ fn handleSingleRequest(
     defer response.deinit(allocator);
 
     if (isNotification(request)) {
+        logRequestTelemetry(allocator, .{
+            .method = request.method,
+            .id_present = false,
+            .batch_size = 1,
+            .status = "notification",
+            .error_code = responseErrorCode(response),
+            .duration_ns = elapsedSince(start_ns),
+            .mode = activeModeName(handlers),
+        });
         return null;
     }
 
-    return @as(?[]u8, try stringifyResponse(allocator, response));
+    const response_body = try stringifyResponse(allocator, response);
+    logRequestTelemetry(allocator, .{
+        .method = request.method,
+        .id_present = true,
+        .batch_size = 1,
+        .status = responseStatus(response),
+        .error_code = responseErrorCode(response),
+        .duration_ns = elapsedSince(start_ns),
+        .mode = activeModeName(handlers),
+    });
+    return @as(?[]u8, response_body);
 }
 
 fn handleBatch(
@@ -310,9 +369,19 @@ fn handleBatch(
     try response_bytes.append(allocator, '[');
     var wrote_response = false;
     for (batch) |request| {
+        const start_ns = std.time.nanoTimestamp();
         if (isNotification(request)) {
             var response = try dispatcher.dispatch(allocator, request, handlers);
             defer response.deinit(allocator);
+            logRequestTelemetry(allocator, .{
+                .method = request.method,
+                .id_present = false,
+                .batch_size = batch.len,
+                .status = "notification",
+                .error_code = responseErrorCode(response),
+                .duration_ns = elapsedSince(start_ns),
+                .mode = activeModeName(handlers),
+            });
             continue;
         }
 
@@ -321,12 +390,32 @@ fn handleBatch(
         }
 
         const item_bytes = if (request.invalid) blk: {
-            break :blk try writeErrorResponse(allocator, null, jsonrpc.envelope.ErrorCode.INVALID_REQUEST, "Invalid Request");
+            const bytes = try writeErrorResponse(allocator, null, jsonrpc.envelope.ErrorCode.INVALID_REQUEST, "Invalid Request");
+            logRequestTelemetry(allocator, .{
+                .method = "<invalid>",
+                .id_present = request.id != null,
+                .batch_size = batch.len,
+                .status = "error",
+                .error_code = jsonrpc.envelope.ErrorCode.INVALID_REQUEST,
+                .duration_ns = elapsedSince(start_ns),
+                .mode = activeModeName(handlers),
+            });
+            break :blk bytes;
         } else blk: {
             var response = try dispatcher.dispatch(allocator, request, handlers);
             defer response.deinit(allocator);
 
-            break :blk try stringifyResponse(allocator, response);
+            const bytes = try stringifyResponse(allocator, response);
+            logRequestTelemetry(allocator, .{
+                .method = request.method,
+                .id_present = request.id != null,
+                .batch_size = batch.len,
+                .status = responseStatus(response),
+                .error_code = responseErrorCode(response),
+                .duration_ns = elapsedSince(start_ns),
+                .mode = activeModeName(handlers),
+            });
+            break :blk bytes;
         };
         defer allocator.free(item_bytes);
 
@@ -345,6 +434,61 @@ fn handleBatch(
 
 fn isNotification(request: jsonrpc.envelope.RequestEnvelope) bool {
     return !request.invalid and request.id == null;
+}
+
+fn responseStatus(response: jsonrpc.envelope.ResponseEnvelope) []const u8 {
+    return if (response.error_value == null) "success" else "error";
+}
+
+fn responseErrorCode(response: jsonrpc.envelope.ResponseEnvelope) ?i32 {
+    return if (response.error_value) |error_value| error_value.code else null;
+}
+
+fn elapsedSince(start_ns: i128) i128 {
+    const elapsed = std.time.nanoTimestamp() - start_ns;
+    return if (elapsed < 0) 0 else elapsed;
+}
+
+fn activeModeName(handlers: *const dispatcher.HandlerRegistry) []const u8 {
+    if (handlers.mode_name) |mode_name| return mode_name(handlers.context);
+    return "unknown";
+}
+
+fn logRequestTelemetry(
+    allocator: std.mem.Allocator,
+    fields: RequestTelemetryFields,
+) void {
+    if (isTestBuild()) return;
+
+    const message = formatRequestTelemetry(allocator, fields) catch return;
+    defer allocator.free(message);
+    log.info(.rpc, "{s}", .{message});
+}
+
+fn isTestBuild() bool {
+    if (builtin.is_test) return true;
+    const root = @import("root");
+    return if (@hasDecl(root, "is_test")) root.is_test else false;
+}
+
+fn formatRequestTelemetry(allocator: std.mem.Allocator, fields: RequestTelemetryFields) ![]u8 {
+    if (fields.error_code) |code| {
+        return std.fmt.allocPrint(
+            allocator,
+            "rpc_request method={s} id_present={} batch_size={} status={s} error_code={} duration_us={} mode={s}",
+            .{ fields.method, fields.id_present, fields.batch_size, fields.status, code, @divTrunc(fields.duration_ns, 1000), fields.mode },
+        );
+    }
+
+    return std.fmt.allocPrint(
+        allocator,
+        "rpc_request method={s} id_present={} batch_size={} status={s} error_code=null duration_us={} mode={s}",
+        .{ fields.method, fields.id_present, fields.batch_size, fields.status, @divTrunc(fields.duration_ns, 1000), fields.mode },
+    );
+}
+
+pub fn formatRequestTelemetryForTest(allocator: std.mem.Allocator, fields: RequestTelemetryFields) ![]u8 {
+    return formatRequestTelemetry(allocator, fields);
 }
 
 fn writeErrorResponse(

@@ -17,6 +17,15 @@ const dev_erc20_handlers = @import("handlers/dev_erc20.zig");
 pub fn install(registry: *dispatcher_mod.HandlerRegistry, rt: *runtime_mod.NodeRuntime) void {
     registry.context = rt;
     registry.on_method_with_context = dispatchMethod;
+    registry.mode_name = runtimeModeName;
+}
+
+fn runtimeModeName(context: ?*anyopaque) []const u8 {
+    const rt: *runtime_mod.NodeRuntime = @ptrCast(@alignCast(context orelse return "unknown"));
+    return switch (rt.mode) {
+        .trusted => "trusted",
+        .light => "light",
+    };
 }
 
 fn putOwnedJson(

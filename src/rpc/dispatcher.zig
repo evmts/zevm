@@ -7,6 +7,7 @@ pub const HandlerRegistry = struct {
     on_method: ?*const fn (allocator: std.mem.Allocator, method_name: []const u8, params: ?std.json.Value) anyerror!std.json.Value = null,
     context: ?*anyopaque = null,
     on_method_with_context: ?*const fn (context: ?*anyopaque, allocator: std.mem.Allocator, method_name: []const u8, params: ?std.json.Value) anyerror!std.json.Value = null,
+    mode_name: ?*const fn (context: ?*anyopaque) []const u8 = null,
 };
 
 pub const RuntimeErrorCode = struct {

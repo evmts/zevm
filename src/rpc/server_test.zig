@@ -263,6 +263,25 @@ test "application/json content-type allows media-type parameters" {
     try std.testing.expectEqual(@as(i64, 7), (try getObjectField(parsed.value, "result")).integer);
 }
 
+test "request telemetry formatting records outcome without params" {
+    const message = try server.formatRequestTelemetryForTest(std.testing.allocator, .{
+        .method = "eth_sendTransaction",
+        .id_present = true,
+        .batch_size = 3,
+        .status = "error",
+        .error_code = jsonrpc.envelope.ErrorCode.INVALID_PARAMS,
+        .duration_ns = 12_345_678,
+        .mode = "trusted",
+    });
+    defer std.testing.allocator.free(message);
+
+    try std.testing.expectEqualStrings(
+        "rpc_request method=eth_sendTransaction id_present=true batch_size=3 status=error error_code=-32602 duration_us=12345 mode=trusted",
+        message,
+    );
+    try std.testing.expect(std.mem.indexOf(u8, message, "params") == null);
+}
+
 test "single notification returns 204 empty response" {
     const handlers = dispatcher.HandlerRegistry{
         .on_method = &successHandler,
