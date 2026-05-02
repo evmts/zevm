@@ -1,10 +1,8 @@
 pub const dispatcher = @import("dispatcher.zig");
 pub const dispatch_wiring = @import("dispatch_wiring.zig");
 pub const server = @import("server.zig");
-pub const eth_handler = @import("eth_handler.zig");
+pub const parse = @import("parse.zig");
 pub const block_queries = @import("block_queries.zig");
-pub const envelope = @import("envelope.zig");
-pub const router = @import("router.zig");
 pub const trusted_fork_handlers = @import("trusted_fork_handlers.zig");
 pub const simulation = @import("handlers/simulation.zig");
 pub const txpool = @import("handlers/txpool.zig");
@@ -14,11 +12,9 @@ test {
     _ = @import("block_queries_test.zig");
     _ = @import("dispatcher_test.zig");
     _ = @import("dispatch_wiring_test.zig");
-    _ = @import("envelope_test.zig");
     _ = @import("listener_smoke_test.zig");
     _ = @import("server_test.zig");
-    _ = @import("eth_handler_test.zig");
-    _ = @import("router_test.zig");
+    _ = @import("parse.zig");
     _ = @import("trusted_fork_handlers.zig");
     _ = @import("handlers/block_query_handlers_test.zig");
     _ = @import("handlers/block_spec_test.zig");

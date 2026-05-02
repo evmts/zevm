@@ -7,6 +7,10 @@ fn makeSpec(s: []const u8) jsonrpc.types.BlockSpec {
     return .{ .value = .{ .string = s } };
 }
 
+fn makeIntSpec(n: i64) jsonrpc.types.BlockSpec {
+    return .{ .value = .{ .integer = n } };
+}
+
 fn makeRuntime() !runtime.NodeRuntime {
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
     rt.head_block_number = 10;
@@ -77,4 +81,16 @@ test "resolveBlockNumber: malformed hex returns InvalidBlockSpec" {
     var rt = try makeRuntime();
     defer rt.deinit();
     try std.testing.expectError(error.InvalidBlockSpec, block_spec.resolveBlockNumber(&rt, makeSpec("0xZZZ")));
+}
+
+test "resolveBlockNumber: JSON integer block number is invalid" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    try std.testing.expectError(error.InvalidBlockSpec, block_spec.resolveBlockNumber(&rt, makeIntSpec(1)));
+}
+
+test "resolveBlockNumber: non-minimal quantity is invalid" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    try std.testing.expectError(error.InvalidBlockSpec, block_spec.resolveBlockNumber(&rt, makeSpec("0x01")));
 }

@@ -4,6 +4,7 @@ const jsonrpc = @import("jsonrpc");
 const runtime = @import("../../node/runtime.zig");
 const genesis = @import("../../genesis.zig");
 const tx_encoding = @import("../../transaction_encoding.zig");
+const rpc_parse = @import("../parse.zig");
 
 pub const TxSubmissionError = error{
     InvalidHexData,
@@ -153,11 +154,7 @@ const SendTransactionParseError = error{
 };
 
 fn parseQuantityU64Value(value: std.json.Value) SendTransactionParseError!u64 {
-    return switch (value) {
-        .integer => |n| if (n < 0) error.InvalidTransactionRequest else @intCast(n),
-        .string => |text| parseQuantityString(u64, text),
-        else => error.InvalidTransactionRequest,
-    };
+    return rpc_parse.parseQuantityValue(u64, value) catch error.InvalidTransactionRequest;
 }
 
 fn managedDevPrivateKey(address: primitives.Address) ?[32]u8 {
@@ -335,42 +332,27 @@ fn parseSendTransactionRequest(
 }
 
 fn parseAddressValue(value: std.json.Value) SendTransactionParseError!primitives.Address {
-    return switch (value) {
-        .string => |text| parseAddressString(text),
-        else => error.InvalidTransactionRequest,
-    };
+    return rpc_parse.parseAddressValue(value) catch error.InvalidAddress;
 }
 
 fn parseAddressString(text: []const u8) SendTransactionParseError!primitives.Address {
-    if (text.len != 42) return error.InvalidAddress;
-    if (text[0] != '0' or (text[1] != 'x' and text[1] != 'X')) return error.InvalidAddress;
-
-    var bytes: [20]u8 = undefined;
-    _ = std.fmt.hexToBytes(&bytes, text[2..]) catch return error.InvalidAddress;
-    return .{ .bytes = bytes };
+    return rpc_parse.parseAddressString(text) catch error.InvalidAddress;
 }
 
 fn parseQuantityU256Value(value: std.json.Value) SendTransactionParseError!u256 {
-    return switch (value) {
-        .integer => |n| if (n < 0) error.InvalidTransactionRequest else @intCast(n),
-        .string => |text| parseQuantityString(u256, text),
-        else => error.InvalidTransactionRequest,
-    };
+    return rpc_parse.parseQuantityValue(u256, value) catch error.InvalidTransactionRequest;
 }
 
 fn parseQuantityString(comptime T: type, text: []const u8) SendTransactionParseError!T {
-    if (text.len <= 2 or text[0] != '0' or (text[1] != 'x' and text[1] != 'X')) return error.InvalidTransactionRequest;
-    return std.fmt.parseInt(T, text[2..], 16) catch error.InvalidTransactionRequest;
+    return rpc_parse.parseQuantityString(T, text) catch error.InvalidTransactionRequest;
+}
+
+fn isQuantityHex(text: []const u8) bool {
+    return rpc_parse.isQuantityHex(text);
 }
 
 fn parseHexDataValue(allocator: std.mem.Allocator, value: std.json.Value) SendTransactionParseError![]const u8 {
-    const text = switch (value) {
-        .string => |s| s,
-        else => return error.InvalidTransactionRequest,
-    };
-    if (text.len < 2 or text[0] != '0' or (text[1] != 'x' and text[1] != 'X')) return error.InvalidTransactionRequest;
-    if ((text.len - 2) % 2 != 0) return error.InvalidTransactionRequest;
-    return primitives.Hex.hexToBytes(allocator, text) catch error.InvalidTransactionRequest;
+    return rpc_parse.parseHexDataBytes(allocator, value) catch error.InvalidTransactionRequest;
 }
 
 // --- Intrinsic gas (legacy only; EIP-2028 calldata) ---------------------

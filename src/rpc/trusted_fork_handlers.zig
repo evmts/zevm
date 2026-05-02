@@ -1,12 +1,16 @@
 const std = @import("std");
 const runtime = @import("../node/runtime.zig");
+const rpc_parse = @import("parse.zig");
 
 pub fn handleZevmReset(
     rt: *runtime.NodeRuntime,
     params: ?std.json.Value,
 ) !std.json.Value {
     const reset_mode = parseResetMode(params) orelse return error.InvalidParams;
-    try rt.reset(reset_mode);
+    rt.reset(reset_mode) catch |err| switch (err) {
+        error.InvalidForkUrl => return error.InvalidParams,
+        else => return err,
+    };
     return .{ .bool = true };
 }
 
@@ -17,7 +21,10 @@ pub fn handleZevmSetRpcUrl(
 ) !std.json.Value {
     _ = allocator;
     const url = parseSetRpcUrl(params) orelse return error.InvalidParams;
-    try rt.setRpcUrl(url);
+    rt.setRpcUrl(url) catch |err| switch (err) {
+        error.InvalidForkUrl => return error.InvalidParams,
+        else => return err,
+    };
     return .{ .bool = true };
 }
 
@@ -76,14 +83,11 @@ fn getParamsArray(params: ?std.json.Value) ?[]const std.json.Value {
 }
 
 fn parseQuantityHexU64(value: std.json.Value) ?u64 {
-    const text = switch (value) {
-        .string => |str| str,
-        else => return null,
-    };
+    return rpc_parse.parseQuantityValue(u64, value) catch null;
+}
 
-    if (text.len < 3) return null;
-    if (!(text[0] == '0' and (text[1] == 'x' or text[1] == 'X'))) return null;
-    return std.fmt.parseInt(u64, text[2..], 16) catch null;
+fn isQuantityHex(text: []const u8) bool {
+    return rpc_parse.isQuantityHex(text);
 }
 
 test "handleZevmReset with omitted params keeps fork configuration and invalidates snapshots" {
@@ -141,6 +145,24 @@ test "handleZevmReset with fork object replaces fork URL and block" {
     try std.testing.expectEqual(@as(?u64, 42), rt.fork_config.?.block_number);
 }
 
+test "handleZevmReset rejects non-minimal fork block number" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, .{
+        .fork_url = "https://rpc-a.example",
+    });
+    defer rt.deinit();
+
+    var cfg_obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer cfg_obj.deinit();
+    try cfg_obj.put("url", .{ .string = "https://rpc-b.example" });
+    try cfg_obj.put("blockNumber", .{ .string = "0x02" });
+
+    var args = std.json.Array.init(std.testing.allocator);
+    defer args.deinit();
+    try args.append(.{ .object = cfg_obj });
+
+    try std.testing.expectError(error.InvalidParams, handleZevmReset(&rt, .{ .array = args }));
+}
+
 test "handleZevmSetRpcUrl updates active fork URL" {
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, .{
         .fork_url = "https://rpc-a.example",
@@ -156,6 +178,19 @@ test "handleZevmSetRpcUrl updates active fork URL" {
     try std.testing.expect(result.bool);
     try std.testing.expectEqualStrings("https://rpc-b.example", rt.fork_config.?.url);
     try std.testing.expectEqual(@as(?u64, 99), rt.fork_config.?.block_number);
+}
+
+test "handleZevmSetRpcUrl rejects malformed URL as invalid params" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, .{
+        .fork_url = "https://rpc-a.example",
+    });
+    defer rt.deinit();
+
+    var args = std.json.Array.init(std.testing.allocator);
+    defer args.deinit();
+    try args.append(.{ .string = "ftp://rpc-b.example" });
+
+    try std.testing.expectError(error.InvalidParams, handleZevmSetRpcUrl(std.testing.allocator, &rt, .{ .array = args }));
 }
 
 test "handleZevmSetRpcUrl fails when forking is disabled" {

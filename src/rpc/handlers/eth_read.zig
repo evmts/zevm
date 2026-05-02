@@ -3,9 +3,9 @@ const builtin = @import("builtin");
 const jsonrpc = @import("jsonrpc");
 const runtime = @import("../../node/runtime.zig");
 const block_spec = @import("block_spec.zig");
+const rpc_parse = @import("../parse.zig");
 
 pub const PRUNED_HISTORY_ERROR_CODE: i32 = 4444;
-pub const ETH_GET_PROOF_UNSUPPORTED_MESSAGE = "TODO: eth_getProof requires an MPT proof API; StateManager does not expose account/storage proofs";
 pub const MAX_FEE_HISTORY_BLOCK_COUNT: u64 = 1024;
 pub const MAX_REWARD_PERCENTILES: usize = 100;
 
@@ -55,12 +55,6 @@ pub const FeeHistoryResult = struct {
     }
 };
 
-pub const GetProofParams = struct {
-    address: jsonrpc.types.Address,
-    storage_keys: []const jsonrpc.types.Quantity,
-    block: jsonrpc.types.BlockSpec,
-};
-
 pub const AccountsResult = struct {
     value: []jsonrpc.types.Address,
 };
@@ -107,7 +101,7 @@ pub fn handleEthGetStorageAt(
     params: jsonrpc.eth.GetStorageAt.Params,
 ) !jsonrpc.eth.GetStorageAt.Result {
     _ = try resolveBlockParam(rt, params.block);
-    const slot = parseQuantityToU256(params.storage_slot) catch return error.InvalidParams;
+    const slot = parseStorageSlotToU256(params.storage_slot) catch return error.InvalidParams;
     const value = try rt.getStorage(.{ .bytes = params.address.bytes }, slot);
     return .{ .value = try dataHexU256(allocator, value) };
 }
@@ -278,18 +272,6 @@ pub fn handleWeb3ClientVersion(
     }) };
 }
 
-pub fn handleEthGetProof(
-    _: std.mem.Allocator,
-    rt: *runtime.NodeRuntime,
-    params: GetProofParams,
-) !std.json.Value {
-    _ = try resolveBlockParam(rt, params.block);
-    for (params.storage_keys) |key| {
-        _ = parseQuantityToU256(key) catch return error.InvalidParams;
-    }
-    return error.MethodNotFound;
-}
-
 const FeeHistoryRange = struct {
     oldest: u64,
     count: usize,
@@ -322,33 +304,24 @@ fn paramsArrayItems(params: ?std.json.Value) ![]const std.json.Value {
 }
 
 fn parseQuantityToU64(q: jsonrpc.types.Quantity) !u64 {
-    return parseQuantityValue(u64, q.value);
+    return rpc_parse.parseQuantity(u64, q) catch return error.InvalidQuantity;
 }
 
 fn parseQuantityToU256(q: jsonrpc.types.Quantity) !u256 {
-    return parseQuantityValue(u256, q.value);
+    return rpc_parse.parseQuantity(u256, q) catch return error.InvalidQuantity;
 }
 
-fn parseQuantityValue(comptime T: type, value: std.json.Value) !T {
-    return switch (value) {
-        .string => |s| parseQuantityString(T, s),
-        else => error.InvalidQuantity,
-    };
-}
-
-fn parseQuantityString(comptime T: type, text: []const u8) !T {
-    if (!isQuantityHex(text)) return error.InvalidQuantity;
-    return std.fmt.parseInt(T, text[2..], 16) catch return error.InvalidQuantity;
-}
-
-fn isQuantityHex(text: []const u8) bool {
-    if (text.len <= 2) return false;
-    if (text[0] != '0' or text[1] != 'x') return false;
-    if (text.len > 3 and text[2] == '0') return false;
-    for (text[2..]) |c| {
-        _ = std.fmt.charToDigit(c, 16) catch return false;
+fn parseStorageSlotToU256(q: jsonrpc.types.Quantity) !u256 {
+    switch (q.value) {
+        .string => |text| {
+            if (rpc_parse.isHash32(text)) {
+                const bytes = try rpc_parse.parseHash32String(text);
+                return std.mem.readInt(u256, &bytes, .big);
+            }
+        },
+        else => {},
     }
-    return true;
+    return parseQuantityToU256(q);
 }
 
 fn resolveBlockParam(rt: *const runtime.NodeRuntime, spec: jsonrpc.types.BlockSpec) !u64 {

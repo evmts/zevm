@@ -1,8 +1,9 @@
 const std = @import("std");
 const primitives = @import("primitives");
 const runtime = @import("../../node/runtime.zig");
+const rpc_parse = @import("../parse.zig");
 
-pub fn handleSetERC20Balance(
+pub fn handleDealErc20(
     rt: *runtime.NodeRuntime,
     params: ?std.json.Value,
 ) !std.json.Value {
@@ -11,7 +12,7 @@ pub fn handleSetERC20Balance(
     return .{ .bool = true };
 }
 
-pub fn handleSetERC20Allowance(
+pub fn handleSetErc20Allowance(
     rt: *runtime.NodeRuntime,
     params: ?std.json.Value,
 ) !std.json.Value {
@@ -63,40 +64,23 @@ fn parseAllowanceArgs(params: ?std.json.Value) !AllowanceArgs {
 }
 
 fn paramsArrayItems(params: ?std.json.Value) ![]const std.json.Value {
-    const value = params orelse return error.InvalidParams;
-    return switch (value) {
-        .array => |array| array.items,
-        else => error.InvalidParams,
-    };
+    return rpc_parse.paramsArrayItems(params);
 }
 
 fn parseAddressJson(value: std.json.Value) !primitives.Address {
-    return switch (value) {
-        .string => |s| parseAddressString(s),
-        else => error.InvalidParams,
-    };
+    return rpc_parse.parseAddressValue(value);
 }
 
 fn parseAddressString(text: []const u8) !primitives.Address {
-    if (!hasHexPrefix(text)) return error.InvalidParams;
-    const hex = text[2..];
-    if (hex.len != 40) return error.InvalidParams;
-    var bytes: [20]u8 = undefined;
-    _ = std.fmt.hexToBytes(&bytes, hex) catch return error.InvalidParams;
-    return .{ .bytes = bytes };
+    return rpc_parse.parseAddressString(text);
 }
 
 fn parseU256Json(value: std.json.Value) !u256 {
-    return switch (value) {
-        .integer => |n| if (n < 0) error.InvalidParams else @intCast(n),
-        .string => |s| parseU256String(s),
-        else => error.InvalidParams,
-    };
+    return rpc_parse.parseQuantityValue(u256, value);
 }
 
 fn parseU256String(text: []const u8) !u256 {
-    if (!isQuantityHex(text)) return error.InvalidParams;
-    return std.fmt.parseInt(u256, text[2..], 16) catch error.InvalidParams;
+    return rpc_parse.parseQuantityString(u256, text);
 }
 
 fn mappingSlot(key: primitives.Address, slot: u256) u256 {
@@ -110,9 +94,9 @@ fn mappingSlot(key: primitives.Address, slot: u256) u256 {
 }
 
 fn hasHexPrefix(text: []const u8) bool {
-    return text.len >= 2 and text[0] == '0' and (text[1] == 'x' or text[1] == 'X');
+    return rpc_parse.hasHexPrefix(text);
 }
 
 fn isQuantityHex(text: []const u8) bool {
-    return text.len > 2 and hasHexPrefix(text);
+    return rpc_parse.isQuantityHex(text);
 }

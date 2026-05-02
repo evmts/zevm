@@ -2,13 +2,13 @@ const std = @import("std");
 const primitives = @import("primitives");
 const guillotine_mini = @import("guillotine_mini");
 const runtime = @import("../../node/runtime.zig");
+const block_builder = @import("../../block_builder.zig");
 const host_adapter = @import("../../host_adapter.zig");
 const tx_processor = @import("../../tx_processor.zig");
+const rpc_parse = @import("../parse.zig");
 
 pub const MODE_UNSUPPORTED_ERROR_CODE: i32 = -32010;
 pub const MODE_UNSUPPORTED_MESSAGE = "mode-unsupported";
-
-const DEFAULT_SIMULATION_GAS_LIMIT: u64 = 30_000_000;
 
 const TransactionRequest = struct {
     from: ?primitives.Address = null,
@@ -63,7 +63,8 @@ pub fn handleEthCall(
     var parsed = try parseCallParams(allocator, params);
     defer parsed.deinit(allocator);
 
-    _ = try resolveTrustedBlockSelector(rt, parsed.block);
+    const selected_block_number = try resolveTrustedBlockSelector(rt, parsed.block);
+    const block_ctx = try blockContext(rt, selected_block_number);
 
     try rt.state.checkpoint();
     defer rt.state.revert();
@@ -72,7 +73,7 @@ pub fn handleEthCall(
         try applyStateOverrides(allocator, rt, overrides);
     }
 
-    var result = try executeOnce(allocator, rt, parsed.tx, gasLimit(parsed.tx));
+    var result = try executeOnce(allocator, rt, parsed.tx, block_ctx, gasLimit(parsed.tx, block_ctx));
     defer result.deinit(allocator);
 
     return hexBytes(allocator, result.output);
@@ -88,9 +89,11 @@ pub fn handleEthEstimateGas(
     var parsed = try parseEstimateParams(allocator, params);
     defer parsed.deinit(allocator);
 
-    if (parsed.block) |block| {
-        _ = try resolveTrustedBlockSelector(rt, block);
-    }
+    const selected_block_number = if (parsed.block) |block|
+        try resolveTrustedBlockSelector(rt, block)
+    else
+        rt.head_block_number;
+    const block_ctx = try blockContext(rt, selected_block_number);
 
     try rt.state.checkpoint();
     defer rt.state.revert();
@@ -99,7 +102,7 @@ pub fn handleEthEstimateGas(
         try applyStateOverrides(allocator, rt, overrides);
     }
 
-    const estimate = try estimateGas(allocator, rt, parsed.tx);
+    const estimate = try estimateGas(allocator, rt, parsed.tx, block_ctx);
     return hexQuantity(allocator, estimate);
 }
 
@@ -126,11 +129,7 @@ fn parseEstimateParams(allocator: std.mem.Allocator, params: ?std.json.Value) !P
 }
 
 fn paramsArrayItems(params: ?std.json.Value) ![]const std.json.Value {
-    const value = params orelse return error.InvalidParams;
-    return switch (value) {
-        .array => |array| array.items,
-        else => error.InvalidParams,
-    };
+    return rpc_parse.paramsArrayItems(params);
 }
 
 fn parseTransactionRequest(allocator: std.mem.Allocator, value: std.json.Value) !TransactionRequest {
@@ -203,20 +202,7 @@ fn parseTransactionRequest(allocator: std.mem.Allocator, value: std.json.Value) 
 }
 
 fn resolveTrustedBlockSelector(rt: *const runtime.NodeRuntime, value: std.json.Value) !u64 {
-    return switch (value) {
-        .string => |selector| {
-            if (std.mem.eql(u8, selector, "latest") or
-                std.mem.eql(u8, selector, "pending") or
-                std.mem.eql(u8, selector, "safe") or
-                std.mem.eql(u8, selector, "finalized"))
-            {
-                return rt.head_block_number;
-            }
-            if (std.mem.eql(u8, selector, "earliest")) return 0;
-            return parseQuantityU64String(selector);
-        },
-        else => error.InvalidParams,
-    };
+    return rpc_parse.resolveTrustedBlockSelector(rt.head_block_number, value);
 }
 
 fn applyStateOverrides(
@@ -284,18 +270,19 @@ fn estimateGas(
     allocator: std.mem.Allocator,
     rt: *runtime.NodeRuntime,
     tx: TransactionRequest,
+    block_ctx: guillotine_mini.BlockContext,
 ) !u64 {
-    const intrinsic = tx_processor.intrinsicGas(tx.data, tx.to == null);
-    var high = gasLimit(tx);
-    if (high < intrinsic) return error.ExecutionFailed;
+    const intrinsic = intrinsicGas(tx, block_ctx);
+    var high = gasLimit(tx, block_ctx);
+    if (high < intrinsic or high > block_ctx.block_gas_limit) return error.ExecutionFailed;
 
-    var high_result = try executeOnce(allocator, rt, tx, high);
+    var high_result = try executeOnce(allocator, rt, tx, block_ctx, high);
     high_result.deinit(allocator);
 
     var low = intrinsic;
     while (low < high) {
         const mid = low + (high - low) / 2;
-        var attempt = executeOnce(allocator, rt, tx, mid) catch |err| switch (err) {
+        var attempt = executeOnce(allocator, rt, tx, block_ctx, mid) catch |err| switch (err) {
             error.ExecutionFailed => {
                 low = mid + 1;
                 continue;
@@ -313,10 +300,11 @@ fn executeOnce(
     allocator: std.mem.Allocator,
     rt: *runtime.NodeRuntime,
     tx: TransactionRequest,
+    block_ctx: guillotine_mini.BlockContext,
     gas_limit: u64,
 ) !ExecutionResult {
-    const intrinsic = tx_processor.intrinsicGas(tx.data, tx.to == null);
-    if (intrinsic > gas_limit) return error.ExecutionFailed;
+    const intrinsic = intrinsicGas(tx, block_ctx);
+    if (intrinsic > gas_limit or gas_limit > block_ctx.block_gas_limit) return error.ExecutionFailed;
     const execution_gas = gas_limit - intrinsic;
 
     try rt.state.checkpoint();
@@ -330,7 +318,6 @@ fn executeOnce(
 
     var adapter = host_adapter.HostAdapter{ .state = &rt.state };
     const host = adapter.hostInterface();
-    const block_ctx = blockContext(rt);
 
     const EvmType = guillotine_mini.Evm(.{});
     var evm: EvmType = undefined;
@@ -408,97 +395,83 @@ fn executeCreate(
     };
 }
 
-fn gasLimit(tx: TransactionRequest) u64 {
-    return tx.gas orelse DEFAULT_SIMULATION_GAS_LIMIT;
+fn gasLimit(tx: TransactionRequest, block_ctx: guillotine_mini.BlockContext) u64 {
+    return tx.gas orelse block_ctx.block_gas_limit;
 }
 
-fn blockContext(rt: *const runtime.NodeRuntime) guillotine_mini.BlockContext {
-    return .{
+fn intrinsicGas(tx: TransactionRequest, block_ctx: guillotine_mini.BlockContext) u64 {
+    return tx_processor.intrinsicGasForFork(tx.data, tx.to == null, tx_processor.resolveHardfork(block_ctx));
+}
+
+fn blockContext(rt: *runtime.NodeRuntime, block_number: u64) !guillotine_mini.BlockContext {
+    if (block_number == rt.head_block_number) {
+        const ctx = guillotine_mini.BlockContext{
+            .chain_id = rt.chain_id,
+            .block_number = rt.head_block_number,
+            .block_timestamp = rt.head_block_timestamp,
+            .block_difficulty = 0,
+            .block_prevrandao = 0,
+            .block_coinbase = rt.coinbase,
+            .block_gas_limit = rt.dev_runtime.config.block_gas_limit,
+            .block_base_fee = rt.base_fee,
+            .blob_base_fee = rt.blob_base_fee,
+        };
+        return block_builder.blockContextWithEnvironmentOverrides(&rt.dev_runtime, ctx);
+    }
+
+    const block = (try rt.blockchain.getBlockByNumber(block_number)) orelse return error.InvalidParams;
+    return guillotine_mini.BlockContext{
         .chain_id = rt.chain_id,
-        .block_number = rt.head_block_number,
-        .block_timestamp = 0,
+        .block_number = block.header.number,
+        .block_timestamp = block.header.timestamp,
         .block_difficulty = 0,
         .block_prevrandao = 0,
-        .block_coinbase = rt.coinbase,
-        .block_gas_limit = DEFAULT_SIMULATION_GAS_LIMIT,
-        .block_base_fee = rt.base_fee,
+        .block_coinbase = block.header.beneficiary,
+        .block_gas_limit = block.header.gas_limit,
+        .block_base_fee = block.header.base_fee_per_gas orelse 0,
         .blob_base_fee = rt.blob_base_fee,
     };
 }
 
 fn parseAddressValue(value: std.json.Value) !primitives.Address {
-    return switch (value) {
-        .string => |text| parseAddressString(text),
-        else => error.InvalidParams,
-    };
+    return rpc_parse.parseAddressValue(value);
 }
 
 fn parseAddressString(text: []const u8) !primitives.Address {
-    if (!hasHexPrefix(text)) return error.InvalidParams;
-    const hex = text[2..];
-    if (hex.len != 40) return error.InvalidParams;
-    var bytes: [20]u8 = undefined;
-    _ = std.fmt.hexToBytes(&bytes, hex) catch return error.InvalidParams;
-    return .{ .bytes = bytes };
+    return rpc_parse.parseAddressString(text);
 }
 
 fn parseQuantityU64Value(value: std.json.Value) !u64 {
-    return switch (value) {
-        .string => |text| parseQuantityU64String(text),
-        else => error.InvalidParams,
-    };
+    return rpc_parse.parseQuantityValue(u64, value);
 }
 
 fn parseQuantityU64String(text: []const u8) !u64 {
-    if (!isQuantityHex(text)) return error.InvalidParams;
-    return std.fmt.parseInt(u64, text[2..], 16) catch return error.InvalidParams;
+    return rpc_parse.parseQuantityString(u64, text);
 }
 
 fn parseQuantityU256Value(value: std.json.Value) !u256 {
-    return switch (value) {
-        .string => |text| parseQuantityU256String(text),
-        else => error.InvalidParams,
-    };
+    return rpc_parse.parseQuantityValue(u256, value);
 }
 
 fn parseQuantityU256String(text: []const u8) !u256 {
-    if (!isQuantityHex(text)) return error.InvalidParams;
-    return std.fmt.parseInt(u256, text[2..], 16) catch return error.InvalidParams;
+    return rpc_parse.parseQuantityString(u256, text);
 }
 
 fn parseHexDataValue(allocator: std.mem.Allocator, value: std.json.Value) ![]u8 {
-    const text = switch (value) {
-        .string => |text| text,
-        else => return error.InvalidParams,
-    };
-    if (!hasHexPrefix(text)) return error.InvalidParams;
-    const hex = text[2..];
-    if (hex.len % 2 != 0) return error.InvalidParams;
-    const out = try allocator.alloc(u8, hex.len / 2);
-    errdefer allocator.free(out);
-    _ = std.fmt.hexToBytes(out, hex) catch return error.InvalidParams;
-    return out;
+    return rpc_parse.parseHexDataBytes(allocator, value);
 }
 
 fn parseBytes32U256(text: []const u8) !u256 {
-    if (!hasHexPrefix(text)) return error.InvalidParams;
-    const hex = text[2..];
-    if (hex.len != 64) return error.InvalidParams;
-    return std.fmt.parseInt(u256, hex, 16) catch return error.InvalidParams;
+    _ = try rpc_parse.parseHash32String(text);
+    return std.fmt.parseInt(u256, text[2..], 16) catch return error.InvalidParams;
 }
 
 fn hasHexPrefix(text: []const u8) bool {
-    return text.len >= 2 and text[0] == '0' and (text[1] == 'x' or text[1] == 'X');
+    return rpc_parse.hasHexPrefix(text);
 }
 
 fn isQuantityHex(text: []const u8) bool {
-    if (text.len < 3 or !hasHexPrefix(text)) return false;
-    const hex = text[2..];
-    if (hex.len > 1 and hex[0] == '0') return false;
-    for (hex) |char| {
-        if (!std.ascii.isHex(char)) return false;
-    }
-    return true;
+    return rpc_parse.isQuantityHex(text);
 }
 
 fn hexQuantity(allocator: std.mem.Allocator, value: u64) !std.json.Value {

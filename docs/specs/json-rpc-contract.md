@@ -565,6 +565,10 @@ Simulation semantics:
   - exact `error.message` text and optional `error.data` payload for runtime execution failure
   - gas-search strategy and tie-breaking used by `eth_estimateGas`
   - internal defaults for omitted simulation fields (`from`, `gas`, `gasPrice`, `value`, `nonce`) beyond this document's required validation and tuple contract
+- block environment:
+  - current-head simulations use the trusted runtime chain ID, coinbase, head block number, head timestamp, gas limit, base fee, blob base fee, and active one-shot block-environment overrides
+  - non-head numeric selectors use the stored block header environment while still executing on the current trusted state overlay
+  - omitted `gas` defaults to the selected simulation block gas limit
 
 ### 8.3 Submission
 

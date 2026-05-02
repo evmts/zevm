@@ -5,6 +5,8 @@ const log = @import("../log.zig");
 
 pub const HandlerRegistry = struct {
     on_method: ?*const fn (allocator: std.mem.Allocator, method_name: []const u8, params: ?std.json.Value) anyerror!std.json.Value = null,
+    context: ?*anyopaque = null,
+    on_method_with_context: ?*const fn (context: ?*anyopaque, allocator: std.mem.Allocator, method_name: []const u8, params: ?std.json.Value) anyerror!std.json.Value = null,
 };
 
 pub const RuntimeErrorCode = struct {
@@ -24,11 +26,16 @@ pub fn dispatch(allocator: std.mem.Allocator, request: jsonrpc.envelope.RequestE
         },
     };
 
-    if (handlers.on_method == null) {
+    if (handlers.on_method == null and handlers.on_method_with_context == null) {
         return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND, "Method not found");
     }
 
-    const result = handlers.on_method.?(allocator, request.method, request.params) catch |err| switch (err) {
+    const result = if (handlers.on_method_with_context) |handler|
+        handler(handlers.context, allocator, request.method, request.params)
+    else
+        handlers.on_method.?(allocator, request.method, request.params);
+
+    const unwrapped_result = result catch |err| switch (err) {
         error.MethodNotFound => {
             return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND, "Method not found");
         },
@@ -48,19 +55,22 @@ pub fn dispatch(allocator: std.mem.Allocator, request: jsonrpc.envelope.RequestE
             return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.PROOF_VERIFY_FAILED, "Proof verification failed");
         },
         else => {
-            if (builtin.mode == .Debug or isTestBuild()) {
-                log.warn(.rpc, "rpc internal error method={s} error={s}", .{ request.method, @errorName(err) });
-            } else {
-                log.err(.rpc, "rpc internal error method={s} error={s}", .{ request.method, @errorName(err) });
+            if (!isTestBuild()) {
+                if (builtin.mode == .Debug) {
+                    log.warn(.rpc, "rpc internal error method={s} error={s}", .{ request.method, @errorName(err) });
+                } else {
+                    log.err(.rpc, "rpc internal error method={s} error={s}", .{ request.method, @errorName(err) });
+                }
             }
             return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.INTERNAL_ERROR, "Internal error");
         },
     };
 
-    return jsonrpc.envelope.ResponseEnvelope.makeSuccess(request.id, result);
+    return jsonrpc.envelope.ResponseEnvelope.makeSuccess(request.id, unwrapped_result);
 }
 
 fn isTestBuild() bool {
+    if (builtin.is_test) return true;
     const root = @import("root");
     return if (@hasDecl(root, "is_test")) root.is_test else false;
 }
@@ -105,10 +115,6 @@ fn validateParamsForMethod(allocator: std.mem.Allocator, method_name: []const u8
         return;
     }
 
-    if (isModeRoutedPrefix(method_name)) {
-        return;
-    }
-
     return error.UnknownMethod;
 }
 
@@ -146,12 +152,10 @@ fn isLocallyHandledMethod(method_name: []const u8) bool {
         std.mem.eql(u8, method_name, "zevm_setStorageAt") or
         std.mem.eql(u8, method_name, "anvil_setStorageAt") or
         std.mem.eql(u8, method_name, "hardhat_setStorageAt") or
-        std.mem.eql(u8, method_name, "zevm_setERC20Balance") or
-        std.mem.eql(u8, method_name, "anvil_setERC20Balance") or
-        std.mem.eql(u8, method_name, "hardhat_setERC20Balance") or
-        std.mem.eql(u8, method_name, "zevm_setERC20Allowance") or
-        std.mem.eql(u8, method_name, "anvil_setERC20Allowance") or
-        std.mem.eql(u8, method_name, "hardhat_setERC20Allowance") or
+        std.mem.eql(u8, method_name, "zevm_dealErc20") or
+        std.mem.eql(u8, method_name, "anvil_dealErc20") or
+        std.mem.eql(u8, method_name, "zevm_setErc20Allowance") or
+        std.mem.eql(u8, method_name, "anvil_setErc20Allowance") or
         std.mem.eql(u8, method_name, "zevm_setCoinbase") or
         std.mem.eql(u8, method_name, "anvil_setCoinbase") or
         std.mem.eql(u8, method_name, "hardhat_setCoinbase") or
@@ -203,14 +207,6 @@ fn isLocallyHandledMethod(method_name: []const u8) bool {
         std.mem.eql(u8, method_name, "anvil_setIntervalMining") or
         std.mem.eql(u8, method_name, "evm_setIntervalMining") or
         std.mem.eql(u8, method_name, "zevm_lightSyncStatus");
-}
-
-fn isModeRoutedPrefix(method_name: []const u8) bool {
-    return std.mem.startsWith(u8, method_name, "zevm_") or
-        std.mem.startsWith(u8, method_name, "dev_") or
-        std.mem.startsWith(u8, method_name, "anvil_") or
-        std.mem.startsWith(u8, method_name, "hardhat_") or
-        std.mem.startsWith(u8, method_name, "evm_");
 }
 
 fn validateResetParams(params: ?std.json.Value) !void {

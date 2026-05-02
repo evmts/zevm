@@ -32,6 +32,31 @@ test "dispatch unknown method returns -32601" {
     try std.testing.expectEqual(@as(i32, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND), response.error_value.?.code);
 }
 
+test "dispatch unknown prefixed methods return -32601" {
+    const handlers = dispatcher.HandlerRegistry{};
+    const methods = [_][]const u8{
+        "zevm_noSuchMethod",
+        "dev_noSuchMethod",
+        "anvil_noSuchMethod",
+        "hardhat_noSuchMethod",
+        "evm_noSuchMethod",
+    };
+
+    for (methods, 0..) |method, index| {
+        var request = jsonrpc.envelope.RequestEnvelope{
+            .jsonrpc = try std.testing.allocator.dupe(u8, "2.0"),
+            .id = .{ .integer = @intCast(index + 10) },
+            .method = try std.testing.allocator.dupe(u8, method),
+            .params = null,
+        };
+        defer request.deinit(std.testing.allocator);
+
+        const response = try dispatcher.dispatch(std.testing.allocator, request, &handlers);
+        try std.testing.expect(response.error_value != null);
+        try std.testing.expectEqual(@as(i32, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND), response.error_value.?.code);
+    }
+}
+
 test "dispatch recognized eth/debug/engine method with no handler returns -32601" {
     const handlers = dispatcher.HandlerRegistry{};
 

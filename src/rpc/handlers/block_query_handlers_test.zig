@@ -106,6 +106,45 @@ test "handleGetBlockByNumber: returns block at latest" {
     try std.testing.expect(result.block != null);
 }
 
+test "handleGetBlockByNumber: invalid selector is invalid params" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var state = try setupCtx(allocator);
+    defer state.deinit(allocator);
+
+    var ctx = state.getCtx();
+    try std.testing.expectError(
+        error.InvalidParams,
+        block_query_handlers.handleGetBlockByNumber(
+            arena.allocator(),
+            &ctx,
+            .{ .block = makeBlockSpec("not-a-selector"), .hydrated_transactions = false },
+        ),
+    );
+}
+
+test "handleGetBlockByNumber: allocator failure does not become null block" {
+    const allocator = std.testing.allocator;
+
+    var state = try setupCtx(allocator);
+    defer state.deinit(allocator);
+
+    var failing_allocator = std.testing.FailingAllocator.init(allocator, .{});
+    failing_allocator.fail_index = failing_allocator.alloc_index;
+
+    var ctx = state.getCtx();
+    try std.testing.expectError(
+        error.OutOfMemory,
+        block_query_handlers.handleGetBlockByNumber(
+            failing_allocator.allocator(),
+            &ctx,
+            .{ .block = makeBlockSpec("latest"), .hydrated_transactions = false },
+        ),
+    );
+}
+
 // ============================================================================
 // eth_getBlockByHash tests
 // ============================================================================
@@ -244,4 +283,37 @@ test "handleGetLogs: returns empty for empty chain" {
         params,
     );
     try std.testing.expectEqual(@as(usize, 0), result.logs.len);
+}
+
+test "handleGetLogs: allocator failure does not become empty logs" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var state = try setupCtx(allocator);
+    defer state.deinit(allocator);
+
+    const filter_json =
+        \\[{"fromBlock":"0x0","toBlock":"0x0","address":"0x0000000000000000000000000000000000000000"}]
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, arena.allocator(), filter_json, .{});
+    const params = try std.json.innerParseFromValue(
+        jsonrpc.eth.GetLogs.Params,
+        arena.allocator(),
+        parsed.value,
+        .{},
+    );
+
+    var failing_allocator = std.testing.FailingAllocator.init(allocator, .{});
+    failing_allocator.fail_index = failing_allocator.alloc_index;
+
+    var ctx = state.getCtx();
+    try std.testing.expectError(
+        error.OutOfMemory,
+        block_query_handlers.handleGetLogs(
+            failing_allocator.allocator(),
+            &ctx,
+            params,
+        ),
+    );
 }

@@ -102,6 +102,32 @@ test "installed dispatch wiring reaches runtime-backed eth methods" {
     try std.testing.expectEqualStrings("0x7a69", response.result.?.string);
 }
 
+test "installed dispatch wiring keeps independent runtime contexts" {
+    var rt_a = try runtime_mod.NodeRuntime.init(std.testing.allocator, .{ .chain_id = 1 });
+    defer rt_a.deinit();
+    var rt_b = try runtime_mod.NodeRuntime.init(std.testing.allocator, .{ .chain_id = 2 });
+    defer rt_b.deinit();
+
+    var handlers_a = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers_a, &rt_a);
+    var handlers_b = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers_b, &rt_b);
+
+    var request_a = try makeRequest("eth_chainId", null);
+    defer request_a.deinit(std.testing.allocator);
+    var response_a = try dispatcher.dispatch(std.testing.allocator, request_a, &handlers_a);
+    defer response_a.deinit(std.testing.allocator);
+    try std.testing.expect(response_a.error_value == null);
+    try std.testing.expectEqualStrings("0x1", response_a.result.?.string);
+
+    var request_b = try makeRequest("eth_chainId", null);
+    defer request_b.deinit(std.testing.allocator);
+    var response_b = try dispatcher.dispatch(std.testing.allocator, request_b, &handlers_b);
+    defer response_b.deinit(std.testing.allocator);
+    try std.testing.expect(response_b.error_value == null);
+    try std.testing.expectEqualStrings("0x2", response_b.result.?.string);
+}
+
 test "installed dispatch wiring reaches runtime-backed eth_feeHistory" {
     var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();
@@ -153,7 +179,7 @@ test "installed dispatch wiring returns eth_getStorageAt as 32-byte data" {
     var params = std.json.Array.init(std.testing.allocator);
     defer params.deinit();
     try params.append(.{ .string = address_text });
-    try params.append(.{ .string = "0x01" });
+    try params.append(.{ .string = "0x1" });
     try params.append(.{ .string = "latest" });
 
     var request = try makeRequest("eth_getStorageAt", .{ .array = params });
@@ -166,6 +192,33 @@ test "installed dispatch wiring returns eth_getStorageAt as 32-byte data" {
     try std.testing.expect(response.result != null);
     try std.testing.expectEqualStrings(
         "0x000000000000000000000000000000000000000000000000000000000000002a",
+        response.result.?.string,
+    );
+}
+
+test "installed dispatch wiring accepts 32-byte eth_getStorageAt slot" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    var params = std.json.Array.init(std.testing.allocator);
+    defer params.deinit();
+    try params.append(.{ .string = "0xc1cadaffffffffffffffffffffffffffffffffff" });
+    try params.append(.{ .string = "0x0100000000000000000000000000000000000000000000000000000000000000" });
+    try params.append(.{ .string = "latest" });
+
+    var request = try makeRequest("eth_getStorageAt", .{ .array = params });
+    defer request.deinit(std.testing.allocator);
+
+    var response = try dispatcher.dispatch(std.testing.allocator, request, &handlers);
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expect(response.error_value == null);
+    try std.testing.expect(response.result != null);
+    try std.testing.expectEqualStrings(
+        "0x0000000000000000000000000000000000000000000000000000000000000000",
         response.result.?.string,
     );
 }
@@ -531,6 +584,30 @@ test "light mode unsupported methods return mode unsupported after validation" {
     try expectErrorCode(&rt, "eth_call", .{ .array = params }, dispatcher.RuntimeErrorCode.MODE_UNSUPPORTED);
 }
 
+test "light mode unknown prefixed methods return method not found" {
+    var rt = try initLightRuntime(null);
+    defer rt.deinit();
+
+    const methods = [_][]const u8{
+        "zevm_noSuchMethod",
+        "dev_noSuchMethod",
+        "anvil_noSuchMethod",
+        "hardhat_noSuchMethod",
+        "evm_noSuchMethod",
+    };
+
+    for (methods) |method| {
+        try expectErrorCode(&rt, method, null, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND);
+    }
+}
+
+test "light mode known trusted controls return mode unsupported" {
+    var rt = try initLightRuntime(null);
+    defer rt.deinit();
+
+    try expectErrorCode(&rt, "zevm_setBalance", null, dispatcher.RuntimeErrorCode.MODE_UNSUPPORTED);
+}
+
 test "light mode proof reads and block number return not-ready after validation" {
     var rt = try initLightRuntime(null);
     defer rt.deinit();
@@ -752,5 +829,40 @@ test "installed dispatch wiring rejects malformed mining params" {
         try params.append(.{ .integer = 1 });
 
         try expectInvalidParamsRpc(&handlers, "anvil_mine", .{ .array = params });
+    }
+}
+
+test "installed dispatch wiring rejects non-hex and non-minimal quantities" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(validAddress());
+        try params.append(.{ .integer = 1 });
+
+        try expectInvalidParamsRpc(&handlers, "zevm_setBalance", .{ .array = params });
+    }
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(validAddress());
+        try params.append(.{ .string = "0x01" });
+
+        try expectInvalidParamsRpc(&handlers, "zevm_setBalance", .{ .array = params });
+    }
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(validAddress());
+        try params.append(.{ .integer = 1 });
+
+        try expectInvalidParamsRpc(&handlers, "eth_getBalance", .{ .array = params });
     }
 }

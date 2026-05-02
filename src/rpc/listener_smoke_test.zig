@@ -115,6 +115,51 @@ fn objectField(value: std.json.Value, key: []const u8) !std.json.Value {
     };
 }
 
+fn assertLightCheckpointStatus(checkpoint_dir: []const u8, expected_checkpoint: [32]u8) !void {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, .{
+        .mode = .light,
+        .light = .{
+            .network = .holesky,
+            .consensus_rpc_url = "http://127.0.0.1:5052",
+            .proof_rpc_url = "http://127.0.0.1:8545",
+            .advance_on_request = false,
+            .checkpoint_dir = checkpoint_dir,
+        },
+    });
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    installHandlers(&rt, &handlers);
+
+    var listener = try server.TestListener.init(std.testing.allocator, "127.0.0.1", &handlers);
+    defer listener.deinit();
+    try listener.start();
+
+    var response = try postJson(listener.address(), "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"zevm_lightSyncStatus\"}");
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(u16, 200), response.status_code);
+
+    const parsed = try parseBody(response.body);
+    defer parsed.deinit();
+
+    const result = try objectField(parsed.value, "result");
+    try std.testing.expectEqualStrings("syncing", (try objectField(result, "status")).string);
+    try std.testing.expectEqual(false, (try objectField(result, "ready")).bool);
+    try std.testing.expectEqualStrings("holesky", (try objectField(result, "network")).string);
+    try std.testing.expectEqualStrings("persisted", (try objectField(result, "checkpointSource")).string);
+
+    const expected_hex = std.fmt.bytesToHex(expected_checkpoint, .lower);
+    var expected_prefixed: [66]u8 = undefined;
+    expected_prefixed[0] = '0';
+    expected_prefixed[1] = 'x';
+    @memcpy(expected_prefixed[2..], expected_hex[0..]);
+    try std.testing.expectEqualStrings(
+        expected_prefixed[0..],
+        (try objectField(result, "lastCheckpoint")).string,
+    );
+}
+
 test "trusted mode serves JSON-RPC over a real TCP listener" {
     var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, .{});
     defer rt.deinit();
@@ -156,7 +201,7 @@ test "trusted mode returns 204 for a notification over a real TCP listener" {
     try std.testing.expectEqual(@as(usize, 0), response.body.len);
 }
 
-test "light mode serves persisted checkpoint status over a real TCP listener" {
+test "light mode restarts from persisted checkpoint over a real TCP listener" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
@@ -166,40 +211,6 @@ test "light mode serves persisted checkpoint status over a real TCP listener" {
     const persisted_checkpoint = [_]u8{0xab} ** 32;
     try checkpoint.saveCheckpoint(std.testing.allocator, checkpoint_dir, persisted_checkpoint);
 
-    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, .{
-        .mode = .light,
-        .light = .{
-            .network = .holesky,
-            .consensus_rpc_url = "http://127.0.0.1:5052",
-            .proof_rpc_url = "http://127.0.0.1:8545",
-            .advance_on_request = false,
-            .checkpoint_dir = checkpoint_dir,
-        },
-    });
-    defer rt.deinit();
-
-    var handlers = dispatcher.HandlerRegistry{};
-    installHandlers(&rt, &handlers);
-
-    var listener = try server.TestListener.init(std.testing.allocator, "127.0.0.1", &handlers);
-    defer listener.deinit();
-    try listener.start();
-
-    var response = try postJson(listener.address(), "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"zevm_lightSyncStatus\"}");
-    defer response.deinit(std.testing.allocator);
-
-    try std.testing.expectEqual(@as(u16, 200), response.status_code);
-
-    const parsed = try parseBody(response.body);
-    defer parsed.deinit();
-
-    const result = try objectField(parsed.value, "result");
-    try std.testing.expectEqualStrings("syncing", (try objectField(result, "status")).string);
-    try std.testing.expectEqual(false, (try objectField(result, "ready")).bool);
-    try std.testing.expectEqualStrings("holesky", (try objectField(result, "network")).string);
-    try std.testing.expectEqualStrings("persisted", (try objectField(result, "checkpointSource")).string);
-    try std.testing.expectEqualStrings(
-        "0xabababababababababababababababababababababababababababababababab",
-        (try objectField(result, "lastCheckpoint")).string,
-    );
+    try assertLightCheckpointStatus(checkpoint_dir, persisted_checkpoint);
+    try assertLightCheckpointStatus(checkpoint_dir, persisted_checkpoint);
 }

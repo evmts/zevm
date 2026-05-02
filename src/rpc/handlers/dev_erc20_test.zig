@@ -41,7 +41,7 @@ test "allowanceSlot matches OpenZeppelin nested mapping slot 1" {
     try std.testing.expectEqual(expected, dev_erc20.allowanceSlot(owner, spender));
 }
 
-test "handleSetERC20Balance writes holder balance storage" {
+test "handleDealErc20 writes holder balance storage" {
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();
 
@@ -55,7 +55,7 @@ test "handleSetERC20Balance writes holder balance storage" {
     try args.append(.{ .string = holder_text });
     try args.append(.{ .string = "0x1234" });
 
-    const result = try dev_erc20.handleSetERC20Balance(&rt, .{ .array = args });
+    const result = try dev_erc20.handleDealErc20(&rt, .{ .array = args });
     try std.testing.expect(result.bool);
 
     const token = try parseAddress(token_text);
@@ -63,7 +63,7 @@ test "handleSetERC20Balance writes holder balance storage" {
     try std.testing.expectEqual(value, try rt.getStorage(token, dev_erc20.balanceSlot(holder)));
 }
 
-test "handleSetERC20Allowance writes owner spender allowance storage" {
+test "handleSetErc20Allowance writes owner spender allowance storage" {
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();
 
@@ -79,7 +79,7 @@ test "handleSetERC20Allowance writes owner spender allowance storage" {
     try args.append(.{ .string = spender_text });
     try args.append(.{ .string = "0x4567" });
 
-    const result = try dev_erc20.handleSetERC20Allowance(&rt, .{ .array = args });
+    const result = try dev_erc20.handleSetErc20Allowance(&rt, .{ .array = args });
     try std.testing.expect(result.bool);
 
     const token = try parseAddress(token_text);
@@ -110,7 +110,7 @@ test "dispatch wiring accepts ERC20 balance and allowance aliases" {
     try balance_args.append(.{ .string = holder_text });
     try balance_args.append(.{ .string = "0x55" });
 
-    var balance_request = try makeRequest("hardhat_setERC20Balance", .{ .array = balance_args });
+    var balance_request = try makeRequest("zevm_dealErc20", .{ .array = balance_args });
     defer balance_request.deinit(std.testing.allocator);
 
     var balance_response = try dispatcher.dispatch(std.testing.allocator, balance_request, &handlers);
@@ -127,7 +127,7 @@ test "dispatch wiring accepts ERC20 balance and allowance aliases" {
     try allowance_args.append(.{ .string = spender_text });
     try allowance_args.append(.{ .string = "0x66" });
 
-    var allowance_request = try makeRequest("anvil_setERC20Allowance", .{ .array = allowance_args });
+    var allowance_request = try makeRequest("anvil_setErc20Allowance", .{ .array = allowance_args });
     defer allowance_request.deinit(std.testing.allocator);
 
     var allowance_response = try dispatcher.dispatch(std.testing.allocator, allowance_request, &handlers);
@@ -136,4 +136,32 @@ test "dispatch wiring accepts ERC20 balance and allowance aliases" {
     try std.testing.expect(allowance_response.error_value == null);
     try std.testing.expect(allowance_response.result.?.bool);
     try std.testing.expectEqual(@as(u256, 0x66), try rt.getStorage(token, dev_erc20.allowanceSlot(owner, spender)));
+}
+
+test "dispatch wiring rejects non-canonical ERC20 helper names" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    const methods = [_][]const u8{
+        "zevm_setERC20Balance",
+        "anvil_setERC20Balance",
+        "hardhat_setERC20Balance",
+        "zevm_setERC20Allowance",
+        "anvil_setERC20Allowance",
+        "hardhat_setERC20Allowance",
+    };
+
+    for (methods) |method| {
+        var request = try makeRequest(method, null);
+        defer request.deinit(std.testing.allocator);
+
+        var response = try dispatcher.dispatch(std.testing.allocator, request, &handlers);
+        defer response.deinit(std.testing.allocator);
+
+        try std.testing.expect(response.error_value != null);
+        try std.testing.expectEqual(@as(i32, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND), response.error_value.?.code);
+    }
 }

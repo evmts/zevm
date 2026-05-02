@@ -3,6 +3,7 @@
 const std = @import("std");
 const jsonrpc = @import("jsonrpc");
 const primitives = @import("primitives");
+const rpc_parse = @import("parse.zig");
 const dispatcher_mod = @import("dispatcher.zig");
 const block_query_handlers = @import("handlers/block_query_handlers.zig");
 const eth_read = @import("handlers/eth_read.zig");
@@ -13,11 +14,9 @@ const tx_submission = @import("handlers/tx_submission.zig");
 const txpool_handlers = @import("handlers/txpool.zig");
 const dev_erc20_handlers = @import("handlers/dev_erc20.zig");
 
-var runtime_ptr: ?*runtime_mod.NodeRuntime = null;
-
 pub fn install(registry: *dispatcher_mod.HandlerRegistry, rt: *runtime_mod.NodeRuntime) void {
-    runtime_ptr = rt;
-    registry.on_method = dispatchMethod;
+    registry.context = rt;
+    registry.on_method_with_context = dispatchMethod;
 }
 
 fn putOwnedJson(
@@ -39,11 +38,12 @@ fn parseSendTransactionParams(params: ?std.json.Value) !jsonrpc.eth.SendTransact
 }
 
 fn dispatchMethod(
+    context: ?*anyopaque,
     allocator: std.mem.Allocator,
     method_name: []const u8,
     params: ?std.json.Value,
 ) anyerror!std.json.Value {
-    const rt = runtime_ptr orelse return error.MethodNotFound;
+    const rt: *runtime_mod.NodeRuntime = @ptrCast(@alignCast(context orelse return error.MethodNotFound));
 
     if (rt.mode == .light) {
         return dispatchLightMethod(allocator, rt, method_name, params);
@@ -314,11 +314,11 @@ fn dispatchMethod(
         try rt.setStorage(args.address, args.slot, args.value);
         return .{ .bool = true };
     }
-    if (methodIs(method_name, &.{ "zevm_setERC20Balance", "anvil_setERC20Balance", "hardhat_setERC20Balance" })) {
-        return dev_erc20_handlers.handleSetERC20Balance(rt, params);
+    if (methodIs(method_name, &.{ "zevm_dealErc20", "anvil_dealErc20" })) {
+        return dev_erc20_handlers.handleDealErc20(rt, params);
     }
-    if (methodIs(method_name, &.{ "zevm_setERC20Allowance", "anvil_setERC20Allowance", "hardhat_setERC20Allowance" })) {
-        return dev_erc20_handlers.handleSetERC20Allowance(rt, params);
+    if (methodIs(method_name, &.{ "zevm_setErc20Allowance", "anvil_setErc20Allowance" })) {
+        return dev_erc20_handlers.handleSetErc20Allowance(rt, params);
     }
     if (methodIs(method_name, &.{ "zevm_setCoinbase", "anvil_setCoinbase", "hardhat_setCoinbase" })) {
         const items = try paramsArrayItems(params);
@@ -470,14 +470,7 @@ fn lightStatusText(status: @import("../consensus_sync.zig").SyncStatus) []const 
     };
 }
 
-const LightBlockSelector = union(enum) {
-    latest,
-    earliest,
-    pending,
-    safe,
-    finalized,
-    number: u64,
-};
+const LightBlockSelector = rpc_parse.LightBlockSelector;
 
 const LightAddrBlockArgs = struct {
     address: primitives.Address,
@@ -575,17 +568,7 @@ fn parseLightStorageArgs(params: ?std.json.Value) !LightStorageArgs {
 }
 
 fn parseLightBlockSelectorJson(value: std.json.Value) !LightBlockSelector {
-    const text = switch (value) {
-        .string => |str| str,
-        else => return error.InvalidParams,
-    };
-    if (std.mem.eql(u8, text, "latest")) return .latest;
-    if (std.mem.eql(u8, text, "earliest")) return .earliest;
-    if (std.mem.eql(u8, text, "pending")) return .pending;
-    if (std.mem.eql(u8, text, "safe")) return .safe;
-    if (std.mem.eql(u8, text, "finalized")) return .finalized;
-    if (isQuantityHex(text)) return .{ .number = try parseU64String(text) };
-    return error.InvalidParams;
+    return rpc_parse.parseLightBlockSelectorValue(value);
 }
 
 fn validateNoParams(params: ?std.json.Value) !void {
@@ -599,14 +582,6 @@ fn validateNoParams(params: ?std.json.Value) !void {
 
 fn isLightModeUnsupportedMethod(method_name: []const u8) bool {
     if (std.mem.eql(u8, method_name, "zevm_lightSyncStatus")) return false;
-    if (std.mem.startsWith(u8, method_name, "zevm_") or
-        std.mem.startsWith(u8, method_name, "dev_") or
-        std.mem.startsWith(u8, method_name, "anvil_") or
-        std.mem.startsWith(u8, method_name, "hardhat_") or
-        std.mem.startsWith(u8, method_name, "evm_"))
-    {
-        return true;
-    }
     return methodIs(method_name, &.{
         "web3_clientVersion",
         "web3_sha3",
@@ -639,6 +614,77 @@ fn isLightModeUnsupportedMethod(method_name: []const u8) bool {
         "txpool_content",
         "txpool_status",
         "txpool_inspect",
+        "zevm_reset",
+        "anvil_reset",
+        "hardhat_reset",
+        "zevm_setRpcUrl",
+        "anvil_setRpcUrl",
+        "zevm_setBalance",
+        "anvil_setBalance",
+        "hardhat_setBalance",
+        "zevm_setNonce",
+        "anvil_setNonce",
+        "hardhat_setNonce",
+        "zevm_setCode",
+        "anvil_setCode",
+        "hardhat_setCode",
+        "zevm_setStorageAt",
+        "anvil_setStorageAt",
+        "hardhat_setStorageAt",
+        "zevm_dealErc20",
+        "anvil_dealErc20",
+        "zevm_setErc20Allowance",
+        "anvil_setErc20Allowance",
+        "zevm_setCoinbase",
+        "anvil_setCoinbase",
+        "hardhat_setCoinbase",
+        "zevm_setBlockGasLimit",
+        "anvil_setBlockGasLimit",
+        "hardhat_setBlockGasLimit",
+        "evm_setBlockGasLimit",
+        "zevm_setNextBlockBaseFeePerGas",
+        "anvil_setNextBlockBaseFeePerGas",
+        "hardhat_setNextBlockBaseFeePerGas",
+        "zevm_setBlobBaseFee",
+        "anvil_setBlobBaseFee",
+        "hardhat_setBlobBaseFee",
+        "zevm_impersonateAccount",
+        "anvil_impersonateAccount",
+        "hardhat_impersonateAccount",
+        "zevm_stopImpersonatingAccount",
+        "anvil_stopImpersonatingAccount",
+        "hardhat_stopImpersonatingAccount",
+        "zevm_setAutoImpersonateAccount",
+        "anvil_setAutoImpersonateAccount",
+        "hardhat_setAutoImpersonateAccount",
+        "zevm_autoImpersonateAccount",
+        "anvil_autoImpersonateAccount",
+        "zevm_increaseTime",
+        "anvil_increaseTime",
+        "evm_increaseTime",
+        "zevm_setTime",
+        "anvil_setTime",
+        "evm_setTime",
+        "zevm_setNextBlockTimestamp",
+        "anvil_setNextBlockTimestamp",
+        "evm_setNextBlockTimestamp",
+        "hardhat_setNextBlockTimestamp",
+        "zevm_snapshot",
+        "anvil_snapshot",
+        "evm_snapshot",
+        "zevm_revert",
+        "anvil_revert",
+        "evm_revert",
+        "zevm_mine",
+        "anvil_mine",
+        "evm_mine",
+        "hardhat_mine",
+        "zevm_setAutomine",
+        "anvil_setAutomine",
+        "evm_setAutomine",
+        "zevm_setIntervalMining",
+        "anvil_setIntervalMining",
+        "evm_setIntervalMining",
     });
 }
 
@@ -817,22 +863,11 @@ fn validateHash32Json(value: std.json.Value) !void {
 }
 
 fn validateHexData(text: []const u8) !void {
-    if (!hasHexPrefix(text)) return error.InvalidParams;
-    const hex = text[2..];
-    if (hex.len % 2 != 0) return error.InvalidParams;
-    var index: usize = 0;
-    while (index < hex.len) : (index += 1) {
-        _ = std.fmt.charToDigit(hex[index], 16) catch return error.InvalidParams;
-    }
+    return rpc_parse.validateHexData(text);
 }
 
 fn isHash32(text: []const u8) bool {
-    if (!hasHexPrefix(text)) return false;
-    if (text.len != 66) return false;
-    for (text[2..]) |c| {
-        _ = std.fmt.charToDigit(c, 16) catch return false;
-    }
-    return true;
+    return rpc_parse.isHash32(text);
 }
 
 const AddrBlockArgs = struct {
@@ -871,11 +906,7 @@ const MineArgs = struct {
 };
 
 fn paramsArrayItems(params: ?std.json.Value) ![]const std.json.Value {
-    const value = params orelse return error.InvalidParams;
-    return switch (value) {
-        .array => |array| array.items,
-        else => error.InvalidParams,
-    };
+    return rpc_parse.paramsArrayItems(params);
 }
 
 fn parseAddrAndBlockArgs(params: ?std.json.Value) !AddrBlockArgs {
@@ -891,7 +922,7 @@ fn parseStorageArgs(params: ?std.json.Value) !StorageArgs {
     try validateBlockSpecJson(items[2]);
     return .{
         .address = try parseAddressJson(items[0]),
-        .slot = try parseU256Json(items[1]),
+        .slot = try parseStorageSlotJson(items[1]),
     };
 }
 
@@ -931,7 +962,7 @@ fn parseSetStorageArgs(params: ?std.json.Value) !StorageSetArgs {
     if (items.len != 3) return error.InvalidParams;
     return .{
         .address = try parseAddressJson(items[0]),
-        .slot = try parseU256Json(items[1]),
+        .slot = try parseStorageSlotJson(items[1]),
         .value = try parseU256Json(items[2]),
     };
 }
@@ -1120,14 +1151,7 @@ fn parseGetLogsParams(params: ?std.json.Value) !jsonrpc.eth.GetLogs.Params {
 
 fn parseHashJson(allocator: std.mem.Allocator, value: std.json.Value) !jsonrpc.types.Hash {
     _ = allocator;
-    const text = switch (value) {
-        .string => |s| s,
-        else => return error.InvalidParams,
-    };
-    if (!isHash32(text)) return error.InvalidParams;
-    var bytes: [32]u8 = undefined;
-    _ = std.fmt.hexToBytes(&bytes, text[2..]) catch return error.InvalidParams;
-    return .{ .bytes = bytes };
+    return rpc_parse.parseJsonRpcHash32Value(value);
 }
 
 fn parseBoolJson(value: std.json.Value) !bool {
@@ -1138,16 +1162,11 @@ fn parseBoolJson(value: std.json.Value) !bool {
 }
 
 fn validateTrustedBlockSelectorValue(value: std.json.Value) !void {
-    switch (value) {
-        .integer => |n| if (n < 0) return error.InvalidParams,
-        .string => |s| if (!isTrustedBlockSelectorString(s)) return error.InvalidParams,
-        else => return error.InvalidParams,
-    }
+    return rpc_parse.validateTrustedBlockSelectorValue(value);
 }
 
 fn validateReceiptSelectorValue(value: std.json.Value) !void {
     switch (value) {
-        .integer => |n| if (n < 0) return error.InvalidParams,
         .string => |s| {
             if (!isTrustedBlockSelectorString(s) and !isHashString(s)) return error.InvalidParams;
         },
@@ -1156,126 +1175,76 @@ fn validateReceiptSelectorValue(value: std.json.Value) !void {
 }
 
 fn validateQuantityValue(value: std.json.Value) !void {
-    switch (value) {
-        .integer => |n| if (n < 0) return error.InvalidParams,
-        .string => |s| {
-            if (!isQuantityHex(s)) return error.InvalidParams;
-            _ = std.fmt.parseInt(u64, s[2..], 16) catch return error.InvalidParams;
-        },
-        else => return error.InvalidParams,
-    }
+    _ = try rpc_parse.parseQuantityValue(u64, value);
 }
 
 fn validateHexDataValue(value: std.json.Value) !void {
-    const text = switch (value) {
-        .string => |s| s,
-        else => return error.InvalidParams,
-    };
-    if (!hasHexPrefix(text)) return error.InvalidParams;
-    const hex = text[2..];
-    if (hex.len % 2 != 0) return error.InvalidParams;
-    var index: usize = 0;
-    while (index < hex.len) : (index += 1) {
-        _ = std.fmt.charToDigit(hex[index], 16) catch return error.InvalidParams;
-    }
+    return rpc_parse.validateHexDataValue(value);
 }
 
 fn isTrustedBlockSelectorString(text: []const u8) bool {
-    return std.mem.eql(u8, text, "latest") or
-        std.mem.eql(u8, text, "earliest") or
-        std.mem.eql(u8, text, "pending") or
-        std.mem.eql(u8, text, "safe") or
-        std.mem.eql(u8, text, "finalized") or
-        isQuantityHex(text);
+    return rpc_parse.isTrustedBlockSelectorString(text);
 }
 
 fn isHashString(text: []const u8) bool {
-    if (text.len != 66 or !hasHexPrefix(text)) return false;
-    var index: usize = 2;
-    while (index < text.len) : (index += 1) {
-        _ = std.fmt.charToDigit(text[index], 16) catch return false;
-    }
-    return true;
+    return rpc_parse.isHash32(text);
 }
 
 fn validateBlockSpecJson(value: std.json.Value) !void {
-    switch (value) {
-        .string => {},
-        .integer => |n| if (n < 0) return error.InvalidParams,
-        else => return error.InvalidParams,
-    }
+    return rpc_parse.validateTrustedBlockSelectorValue(value);
 }
 
 fn parseAddressJson(value: std.json.Value) !primitives.Address {
-    return switch (value) {
-        .string => |s| parseAddressString(s),
-        else => error.InvalidParams,
-    };
+    return rpc_parse.parseAddressValue(value);
 }
 
 fn parseAddressString(text: []const u8) !primitives.Address {
-    if (!hasHexPrefix(text)) return error.InvalidParams;
-    const hex = text[2..];
-    if (hex.len != 40) return error.InvalidParams;
-    var bytes: [20]u8 = undefined;
-    _ = std.fmt.hexToBytes(&bytes, hex) catch return error.InvalidParams;
-    return .{ .bytes = bytes };
+    return rpc_parse.parseAddressString(text);
 }
 
 fn parseU64Json(value: std.json.Value) !u64 {
-    return switch (value) {
-        .integer => |n| if (n < 0) error.InvalidParams else @intCast(n),
-        .string => |s| parseU64String(s),
-        else => error.InvalidParams,
-    };
+    return rpc_parse.parseQuantityValue(u64, value);
 }
 
 fn parseQuantityU64Json(value: std.json.Value) !u64 {
-    return switch (value) {
-        .string => |s| parseU64String(s),
-        else => error.InvalidParams,
-    };
+    return rpc_parse.parseQuantityValue(u64, value);
 }
 
 fn parseU64String(text: []const u8) !u64 {
-    if (!isQuantityHex(text)) return error.InvalidParams;
-    return std.fmt.parseInt(u64, text[2..], 16) catch error.InvalidParams;
+    return rpc_parse.parseQuantityString(u64, text);
 }
 
 fn parseU256Json(value: std.json.Value) !u256 {
-    return switch (value) {
-        .integer => |n| if (n < 0) error.InvalidParams else @intCast(n),
-        .string => |s| parseU256String(s),
-        else => error.InvalidParams,
-    };
+    return rpc_parse.parseQuantityValue(u256, value);
+}
+
+fn parseStorageSlotJson(value: std.json.Value) !u256 {
+    switch (value) {
+        .string => |text| {
+            if (rpc_parse.isHash32(text)) {
+                const bytes = try rpc_parse.parseHash32String(text);
+                return std.mem.readInt(u256, &bytes, .big);
+            }
+        },
+        else => {},
+    }
+    return parseU256Json(value);
 }
 
 fn parseU256String(text: []const u8) !u256 {
-    if (!isQuantityHex(text)) return error.InvalidParams;
-    return std.fmt.parseInt(u256, text[2..], 16) catch error.InvalidParams;
+    return rpc_parse.parseQuantityString(u256, text);
 }
 
 fn hexStringToBytes(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
-    var hex = text;
-    if (hex.len >= 2 and hex[0] == '0' and (hex[1] == 'x' or hex[1] == 'X')) {
-        hex = hex[2..];
-    }
-    if (hex.len == 0) return try allocator.alloc(u8, 0);
-    if (hex.len % 2 != 0) return error.InvalidParams;
-    const out = try allocator.alloc(u8, hex.len / 2);
-    _ = std.fmt.hexToBytes(out, hex) catch {
-        allocator.free(out);
-        return error.InvalidParams;
-    };
-    return out;
+    return rpc_parse.parseHexDataBytes(allocator, .{ .string = text });
 }
 
 fn hasHexPrefix(text: []const u8) bool {
-    return text.len >= 2 and text[0] == '0' and (text[1] == 'x' or text[1] == 'X');
+    return rpc_parse.hasHexPrefix(text);
 }
 
 fn isQuantityHex(text: []const u8) bool {
-    return text.len > 2 and hasHexPrefix(text);
+    return rpc_parse.isQuantityHex(text);
 }
 
 fn hexQuantity(allocator: std.mem.Allocator, n: u64) !std.json.Value {
