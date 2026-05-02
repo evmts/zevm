@@ -42,6 +42,15 @@ fn blockContextWithGasLimit(limit: u64) guillotine_mini.BlockContext {
     };
 }
 
+fn balanceProbeBytecode(address: primitives.Address) [23]u8 {
+    var code: [23]u8 = undefined;
+    code[0] = 0x73; // PUSH20
+    @memcpy(code[1..21], &address.bytes);
+    code[21] = 0x31; // BALANCE
+    code[22] = 0x00; // STOP
+    return code;
+}
+
 test "buildBlock enforces block gas limit" {
     var sm = try state_manager.StateManager.init(std.testing.allocator, null);
     defer sm.deinit();
@@ -144,6 +153,48 @@ test "buildBlock rejects invalid included tx and reverts block state" {
 
     try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(sender));
     try std.testing.expectEqual(@as(u256, 0), try sm.getBalance(recipient));
+}
+
+test "buildBlock aborts and reverts when EVM host read records an error" {
+    var fork_backend = try state_manager.ForkBackend.init(std.testing.allocator, "latest", .{});
+    defer fork_backend.deinit();
+
+    var sm = try state_manager.StateManager.init(std.testing.allocator, &fork_backend);
+    defer sm.deinit();
+
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    const host = adapter.hostInterface();
+
+    const sender = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
+    const contract = primitives.Address{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 19 };
+    const remote = primitives.Address{ .bytes = [_]u8{0x99} ++ [_]u8{0} ** 19 };
+    const code = balanceProbeBytecode(remote);
+
+    try sm.initAccount(sender, 0);
+    try sm.setCode(sender, &[_]u8{});
+    try sm.setCode(contract, &code);
+
+    const txs = [_]tx_processor.ExecutionTx{.{
+        .caller = sender,
+        .tx = makeLegacyTx(.{
+            .to = contract,
+            .value = 0,
+            .data = &[_]u8{},
+            .gas_limit = 100_000,
+            .gas_price = 0,
+            .nonce = 0,
+        }),
+    }};
+
+    try std.testing.expectError(tx_processor.TxError.StateError, block_builder.buildBlock(
+        std.testing.allocator,
+        &sm,
+        host,
+        &txs,
+        blockContextWithGasLimit(30_000_000),
+    ));
+    try std.testing.expectEqual(@as(?host_adapter.HostAdapter.HostError, null), adapter.getHostError());
+    try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(sender));
 }
 
 test "buildBlockWithOptions consumes dev block environment overrides once" {

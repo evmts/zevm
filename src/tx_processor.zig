@@ -2,6 +2,7 @@ const std = @import("std");
 const primitives = @import("primitives");
 const state_manager = @import("state-manager");
 const guillotine_mini = @import("guillotine_mini");
+const host_adapter = @import("host_adapter.zig");
 const tx_encoding = @import("transaction_encoding.zig");
 const INTRINSIC_GAS: u64 = 21_000;
 const CALLDATA_ZERO_BYTE_GAS: u64 = 4;
@@ -139,6 +140,19 @@ fn computeLegacyTxHash(
     return tx_encoding.transactionHash(encoded);
 }
 
+fn hostErrorToTxError(host_error: host_adapter.HostAdapter.HostError) TxError {
+    return switch (host_error) {
+        .out_of_memory => TxError.OutOfMemory,
+        else => TxError.StateError,
+    };
+}
+
+fn consumeHostError(adapter: ?*host_adapter.HostAdapter) TxError!void {
+    if (adapter) |a| {
+        if (a.takeHostError()) |host_error| return hostErrorToTxError(host_error);
+    }
+}
+
 /// Processes a single transaction against the state.
 ///
 /// Gas deduction and nonce increment persist regardless of EVM outcome.
@@ -172,6 +186,9 @@ pub fn processTransactionWithOptions(
     block_ctx: guillotine_mini.BlockContext,
     options: ProcessTransactionOptions,
 ) TxError!primitives.Receipt.Receipt {
+    const adapter = host_adapter.HostAdapter.fromHostInterface(host_iface);
+    if (adapter) |a| a.clearHostError();
+
     const hardfork = options.hardfork_override orelse resolveHardfork(block_ctx);
     if (!transactionTypeSupported(options.receipt_type, hardfork)) return TxError.UnsupportedTransactionType;
     if (tx.gas_limit > block_ctx.block_gas_limit) return TxError.BlockGasLimitExceeded;
@@ -209,10 +226,16 @@ pub fn processTransactionWithOptions(
     const balance = sm.getBalance(caller) catch return TxError.StateError;
     if (balance < total_cost) return TxError.InsufficientBalance;
 
+    sm.checkpoint() catch return TxError.StateError;
+    var transaction_checkpoint_open = true;
+    errdefer if (transaction_checkpoint_open) sm.revert();
+
     sm.setBalance(caller, balance - max_gas_cost) catch return TxError.StateError;
     sm.setNonce(caller, current_nonce + 1) catch return TxError.StateError;
 
     sm.checkpoint() catch return TxError.StateError;
+    var evm_checkpoint_open = true;
+    errdefer if (evm_checkpoint_open) sm.revert();
 
     const execution_gas = tx.gas_limit - intrinsic;
 
@@ -228,12 +251,10 @@ pub fn processTransactionWithOptions(
             effective_gas_price,
             null,
         ) catch {
-            sm.revert();
             return TxError.EvmInitError;
         };
         defer evm.deinit();
         evm.initTransactionState(null) catch {
-            sm.revert();
             return TxError.EvmInitError;
         };
 
@@ -269,11 +290,14 @@ pub fn processTransactionWithOptions(
     };
     defer result.deinit(allocator);
 
+    try consumeHostError(adapter);
+
     if (result.success) {
         sm.commit();
     } else {
         sm.revert();
     }
+    evm_checkpoint_open = false;
 
     const gas_consumed = if (result.gas_left > execution_gas) 0 else execution_gas - result.gas_left;
     const total_gas_used = intrinsic + gas_consumed;
@@ -305,7 +329,7 @@ pub fn processTransactionWithOptions(
 
     const tx_hash = try computeLegacyTxHash(allocator, tx);
 
-    return primitives.Receipt.Receipt{
+    const receipt = primitives.Receipt.Receipt{
         .transaction_hash = tx_hash,
         .transaction_index = 0,
         .block_hash = primitives.Hash.ZERO,
@@ -324,4 +348,9 @@ pub fn processTransactionWithOptions(
         .blob_gas_used = null,
         .blob_gas_price = null,
     };
+
+    sm.commit();
+    transaction_checkpoint_open = false;
+
+    return receipt;
 }

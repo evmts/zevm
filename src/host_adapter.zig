@@ -35,6 +35,7 @@ pub const HostAdapter = struct {
         .setStorage = setStorageVTable,
         .getNonce = getNonceVTable,
         .setNonce = setNonceVTable,
+        .accountExists = accountExistsVTable,
         .deleteAccount = deleteAccountVTable,
     };
 
@@ -43,6 +44,11 @@ pub const HostAdapter = struct {
             .ptr = @ptrCast(self),
             .vtable = &vtable,
         };
+    }
+
+    pub fn fromHostInterface(host_iface: guillotine_mini.HostInterface) ?*HostAdapter {
+        if (host_iface.vtable != &vtable) return null;
+        return @ptrCast(@alignCast(host_iface.ptr));
     }
 
     pub fn getHostError(self: *const HostAdapter) ?HostError {
@@ -176,6 +182,14 @@ pub const HostAdapter = struct {
         const self: *HostAdapter = @ptrCast(@alignCast(ptr));
         self.state.setNonce(address, nonce) catch |err| {
             self.recordError(mapStateWriteError(err));
+        };
+    }
+
+    fn accountExistsVTable(ptr: *anyopaque, address: primitives.Address) bool {
+        const self: *HostAdapter = @ptrCast(@alignCast(ptr));
+        return self.accountExists(address) catch |err| {
+            self.recordError(mapStateReadError(err));
+            return false;
         };
     }
 

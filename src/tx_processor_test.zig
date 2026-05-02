@@ -41,6 +41,15 @@ fn defaultBlockContext() guillotine_mini.BlockContext {
     };
 }
 
+fn balanceProbeBytecode(address: primitives.Address) [23]u8 {
+    var code: [23]u8 = undefined;
+    code[0] = 0x73; // PUSH20
+    @memcpy(code[1..21], &address.bytes);
+    code[21] = 0x31; // BALANCE
+    code[22] = 0x00; // STOP
+    return code;
+}
+
 test "intrinsic gas calculation" {
     try std.testing.expectEqual(@as(u64, 21_000), tx_processor.intrinsicGas(&[_]u8{}, false));
     try std.testing.expectEqual(@as(u64, 21_000 + 32_000), tx_processor.intrinsicGas(&[_]u8{}, true));
@@ -166,6 +175,45 @@ test "precompile call executes even with empty input" {
 
     try std.testing.expect(receipt.status.?.success);
     try std.testing.expect(receipt.gas_used > @as(u256, 21_000));
+}
+
+test "processTransaction aborts when EVM host read records an error" {
+    var fork_backend = try state_manager.ForkBackend.init(std.testing.allocator, "latest", .{});
+    defer fork_backend.deinit();
+
+    var sm = try state_manager.StateManager.init(std.testing.allocator, &fork_backend);
+    defer sm.deinit();
+
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+
+    const sender = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
+    const contract = primitives.Address{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 19 };
+    const remote = primitives.Address{ .bytes = [_]u8{0x99} ++ [_]u8{0} ** 19 };
+    const code = balanceProbeBytecode(remote);
+
+    try sm.initAccount(sender, 0);
+    try sm.setCode(sender, &[_]u8{});
+    try sm.setCode(contract, &code);
+
+    const result = tx_processor.processTransaction(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        sender,
+        makeLegacyTx(.{
+            .to = contract,
+            .value = 0,
+            .data = &[_]u8{},
+            .gas_limit = 100_000,
+            .gas_price = 0,
+            .nonce = 0,
+        }),
+        defaultBlockContext(),
+    );
+
+    try std.testing.expectError(tx_processor.TxError.StateError, result);
+    try std.testing.expectEqual(@as(?host_adapter.HostAdapter.HostError, null), adapter.getHostError());
+    try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(sender));
 }
 
 test "reject wrong nonce" {
