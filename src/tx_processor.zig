@@ -2,6 +2,7 @@ const std = @import("std");
 const primitives = @import("primitives");
 const state_manager = @import("state-manager");
 const guillotine_mini = @import("guillotine_mini");
+const tx_encoding = @import("transaction_encoding.zig");
 const INTRINSIC_GAS: u64 = 21_000;
 const CALLDATA_ZERO_BYTE_GAS: u64 = 4;
 const CALLDATA_NONZERO_BYTE_GAS: u64 = 16;
@@ -132,13 +133,10 @@ fn allocateEventLogs(
 fn computeLegacyTxHash(
     allocator: std.mem.Allocator,
     tx: primitives.Transaction.LegacyTransaction,
-    chain_id: u64,
 ) TxError!primitives.Hash.Hash {
-    const encoded = primitives.Transaction.encodeLegacyForSigning(allocator, tx, chain_id) catch return TxError.OutOfMemory;
+    const encoded = tx_encoding.encodeLegacyTransactionEnvelope(allocator, tx) catch return TxError.OutOfMemory;
     defer allocator.free(encoded);
-    var out: primitives.Hash.Hash = undefined;
-    std.crypto.hash.sha3.Keccak256.hash(encoded, &out, .{});
-    return out;
+    return tx_encoding.transactionHash(encoded);
 }
 
 /// Processes a single transaction against the state.
@@ -305,7 +303,7 @@ pub fn processTransactionWithOptions(
     var logs_bloom: [256]u8 = undefined;
     @memset(&logs_bloom, 0);
 
-    const tx_hash = try computeLegacyTxHash(allocator, tx, @as(u64, @intCast(block_ctx.chain_id)));
+    const tx_hash = try computeLegacyTxHash(allocator, tx);
 
     return primitives.Receipt.Receipt{
         .transaction_hash = tx_hash,

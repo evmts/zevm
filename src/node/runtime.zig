@@ -14,6 +14,7 @@ const log_index_mod = @import("../log_index.zig");
 const checkpoint = @import("../checkpoint.zig");
 const consensus_sync = @import("../consensus_sync.zig");
 const light_proof = @import("../light_proof.zig");
+const tx_encoding = @import("../transaction_encoding.zig");
 const log = @import("../log.zig");
 const guillotine_mini = @import("guillotine_mini");
 
@@ -1089,10 +1090,9 @@ pub const NodeRuntime = struct {
             const raw = if (pooled.raw.len > 0)
                 try self.allocator.dupe(u8, pooled.raw)
             else
-                try primitives.Transaction.encodeLegacyForSigning(
+                try tx_encoding.encodeLegacyTransactionEnvelope(
                     self.allocator,
                     NodeRuntime.executionTransactionFromPooled(pooled).tx,
-                    self.chain_id,
                 );
             transactions[out_index] = .{ .raw = raw };
             initialized += 1;

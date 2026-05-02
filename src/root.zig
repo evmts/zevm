@@ -13,6 +13,7 @@ pub const database = @import("database/root.zig");
 pub const blockchain = @import("blockchain");
 pub const host_adapter = @import("host_adapter.zig");
 pub const tx_processor = @import("tx_processor.zig");
+pub const transaction_encoding = @import("transaction_encoding.zig");
 pub const block_builder = @import("block_builder.zig");
 pub const consensus_verifier = @import("consensus_verifier.zig");
 pub const beacon_api = @import("beacon_api.zig");
@@ -31,6 +32,7 @@ test {
     _ = @import("log.zig");
     _ = @import("database/root.zig");
     _ = @import("host_adapter_test.zig");
+    _ = @import("transaction_encoding.zig");
     _ = @import("tx_processor_test.zig");
     _ = @import("block_builder_test.zig");
     _ = @import("consensus_verifier_test.zig");

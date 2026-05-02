@@ -4,6 +4,7 @@ const state_manager = @import("state-manager");
 const guillotine_mini = @import("guillotine_mini");
 const tx_processor = @import("tx_processor.zig");
 const host_adapter = @import("host_adapter.zig");
+const tx_encoding = @import("transaction_encoding.zig");
 
 fn makeLegacyTx(params: struct {
     to: ?primitives.Address,
@@ -85,6 +86,52 @@ test "process simple ETH transfer" {
     // Verify value transferred
     const recipient_bal = try sm.getBalance(recipient);
     try std.testing.expectEqual(@as(u256, 1000), recipient_bal);
+}
+
+test "processTransaction receipt hash uses canonical signed legacy envelope" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    const host = adapter.hostInterface();
+
+    const sender = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
+    const recipient = primitives.Address{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 19 };
+    var r = [_]u8{0} ** 32;
+    var s = [_]u8{0} ** 32;
+    r[31] = 0x01;
+    s[31] = 0x80;
+
+    try sm.setBalance(sender, 1_000_000_000_000);
+    try sm.setNonce(sender, 0);
+
+    var tx = makeLegacyTx(.{
+        .to = recipient,
+        .value = 0,
+        .data = &[_]u8{},
+        .gas_limit = 21_000,
+        .gas_price = 1,
+        .nonce = 0,
+    });
+    tx.v = 37;
+    tx.r = r;
+    tx.s = s;
+
+    const canonical = try tx_encoding.encodeLegacyTransactionEnvelope(std.testing.allocator, tx);
+    defer std.testing.allocator.free(canonical);
+    const expected_hash = tx_encoding.transactionHash(canonical);
+
+    var receipt = try tx_processor.processTransaction(
+        std.testing.allocator,
+        &sm,
+        host,
+        sender,
+        tx,
+        defaultBlockContext(),
+    );
+    defer receipt.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualSlices(u8, &expected_hash, &receipt.transaction_hash);
 }
 
 test "precompile call executes even with empty input" {

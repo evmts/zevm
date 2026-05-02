@@ -5,6 +5,7 @@ const genesis = @import("../../genesis.zig");
 const mining = @import("../../mining.zig");
 const runtime = @import("../../node/runtime.zig");
 const tx_submission = @import("tx_submission.zig");
+const tx_encoding = @import("../../transaction_encoding.zig");
 const jsonrpc = @import("jsonrpc");
 
 fn makeRuntime() !runtime.NodeRuntime {
@@ -39,18 +40,8 @@ fn signTestLegacyTx(
         .s = [_]u8{0} ** 32,
     };
 
-    var signed_tx = try primitives.Transaction.signLegacyTransaction(allocator, unsigned_tx, private_key, chain_id);
-    const invalid_base = chain_id * 2 + 62;
-    const y_parity = if (signed_tx.v >= invalid_base and signed_tx.v <= invalid_base + 1)
-        signed_tx.v - invalid_base
-    else if (signed_tx.v >= 35)
-        (signed_tx.v - 35) % 2
-    else if (signed_tx.v >= 27)
-        signed_tx.v - 27
-    else
-        signed_tx.v % 2;
-    signed_tx.v = chain_id * 2 + 35 + y_parity;
-    const encoded = try primitives.Transaction.encodeLegacyForSigning(allocator, signed_tx, chain_id);
+    const signed_tx = try tx_encoding.signLegacyTransaction(allocator, unsigned_tx, private_key, chain_id);
+    const encoded = try tx_encoding.encodeLegacyTransactionEnvelope(allocator, signed_tx);
     return encoded;
 }
 
@@ -261,6 +252,75 @@ test "eth_sendTransaction managed account signs and returns hash" {
     const zero_hash = [_]u8{0} ** 32;
     try std.testing.expect(!std.mem.eql(u8, &result.value.bytes, &zero_hash));
     try std.testing.expectEqual(@as(usize, 1), rt.pool.pendingCount());
+
+    const pooled = rt.pool.items()[0];
+    try std.testing.expectEqualSlices(u8, &result.value.bytes, &pooled.hash);
+
+    const decoded = try tx_encoding.decodeLegacyEnvelope(pooled.raw);
+    try std.testing.expectEqual(@as(u64, 0), decoded.nonce);
+    try std.testing.expectEqual(runtime.DEFAULT_GAS_PRICE, decoded.gas_price);
+    try std.testing.expectEqual(@as(u64, 21_000), decoded.gas_limit);
+    try std.testing.expectEqual(runtime.DEFAULT_DEV_ACCOUNTS[1], decoded.to.?);
+    try std.testing.expectEqual(@as(u256, 1000), decoded.value);
+    try std.testing.expectEqual(runtime.DEFAULT_CHAIN_ID, tx_encoding.legacyChainId(decoded).?);
+    try std.testing.expect(decoded.v == runtime.DEFAULT_CHAIN_ID * 2 + 35 or decoded.v == runtime.DEFAULT_CHAIN_ID * 2 + 36);
+
+    const sender = try tx_encoding.recoverLegacySender(std.testing.allocator, decoded);
+    try std.testing.expectEqual(runtime.DEFAULT_DEV_ACCOUNTS[0], sender);
+
+    const canonical = try tx_encoding.encodeLegacyTransactionEnvelope(std.testing.allocator, decoded);
+    defer std.testing.allocator.free(canonical);
+    try std.testing.expectEqualSlices(u8, canonical, pooled.raw);
+    const canonical_hash = tx_encoding.transactionHash(canonical);
+    try std.testing.expectEqualSlices(u8, &canonical_hash, &result.value.bytes);
+
+    const signing_preimage = try tx_encoding.encodeLegacySigningPreimage(
+        std.testing.allocator,
+        decoded,
+        tx_encoding.legacyChainId(decoded),
+    );
+    defer std.testing.allocator.free(signing_preimage);
+    try std.testing.expect(!std.mem.eql(u8, signing_preimage, pooled.raw));
+}
+
+test "eth_sendTransaction accepts matching data aliases without leaking parser buffers" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    rt.setMiningConfig(.manual);
+
+    var obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try obj.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try obj.put("gas", .{ .string = "0x5218" });
+    try obj.put("data", .{ .string = "0xab" });
+    try obj.put("input", .{ .string = "0xab" });
+
+    const params = jsonrpc.eth.SendTransaction.Params{
+        .transaction = .{ .value = .{ .object = obj } },
+    };
+
+    _ = try tx_submission.handleSendTransaction(std.testing.allocator, &rt, params);
+    try std.testing.expectEqual(@as(usize, 1), rt.pool.pendingCount());
+    try std.testing.expectEqualSlices(u8, &[_]u8{0xab}, rt.pool.items()[0].input);
+}
+
+test "eth_sendTransaction frees parser buffers on data alias mismatch" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+
+    var obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try obj.put("data", .{ .string = "0xab" });
+    try obj.put("input", .{ .string = "0xcd" });
+
+    const params = jsonrpc.eth.SendTransaction.Params{
+        .transaction = .{ .value = .{ .object = obj } },
+    };
+
+    const result = tx_submission.handleSendTransaction(std.testing.allocator, &rt, params);
+    try std.testing.expectError(tx_submission.TxSubmissionError.InvalidHexData, result);
 }
 
 test "eth_sendTransaction automine executes and persists canonical block" {
