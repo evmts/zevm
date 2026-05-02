@@ -3,6 +3,7 @@ const runtime = @import("runtime.zig");
 const genesis = @import("../genesis.zig");
 const mining = @import("../mining.zig");
 const primitives = @import("primitives");
+const tx_encoding = @import("../transaction_encoding.zig");
 
 test "NodeRuntime.init uses deterministic defaults" {
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
@@ -58,6 +59,7 @@ test "NodeRuntime.init respects custom config" {
         .chain_id = 1,
         .coinbase_index = 2,
         .initial_balance = 42,
+        .block_gas_limit = 12_345_678,
     });
     defer rt.deinit();
 
@@ -66,6 +68,13 @@ test "NodeRuntime.init respects custom config" {
 
     const balance = try rt.state.getBalance(runtime.DEFAULT_DEV_ACCOUNTS[0]);
     try std.testing.expectEqual(@as(u256, 42), balance);
+    try std.testing.expectEqual(@as(u64, 12_345_678), rt.dev_runtime.config.block_gas_limit);
+}
+
+test "NodeRuntime.init rejects invalid startup config before listener setup" {
+    try std.testing.expectError(error.InvalidCoinbaseIndex, runtime.NodeRuntime.init(std.testing.allocator, .{
+        .coinbase_index = runtime.DEFAULT_DEV_ACCOUNTS.len,
+    }));
 }
 
 test "NodeRuntime.init head block number starts at 0" {
@@ -115,6 +124,60 @@ test "NodeRuntime init respects custom mining config" {
     defer rt.deinit();
 
     try std.testing.expectEqual(mining.MiningConfigType.interval, std.meta.activeTag(rt.mining_config));
+}
+
+test "NodeRuntime mining fallback stores canonical signed legacy raw transaction" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    const sender = runtime.DEFAULT_DEV_ACCOUNTS[0];
+    const recipient = runtime.DEFAULT_DEV_ACCOUNTS[1];
+    const input = [_]u8{ 0xab, 0xcd };
+    const unsigned = primitives.Transaction.LegacyTransaction{
+        .nonce = 0,
+        .gas_price = runtime.DEFAULT_GAS_PRICE,
+        .gas_limit = 50_000,
+        .to = recipient,
+        .value = 1000,
+        .data = &input,
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+    const signed = try tx_encoding.signLegacyTransaction(
+        std.testing.allocator,
+        unsigned,
+        genesis.DEV_ACCOUNTS[0].private_key,
+        rt.chain_id,
+    );
+    const canonical_raw = try tx_encoding.encodeLegacyTransactionEnvelope(std.testing.allocator, signed);
+    defer std.testing.allocator.free(canonical_raw);
+    const tx_hash = tx_encoding.transactionHash(canonical_raw);
+
+    try rt.pool.setNonce(sender, 0);
+    try rt.pool.add(std.testing.allocator, .{
+        .sender = sender,
+        .nonce = signed.nonce,
+        .gas_limit = signed.gas_limit,
+        .max_fee_per_gas = signed.gas_price,
+        .max_priority_fee_per_gas = signed.gas_price,
+        .hash = tx_hash,
+        .to = signed.to,
+        .value = signed.value,
+        .input = signed.data,
+        .raw = &.{},
+        .v = signed.v,
+        .r = signed.r,
+        .s = signed.s,
+    });
+
+    try rt.mineBlocks(1, 0);
+
+    const block = (try rt.blockchain.getBlockByNumber(1)).?;
+    try std.testing.expectEqual(@as(usize, 1), block.body.transactions.len);
+    try std.testing.expectEqualSlices(u8, canonical_raw, block.body.transactions[0].raw);
+    const receipt = rt.receipt_index.getByTxHash(tx_hash).?;
+    try std.testing.expectEqualSlices(u8, &tx_hash, &receipt.transaction_hash);
 }
 
 test "NodeRuntime time controls adjust effective current time" {
@@ -445,6 +508,24 @@ test "snapshot and revert restore block environment overrides" {
     try std.testing.expectEqual(@as(u256, 2), rt.dev_runtime.config.next_block_base_fee_per_gas.?);
     try std.testing.expectEqual(@as(u64, 1234), rt.dev_runtime.config.next_block_timestamp.?);
     try std.testing.expectEqual(@as(u256, 7), rt.dev_runtime.config.blob_base_fee.?);
+}
+
+test "reset restores configured block gas limit default" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, .{
+        .block_gas_limit = 12_345_678,
+    });
+    defer rt.deinit();
+
+    try std.testing.expectEqual(@as(u64, 12_345_678), rt.dev_runtime.config.block_gas_limit);
+    rt.dev_runtime.config.block_gas_limit = 21_000;
+    rt.dev_runtime.config.next_block_base_fee_per_gas = 2;
+    rt.setNextBlockTimestamp(1234);
+
+    try rt.reset(.keep_current);
+
+    try std.testing.expectEqual(@as(u64, 12_345_678), rt.dev_runtime.config.block_gas_limit);
+    try std.testing.expect(rt.dev_runtime.config.next_block_base_fee_per_gas == null);
+    try std.testing.expect(rt.dev_runtime.config.next_block_timestamp == null);
 }
 
 test "reset keep/disable/replace follows fork semantics without changing chain id" {

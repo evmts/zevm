@@ -1,6 +1,7 @@
 const std = @import("std");
 const config = @import("config.zig");
 const mining = @import("mining.zig");
+const node_runtime = @import("node/runtime.zig");
 
 fn tmpPath(allocator: std.mem.Allocator, tmp_dir: *std.testing.TmpDir, name: []const u8) ![]u8 {
     return std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/{s}", .{ tmp_dir.sub_path, name });
@@ -88,9 +89,16 @@ test "load merges trusted config file with CLI precedence" {
     try std.testing.expectEqual(@as(u64, 2), trusted.chain_id);
     try std.testing.expectEqual(@as(u8, 2), trusted.coinbase_index);
     try std.testing.expectEqual(@as(u256, 100), trusted.initial_balance);
+    try std.testing.expectEqual(@as(u64, 9_000_000), trusted.block_gas_limit);
     try std.testing.expectEqual(mining.MiningConfigType.manual, std.meta.activeTag(trusted.mining_config));
     try std.testing.expectEqualStrings("https://config-rpc.example", trusted.fork.?.url);
     try std.testing.expectEqual(@as(u64, 7), trusted.fork.?.block_number.?);
+
+    const node_config = trusted.toNodeConfig();
+    try std.testing.expectEqual(@as(u64, 9_000_000), node_config.block_gas_limit);
+    var rt = try node_runtime.NodeRuntime.init(std.testing.allocator, node_config);
+    defer rt.deinit();
+    try std.testing.expectEqual(@as(u64, 9_000_000), rt.dev_runtime.config.block_gas_limit);
 }
 
 test "load requires config to contain exactly one mode branch" {

@@ -22,6 +22,7 @@ pub const SnapshotEntry = struct {
 pub const DevRuntime = struct {
     snapshots: std.AutoHashMapUnmanaged(u64, SnapshotEntry),
     next_snapshot_id: u64,
+    default_block_gas_limit: u64,
     config: NodeDevConfig,
 
     pub fn init() DevRuntime {
@@ -29,10 +30,18 @@ pub const DevRuntime = struct {
     }
 
     pub fn initWithCoinbase(coinbase: primitives.Address.Address) DevRuntime {
+        return initWithCoinbaseAndBlockGasLimit(coinbase, DEFAULT_BLOCK_GAS_LIMIT);
+    }
+
+    pub fn initWithCoinbaseAndBlockGasLimit(
+        coinbase: primitives.Address.Address,
+        block_gas_limit: u64,
+    ) DevRuntime {
         return .{
             .snapshots = .{},
             .next_snapshot_id = 1,
-            .config = defaultConfig(coinbase),
+            .default_block_gas_limit = block_gas_limit,
+            .config = defaultConfigWithBlockGasLimit(coinbase, block_gas_limit),
         };
     }
 
@@ -41,7 +50,7 @@ pub const DevRuntime = struct {
     }
 
     pub fn resetConfig(self: *DevRuntime, coinbase: primitives.Address.Address) void {
-        self.config = defaultConfig(coinbase);
+        self.config = defaultConfigWithBlockGasLimit(coinbase, self.default_block_gas_limit);
     }
 
     pub fn clearNextBlockOverrides(self: *DevRuntime) void {
@@ -102,11 +111,18 @@ pub const DevRuntime = struct {
 };
 
 pub fn defaultConfig(coinbase: primitives.Address.Address) NodeDevConfig {
+    return defaultConfigWithBlockGasLimit(coinbase, DEFAULT_BLOCK_GAS_LIMIT);
+}
+
+fn defaultConfigWithBlockGasLimit(
+    coinbase: primitives.Address.Address,
+    block_gas_limit: u64,
+) NodeDevConfig {
     return .{
         .coinbase = coinbase,
         .next_block_base_fee_per_gas = null,
         .next_block_timestamp = null,
-        .block_gas_limit = DEFAULT_BLOCK_GAS_LIMIT,
+        .block_gas_limit = block_gas_limit,
         .blob_base_fee = null,
     };
 }
@@ -210,6 +226,28 @@ test "clearNextBlockOverrides keeps persistent block environment overrides" {
     try std.testing.expect(runtime.config.next_block_timestamp == null);
     try std.testing.expectEqual(@as(u64, 15_000_000), runtime.config.block_gas_limit);
     try std.testing.expectEqual(@as(u256, 7), runtime.config.blob_base_fee.?);
+}
+
+test "resetConfig restores configured default block gas limit" {
+    const allocator = std.testing.allocator;
+    const configured_coinbase = primitives.Address.Address{ .bytes = [_]u8{0x12} ++ [_]u8{0} ** 19 };
+    const reset_coinbase = primitives.Address.Address{ .bytes = [_]u8{0x34} ++ [_]u8{0} ** 19 };
+    var runtime = DevRuntime.initWithCoinbaseAndBlockGasLimit(configured_coinbase, 12_345_678);
+    defer runtime.deinit(allocator);
+
+    try std.testing.expectEqual(@as(u64, 12_345_678), runtime.config.block_gas_limit);
+    runtime.config.block_gas_limit = 21_000;
+    runtime.config.next_block_base_fee_per_gas = 2;
+    runtime.config.next_block_timestamp = 1234;
+    runtime.config.blob_base_fee = 7;
+
+    runtime.resetConfig(reset_coinbase);
+
+    try std.testing.expectEqual(reset_coinbase, runtime.config.coinbase);
+    try std.testing.expectEqual(@as(u64, 12_345_678), runtime.config.block_gas_limit);
+    try std.testing.expect(runtime.config.next_block_base_fee_per_gas == null);
+    try std.testing.expect(runtime.config.next_block_timestamp == null);
+    try std.testing.expect(runtime.config.blob_base_fee == null);
 }
 
 test "revertSnapshot removes newer snapshots (nested semantics)" {

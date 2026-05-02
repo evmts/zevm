@@ -52,6 +52,9 @@ pub const DEFAULT_BLOB_BASE_FEE: u256 = 1;
 /// Default max priority fee: 1 gwei
 pub const DEFAULT_MAX_PRIORITY_FEE: u256 = 1_000_000_000;
 
+/// Default block gas limit matching Hardhat/Anvil.
+pub const DEFAULT_BLOCK_GAS_LIMIT: u64 = dev_runtime_mod.DEFAULT_BLOCK_GAS_LIMIT;
+
 pub const Mode = enum { trusted, light };
 
 pub const LightNetwork = enum {
@@ -145,6 +148,7 @@ pub const NodeConfig = struct {
     base_fee: u256 = DEFAULT_BASE_FEE,
     blob_base_fee: u256 = DEFAULT_BLOB_BASE_FEE,
     max_priority_fee: u256 = DEFAULT_MAX_PRIORITY_FEE,
+    block_gas_limit: u64 = DEFAULT_BLOCK_GAS_LIMIT,
     mining_config: mining.MiningConfig = mining.MiningConfig.default(),
     fork_url: ?[]const u8 = null,
     fork_block_number: ?u64 = null,
@@ -350,7 +354,10 @@ pub const NodeRuntime = struct {
             .pool = txpool.TransactionPool.init(allocator),
             .time_offset = 0,
             .next_block_timestamp = null,
-            .dev_runtime = dev_runtime_mod.DevRuntime.initWithCoinbase(default_coinbase),
+            .dev_runtime = dev_runtime_mod.DevRuntime.initWithCoinbaseAndBlockGasLimit(
+                default_coinbase,
+                config.block_gas_limit,
+            ),
             .state = state,
             .blockchain = blockchain,
             .owned_block_bodies = .{},

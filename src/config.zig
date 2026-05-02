@@ -9,7 +9,7 @@ pub const Network = cli.Network;
 
 pub const DEFAULT_HOST = "127.0.0.1";
 pub const DEFAULT_PORT: u16 = 8545;
-pub const DEFAULT_BLOCK_GAS_LIMIT: u64 = 30_000_000;
+pub const DEFAULT_BLOCK_GAS_LIMIT: u64 = node_runtime.DEFAULT_BLOCK_GAS_LIMIT;
 pub const DEFAULT_MAX_CHECKPOINT_AGE_SECONDS: u64 = 1_209_600;
 const DEFAULT_CHECKPOINT_DIR_TEMPLATE = ".zevm/checkpoints/<network>";
 
@@ -49,6 +49,7 @@ pub const TrustedConfig = struct {
             .base_fee = self.base_fee,
             .blob_base_fee = self.blob_base_fee,
             .max_priority_fee = self.max_priority_fee_per_gas,
+            .block_gas_limit = self.block_gas_limit,
             .mining_config = self.mining_config,
             .fork_url = if (self.fork) |fork| fork.url else null,
             .fork_block_number = if (self.fork) |fork| fork.block_number else null,
