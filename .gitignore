@@ -14,6 +14,10 @@ effect-repo/
 .scratch/
 # Worktrees directory is temporarily ignored but compiled artifacts should still be prevented
 worktrees/
+.worktrees/
+
+# Local Smithers state
+/smithers.db*
 
 macos
 
@@ -240,6 +244,7 @@ tevm-monorepo/
 
 # Reference code (now tracked as submodules)
 workflow/.db-backups/
+workflow/*.db-shm
 workflow/*.db-wal
 workflow/*.db
 workflow/*.bak
