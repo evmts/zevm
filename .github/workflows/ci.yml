@@ -1,0 +1,199 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  release:
+    types:
+      - published
+  schedule:
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ZIG_VERSION: "0.15.2"
+
+jobs:
+  fast:
+    name: Build, Test, And Qualification
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout ZEVM
+        uses: actions/checkout@v4
+        with:
+          path: zevm
+          submodules: recursive
+
+      - name: Checkout voltaire
+        uses: actions/checkout@v4
+        with:
+          repository: evmts/voltaire
+          path: voltaire
+
+      - name: Checkout guillotine-mini
+        uses: actions/checkout@v4
+        with:
+          repository: evmts/guillotine-mini
+          path: guillotine-mini
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cargo perl rustc
+
+      - name: Verify sibling dependency layout
+        working-directory: zevm
+        run: |
+          test -d ../voltaire/.git
+          test -d ../guillotine-mini/.git
+          test "$(zig version)" = "$ZIG_VERSION"
+
+      - name: Build
+        working-directory: zevm
+        run: zig build
+
+      - name: Fast verification
+        working-directory: zevm
+        run: zig build verify-fast
+
+      - name: Qualification map structural check
+        working-directory: zevm
+        run: zig build qualification-check
+
+      - name: Release metadata smoke generation
+        working-directory: zevm
+        run: |
+          zig build release-metadata -- \
+            --out-dir zig-out/release/ci \
+            --release-identifier "commit-$(git rev-parse HEAD)"
+          test -s zig-out/release/ci/release-tuple.json
+          test -s zig-out/release/ci/light-default-checkpoints.json
+          test "$(jq -r '.zevmGitRevision' zig-out/release/ci/release-tuple.json)" = "$(git rev-parse HEAD)"
+          test "$(jq -r '.zigVersion' zig-out/release/ci/release-tuple.json)" = "$ZIG_VERSION"
+
+      - name: Dirty worktree preflight
+        working-directory: zevm
+        run: git diff --exit-code -- .
+
+  external:
+    name: Official External Verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Checkout ZEVM
+        uses: actions/checkout@v4
+        with:
+          path: zevm
+          submodules: recursive
+
+      - name: Checkout voltaire
+        uses: actions/checkout@v4
+        with:
+          repository: evmts/voltaire
+          path: voltaire
+
+      - name: Checkout guillotine-mini
+        uses: actions/checkout@v4
+        with:
+          repository: evmts/guillotine-mini
+          path: guillotine-mini
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cargo perl rustc
+
+      - name: Verify release qualification coverage
+        working-directory: zevm
+        run: zig build qualification-check -- --require-covered
+
+      - name: External verification
+        working-directory: zevm
+        run: zig build verify
+
+      - name: Dirty worktree preflight
+        working-directory: zevm
+        run: git diff --exit-code -- .
+
+  release-assets:
+    name: Published Release Asset Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event_name == 'release'
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_IDENTIFIER: ${{ github.event.release.tag_name }}
+    steps:
+      - name: Checkout ZEVM release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          path: zevm
+
+      - name: Download required release metadata assets
+        working-directory: zevm
+        run: |
+          mkdir -p .ops/release-metadata/"$RELEASE_IDENTIFIER"
+          ASSET_NAMES_JSON="$(gh api "repos/${{ github.repository }}/releases/tags/$RELEASE_IDENTIFIER" --jq '[.assets[].name]')"
+          RELEASE_TUPLE_COUNT="$(printf '%s' "$ASSET_NAMES_JSON" | jq '[.[] | select(. == "release-tuple.json")] | length')"
+          LIGHT_DEFAULTS_COUNT="$(printf '%s' "$ASSET_NAMES_JSON" | jq '[.[] | select(. == "light-default-checkpoints.json")] | length')"
+          test "$RELEASE_TUPLE_COUNT" -eq 1
+          test "$LIGHT_DEFAULTS_COUNT" -eq 1
+          gh release download "$RELEASE_IDENTIFIER" \
+            --repo "${{ github.repository }}" \
+            --pattern "release-tuple.json" \
+            --pattern "light-default-checkpoints.json" \
+            --dir .ops/release-metadata/"$RELEASE_IDENTIFIER"
+
+      - name: Validate release metadata contracts
+        working-directory: zevm
+        run: |
+          ARTIFACT_DIR=.ops/release-metadata/"$RELEASE_IDENTIFIER"
+          jq -e --arg rid "$RELEASE_IDENTIFIER" --arg zevm_head "$(git rev-parse HEAD)" '
+            (type == "object")
+            and ((keys | sort) == [
+              "guillotineMiniGitRevision",
+              "releaseIdentifier",
+              "schemaVersion",
+              "voltaireGitRevision",
+              "zevmGitRevision",
+              "zigVersion"
+            ])
+            and (.schemaVersion == "zevm-release-tuple.v1")
+            and (.releaseIdentifier == $rid)
+            and (.zevmGitRevision == $zevm_head)
+            and (.zevmGitRevision | test("^[0-9a-fA-F]{40}$"))
+            and (.voltaireGitRevision | test("^[0-9a-fA-F]{40}$"))
+            and (.guillotineMiniGitRevision | test("^[0-9a-fA-F]{40}$"))
+            and (.zigVersion | type == "string" and length > 0)
+          ' "$ARTIFACT_DIR/release-tuple.json" > /dev/null
+          jq -e --arg rid "$RELEASE_IDENTIFIER" '
+            (type == "object")
+            and ((keys | sort) == ["defaults", "releaseIdentifier", "schemaVersion"])
+            and (.schemaVersion == "zevm-light-default-checkpoints.v1")
+            and (.releaseIdentifier == $rid)
+            and (.defaults | type == "object")
+            and ((.defaults | keys | sort) == ["holesky", "mainnet", "sepolia"])
+            and (.defaults.mainnet | test("^0x[0-9a-fA-F]{64}$"))
+            and (.defaults.sepolia | test("^0x[0-9a-fA-F]{64}$"))
+            and (.defaults.holesky | test("^0x[0-9a-fA-F]{64}$"))
+          ' "$ARTIFACT_DIR/light-default-checkpoints.json" > /dev/null

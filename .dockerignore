@@ -1,0 +1,17 @@
+*
+!build.zig
+!build.zig.zon
+!LICENSE
+!README.md
+!src/
+!src/**
+!tools/
+!tools/**
+!docs/
+!docs/specs/
+!docs/specs/qualification/
+!docs/specs/qualification/**
+!hive/
+!hive/clients/
+!hive/clients/zevm/
+!hive/clients/zevm/**

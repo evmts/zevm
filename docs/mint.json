@@ -14,6 +14,7 @@
         "index",
         "reference/canonical-specs",
         "reference/specs-and-process",
+        "reference/ci-and-release-gates",
         "reference/release-metadata-runbook"
       ]
     },

@@ -96,6 +96,7 @@ Coverage intent for phase-1 qualification is explicit startup/configuration/runt
 Before shipping, confirm all PRD criteria:
 
 - clean-checkout source build verification passes: `zig build` and `zig build test` succeed on pinned siblings/toolchain without local patching
+- CI runs the root release gates documented in [CI And Release Gates](./ci-and-release-gates), including sibling dependency materialization, strict qualification coverage, generated-metadata smoke validation, dirty-worktree preflight, and scheduled/manual external verification
 - default `zig build test` graph covers all shipped executable startup/configuration/runtime/transport/method/semantic behaviors from PRD sections `3.1` and `4` through `12`
 - qualification evidence maps each shipped phase-1 surface in PRD sections `3.1`, `3.3`, `3.4`, and `4` through `12` to at least one qualification assertion
 - for candidates claiming a published `releaseIdentifier`, qualification validates both required release artifacts and all PRD section `3.4` field/schema/value invariants
@@ -106,5 +107,6 @@ Before shipping, confirm all PRD criteria:
 ## Related Pages
 
 - [Installation](../quickstart/installation)
+- [CI And Release Gates](./ci-and-release-gates)
 - [Release Metadata Runbook](./release-metadata-runbook)
 - [ZEVM](../index)
