@@ -613,9 +613,11 @@ fn isCurrentCommitteeProofValid(
     slot: u64,
     fork_config: primitives.ForkConfig.ForkConfig,
 ) bool {
-    _ = slot;
-    _ = fork_config;
-    return primitives.consensus.isCurrentCommitteeProofValid(attested_state_root, committee_root, branch);
+    const gindex = if (isElectraOrLater(slot, fork_config))
+        CURRENT_SYNC_COMMITTEE_GINDEX_ELECTRA
+    else
+        CURRENT_SYNC_COMMITTEE_GINDEX;
+    return isGeneralizedIndexProofValid(committee_root, branch, gindex, attested_state_root);
 }
 
 fn isNextCommitteeProofValid(
@@ -625,9 +627,11 @@ fn isNextCommitteeProofValid(
     slot: u64,
     fork_config: primitives.ForkConfig.ForkConfig,
 ) bool {
-    _ = slot;
-    _ = fork_config;
-    return primitives.consensus.isNextCommitteeProofValid(attested_state_root, committee_root, branch);
+    const gindex = if (isElectraOrLater(slot, fork_config))
+        NEXT_SYNC_COMMITTEE_GINDEX_ELECTRA
+    else
+        NEXT_SYNC_COMMITTEE_GINDEX;
+    return isGeneralizedIndexProofValid(committee_root, branch, gindex, attested_state_root);
 }
 
 fn isFinalityProofValid(
@@ -637,9 +641,40 @@ fn isFinalityProofValid(
     slot: u64,
     fork_config: primitives.ForkConfig.ForkConfig,
 ) bool {
-    _ = slot;
-    _ = fork_config;
-    return primitives.consensus.isFinalityProofValid(attested_state_root, finality_root, branch);
+    const gindex = if (isElectraOrLater(slot, fork_config))
+        FINALIZED_ROOT_GINDEX_ELECTRA
+    else
+        FINALIZED_ROOT_GINDEX;
+    return isGeneralizedIndexProofValid(finality_root, branch, gindex, attested_state_root);
+}
+
+fn isElectraOrLater(slot: u64, fork_config: primitives.ForkConfig.ForkConfig) bool {
+    const epoch = slot / primitives.ConsensusSpec.SLOTS_PER_EPOCH;
+    return epoch >= fork_config.electra.epoch;
+}
+
+fn isGeneralizedIndexProofValid(
+    leaf: [32]u8,
+    branch: []const [32]u8,
+    gindex: u64,
+    root: [32]u8,
+) bool {
+    return primitives.consensus.isValidMerkleBranch(
+        leaf,
+        branch,
+        generalizedIndexDepth(gindex),
+        gindex,
+        root,
+    );
+}
+
+fn generalizedIndexDepth(gindex: u64) u6 {
+    var value = gindex;
+    var depth: u6 = 0;
+    while (value > 1) : (value >>= 1) {
+        depth += 1;
+    }
+    return depth;
 }
 
 pub fn beaconHeaderRoot(beacon_header: primitives.LightClientHeader.LightClientHeader.BeaconBlockHeader) [32]u8 {
@@ -655,4 +690,116 @@ pub fn beaconHeaderRoot(beacon_header: primitives.LightClientHeader.LightClientH
     const second_layer_1 = primitives.Ssz.merkle.hashPair(first_layer_2, first_layer_3);
 
     return primitives.Ssz.merkle.hashPair(second_layer_0, second_layer_1);
+}
+
+fn testHash(marker: u8) [32]u8 {
+    return [_]u8{marker} ** 32;
+}
+
+fn fillTestBranch(branch: [][32]u8, start_marker: u8) void {
+    for (branch, 0..) |*entry, i| {
+        entry.* = testHash(start_marker + @as(u8, @intCast(i)));
+    }
+}
+
+fn testRootFromBranch(leaf: [32]u8, branch: []const [32]u8, gindex: u64) [32]u8 {
+    var derived_root = leaf;
+    for (branch, 0..) |branch_item, i| {
+        if (((gindex >> @intCast(i)) & 1) == 1) {
+            derived_root = primitives.Ssz.merkle.hashPair(branch_item, derived_root);
+        } else {
+            derived_root = primitives.Ssz.merkle.hashPair(derived_root, branch_item);
+        }
+    }
+    return derived_root;
+}
+
+test "committee proofs select Electra generalized indices at the fork epoch" {
+    const fork_config = primitives.ForkConfig.ForkConfig.mainnet();
+    const pre_electra_slot = (fork_config.electra.epoch - 1) * primitives.ConsensusSpec.SLOTS_PER_EPOCH;
+    const electra_slot = fork_config.electra.epoch * primitives.ConsensusSpec.SLOTS_PER_EPOCH;
+    const committee_root = testHash(0x11);
+
+    var pre_electra_branch: [5][32]u8 = undefined;
+    fillTestBranch(pre_electra_branch[0..], 0x20);
+    const pre_electra_root = testRootFromBranch(
+        committee_root,
+        pre_electra_branch[0..],
+        CURRENT_SYNC_COMMITTEE_GINDEX,
+    );
+
+    var electra_branch: [6][32]u8 = undefined;
+    fillTestBranch(electra_branch[0..], 0x30);
+    const electra_root = testRootFromBranch(
+        committee_root,
+        electra_branch[0..],
+        CURRENT_SYNC_COMMITTEE_GINDEX_ELECTRA,
+    );
+
+    try std.testing.expect(isCurrentCommitteeProofValid(
+        pre_electra_root,
+        committee_root,
+        pre_electra_branch[0..],
+        pre_electra_slot,
+        fork_config,
+    ));
+    try std.testing.expect(!isCurrentCommitteeProofValid(
+        pre_electra_root,
+        committee_root,
+        pre_electra_branch[0..],
+        electra_slot,
+        fork_config,
+    ));
+    try std.testing.expect(isCurrentCommitteeProofValid(
+        electra_root,
+        committee_root,
+        electra_branch[0..],
+        electra_slot,
+        fork_config,
+    ));
+}
+
+test "finality proofs select Electra generalized indices at the fork epoch" {
+    const fork_config = primitives.ForkConfig.ForkConfig.mainnet();
+    const pre_electra_slot = (fork_config.electra.epoch - 1) * primitives.ConsensusSpec.SLOTS_PER_EPOCH;
+    const electra_slot = fork_config.electra.epoch * primitives.ConsensusSpec.SLOTS_PER_EPOCH;
+    const finality_root = testHash(0x44);
+
+    var pre_electra_branch: [6][32]u8 = undefined;
+    fillTestBranch(pre_electra_branch[0..], 0x50);
+    const pre_electra_root = testRootFromBranch(
+        finality_root,
+        pre_electra_branch[0..],
+        FINALIZED_ROOT_GINDEX,
+    );
+
+    var electra_branch: [7][32]u8 = undefined;
+    fillTestBranch(electra_branch[0..], 0x60);
+    const electra_root = testRootFromBranch(
+        finality_root,
+        electra_branch[0..],
+        FINALIZED_ROOT_GINDEX_ELECTRA,
+    );
+
+    try std.testing.expect(isFinalityProofValid(
+        pre_electra_root,
+        finality_root,
+        pre_electra_branch[0..],
+        pre_electra_slot,
+        fork_config,
+    ));
+    try std.testing.expect(!isFinalityProofValid(
+        pre_electra_root,
+        finality_root,
+        pre_electra_branch[0..],
+        electra_slot,
+        fork_config,
+    ));
+    try std.testing.expect(isFinalityProofValid(
+        electra_root,
+        finality_root,
+        electra_branch[0..],
+        electra_slot,
+        fork_config,
+    ));
 }
