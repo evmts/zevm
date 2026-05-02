@@ -483,7 +483,7 @@ fn stringifyJsonValue(allocator: std.mem.Allocator, value: std.json.Value) ![]u8
 test "empty-account proof verifies against empty state root" {
     const allocator = std.testing.allocator;
     const source = ProofSource{
-        .url = "mock://proof",
+        .url = "fixture://empty-account-proof",
         .resolver = .{
             .context = null,
             .resolve = &emptyAccountResolver,
