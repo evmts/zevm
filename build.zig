@@ -110,6 +110,31 @@ pub fn build(b: *std.Build) void {
     }
     qualification_check_step.dependOn(&qualification_check_cmd.step);
 
+    const test_graph_check_exe = b.addExecutable(.{
+        .name = "test-graph-check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/test_graph_check.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const dependency_preflight_exe = b.addExecutable(.{
+        .name = "dependency-preflight",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/dependency_preflight.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const dependency_preflight_step = b.step("dependency-preflight", "Validate sibling dependency worktrees and optional revision pins");
+    const dependency_preflight_cmd = b.addRunArtifact(dependency_preflight_exe);
+    if (b.args) |args| {
+        dependency_preflight_cmd.addArgs(args);
+    }
+    dependency_preflight_step.dependOn(&dependency_preflight_cmd.step);
+
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
@@ -134,10 +159,21 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_qualification_check_tests = b.addRunArtifact(qualification_check_tests);
+    const dependency_preflight_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/dependency_preflight.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_dependency_preflight_tests = b.addRunArtifact(dependency_preflight_tests);
+    const run_test_graph_check = b.addRunArtifact(test_graph_check_exe);
 
     const test_step = b.step("test", "Run tests");
+    test_step.dependOn(&run_test_graph_check.step);
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_qualification_check_tests.step);
+    test_step.dependOn(&run_dependency_preflight_tests.step);
 
     const external_verify_exe = b.addExecutable(.{
         .name = "external-verify",
