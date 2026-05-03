@@ -1,9 +1,9 @@
 /** @jsxImportSource smithers-orchestrator */
 import {
-  createSmithers,
   CodexAgent,
   Loop,
   Sequence,
+  createSmithers,
 } from "smithers-orchestrator";
 import { z } from "zod";
 import ImplementationPrompt from "../prompts/ImplementationPrompt.mdx";
@@ -104,7 +104,10 @@ const summarySchema = z.object({
   finalSummary: z.string(),
 });
 
-const { Workflow, Task, smithers, outputs } = createSmithers(
+const { Workflow, Task, smithers, outputs } = (createSmithers as (
+  schemas: Record<string, unknown>,
+  options: Record<string, unknown>,
+) => any)(
   {
     docsPass: docsPassSchema,
     review: reviewSchema,
@@ -248,7 +251,7 @@ const reviewAgent = SMOKE_MODE
       systemPrompt: REVIEW_SYSTEM_PROMPT,
     });
 
-export default smithers((ctx) => {
+export default smithers((ctx: any) => {
   const latestReview = ctx.latest("review", "cold-review");
   const latestFix = ctx.latest("docsPass", "fix-findings");
   const latestImplementation = ctx.latest("docsPass", "implementation");

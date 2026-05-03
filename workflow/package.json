@@ -6,26 +6,26 @@
     "resume": "smithers resume components/workflow.tsx"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.36",
-    "@ai-sdk/google": "^3.0.30",
-    "@ai-sdk/openai": "^2.0.0",
-    "super-ralph": "^0.3.2",
+    "@ai-sdk/anthropic": "^3.0.74",
+    "@ai-sdk/google": "^3.0.67",
+    "@ai-sdk/openai": "3.0.58",
     "@mdx-js/esbuild": "^3.1.1",
     "@mdx-js/mdx": "^3.1.1",
     "@types/mdx": "^2.0.13",
-    "ai": "^6.0.69",
-    "drizzle-orm": "^0.45.1",
+    "ai": "^6.0.174",
+    "drizzle-orm": "^0.45.2",
     "drizzle-zod": "^0.8.3",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "smithers-orchestrator": "^0.17.0",
-    "zod": "^4.3.6",
-    "zod-to-json-schema": "^3.25.1"
+    "super-ralph": "^0.3.2",
+    "zod": "^4.4.2",
+    "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
-    "@types/react": "^19.2.10",
+    "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
-    "better-sqlite3": "^12.6.2",
-    "drizzle-kit": "^0.31.9"
+    "better-sqlite3": "^12.9.0",
+    "drizzle-kit": "^0.31.10"
   }
 }
