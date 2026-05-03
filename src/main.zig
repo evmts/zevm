@@ -57,8 +57,11 @@ pub fn main() !void {
 
             var handlers = zevm.rpc.dispatcher.HandlerRegistry{};
             zevm.rpc.dispatch_wiring.install(&handlers, &runtime);
+            var engine_listener: ?zevm.rpc.server.RpcServer = null;
+            defer if (engine_listener) |*listener| listener.deinit();
+
             if (app_config.engine_rpc) |engine_rpc| {
-                var engine_listener = zevm.rpc.server.RpcServer.init(
+                engine_listener = zevm.rpc.server.RpcServer.init(
                     std.heap.page_allocator,
                     engine_rpc,
                     &handlers,
@@ -68,8 +71,7 @@ pub fn main() !void {
                     engine_rpc.port,
                     @errorName(err),
                 });
-                defer engine_listener.deinit();
-                engine_listener.start() catch |err| exitStartupError("startup failed phase=engine_rpc_listener mode=trusted host={s} port={} error={s}", .{
+                engine_listener.?.start() catch |err| exitStartupError("startup failed phase=engine_rpc_listener mode=trusted host={s} port={} error={s}", .{
                     engine_rpc.host,
                     engine_rpc.port,
                     @errorName(err),

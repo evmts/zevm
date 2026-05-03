@@ -24,7 +24,7 @@ Static release-blocker audit that does not execute ZEVM build artifacts unless
 Options:
   --allow-dirty                 do not fail on dirty ZEVM/dependency worktrees
   --allow-open-qualification    do not fail on qualification gap/blocked rows
-  --allow-partial-external      do not fail on partial external suite manifests
+  --allow-partial-external      do not fail on malformed partial external suite metadata
   --include-launch-preflight    also run the macOS executable launch preflight
   --help                        show this help
 `);
@@ -106,7 +106,7 @@ function checkCleanGit(name: string, path: string): void {
     fail(`${name} worktree has tracked changes: ${absolutePath}`);
   }
 
-  const untracked = run(["git", "-C", absolutePath, "ls-files", "--others", "--exclude-standard", "--directory"]);
+  const untracked = run(["git", "-C", absolutePath, "ls-files", "--others", "--exclude-standard"]);
   if (untracked.stdout.trim().length !== 0) {
     fail(`${name} worktree has untracked files: ${absolutePath}`);
     printLines(
@@ -145,12 +145,32 @@ async function checkExternalSuites(): Promise<void> {
   try {
     const data = await Bun.file(".smithers/external-test-suites.json").json();
     const suites = Array.isArray(data.suites) ? data.suites : [];
-    const partial = suites.filter((suite: { status?: string }) => suite.status !== "complete");
-    process.stdout.write(`release-blocker-audit: external non-complete suites=${partial.length}\n`);
-    if (!allowPartialExternal && partial.length !== 0) {
-      fail("external suite manifest still has non-complete suites");
-      for (const suite of partial) {
+    const partial = suites.filter((suite: { status?: string }) => suite.status === "partial");
+    const invalid = suites.filter((suite: { status?: string }) => suite.status !== "complete" && suite.status !== "partial");
+    const malformedPartial = partial.filter((suite: { reason?: unknown; activeCases?: unknown; remaining?: unknown }) => {
+      const hasReason = typeof suite.reason === "string" && suite.reason.trim().length !== 0;
+      const activeCases = Array.isArray(suite.activeCases) ? suite.activeCases : [];
+      const remaining = Array.isArray(suite.remaining) ? suite.remaining : [];
+      const hasActiveCases = activeCases.some((entry) => typeof entry === "string" && entry.trim().length !== 0);
+      const hasRemaining = remaining.some((entry) => typeof entry === "string" && entry.trim().length !== 0);
+      return !hasReason || !hasActiveCases || !hasRemaining;
+    });
+
+    process.stdout.write(
+      `release-blocker-audit: external complete=${suites.length - partial.length - invalid.length} partial=${partial.length} invalid=${invalid.length}\n`,
+    );
+
+    if (invalid.length !== 0) {
+      fail("external suite manifest has unsupported statuses");
+      for (const suite of invalid) {
         process.stderr.write(`- ${suite.name}: ${suite.status}\n`);
+      }
+    }
+
+    if (!allowPartialExternal && malformedPartial.length !== 0) {
+      fail("partial external suites need reason, activeCases, and remaining scope");
+      for (const suite of malformedPartial) {
+        process.stderr.write(`- ${suite.name}\n`);
       }
     }
   } catch (error) {

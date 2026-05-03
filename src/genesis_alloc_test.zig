@@ -99,6 +99,30 @@ test "loadGenesisJson parses genesis header fields" {
     try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }, &loaded.header.nonce);
 }
 
+test "loadGenesisJson treats null optional header fields as absent" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+
+    var loaded = try genesis_alloc.loadGenesisJson(std.testing.allocator, &sm,
+        \\{
+        \\  "baseFeePerGas": null,
+        \\  "blobGasUsed": null,
+        \\  "excessBlobGas": null,
+        \\  "withdrawalsRoot": null,
+        \\  "parentBeaconBlockRoot": null,
+        \\  "alloc": {}
+        \\}
+    );
+    defer loaded.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), loaded.account_count);
+    try std.testing.expectEqual(null, loaded.header.base_fee_per_gas);
+    try std.testing.expectEqual(null, loaded.header.blob_gas_used);
+    try std.testing.expectEqual(null, loaded.header.excess_blob_gas);
+    try std.testing.expectEqual(null, loaded.header.withdrawals_root);
+    try std.testing.expectEqual(null, loaded.header.parent_beacon_block_root);
+}
+
 test "applyGenesisJson accepts empty accounts and produces a state root" {
     var sm = try state_manager.StateManager.init(std.testing.allocator, null);
     defer sm.deinit();

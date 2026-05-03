@@ -1,6 +1,6 @@
 {
   "schemaVersion": "zevm-external-test-suites.v1",
-  "updated": "2026-04-30",
+  "updated": "2026-05-03",
   "suites": [
     {
       "name": "ethereum-tests-state",
@@ -47,6 +47,7 @@
       "name": "ethereum-tests-blockchain",
       "path": "ethereum-tests/BlockchainTests",
       "status": "partial",
+      "reason": "Phase-1 release verification keeps one ValidBlocks smoke fixture active while full ValidBlocks execution/post-state validation and InvalidBlocks expected-rejection validation remain tracked expansion work.",
       "activeCases": [
         "BlockchainTests/ValidBlocks/bcExample/optionsTest.json"
       ],
@@ -60,6 +61,7 @@
       "name": "execution-spec-tests",
       "path": "execution-spec-tests",
       "status": "partial",
+      "reason": "Phase-1 release verification activates the generated state fixtures and structural blockchain fixture walks available in this checkout; broader generated fixture execution remains tracked expansion work.",
       "activeCases": [
         "src/ethereum_test_specs/tests/fixtures/chainid_paris_state_test_tx_type_0.json",
         "src/ethereum_test_specs/tests/fixtures/chainid_cancun_state_test_tx_type_0.json",
@@ -89,6 +91,7 @@
       "name": "hive-rpc-compat",
       "path": "hive/simulators/ethereum/rpc-compat",
       "status": "partial",
+      "reason": "Phase-1 release verification runs ZEVM through the active Hive-compatible launch, identity, unknown-account, and head forkchoice coverage while full rpc-compat state/receipt/log/payload lifecycle remains outside the current release contract.",
       "activeCases": [
         "execution-apis/tests/eth_chainId/get-chain-id.io",
         "execution-apis/tests/eth_blobBaseFee/get-current-blobfee.io",

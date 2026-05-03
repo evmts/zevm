@@ -171,19 +171,19 @@ fn parseHeaderConfig(allocator: std.mem.Allocator, root: std.json.ObjectMap) !He
         std.mem.writeInt(u64, &header.nonce, nonce, .big);
     }
     if (root.get("baseFeePerGas")) |value| {
-        header.base_fee_per_gas = try parseQuantity(value);
+        header.base_fee_per_gas = try parseOptionalQuantity(value);
     }
     if (root.get("withdrawalsRoot")) |value| {
-        header.withdrawals_root = try parseHashValue(value);
+        header.withdrawals_root = try parseOptionalHashValue(value);
     }
     if (root.get("blobGasUsed")) |value| {
-        header.blob_gas_used = try parseU64Quantity(value);
+        header.blob_gas_used = try parseOptionalU64Quantity(value);
     }
     if (root.get("excessBlobGas")) |value| {
-        header.excess_blob_gas = try parseU64Quantity(value);
+        header.excess_blob_gas = try parseOptionalU64Quantity(value);
     }
     if (root.get("parentBeaconBlockRoot")) |value| {
-        header.parent_beacon_block_root = try parseHashValue(value);
+        header.parent_beacon_block_root = try parseOptionalHashValue(value);
     }
 
     return header;
@@ -285,6 +285,11 @@ fn parseHashValue(value: std.json.Value) Error!primitives.Hash.Hash {
     return hash;
 }
 
+fn parseOptionalHashValue(value: std.json.Value) Error!?primitives.Hash.Hash {
+    if (value == .null) return null;
+    return try parseHashValue(value);
+}
+
 fn parseString(value: std.json.Value) Error![]const u8 {
     return switch (value) {
         .string => |text| text,
@@ -300,9 +305,19 @@ fn parseQuantity(value: std.json.Value) Error!u256 {
     };
 }
 
+fn parseOptionalQuantity(value: std.json.Value) Error!?u256 {
+    if (value == .null) return null;
+    return try parseQuantity(value);
+}
+
 fn parseU64Quantity(value: std.json.Value) Error!u64 {
     const quantity = try parseQuantity(value);
     return std.math.cast(u64, quantity) orelse error.InvalidGenesisAlloc;
+}
+
+fn parseOptionalU64Quantity(value: std.json.Value) Error!?u64 {
+    if (value == .null) return null;
+    return try parseU64Quantity(value);
 }
 
 fn parseQuantityString(text: []const u8) Error!u256 {

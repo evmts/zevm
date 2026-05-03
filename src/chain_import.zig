@@ -118,7 +118,7 @@ pub fn decodeNextBlock(
     var owned_body = OwnedBlockBody{};
     errdefer owned_body.deinit(allocator);
 
-    var header = try primitives.BlockHeader.rlpDecode(allocator, block_bytes[header_span.start..header_span.end]);
+    var header = try decodeHeaderForImport(allocator, block_bytes[header_span.start..header_span.end]);
     owned_body.header_extra_data = try decodeHeaderExtraData(allocator, block_bytes[header_span.start..header_span.end]);
     header.extra_data = owned_body.header_extra_data orelse &.{};
 
@@ -135,11 +135,49 @@ pub fn decodeNextBlock(
     };
 
     var block = try primitives.Block.from(&header, &body, allocator);
+    std.crypto.hash.sha3.Keccak256.hash(block_bytes[header_span.start..header_span.end], &block.hash, .{});
     block.size = @intCast(block_bytes.len);
     return .{
         .block = block,
         .owned_body = owned_body,
     };
+}
+
+fn decodeHeaderForImport(
+    allocator: std.mem.Allocator,
+    header_bytes: []const u8,
+) !primitives.BlockHeader.BlockHeader {
+    const header_span = try itemSpan(header_bytes, 0);
+    if (header_span.kind != .list or header_span.start != 0 or header_span.end != header_bytes.len) return error.InvalidChainRlp;
+
+    const fields = try childSpans(allocator, header_bytes, header_span.payload_start, header_span.payload_end);
+    defer allocator.free(fields);
+    if (fields.len < 15) return error.InvalidChainRlp;
+
+    var header = primitives.BlockHeader.BlockHeader{};
+    header.parent_hash = try parseRlpHash(header_bytes, fields[0]);
+    header.ommers_hash = try parseRlpHash(header_bytes, fields[1]);
+    header.beneficiary = try parseRlpAddress(header_bytes, fields[2]);
+    header.state_root = try parseRlpHash(header_bytes, fields[3]);
+    header.transactions_root = try parseRlpHash(header_bytes, fields[4]);
+    header.receipts_root = try parseRlpHash(header_bytes, fields[5]);
+    header.logs_bloom = try parseRlpBloom(header_bytes, fields[6]);
+    header.difficulty = try parseRlpU256Field(header_bytes, fields[7]);
+    header.number = try parseRlpU64Field(header_bytes, fields[8]);
+    header.gas_limit = try parseRlpU64Field(header_bytes, fields[9]);
+    header.gas_used = try parseRlpU64Field(header_bytes, fields[10]);
+    header.timestamp = try parseRlpU64Field(header_bytes, fields[11]);
+    header.extra_data = header_bytes[fields[12].payload_start..fields[12].payload_end];
+    header.mix_hash = try parseRlpHash(header_bytes, fields[13]);
+    header.nonce = try parseRlpNonce(header_bytes, fields[14]);
+
+    if (fields.len > 15) header.base_fee_per_gas = try parseRlpU256Field(header_bytes, fields[15]);
+    if (fields.len > 16) header.withdrawals_root = try parseRlpHash(header_bytes, fields[16]);
+    if (fields.len > 17) header.blob_gas_used = try parseRlpU64Field(header_bytes, fields[17]);
+    if (fields.len > 18) header.excess_blob_gas = try parseRlpU64Field(header_bytes, fields[18]);
+    if (fields.len > 19) header.parent_beacon_block_root = try parseRlpHash(header_bytes, fields[19]);
+
+    return header;
 }
 
 pub fn cloneBlockBody(
@@ -449,11 +487,80 @@ fn parseLength(bytes: []const u8, start: usize, len_of_len: usize) !usize {
     return len;
 }
 
+fn parseRlpHash(bytes: []const u8, span: RlpSpan) !primitives.Hash.Hash {
+    if (span.kind != .string) return error.InvalidChainRlp;
+    const payload = bytes[span.payload_start..span.payload_end];
+    if (payload.len != 32) return error.InvalidChainRlp;
+    return payload[0..32].*;
+}
+
+fn parseRlpAddress(bytes: []const u8, span: RlpSpan) !primitives.Address {
+    if (span.kind != .string) return error.InvalidChainRlp;
+    const payload = bytes[span.payload_start..span.payload_end];
+    if (payload.len != 20) return error.InvalidChainRlp;
+    return .{ .bytes = payload[0..20].* };
+}
+
+fn parseRlpBloom(bytes: []const u8, span: RlpSpan) ![primitives.BlockHeader.BLOOM_SIZE]u8 {
+    if (span.kind != .string) return error.InvalidChainRlp;
+    const payload = bytes[span.payload_start..span.payload_end];
+    if (payload.len != primitives.BlockHeader.BLOOM_SIZE) return error.InvalidChainRlp;
+    return payload[0..primitives.BlockHeader.BLOOM_SIZE].*;
+}
+
+fn parseRlpNonce(bytes: []const u8, span: RlpSpan) ![primitives.BlockHeader.NONCE_SIZE]u8 {
+    if (span.kind != .string) return error.InvalidChainRlp;
+    const payload = bytes[span.payload_start..span.payload_end];
+    if (payload.len != primitives.BlockHeader.NONCE_SIZE) return error.InvalidChainRlp;
+    return payload[0..primitives.BlockHeader.NONCE_SIZE].*;
+}
+
+fn parseRlpU64Field(bytes: []const u8, span: RlpSpan) !u64 {
+    if (span.kind != .string) return error.InvalidChainRlp;
+    return parseRlpU64(bytes[span.payload_start..span.payload_end]);
+}
+
+fn parseRlpU256Field(bytes: []const u8, span: RlpSpan) !u256 {
+    if (span.kind != .string) return error.InvalidChainRlp;
+    return parseRlpU256(bytes[span.payload_start..span.payload_end]);
+}
+
 fn parseRlpU64(bytes: []const u8) !u64 {
     if (bytes.len > @sizeOf(u64)) return error.InvalidChainRlp;
+    if (bytes.len > 1 and bytes[0] == 0) return error.InvalidChainRlp;
     var value: u64 = 0;
     for (bytes) |byte| {
         value = (value << 8) | byte;
     }
     return value;
+}
+
+fn parseRlpU256(bytes: []const u8) !u256 {
+    if (bytes.len > 32) return error.InvalidChainRlp;
+    if (bytes.len > 1 and bytes[0] == 0) return error.InvalidChainRlp;
+    var value: u256 = 0;
+    for (bytes) |byte| {
+        value = (value << 8) | byte;
+    }
+    return value;
+}
+
+test "decodeNextBlock accepts full Hive rpc-compat chain stream" {
+    const bytes = try std.fs.cwd().readFileAlloc(std.testing.allocator, "execution-apis/tests/chain.rlp", 1024 * 1024);
+    defer std.testing.allocator.free(bytes);
+
+    var offset: usize = 0;
+    var count: usize = 0;
+    var last_hash = primitives.Hash.ZERO;
+    while (offset < bytes.len) {
+        var decoded = try decodeNextBlock(std.testing.allocator, bytes[offset..]);
+        defer decoded.deinit(std.testing.allocator);
+        last_hash = decoded.block.hash;
+        offset += decodedBlockLength(bytes[offset..]);
+        count += 1;
+    }
+
+    const expected_head = try primitives.Hash.fromHex("0xe27a3e81bd7cfe2aec2cc9e832c73a17c93e7efcf659cf4b39883b96c48708c2");
+    try std.testing.expectEqual(@as(usize, 45), count);
+    try std.testing.expectEqualSlices(u8, &expected_head, &last_hash);
 }
