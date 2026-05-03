@@ -1,9 +1,30 @@
 const std = @import("std");
 const runtime = @import("runtime.zig");
 const genesis = @import("../genesis.zig");
+const block_builder = @import("../block_builder.zig");
+const hardfork_schedule = @import("../hardfork_schedule.zig");
 const mining = @import("../mining.zig");
 const primitives = @import("primitives");
+const guillotine_mini = @import("guillotine_mini");
 const tx_encoding = @import("../transaction_encoding.zig");
+
+const STORE_BLOCKHASH_ZERO = [_]u8{ 0x60, 0x00, 0x40, 0x60, 0x00, 0x55, 0x00 };
+
+fn tmpPath(allocator: std.mem.Allocator, tmp_dir: *std.testing.TmpDir, name: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/{s}", .{ tmp_dir.sub_path, name });
+}
+
+fn writeTmpFile(
+    allocator: std.mem.Allocator,
+    tmp_dir: *std.testing.TmpDir,
+    name: []const u8,
+    body: []const u8,
+) ![]u8 {
+    var file = try tmp_dir.dir.createFile(name, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll(body);
+    return tmpPath(allocator, tmp_dir, name);
+}
 
 test "NodeRuntime.init uses deterministic defaults" {
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
@@ -41,7 +62,20 @@ test "NodeRuntime signer scope includes every managed genesis account" {
 
     for (&genesis.DEV_ACCOUNTS) |*account| {
         try std.testing.expect(rt.canSignForAccount(account.address));
+        const private_key = rt.managedPrivateKey(account.address) orelse return error.MissingManagedPrivateKey;
+        try std.testing.expectEqualSlices(u8, &account.private_key, &private_key);
     }
+}
+
+test "NodeRuntime exposes managed accounts from runtime state" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    try std.testing.expectEqual(genesis.DEV_ACCOUNTS.len, rt.managedAccountCount());
+    try std.testing.expectEqual(genesis.DEV_ACCOUNTS[0].address, rt.managedAccountAddress(0));
+
+    rt.managed_accounts[0] = genesis.DEV_ACCOUNTS[1];
+    try std.testing.expectEqual(genesis.DEV_ACCOUNTS[1].address, rt.managedAccountAddress(0));
 }
 
 test "NodeRuntime.init seeds dev account balances" {
@@ -52,6 +86,66 @@ test "NodeRuntime.init seeds dev account balances" {
         const balance = try rt.state.getBalance(addr);
         try std.testing.expectEqual(runtime.DEFAULT_BALANCE, balance);
     }
+
+    const genesis_block = (try rt.blockchain.getBlockByNumber(0)).?;
+    const state_root = try block_builder.computeStateRoot(std.testing.allocator, &rt.state);
+    try std.testing.expectEqualSlices(u8, &state_root, &genesis_block.header.state_root);
+    try std.testing.expect(!std.mem.eql(u8, &genesis_block.header.state_root, &primitives.Hash.ZERO));
+}
+
+test "NodeRuntime.init seeds trusted genesis allocation from file" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const genesis_path = try writeTmpFile(std.testing.allocator, &tmp_dir, "genesis.json",
+        \\{
+        \\  "coinbase": "0x00000000000000000000000000000000000000aa",
+        \\  "timestamp": "0x1234",
+        \\  "gasLimit": "0x100000",
+        \\  "difficulty": "0x20",
+        \\  "extraData": "0x68697665",
+        \\  "baseFeePerGas": "0x7",
+        \\  "alloc": {
+        \\    "0x0000000000000000000000000000000000000011": {
+        \\      "balance": "0x2a",
+        \\      "nonce": "0x7",
+        \\      "code": "0x6001",
+        \\      "storage": {
+        \\        "0x00": "0x05"
+        \\      }
+        \\    }
+        \\  }
+        \\}
+    );
+    defer std.testing.allocator.free(genesis_path);
+
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, .{
+        .initial_balance = 999,
+        .genesis_alloc_path = genesis_path,
+    });
+    defer rt.deinit();
+
+    const account = try primitives.Address.fromHex("0x0000000000000000000000000000000000000011");
+    try std.testing.expectEqual(@as(u256, 42), try rt.state.getBalance(account));
+    try std.testing.expectEqual(@as(u64, 7), try rt.state.getNonce(account));
+    try std.testing.expectEqual(@as(u256, 5), try rt.state.getStorage(account, 0));
+    try std.testing.expectEqual(@as(u256, 0), try rt.state.getBalance(runtime.DEFAULT_DEV_ACCOUNTS[0]));
+
+    const code = try rt.state.getCode(account);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x60, 0x01 }, code);
+
+    const genesis_block = (try rt.blockchain.getBlockByNumber(0)).?;
+    const state_root = try block_builder.computeStateRoot(std.testing.allocator, &rt.state);
+    try std.testing.expectEqualSlices(u8, &state_root, &genesis_block.header.state_root);
+    try std.testing.expectEqual(@as(u64, 0x1234), rt.head_block_timestamp);
+    try std.testing.expectEqual(@as(u64, 0x100000), genesis_block.header.gas_limit);
+    try std.testing.expectEqual(@as(u256, 0x20), genesis_block.header.difficulty);
+    try std.testing.expectEqual(@as(u256, 7), genesis_block.header.base_fee_per_gas.?);
+    try std.testing.expectEqualSlices(u8, "hive", genesis_block.header.extra_data);
+    try std.testing.expectEqual(
+        try primitives.Address.fromHex("0x00000000000000000000000000000000000000aa"),
+        genesis_block.header.beneficiary,
+    );
 }
 
 test "NodeRuntime.init respects custom config" {
@@ -69,6 +163,52 @@ test "NodeRuntime.init respects custom config" {
     const balance = try rt.state.getBalance(runtime.DEFAULT_DEV_ACCOUNTS[0]);
     try std.testing.expectEqual(@as(u256, 42), balance);
     try std.testing.expectEqual(@as(u64, 12_345_678), rt.dev_runtime.config.block_gas_limit);
+
+    const genesis_block = (try rt.blockchain.getBlockByNumber(0)).?;
+    const state_root = try block_builder.computeStateRoot(std.testing.allocator, &rt.state);
+    try std.testing.expectEqualSlices(u8, &state_root, &genesis_block.header.state_root);
+}
+
+test "NodeRuntime owns explicit hardfork policy" {
+    var dev = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer dev.deinit();
+    try std.testing.expectEqual(guillotine_mini.Hardfork.CANCUN, dev.hardforkAt(0, 0));
+    try std.testing.expectEqual(runtime.DEFAULT_DEV_HARDFORK_CONFIG.cancun_timestamp, dev.hardfork_config.cancun_timestamp);
+
+    var mainnet = try runtime.NodeRuntime.init(std.testing.allocator, .{ .chain_id = 1 });
+    defer mainnet.deinit();
+    try std.testing.expectEqual(guillotine_mini.Hardfork.FRONTIER, mainnet.hardforkAt(0, 0));
+    try std.testing.expectEqual(
+        guillotine_mini.Hardfork.PRAGUE,
+        mainnet.hardforkAt(hardfork_schedule.MAINNET_CHAIN_CONFIG.merge_block, hardfork_schedule.MAINNET_CHAIN_CONFIG.prague_timestamp),
+    );
+
+    var custom = try runtime.NodeRuntime.init(std.testing.allocator, .{
+        .chain_id = 999,
+        .hardfork_config = .{
+            .homestead_block = 0,
+            .dao_block = 0,
+            .tangerine_whistle_block = 0,
+            .spurious_dragon_block = 0,
+            .byzantium_block = 0,
+            .petersburg_block = 0,
+            .istanbul_block = 0,
+            .muir_glacier_block = 0,
+            .berlin_block = 0,
+            .london_block = 10,
+            .arrow_glacier_block = 30,
+            .gray_glacier_block = 30,
+            .merge_block = 20,
+            .shanghai_timestamp = 100,
+            .cancun_timestamp = 200,
+            .prague_timestamp = std.math.maxInt(u64),
+            .osaka_timestamp = std.math.maxInt(u64),
+        },
+    });
+    defer custom.deinit();
+    try std.testing.expectEqual(guillotine_mini.Hardfork.BERLIN, custom.hardforkAt(9, 0));
+    try std.testing.expectEqual(guillotine_mini.Hardfork.LONDON, custom.hardforkAt(10, 0));
+    try std.testing.expectEqual(guillotine_mini.Hardfork.CANCUN, custom.hardforkAt(20, 200));
 }
 
 test "NodeRuntime.init rejects invalid startup config before listener setup" {
@@ -101,7 +241,7 @@ test "NodeRuntime setMiningConfig updates to interval" {
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();
 
-    rt.setMiningConfig(.{ .interval = .{ .block_time = 12 } });
+    try rt.setMiningConfig(.{ .interval = .{ .block_time = 12 } });
     try std.testing.expectEqual(mining.MiningConfigType.interval, std.meta.activeTag(rt.mining_config));
     switch (rt.mining_config) {
         .interval => |iv| try std.testing.expectEqual(@as(u64, 12), iv.block_time),
@@ -113,7 +253,7 @@ test "NodeRuntime setMiningConfig updates to manual" {
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();
 
-    rt.setMiningConfig(.manual);
+    try rt.setMiningConfig(.manual);
     try std.testing.expectEqual(mining.MiningConfigType.manual, std.meta.activeTag(rt.mining_config));
 }
 
@@ -124,6 +264,20 @@ test "NodeRuntime init respects custom mining config" {
     defer rt.deinit();
 
     try std.testing.expectEqual(mining.MiningConfigType.interval, std.meta.activeTag(rt.mining_config));
+}
+
+test "NodeRuntime startBackgroundServices owns configured interval timer" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, .{
+        .mining_config = .{ .interval = .{ .block_time = 30 } },
+    });
+    defer rt.deinit();
+
+    try rt.startBackgroundServices();
+    try std.testing.expect(rt.interval_thread != null);
+
+    try rt.setAutomine(false);
+    try std.testing.expectEqual(mining.MiningConfigType.manual, std.meta.activeTag(rt.mining_config));
+    try std.testing.expect(rt.interval_thread == null);
 }
 
 test "NodeRuntime mining fallback stores canonical signed legacy raw transaction" {
@@ -174,10 +328,66 @@ test "NodeRuntime mining fallback stores canonical signed legacy raw transaction
     try rt.mineBlocks(1, 0);
 
     const block = (try rt.blockchain.getBlockByNumber(1)).?;
+    const state_root = try block_builder.computeStateRoot(std.testing.allocator, &rt.state);
+    try std.testing.expectEqualSlices(u8, &state_root, &block.header.state_root);
+    try std.testing.expect(!std.mem.eql(u8, &block.header.state_root, &primitives.Hash.ZERO));
     try std.testing.expectEqual(@as(usize, 1), block.body.transactions.len);
     try std.testing.expectEqualSlices(u8, canonical_raw, block.body.transactions[0].raw);
     const receipt = rt.receipt_index.getByTxHash(tx_hash).?;
     try std.testing.expectEqualSlices(u8, &tx_hash, &receipt.transaction_hash);
+}
+
+test "NodeRuntime mining populates BLOCKHASH parent history" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    const genesis_block = (try rt.blockchain.getBlockByNumber(0)).?;
+    const sender = runtime.DEFAULT_DEV_ACCOUNTS[0];
+    const contract = primitives.Address{ .bytes = [_]u8{0x10} ++ [_]u8{0} ** 19 };
+    try rt.setCode(contract, &STORE_BLOCKHASH_ZERO);
+
+    const unsigned = primitives.Transaction.LegacyTransaction{
+        .nonce = 0,
+        .gas_price = runtime.DEFAULT_GAS_PRICE,
+        .gas_limit = 100_000,
+        .to = contract,
+        .value = 0,
+        .data = &.{},
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+    const signed = try tx_encoding.signLegacyTransaction(
+        std.testing.allocator,
+        unsigned,
+        genesis.DEV_ACCOUNTS[0].private_key,
+        rt.chain_id,
+    );
+    const canonical_raw = try tx_encoding.encodeLegacyTransactionEnvelope(std.testing.allocator, signed);
+    defer std.testing.allocator.free(canonical_raw);
+    const tx_hash = tx_encoding.transactionHash(canonical_raw);
+
+    try rt.pool.setNonce(sender, 0);
+    try rt.pool.add(std.testing.allocator, .{
+        .sender = sender,
+        .nonce = signed.nonce,
+        .gas_limit = signed.gas_limit,
+        .max_fee_per_gas = signed.gas_price,
+        .max_priority_fee_per_gas = signed.gas_price,
+        .hash = tx_hash,
+        .to = signed.to,
+        .value = signed.value,
+        .input = signed.data,
+        .raw = canonical_raw,
+        .v = signed.v,
+        .r = signed.r,
+        .s = signed.s,
+    });
+
+    try rt.mineBlocks(1, 0);
+
+    const expected = std.mem.readInt(u256, &genesis_block.hash, .big);
+    try std.testing.expectEqual(expected, try rt.getStorage(contract, 0));
 }
 
 test "NodeRuntime time controls adjust effective current time" {
@@ -268,7 +478,7 @@ test "NodeRuntime snapshot and reset preserve time controls" {
     try std.testing.expectEqual(@as(?u64, null), rt.block_timestamp_interval);
 }
 
-const MockForkResolver = struct {
+const FixtureForkResolver = struct {
     url_a: []const u8,
     url_b: []const u8,
     balance_a: u256,
@@ -282,7 +492,7 @@ const MockForkResolver = struct {
     code_b: []const u8,
     request_count: usize = 0,
 
-    fn asResolver(self: *MockForkResolver) runtime.ForkRpcResolver {
+    fn asResolver(self: *FixtureForkResolver) runtime.ForkRpcResolver {
         return .{
             .context = self,
             .resolve = &resolve,
@@ -295,7 +505,7 @@ const MockForkResolver = struct {
         request: runtime.ForkRpcRequest,
     ) ![]u8 {
         const raw_context = context orelse return error.InvalidContext;
-        const self: *MockForkResolver = @ptrCast(@alignCast(raw_context));
+        const self: *FixtureForkResolver = @ptrCast(@alignCast(raw_context));
         self.request_count += 1;
 
         const use_b = std.mem.eql(u8, request.url, self.url_b);
@@ -425,7 +635,7 @@ test "snapshot revert and reset restore impersonation state" {
 }
 
 test "forked runtime reads remote account code and storage" {
-    var resolver = MockForkResolver{
+    var resolver = FixtureForkResolver{
         .url_a = "https://rpc-a.example",
         .url_b = "https://rpc-b.example",
         .balance_a = 0x2a,
@@ -457,7 +667,7 @@ test "forked runtime reads remote account code and storage" {
 }
 
 test "local overlay writes override fork-backed reads" {
-    var resolver = MockForkResolver{
+    var resolver = FixtureForkResolver{
         .url_a = "https://rpc-a.example",
         .url_b = "https://rpc-b.example",
         .balance_a = 100,
@@ -488,7 +698,7 @@ test "local overlay writes override fork-backed reads" {
 }
 
 test "snapshot and revert restore local overlays and fork URL state" {
-    var resolver = MockForkResolver{
+    var resolver = FixtureForkResolver{
         .url_a = "https://rpc-a.example",
         .url_b = "https://rpc-b.example",
         .balance_a = 11,
@@ -566,7 +776,7 @@ test "reset restores configured block gas limit default" {
 }
 
 test "reset keep/disable/replace follows fork semantics without changing chain id" {
-    var resolver = MockForkResolver{
+    var resolver = FixtureForkResolver{
         .url_a = "https://rpc-a.example",
         .url_b = "https://rpc-b.example",
         .balance_a = 50,

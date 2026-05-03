@@ -36,13 +36,30 @@ test "bytesToHex encodes to 0x-prefixed lowercase string" {
     try std.testing.expectEqualStrings("0xdeadbeef", encoded[0..]);
 }
 
-test "url building for bootstrap updates finality and optimistic endpoints" {
+test "url building for genesis header bootstrap updates finality and optimistic endpoints" {
     const client = beacon_api.BeaconApi{
         .endpoint_url = "https://ethereum.operationsolarstorm.org/",
     };
 
     const checkpoint = [_]u8{0xaa} ** 32;
     const checkpoint_hex = beacon_api.bytesToHex(32, checkpoint);
+
+    const genesis_url = try client.buildGenesisUrl(std.testing.allocator);
+    defer std.testing.allocator.free(genesis_url);
+    try std.testing.expectEqualStrings(
+        "https://ethereum.operationsolarstorm.org/eth/v1/beacon/genesis",
+        genesis_url,
+    );
+
+    const header_url = try client.buildHeaderUrl(std.testing.allocator, checkpoint);
+    defer std.testing.allocator.free(header_url);
+    const expected_header_url = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "https://ethereum.operationsolarstorm.org/eth/v1/beacon/headers/{s}",
+        .{checkpoint_hex[0..]},
+    );
+    defer std.testing.allocator.free(expected_header_url);
+    try std.testing.expectEqualStrings(expected_header_url, header_url);
 
     const bootstrap_url = try client.buildBootstrapUrl(std.testing.allocator, checkpoint);
     defer std.testing.allocator.free(bootstrap_url);
@@ -73,6 +90,69 @@ test "url building for bootstrap updates finality and optimistic endpoints" {
     try std.testing.expectEqualStrings(
         "https://ethereum.operationsolarstorm.org/eth/v1/beacon/light_client/optimistic_update",
         optimistic_url,
+    );
+}
+
+test "parse genesis and header responses" {
+    const root = beacon_api.bytesToHex(32, [_]u8{0x4b} ** 32);
+    const header_root = beacon_api.bytesToHex(32, [_]u8{0xaa} ** 32);
+
+    var genesis_json = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer genesis_json.deinit();
+    try genesis_json.writer.writeAll("{\"data\":{\"genesis_time\":\"1606824023\",\"genesis_validators_root\":\"");
+    try genesis_json.writer.writeAll(root[0..]);
+    try genesis_json.writer.writeAll("\"}}");
+    const genesis_body = try genesis_json.toOwnedSlice();
+    defer std.testing.allocator.free(genesis_body);
+
+    const genesis = try beacon_api.parseGenesisResponse(std.testing.allocator, genesis_body);
+    try std.testing.expectEqual(@as(u64, 1_606_824_023), genesis.genesis_time);
+    try std.testing.expectEqualSlices(u8, &([_]u8{0x4b} ** 32), &genesis.genesis_validators_root);
+
+    var header_json = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer header_json.deinit();
+    try header_json.writer.writeAll("{\"data\":{\"root\":\"");
+    try header_json.writer.writeAll(header_root[0..]);
+    try header_json.writer.writeAll("\",\"header\":{\"message\":{\"slot\":\"12345\"}}}}");
+    const header_body = try header_json.toOwnedSlice();
+    defer std.testing.allocator.free(header_body);
+
+    const header = try beacon_api.parseHeaderResponse(std.testing.allocator, header_body);
+    try std.testing.expectEqual(@as(u64, 12_345), header.slot);
+    try std.testing.expectEqualSlices(u8, &([_]u8{0xaa} ** 32), &header.root);
+}
+
+test "parse genesis and header responses reject malformed startup payloads" {
+    try std.testing.expectError(
+        error.InvalidDecimalValue,
+        beacon_api.parseGenesisResponse(
+            std.testing.allocator,
+            "{\"data\":{\"genesis_time\":\"not-a-number\",\"genesis_validators_root\":\"0x0000000000000000000000000000000000000000000000000000000000000000\"}}",
+        ),
+    );
+
+    try std.testing.expectError(
+        error.MissingJsonField,
+        beacon_api.parseGenesisResponse(
+            std.testing.allocator,
+            "{\"data\":{\"genesis_time\":\"1606824023\"}}",
+        ),
+    );
+
+    try std.testing.expectError(
+        error.InvalidHexValue,
+        beacon_api.parseHeaderResponse(
+            std.testing.allocator,
+            "{\"data\":{\"root\":\"0xzz00000000000000000000000000000000000000000000000000000000000000\",\"header\":{\"message\":{\"slot\":\"1\"}}}}",
+        ),
+    );
+
+    try std.testing.expectError(
+        error.InvalidDecimalValue,
+        beacon_api.parseHeaderResponse(
+            std.testing.allocator,
+            "{\"data\":{\"root\":\"0x0000000000000000000000000000000000000000000000000000000000000000\",\"header\":{\"message\":{\"slot\":\"not-a-number\"}}}}",
+        ),
     );
 }
 

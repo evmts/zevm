@@ -36,6 +36,32 @@ pub const LogIndex = struct {
         self.block_range.deinit(allocator);
     }
 
+    pub fn clone(self: *const LogIndex, allocator: std.mem.Allocator) !LogIndex {
+        var cloned = LogIndex.init();
+        errdefer cloned.deinit(allocator);
+
+        for (self.logs.items) |entry| {
+            const cloned_log = try cloneEventLog(allocator, entry.log);
+            var log_owned = false;
+            errdefer if (!log_owned) {
+                allocator.free(cloned_log.topics);
+                allocator.free(cloned_log.data);
+            };
+            try cloned.logs.append(allocator, .{
+                .log = cloned_log,
+                .block_hash = entry.block_hash,
+            });
+            log_owned = true;
+        }
+
+        var range_it = self.block_range.iterator();
+        while (range_it.next()) |entry| {
+            try cloned.block_range.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
+        }
+
+        return cloned;
+    }
+
     /// Append all logs from a mined block's receipts. Must be called in ascending block order.
     pub fn appendBlockLogs(
         self: *LogIndex,

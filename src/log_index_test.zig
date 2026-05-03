@@ -17,7 +17,7 @@ fn makeReceiptWithLogs(
             l.* = primitives.EventLog.EventLog{
                 .address = address,
                 .topics = topics,
-                .data = try allocator.dupe(u8, &[_]u8{ @intCast(i) }),
+                .data = try allocator.dupe(u8, &[_]u8{@intCast(i)}),
                 .block_number = null,
                 .transaction_hash = null,
                 .transaction_index = null,
@@ -28,7 +28,7 @@ fn makeReceiptWithLogs(
             l.* = primitives.EventLog.EventLog{
                 .address = address,
                 .topics = try allocator.alloc([32]u8, 0),
-                .data = try allocator.dupe(u8, &[_]u8{ @intCast(i) }),
+                .data = try allocator.dupe(u8, &[_]u8{@intCast(i)}),
                 .block_number = null,
                 .transaction_hash = null,
                 .transaction_index = null,
@@ -110,6 +110,38 @@ test "log_index: scan range returns logs in canonical order" {
     try testing.expectEqual(@as(usize, 2), result.len);
     try testing.expect(std.mem.eql(u8, &result[0].block_hash, &bh1));
     try testing.expect(std.mem.eql(u8, &result[1].block_hash, &bh2));
+}
+
+test "log_index: clone preserves logs independently" {
+    const allocator = testing.allocator;
+    var idx = log_index.LogIndex.init();
+
+    var block_hash: [32]u8 = undefined;
+    @memset(&block_hash, 0x42);
+    var topic: [32]u8 = undefined;
+    @memset(&topic, 0x99);
+
+    var receipt = try makeReceiptWithLogs(allocator, primitives.Address.ZERO_ADDRESS, topic, 1);
+    defer receipt.deinit(allocator);
+
+    try idx.appendBlockLogs(allocator, 3, block_hash, &[_]primitives.Receipt.Receipt{receipt});
+
+    var cloned = try idx.clone(allocator);
+    defer cloned.deinit(allocator);
+    idx.deinit(allocator);
+
+    const topic_filter = [_][32]u8{topic};
+    const topics = [_]?[]const [32]u8{&topic_filter};
+    const result = try cloned.query(allocator, .{
+        .from_block = 3,
+        .to_block = 3,
+        .topics = &topics,
+    }, 3);
+    defer allocator.free(result);
+
+    try testing.expectEqual(@as(usize, 1), result.len);
+    try testing.expect(std.mem.eql(u8, &result[0].block_hash, &block_hash));
+    try testing.expectEqual(@as(u8, 0), result[0].log.data[0]);
 }
 
 test "log_index: filter by single address" {

@@ -250,8 +250,6 @@ pub fn initGenesisWithProfile(
     try chain.putBlock(genesis_block);
     try chain.setCanonicalHead(genesis_block.hash);
 
-    try db.block_hashes.put(allocator, 0, genesis_block.hash);
-
     return .{
         .chain_id = chain_id,
         .profile = profile,

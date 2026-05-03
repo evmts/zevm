@@ -114,6 +114,34 @@ test "receipt_index: block hash with no receipts returns empty slice" {
     try testing.expectEqual(@as(usize, 0), found.?.len);
 }
 
+test "receipt_index: clone preserves block and transaction lookups independently" {
+    const allocator = testing.allocator;
+    var idx = receipt_index.ReceiptIndex.init(allocator);
+
+    var block_hash: [32]u8 = undefined;
+    @memset(&block_hash, 0xce);
+    var tx_hash: [32]u8 = undefined;
+    @memset(&tx_hash, 0x42);
+
+    var receipt = try makeReceipt(allocator, tx_hash, block_hash, 9, 0);
+    defer receipt.deinit(allocator);
+
+    try idx.putBlockReceipts(allocator, block_hash, &[_]primitives.Receipt.Receipt{receipt});
+
+    var cloned = try idx.clone(allocator);
+    defer cloned.deinit(allocator);
+    idx.deinit(allocator);
+
+    const by_tx = cloned.getByTxHash(tx_hash);
+    try testing.expect(by_tx != null);
+    try testing.expectEqual(@as(u64, 9), by_tx.?.block_number);
+
+    const by_block = cloned.getByBlockHash(block_hash);
+    try testing.expect(by_block != null);
+    try testing.expectEqual(@as(usize, 1), by_block.?.len);
+    try testing.expect(std.mem.eql(u8, &by_block.?[0].transaction_hash, &tx_hash));
+}
+
 test "receipt_index: multiple receipts stored per block in tx-index order" {
     const allocator = testing.allocator;
     var idx = receipt_index.ReceiptIndex.init(allocator);

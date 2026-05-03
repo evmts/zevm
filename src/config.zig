@@ -1,6 +1,7 @@
 const std = @import("std");
 const cli = @import("cli.zig");
 const consensus_sync = @import("consensus_sync.zig");
+const hardfork_schedule = @import("hardfork_schedule.zig");
 const mining = @import("mining.zig");
 const node_runtime = @import("node/runtime.zig");
 
@@ -9,6 +10,7 @@ pub const Network = cli.Network;
 
 pub const DEFAULT_HOST = "127.0.0.1";
 pub const DEFAULT_PORT: u16 = 8545;
+pub const DEFAULT_ENGINE_PORT: u16 = 8551;
 pub const DEFAULT_BLOCK_GAS_LIMIT: u64 = node_runtime.DEFAULT_BLOCK_GAS_LIMIT;
 pub const DEFAULT_MAX_CHECKPOINT_AGE_SECONDS: u64 = 1_209_600;
 const DEFAULT_CHECKPOINT_DIR_TEMPLATE = ".zevm/checkpoints/<network>";
@@ -16,6 +18,33 @@ const DEFAULT_CHECKPOINT_DIR_TEMPLATE = ".zevm/checkpoints/<network>";
 pub const LoadError = error{
     InvalidConfig,
     OutOfMemory,
+};
+
+pub const LoadFailureClass = enum {
+    cli,
+    missing_file,
+    unreadable_file,
+    malformed_json,
+    schema,
+    validation,
+    out_of_memory,
+
+    pub fn name(self: LoadFailureClass) []const u8 {
+        return switch (self) {
+            .cli => "cli",
+            .missing_file => "missing-file",
+            .unreadable_file => "unreadable-file",
+            .malformed_json => "malformed-json",
+            .schema => "schema",
+            .validation => "validation",
+            .out_of_memory => "out-of-memory",
+        };
+    }
+};
+
+pub const LoadDiagnostics = struct {
+    config_path: ?[]const u8 = null,
+    failure_class: LoadFailureClass = .validation,
 };
 
 pub const RpcConfig = struct {
@@ -38,7 +67,10 @@ pub const TrustedConfig = struct {
     max_priority_fee_per_gas: u256,
     block_gas_limit: u64,
     mining_config: mining.MiningConfig,
+    hardfork_config: hardfork_schedule.ChainConfig,
     fork: ?ForkConfig,
+    genesis_alloc_path: ?[]const u8,
+    chain_rlp_path: ?[]const u8,
 
     pub fn toNodeConfig(self: TrustedConfig) node_runtime.NodeConfig {
         return .{
@@ -51,8 +83,11 @@ pub const TrustedConfig = struct {
             .max_priority_fee = self.max_priority_fee_per_gas,
             .block_gas_limit = self.block_gas_limit,
             .mining_config = self.mining_config,
+            .hardfork_config = self.hardfork_config,
             .fork_url = if (self.fork) |fork| fork.url else null,
             .fork_block_number = if (self.fork) |fork| fork.block_number else null,
+            .genesis_alloc_path = self.genesis_alloc_path,
+            .chain_rlp_path = self.chain_rlp_path,
         };
     }
 };
@@ -97,14 +132,22 @@ pub const ModeConfig = union(Mode) {
 
 pub const AppConfig = struct {
     rpc: RpcConfig,
+    engine_rpc: ?RpcConfig = null,
     mode: ModeConfig,
 
     pub fn deinit(self: *AppConfig, allocator: std.mem.Allocator) void {
         allocator.free(self.rpc.host);
+        if (self.engine_rpc) |engine_rpc| allocator.free(engine_rpc.host);
         switch (self.mode) {
             .trusted => |trusted| {
                 if (trusted.fork) |fork| {
                     allocator.free(fork.url);
+                }
+                if (trusted.genesis_alloc_path) |path| {
+                    allocator.free(path);
+                }
+                if (trusted.chain_rlp_path) |path| {
+                    allocator.free(path);
                 }
             },
             .light => |light| {
@@ -152,7 +195,31 @@ const FileTrusted = struct {
     max_priority_fee_per_gas: ?u256 = null,
     block_gas_limit: ?u64 = null,
     mining_config: ?mining.MiningConfig = null,
+    hardfork_config: ?FileHardforkConfig = null,
     fork: ?FileFork = null,
+    genesis_alloc_path: ?[]const u8 = null,
+    chain_rlp_path: ?[]const u8 = null,
+};
+
+const FileHardforkConfig = struct {
+    homestead_block: ?u64 = null,
+    dao_block: ?u64 = null,
+    tangerine_whistle_block: ?u64 = null,
+    spurious_dragon_block: ?u64 = null,
+    byzantium_block: ?u64 = null,
+    petersburg_block: ?u64 = null,
+    istanbul_block: ?u64 = null,
+    muir_glacier_block: ?u64 = null,
+    berlin_block: ?u64 = null,
+    london_block: ?u64 = null,
+    arrow_glacier_block: ?u64 = null,
+    gray_glacier_block: ?u64 = null,
+    merge_block: ?u64 = null,
+    shanghai_timestamp: ?u64 = null,
+    cancun_timestamp: ?u64 = null,
+    prague_timestamp: ?u64 = null,
+    osaka_timestamp: ?u64 = null,
+    seconds_per_slot: ?u64 = null,
 };
 
 const FileLight = struct {
@@ -172,28 +239,68 @@ const FileMode = union(Mode) {
 
 const FileConfig = struct {
     rpc: FileRpc = .{},
+    engine_rpc: ?FileRpc = null,
     mode: FileMode,
 };
 
 pub fn load(allocator: std.mem.Allocator, args: []const []const u8) LoadError!AppConfig {
-    const options = cli.parse(args) catch return error.InvalidConfig;
+    var diagnostics = LoadDiagnostics{};
+    return loadWithDiagnostics(allocator, args, &diagnostics);
+}
+
+pub fn loadWithDiagnostics(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    diagnostics: *LoadDiagnostics,
+) LoadError!AppConfig {
+    diagnostics.* = .{};
+    const options = cli.parse(args) catch {
+        diagnostics.failure_class = .cli;
+        return error.InvalidConfig;
+    };
 
     if (options.config_path) |path| {
+        diagnostics.config_path = path;
         const bytes = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch |err| {
+            diagnostics.failure_class = classifyConfigReadError(err);
             return mapIoOrAllocError(err);
         };
         defer allocator.free(bytes);
 
         var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{
             .allocate = .alloc_always,
-        }) catch return error.InvalidConfig;
+        }) catch |err| {
+            diagnostics.failure_class = switch (err) {
+                error.OutOfMemory => .out_of_memory,
+                else => .malformed_json,
+            };
+            return mapLoadError(err);
+        };
         defer parsed.deinit();
 
-        const file_config = parseFileConfig(parsed.value) catch return error.InvalidConfig;
-        return resolve(allocator, options, file_config) catch |err| return mapLoadError(err);
+        const file_config = parseFileConfig(parsed.value) catch |err| {
+            diagnostics.failure_class = switch (err) {
+                error.OutOfMemory => .out_of_memory,
+                else => .schema,
+            };
+            return mapLoadError(err);
+        };
+        return resolve(allocator, options, file_config) catch |err| {
+            diagnostics.failure_class = switch (err) {
+                error.OutOfMemory => .out_of_memory,
+                else => .validation,
+            };
+            return mapLoadError(err);
+        };
     }
 
-    return resolve(allocator, options, null) catch |err| return mapLoadError(err);
+    return resolve(allocator, options, null) catch |err| {
+        diagnostics.failure_class = switch (err) {
+            error.OutOfMemory => .out_of_memory,
+            else => .validation,
+        };
+        return mapLoadError(err);
+    };
 }
 
 fn resolve(
@@ -209,9 +316,14 @@ fn resolve(
     if (resolved_mode == .light and options.hasTrustedOnly()) {
         return error.InvalidConfig;
     }
+    if (resolved_mode == .light and options.hasEngineRpc()) {
+        return error.InvalidConfig;
+    }
 
     const rpc = try resolveRpc(allocator, options, file_config);
     errdefer allocator.free(rpc.host);
+    const engine_rpc = try resolveEngineRpc(allocator, options, file_config, resolved_mode, rpc.host);
+    errdefer if (engine_rpc) |value| allocator.free(value.host);
 
     const mode_config: ModeConfig = switch (resolved_mode) {
         .trusted => .{ .trusted = try resolveTrusted(allocator, options, fileTrusted(file_config)) },
@@ -221,6 +333,7 @@ fn resolve(
 
     return .{
         .rpc = rpc,
+        .engine_rpc = engine_rpc,
         .mode = mode_config,
     };
 }
@@ -251,6 +364,25 @@ fn resolveRpc(
     };
 }
 
+fn resolveEngineRpc(
+    allocator: std.mem.Allocator,
+    options: cli.Options,
+    file_config: ?FileConfig,
+    resolved_mode: Mode,
+    fallback_host: []const u8,
+) LoadError!?RpcConfig {
+    const file_engine_rpc = if (file_config) |file| file.engine_rpc else null;
+    const enabled = options.hasEngineRpc() or file_engine_rpc != null;
+    if (!enabled) return null;
+    if (resolved_mode != .trusted) return error.InvalidConfig;
+
+    const file_rpc = file_engine_rpc orelse FileRpc{};
+    return .{
+        .host = try allocator.dupe(u8, options.engine_host orelse file_rpc.host orelse fallback_host),
+        .port = options.engine_port orelse file_rpc.port orelse DEFAULT_ENGINE_PORT,
+    };
+}
+
 fn resolveTrusted(
     allocator: std.mem.Allocator,
     options: cli.Options,
@@ -264,9 +396,22 @@ fn resolveTrusted(
 
     const fork = try resolveFork(allocator, options, file_value.fork);
     errdefer freeFork(allocator, fork);
+    const genesis_alloc_path_value = if (options.genesis_alloc_path) |path| path else file_value.genesis_alloc_path;
+    const genesis_alloc_path = if (genesis_alloc_path_value) |path|
+        try allocator.dupe(u8, path)
+    else
+        null;
+    errdefer if (genesis_alloc_path) |path| allocator.free(path);
+    const chain_rlp_path_value = if (options.chain_rlp_path) |path| path else file_value.chain_rlp_path;
+    const chain_rlp_path = if (chain_rlp_path_value) |path|
+        try allocator.dupe(u8, path)
+    else
+        null;
+    errdefer if (chain_rlp_path) |path| allocator.free(path);
+    const chain_id = options.chain_id orelse file_value.chain_id orelse node_runtime.DEFAULT_CHAIN_ID;
 
     return .{
-        .chain_id = options.chain_id orelse file_value.chain_id orelse node_runtime.DEFAULT_CHAIN_ID,
+        .chain_id = chain_id,
         .coinbase_index = coinbase_index,
         .initial_balance = options.initial_balance orelse file_value.initial_balance orelse node_runtime.DEFAULT_BALANCE,
         .gas_price = options.gas_price orelse file_value.gas_price orelse node_runtime.DEFAULT_GAS_PRICE,
@@ -275,8 +420,35 @@ fn resolveTrusted(
         .max_priority_fee_per_gas = options.max_priority_fee_per_gas orelse file_value.max_priority_fee_per_gas orelse node_runtime.DEFAULT_MAX_PRIORITY_FEE,
         .block_gas_limit = options.block_gas_limit orelse file_value.block_gas_limit orelse DEFAULT_BLOCK_GAS_LIMIT,
         .mining_config = try resolveMining(options, file_value.mining_config),
+        .hardfork_config = resolveHardforkConfig(chain_id, file_value.hardfork_config),
         .fork = fork,
+        .genesis_alloc_path = genesis_alloc_path,
+        .chain_rlp_path = chain_rlp_path,
     };
+}
+
+fn resolveHardforkConfig(chain_id: u64, file_config: ?FileHardforkConfig) hardfork_schedule.ChainConfig {
+    var config = node_runtime.defaultHardforkConfigForChainId(chain_id);
+    const overrides = file_config orelse return config;
+    if (overrides.homestead_block) |value| config.homestead_block = value;
+    if (overrides.dao_block) |value| config.dao_block = value;
+    if (overrides.tangerine_whistle_block) |value| config.tangerine_whistle_block = value;
+    if (overrides.spurious_dragon_block) |value| config.spurious_dragon_block = value;
+    if (overrides.byzantium_block) |value| config.byzantium_block = value;
+    if (overrides.petersburg_block) |value| config.petersburg_block = value;
+    if (overrides.istanbul_block) |value| config.istanbul_block = value;
+    if (overrides.muir_glacier_block) |value| config.muir_glacier_block = value;
+    if (overrides.berlin_block) |value| config.berlin_block = value;
+    if (overrides.london_block) |value| config.london_block = value;
+    if (overrides.arrow_glacier_block) |value| config.arrow_glacier_block = value;
+    if (overrides.gray_glacier_block) |value| config.gray_glacier_block = value;
+    if (overrides.merge_block) |value| config.merge_block = value;
+    if (overrides.shanghai_timestamp) |value| config.shanghai_timestamp = value;
+    if (overrides.cancun_timestamp) |value| config.cancun_timestamp = value;
+    if (overrides.prague_timestamp) |value| config.prague_timestamp = value;
+    if (overrides.osaka_timestamp) |value| config.osaka_timestamp = value;
+    if (overrides.seconds_per_slot) |value| config.seconds_per_slot = value;
+    return config;
 }
 
 fn resolveMining(options: cli.Options, file_mining: ?mining.MiningConfig) LoadError!mining.MiningConfig {
@@ -463,6 +635,7 @@ fn parseFileConfig(value: std.json.Value) LoadError!FileConfig {
     };
 
     var rpc = FileRpc{};
+    var engine_rpc: ?FileRpc = null;
     var mode: ?FileMode = null;
 
     var iterator = object.iterator();
@@ -470,6 +643,8 @@ fn parseFileConfig(value: std.json.Value) LoadError!FileConfig {
         const key = entry.key_ptr.*;
         if (std.mem.eql(u8, key, "rpc")) {
             rpc = try parseRpc(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "engineRpc")) {
+            engine_rpc = try parseRpc(entry.value_ptr.*);
         } else if (std.mem.eql(u8, key, "mode")) {
             mode = try parseModeObject(entry.value_ptr.*);
         } else {
@@ -479,6 +654,7 @@ fn parseFileConfig(value: std.json.Value) LoadError!FileConfig {
 
     return .{
         .rpc = rpc,
+        .engine_rpc = engine_rpc,
         .mode = mode orelse return error.InvalidConfig,
     };
 }
@@ -565,13 +741,72 @@ fn parseTrusted(value: std.json.Value) LoadError!FileTrusted {
             trusted.block_gas_limit = try parseU64(entry.value_ptr.*);
         } else if (std.mem.eql(u8, key, "mining")) {
             trusted.mining_config = try parseMining(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "hardfork")) {
+            trusted.hardfork_config = try parseHardforkConfig(entry.value_ptr.*);
         } else if (std.mem.eql(u8, key, "fork")) {
             trusted.fork = try parseFork(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "genesis")) {
+            trusted.genesis_alloc_path = try parseOptionalString(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "chainRlp")) {
+            trusted.chain_rlp_path = try parseOptionalString(entry.value_ptr.*);
         } else {
             return error.InvalidConfig;
         }
     }
     return trusted;
+}
+
+fn parseHardforkConfig(value: std.json.Value) LoadError!FileHardforkConfig {
+    const object = switch (value) {
+        .object => |object| object,
+        else => return error.InvalidConfig,
+    };
+
+    var config = FileHardforkConfig{};
+    var iterator = object.iterator();
+    while (iterator.next()) |entry| {
+        const key = entry.key_ptr.*;
+        if (std.mem.eql(u8, key, "homesteadBlock")) {
+            config.homestead_block = try parseU64(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "daoBlock")) {
+            config.dao_block = try parseU64(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "tangerineWhistleBlock")) {
+            config.tangerine_whistle_block = try parseU64(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "spuriousDragonBlock")) {
+            config.spurious_dragon_block = try parseU64(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "byzantiumBlock")) {
+            config.byzantium_block = try parseU64(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "petersburgBlock")) {
+            config.petersburg_block = try parseU64(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "istanbulBlock")) {
+            config.istanbul_block = try parseU64(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "muirGlacierBlock")) {
+            config.muir_glacier_block = try parseU64(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "berlinBlock")) {
+            config.berlin_block = try parseU64(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "londonBlock")) {
+            config.london_block = try parseU64(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "arrowGlacierBlock")) {
+            config.arrow_glacier_block = try parseU64(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "grayGlacierBlock")) {
+            config.gray_glacier_block = try parseU64(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "mergeBlock")) {
+            config.merge_block = try parseU64(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "shanghaiTimestamp")) {
+            config.shanghai_timestamp = try parseU64(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "cancunTimestamp")) {
+            config.cancun_timestamp = try parseU64(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "pragueTimestamp")) {
+            config.prague_timestamp = try parseU64(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "osakaTimestamp")) {
+            config.osaka_timestamp = try parseU64(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "secondsPerSlot")) {
+            config.seconds_per_slot = try parseU64(entry.value_ptr.*);
+        } else {
+            return error.InvalidConfig;
+        }
+    }
+    return config;
 }
 
 fn parseMining(value: std.json.Value) LoadError!mining.MiningConfig {
@@ -674,6 +909,14 @@ fn parseString(value: std.json.Value) LoadError![]const u8 {
     };
 }
 
+fn parseOptionalString(value: std.json.Value) LoadError!?[]const u8 {
+    return switch (value) {
+        .null => null,
+        .string => |string| string,
+        else => error.InvalidConfig,
+    };
+}
+
 fn parseBool(value: std.json.Value) LoadError!bool {
     return switch (value) {
         .bool => |boolean| boolean,
@@ -734,7 +977,11 @@ fn fileLight(file_config: ?FileConfig) ?FileLight {
 
 fn deinitModeConfig(allocator: std.mem.Allocator, mode_config: ModeConfig) void {
     switch (mode_config) {
-        .trusted => |trusted| freeFork(allocator, trusted.fork),
+        .trusted => |trusted| {
+            freeFork(allocator, trusted.fork);
+            if (trusted.genesis_alloc_path) |path| allocator.free(path);
+            if (trusted.chain_rlp_path) |path| allocator.free(path);
+        },
         .light => |light| {
             allocator.free(light.consensus_rpc_url);
             if (light.execution_rpc_url) |url| allocator.free(url);
@@ -753,6 +1000,14 @@ fn mapLoadError(err: anyerror) LoadError {
     return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         else => error.InvalidConfig,
+    };
+}
+
+fn classifyConfigReadError(err: anyerror) LoadFailureClass {
+    return switch (err) {
+        error.OutOfMemory => .out_of_memory,
+        error.FileNotFound => .missing_file,
+        else => .unreadable_file,
     };
 }
 

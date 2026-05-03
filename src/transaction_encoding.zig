@@ -93,6 +93,12 @@ pub fn signLegacyTransaction(
 /// Decodes a canonical legacy transaction envelope. The returned `data` slice
 /// borrows from `raw`; callers must keep `raw` alive while using the transaction.
 pub fn decodeLegacyEnvelope(raw: []const u8) TransactionEncodingError!primitives.Transaction.LegacyTransaction {
+    const tx = try decodeLegacyEnvelopeAllowInvalidSignature(raw);
+    if (!legacyVIsValid(tx.v)) return error.InvalidSignatureV;
+    return tx;
+}
+
+pub fn decodeLegacyEnvelopeAllowInvalidSignature(raw: []const u8) TransactionEncodingError!primitives.Transaction.LegacyTransaction {
     var index: usize = 0;
     const top = try parseRlpItem(raw, &index);
     if (index != raw.len) return error.InvalidRemainder;
@@ -114,8 +120,6 @@ pub fn decodeLegacyEnvelope(raw: []const u8) TransactionEncodingError!primitives
     if (payload_index != payload.len) return error.InvalidLength;
 
     const v = try rlpStringToU64(fields[6]);
-    if (!legacyVIsValid(v)) return error.InvalidSignatureV;
-
     return .{
         .nonce = try rlpStringToU64(fields[0]),
         .gas_price = try rlpStringToU256(fields[1]),

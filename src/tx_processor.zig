@@ -64,11 +64,15 @@ pub fn intrinsicGasForFork(data: []const u8, is_create: bool, hardfork: guilloti
     return gas;
 }
 
-/// Resolve the EVM hardfork from the block context. Mainnet uses the shared
-/// activation schedule; local dev chains preserve the existing Cancun baseline
-/// until per-chain fork config is threaded into NodeRuntime.
+/// Resolve the EVM hardfork from an explicit chain schedule.
+pub fn resolveHardforkWithConfig(config: hardfork_schedule.ChainConfig, block_ctx: guillotine_mini.BlockContext) guillotine_mini.Hardfork {
+    return hardfork_schedule.resolveHardforkWithConfig(config, block_ctx.block_number, block_ctx.block_timestamp);
+}
+
+/// Resolve the EVM hardfork from the canonical mainnet activation schedule.
+/// Runtime execution paths should pass an explicit chain schedule through
+/// ProcessTransactionOptions instead of relying on this helper.
 pub fn resolveHardfork(block_ctx: guillotine_mini.BlockContext) guillotine_mini.Hardfork {
-    if (block_ctx.chain_id != 1) return .CANCUN;
     return hardfork_schedule.resolveHardfork(block_ctx.block_number, block_ctx.block_timestamp);
 }
 

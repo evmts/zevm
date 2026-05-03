@@ -7,6 +7,8 @@ test "parse returns only user supplied values" {
     try std.testing.expect(options.mode == null);
     try std.testing.expect(options.host == null);
     try std.testing.expect(options.port == null);
+    try std.testing.expect(options.engine_host == null);
+    try std.testing.expect(options.engine_port == null);
     try std.testing.expect(!options.strict_checkpoint_age);
     try std.testing.expect(!options.strict_checkpoint_age_present);
 }
@@ -21,6 +23,10 @@ test "parse reads shared and trusted flags" {
         "0.0.0.0",
         "--port",
         "9555",
+        "--engine-host",
+        "0.0.0.0",
+        "--engine-port",
+        "9556",
         "--chain-id",
         "1",
         "--coinbase-index",
@@ -45,12 +51,18 @@ test "parse reads shared and trusted flags" {
         "https://rpc.example",
         "--fork-block-number",
         "123",
+        "--genesis",
+        "genesis.json",
+        "--chain-rlp",
+        "chain.rlp",
     });
 
     try std.testing.expectEqualStrings("zevm.json", options.config_path.?);
     try std.testing.expectEqual(cli.Mode.trusted, options.mode.?);
     try std.testing.expectEqualStrings("0.0.0.0", options.host.?);
     try std.testing.expectEqual(@as(u16, 9555), options.port.?);
+    try std.testing.expectEqualStrings("0.0.0.0", options.engine_host.?);
+    try std.testing.expectEqual(@as(u16, 9556), options.engine_port.?);
     try std.testing.expectEqual(@as(u64, 1), options.chain_id.?);
     try std.testing.expectEqual(@as(u8, 9), options.coinbase_index.?);
     try std.testing.expectEqual(@as(u256, 100), options.initial_balance.?);
@@ -58,7 +70,10 @@ test "parse reads shared and trusted flags" {
     try std.testing.expectEqual(@as(u64, 12), options.block_time.?);
     try std.testing.expectEqualStrings("https://rpc.example", options.fork_url.?);
     try std.testing.expectEqual(@as(u64, 123), options.fork_block_number.?);
+    try std.testing.expectEqualStrings("genesis.json", options.genesis_alloc_path.?);
+    try std.testing.expectEqualStrings("chain.rlp", options.chain_rlp_path.?);
     try std.testing.expect(options.hasTrustedOnly());
+    try std.testing.expect(options.hasEngineRpc());
 }
 
 test "parse reads light flags" {

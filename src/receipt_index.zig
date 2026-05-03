@@ -26,6 +26,18 @@ pub const ReceiptIndex = struct {
         self.by_block.deinit();
     }
 
+    pub fn clone(self: *const ReceiptIndex, allocator: std.mem.Allocator) !ReceiptIndex {
+        var cloned = ReceiptIndex.init(allocator);
+        errdefer cloned.deinit(allocator);
+
+        var block_it = self.by_block.iterator();
+        while (block_it.next()) |entry| {
+            try cloned.putBlockReceipts(allocator, entry.key_ptr.*, entry.value_ptr.*);
+        }
+
+        return cloned;
+    }
+
     /// Store receipts for a sealed block. Inserts into both indexes.
     pub fn putBlockReceipts(
         self: *ReceiptIndex,

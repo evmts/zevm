@@ -173,6 +173,43 @@ test "MiningCoordinator blockContext computes base and blob fees" {
     );
 }
 
+test "MiningCoordinator blockContext uses configured chain schedule" {
+    var coordinator = mining_coordinator.MiningCoordinator.init();
+    defer coordinator.deinit(std.testing.allocator);
+
+    coordinator.chain_id = 999;
+    coordinator.chain_config = .{
+        .homestead_block = 0,
+        .dao_block = 0,
+        .tangerine_whistle_block = 0,
+        .spurious_dragon_block = 0,
+        .byzantium_block = 0,
+        .petersburg_block = 0,
+        .istanbul_block = 0,
+        .muir_glacier_block = 0,
+        .berlin_block = 0,
+        .london_block = 0,
+        .arrow_glacier_block = 0,
+        .gray_glacier_block = 0,
+        .merge_block = 0,
+        .shanghai_timestamp = 0,
+        .cancun_timestamp = 100,
+        .prague_timestamp = std.math.maxInt(u64),
+        .osaka_timestamp = std.math.maxInt(u64),
+    };
+    coordinator.current_block_number = 1;
+    coordinator.current_timestamp = 0;
+    coordinator.current_base_fee_per_gas = 7;
+    try std.testing.expectEqual(@as(u256, 7), coordinator.blockContext(.{}).block_base_fee);
+    try std.testing.expectEqual(@as(u256, 0), coordinator.blockContext(.{}).blob_base_fee);
+
+    coordinator.current_timestamp = 100;
+    try std.testing.expectEqual(
+        mining_coordinator.nextBlobBaseFee(0, .CANCUN),
+        coordinator.blockContext(.{}).blob_base_fee,
+    );
+}
+
 fn makeHeader(params: struct {
     number: u64,
     timestamp: u64 = 0,

@@ -4,6 +4,7 @@ const state_manager = @import("state-manager");
 const guillotine_mini = @import("guillotine_mini");
 const tx_processor = @import("tx_processor.zig");
 const host_adapter = @import("host_adapter.zig");
+const hardfork_schedule = @import("hardfork_schedule.zig");
 const tx_encoding = @import("transaction_encoding.zig");
 
 fn makeLegacyTx(params: struct {
@@ -79,10 +80,28 @@ test "resolveHardfork follows block number and timestamp schedule" {
     ctx.block_timestamp = 1_746_612_311;
     try std.testing.expectEqual(guillotine_mini.Hardfork.PRAGUE, tx_processor.resolveHardfork(ctx));
 
-    ctx.chain_id = 31337;
     ctx.block_number = 0;
     ctx.block_timestamp = 0;
-    try std.testing.expectEqual(guillotine_mini.Hardfork.CANCUN, tx_processor.resolveHardfork(ctx));
+    const dev_config = hardfork_schedule.ChainConfig{
+        .homestead_block = 0,
+        .dao_block = 0,
+        .tangerine_whistle_block = 0,
+        .spurious_dragon_block = 0,
+        .byzantium_block = 0,
+        .petersburg_block = 0,
+        .istanbul_block = 0,
+        .muir_glacier_block = 0,
+        .berlin_block = 0,
+        .london_block = 0,
+        .arrow_glacier_block = 0,
+        .gray_glacier_block = 0,
+        .merge_block = 0,
+        .shanghai_timestamp = 0,
+        .cancun_timestamp = 0,
+        .prague_timestamp = std.math.maxInt(u64),
+        .osaka_timestamp = std.math.maxInt(u64),
+    };
+    try std.testing.expectEqual(guillotine_mini.Hardfork.CANCUN, tx_processor.resolveHardforkWithConfig(dev_config, ctx));
 }
 
 test "processTransaction uses block-context hardfork for intrinsic gas" {

@@ -3,6 +3,7 @@ const primitives = @import("primitives");
 const state_manager = @import("state-manager");
 const guillotine_mini = @import("guillotine_mini");
 const block_builder = @import("block_builder.zig");
+const genesis = @import("genesis.zig");
 const tx_processor = @import("tx_processor.zig");
 const host_adapter = @import("host_adapter.zig");
 const dev_runtime = @import("rpc/dev_runtime.zig");
@@ -103,6 +104,38 @@ test "buildBlock enforces block gas limit" {
 
     const gas_used_u64 = std.math.cast(u64, result.receipts[0].gas_used) orelse return error.GasOverflow;
     try std.testing.expectEqual(gas_used_u64, result.total_gas_used);
+
+    const expected_state_root = try block_builder.computeStateRoot(std.testing.allocator, &sm);
+    try std.testing.expectEqualSlices(u8, &expected_state_root, &result.state_root);
+    try std.testing.expect(!std.mem.eql(u8, &result.state_root, &primitives.Hash.ZERO));
+}
+
+test "computeStateRoot matches premine trie root" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+
+    const allocation = [_]genesis.PremineAccount{
+        .{
+            .address = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 },
+            .balance = 1_000,
+        },
+        .{
+            .address = primitives.Address{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 19 },
+            .balance = 2_000,
+            .nonce = 3,
+        },
+    };
+
+    for (&allocation) |account| {
+        try sm.initAccount(account.address, account.balance);
+        if (account.nonce != 0) {
+            try sm.setNonce(account.address, account.nonce);
+        }
+    }
+
+    const expected = try genesis.computeStateRootFromPremine(std.testing.allocator, &allocation);
+    const actual = try block_builder.computeStateRoot(std.testing.allocator, &sm);
+    try std.testing.expectEqualSlices(u8, &expected, &actual);
 }
 
 test "buildBlock rejects invalid included tx and reverts block state" {

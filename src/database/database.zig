@@ -13,14 +13,12 @@ pub const Database = struct {
     state: state_manager.StateManager,
     accounts: @import("accounts.zig").Accounts,
     contracts: @import("contracts.zig").Contracts,
-    block_hashes: @import("block_hashes.zig").BlockHashes,
 
     pub fn init(allocator: std.mem.Allocator, fork_backend: ?*state_manager.ForkBackend) !Database {
         return .{
             .state = try state_manager.StateManager.init(allocator, fork_backend),
             .accounts = @import("accounts.zig").Accounts.init(allocator),
             .contracts = @import("contracts.zig").Contracts.init(),
-            .block_hashes = @import("block_hashes.zig").BlockHashes.init(),
         };
     }
 
@@ -28,7 +26,6 @@ pub const Database = struct {
         self.state.deinit();
         self.accounts.deinit();
         self.contracts.deinit(allocator);
-        self.block_hashes.deinit(allocator);
     }
 
     /// Flush a single account from StateManager into the Accounts trie.

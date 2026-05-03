@@ -28,6 +28,8 @@ pub const Options = struct {
     mode: ?Mode = null,
     host: ?[]const u8 = null,
     port: ?u16 = null,
+    engine_host: ?[]const u8 = null,
+    engine_port: ?u16 = null,
 
     chain_id: ?u64 = null,
     coinbase_index: ?u8 = null,
@@ -41,6 +43,8 @@ pub const Options = struct {
     block_time: ?u64 = null,
     fork_url: ?[]const u8 = null,
     fork_block_number: ?u64 = null,
+    genesis_alloc_path: ?[]const u8 = null,
+    chain_rlp_path: ?[]const u8 = null,
 
     network: ?Network = null,
     consensus_rpc_url: ?[]const u8 = null,
@@ -63,7 +67,13 @@ pub const Options = struct {
             self.mining != null or
             self.block_time != null or
             self.fork_url != null or
-            self.fork_block_number != null;
+            self.fork_block_number != null or
+            self.genesis_alloc_path != null or
+            self.chain_rlp_path != null;
+    }
+
+    pub fn hasEngineRpc(self: Options) bool {
+        return self.engine_host != null or self.engine_port != null;
     }
 
     pub fn hasLightOnly(self: Options) bool {
@@ -99,6 +109,10 @@ pub fn parse(args: []const []const u8) ParseError!Options {
             options.host = try nextValue(args, &index);
         } else if (std.mem.eql(u8, arg, "--port")) {
             options.port = try parseIntValue(u16, try nextValue(args, &index));
+        } else if (std.mem.eql(u8, arg, "--engine-host")) {
+            options.engine_host = try nextValue(args, &index);
+        } else if (std.mem.eql(u8, arg, "--engine-port")) {
+            options.engine_port = try parseIntValue(u16, try nextValue(args, &index));
         } else if (std.mem.eql(u8, arg, "--chain-id")) {
             options.chain_id = try parseIntValue(u64, try nextValue(args, &index));
         } else if (std.mem.eql(u8, arg, "--coinbase-index")) {
@@ -123,6 +137,10 @@ pub fn parse(args: []const []const u8) ParseError!Options {
             options.fork_url = try nextValue(args, &index);
         } else if (std.mem.eql(u8, arg, "--fork-block-number")) {
             options.fork_block_number = try parseIntValue(u64, try nextValue(args, &index));
+        } else if (std.mem.eql(u8, arg, "--genesis")) {
+            options.genesis_alloc_path = try nextValue(args, &index);
+        } else if (std.mem.eql(u8, arg, "--chain-rlp")) {
+            options.chain_rlp_path = try nextValue(args, &index);
         } else if (std.mem.eql(u8, arg, "--network")) {
             options.network = networkFromString(try nextValue(args, &index)) orelse return error.InvalidFlagValue;
         } else if (std.mem.eql(u8, arg, "--consensus-rpc-url")) {

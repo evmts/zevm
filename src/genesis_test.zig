@@ -265,7 +265,7 @@ test "initGenesis stores genesis block in blockchain" {
     try std.testing.expectEqual(@as(u64, 0), head.?);
 }
 
-test "initGenesis records genesis hash in block_hashes" {
+test "initGenesis records genesis hash in canonical chain" {
     const allocator = std.testing.allocator;
     var db = try database.Database.init(allocator, null);
     defer db.deinit(allocator);
@@ -274,7 +274,7 @@ test "initGenesis records genesis hash in block_hashes" {
 
     const result = try genesis.initGenesis(allocator, &db, &chain, genesis.DEVNET_CHAIN_ID, null);
 
-    const hash = db.block_hashes.get(0);
+    const hash = chain.getCanonicalHash(0);
     try std.testing.expect(hash != null);
     try std.testing.expect(primitives.Hash.equals(&hash.?, &result.genesis_hash));
 }

@@ -91,11 +91,8 @@ pub fn verifyBootstrap(
     bootstrap: primitives.LightClientUpdate.LightClientBootstrap,
     checkpoint: [32]u8,
     fork_config: primitives.ForkConfig.ForkConfig,
-    genesis_validators_root: [32]u8,
     allocator: std.mem.Allocator,
 ) !void {
-    _ = genesis_validators_root;
-
     if (!try isHeaderExecutionPayloadProofValid(bootstrap.header, fork_config, allocator)) {
         return ConsensusVerifierError.InvalidExecutionPayloadProof;
     }

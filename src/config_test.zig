@@ -1,5 +1,6 @@
 const std = @import("std");
 const config = @import("config.zig");
+const hardfork_schedule = @import("hardfork_schedule.zig");
 const mining = @import("mining.zig");
 const node_runtime = @import("node/runtime.zig");
 
@@ -40,8 +41,11 @@ test "load defaults to trusted mode with shared defaults" {
     const trusted = try expectTrusted(app_config);
     try std.testing.expectEqualStrings("127.0.0.1", app_config.rpc.host);
     try std.testing.expectEqual(@as(u16, 8545), app_config.rpc.port);
+    try std.testing.expect(app_config.engine_rpc == null);
     try std.testing.expectEqual(@as(u64, 31337), trusted.chain_id);
     try std.testing.expectEqual(@as(u8, 0), trusted.coinbase_index);
+    try std.testing.expectEqual(node_runtime.DEFAULT_DEV_HARDFORK_CONFIG.cancun_timestamp, trusted.hardfork_config.cancun_timestamp);
+    try std.testing.expectEqual(node_runtime.DEFAULT_DEV_HARDFORK_CONFIG.prague_timestamp, trusted.hardfork_config.prague_timestamp);
     try std.testing.expectEqual(mining.MiningConfigType.auto, std.meta.activeTag(trusted.mining_config));
     try std.testing.expect(trusted.fork == null);
 }
@@ -53,6 +57,7 @@ test "load merges trusted config file with CLI precedence" {
     const config_path = try writeTmpFile(std.testing.allocator, &tmp_dir, "trusted.json",
         \\{
         \\  "rpc": { "host": "127.0.0.1", "port": 8000 },
+        \\  "engineRpc": { "host": "127.0.0.1", "port": 8551 },
         \\  "mode": {
         \\    "trusted": {
         \\      "chainId": 1,
@@ -64,7 +69,9 @@ test "load merges trusted config file with CLI precedence" {
         \\      "maxPriorityFeePerGas": "5",
         \\      "blockGasLimit": 9000000,
         \\      "mining": { "type": "interval", "blockTime": 10 },
-        \\      "fork": { "url": "https://config-rpc.example", "blockNumber": 7 }
+        \\      "fork": { "url": "https://config-rpc.example", "blockNumber": 7 },
+        \\      "genesis": "file-genesis.json",
+        \\      "chainRlp": "file-chain.rlp"
         \\    }
         \\  }
         \\}
@@ -76,16 +83,24 @@ test "load merges trusted config file with CLI precedence" {
         config_path,
         "--host",
         "0.0.0.0",
+        "--engine-port",
+        "8552",
         "--chain-id",
         "2",
         "--mining",
         "manual",
+        "--genesis",
+        "cli-genesis.json",
+        "--chain-rlp",
+        "cli-chain.rlp",
     });
     defer app_config.deinit(std.testing.allocator);
 
     const trusted = try expectTrusted(app_config);
     try std.testing.expectEqualStrings("0.0.0.0", app_config.rpc.host);
     try std.testing.expectEqual(@as(u16, 8000), app_config.rpc.port);
+    try std.testing.expectEqualStrings("127.0.0.1", app_config.engine_rpc.?.host);
+    try std.testing.expectEqual(@as(u16, 8552), app_config.engine_rpc.?.port);
     try std.testing.expectEqual(@as(u64, 2), trusted.chain_id);
     try std.testing.expectEqual(@as(u8, 2), trusted.coinbase_index);
     try std.testing.expectEqual(@as(u256, 100), trusted.initial_balance);
@@ -93,12 +108,74 @@ test "load merges trusted config file with CLI precedence" {
     try std.testing.expectEqual(mining.MiningConfigType.manual, std.meta.activeTag(trusted.mining_config));
     try std.testing.expectEqualStrings("https://config-rpc.example", trusted.fork.?.url);
     try std.testing.expectEqual(@as(u64, 7), trusted.fork.?.block_number.?);
+    try std.testing.expectEqualStrings("cli-genesis.json", trusted.genesis_alloc_path.?);
+    try std.testing.expectEqualStrings("cli-chain.rlp", trusted.chain_rlp_path.?);
+    try std.testing.expectEqual(node_runtime.DEFAULT_DEV_HARDFORK_CONFIG.cancun_timestamp, trusted.hardfork_config.cancun_timestamp);
 
     const node_config = trusted.toNodeConfig();
     try std.testing.expectEqual(@as(u64, 9_000_000), node_config.block_gas_limit);
-    var rt = try node_runtime.NodeRuntime.init(std.testing.allocator, node_config);
+    try std.testing.expectEqualStrings("cli-genesis.json", node_config.genesis_alloc_path.?);
+    try std.testing.expectEqualStrings("cli-chain.rlp", node_config.chain_rlp_path.?);
+    var node_config_without_genesis = node_config;
+    node_config_without_genesis.genesis_alloc_path = null;
+    node_config_without_genesis.chain_rlp_path = null;
+    var rt = try node_runtime.NodeRuntime.init(std.testing.allocator, node_config_without_genesis);
     defer rt.deinit();
     try std.testing.expectEqual(@as(u64, 9_000_000), rt.dev_runtime.config.block_gas_limit);
+}
+
+test "load rejects engine RPC in light mode" {
+    try std.testing.expectError(error.InvalidConfig, config.load(std.testing.allocator, &[_][]const u8{
+        "--mode",
+        "light",
+        "--engine-port",
+        "8551",
+        "--network",
+        "sepolia",
+        "--consensus-rpc-url",
+        "https://beacon.example",
+    }));
+}
+
+test "load parses trusted hardfork overrides from config" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const config_path = try writeTmpFile(std.testing.allocator, &tmp_dir, "hardfork.json",
+        \\{
+        \\  "mode": {
+        \\    "trusted": {
+        \\      "chainId": 1,
+        \\      "hardfork": {
+        \\        "londonBlock": 10,
+        \\        "mergeBlock": 20,
+        \\        "shanghaiTimestamp": 30,
+        \\        "cancunTimestamp": 40,
+        \\        "pragueTimestamp": 50,
+        \\        "osakaTimestamp": 60,
+        \\        "secondsPerSlot": 2
+        \\      }
+        \\    }
+        \\  }
+        \\}
+    );
+    defer std.testing.allocator.free(config_path);
+
+    var app_config = try config.load(std.testing.allocator, &[_][]const u8{ "--config", config_path });
+    defer app_config.deinit(std.testing.allocator);
+
+    const trusted = try expectTrusted(app_config);
+    try std.testing.expectEqual(hardfork_schedule.MAINNET_CHAIN_CONFIG.berlin_block, trusted.hardfork_config.berlin_block);
+    try std.testing.expectEqual(@as(u64, 10), trusted.hardfork_config.london_block);
+    try std.testing.expectEqual(@as(u64, 20), trusted.hardfork_config.merge_block);
+    try std.testing.expectEqual(@as(u64, 30), trusted.hardfork_config.shanghai_timestamp);
+    try std.testing.expectEqual(@as(u64, 40), trusted.hardfork_config.cancun_timestamp);
+    try std.testing.expectEqual(@as(u64, 50), trusted.hardfork_config.prague_timestamp);
+    try std.testing.expectEqual(@as(u64, 60), trusted.hardfork_config.osaka_timestamp);
+    try std.testing.expectEqual(@as(u64, 2), trusted.hardfork_config.seconds_per_slot);
+
+    const node_config = trusted.toNodeConfig();
+    try std.testing.expectEqual(@as(u64, 40), node_config.hardfork_config.?.cancun_timestamp);
 }
 
 test "load requires config to contain exactly one mode branch" {
@@ -129,6 +206,43 @@ test "load requires config to contain exactly one mode branch" {
         error.InvalidConfig,
         config.load(std.testing.allocator, &[_][]const u8{ "--config", neither_path }),
     );
+}
+
+test "loadWithDiagnostics classifies config file failures" {
+    var missing = config.LoadDiagnostics{};
+    try std.testing.expectError(
+        error.InvalidConfig,
+        config.loadWithDiagnostics(std.testing.allocator, &[_][]const u8{ "--config", ".zig-cache/tmp/does-not-exist.json" }, &missing),
+    );
+    try std.testing.expectEqual(config.LoadFailureClass.missing_file, missing.failure_class);
+    try std.testing.expectEqualStrings(".zig-cache/tmp/does-not-exist.json", missing.config_path.?);
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const malformed_path = try writeTmpFile(std.testing.allocator, &tmp_dir, "malformed.json", "{");
+    defer std.testing.allocator.free(malformed_path);
+
+    var malformed = config.LoadDiagnostics{};
+    try std.testing.expectError(
+        error.InvalidConfig,
+        config.loadWithDiagnostics(std.testing.allocator, &[_][]const u8{ "--config", malformed_path }, &malformed),
+    );
+    try std.testing.expectEqual(config.LoadFailureClass.malformed_json, malformed.failure_class);
+    try std.testing.expectEqualStrings(malformed_path, malformed.config_path.?);
+
+    const schema_path = try writeTmpFile(std.testing.allocator, &tmp_dir, "schema.json",
+        \\{ "unknown": true }
+    );
+    defer std.testing.allocator.free(schema_path);
+
+    var schema = config.LoadDiagnostics{};
+    try std.testing.expectError(
+        error.InvalidConfig,
+        config.loadWithDiagnostics(std.testing.allocator, &[_][]const u8{ "--config", schema_path }, &schema),
+    );
+    try std.testing.expectEqual(config.LoadFailureClass.schema, schema.failure_class);
+    try std.testing.expectEqualStrings(schema_path, schema.config_path.?);
 }
 
 test "load rejects explicit CLI mode mismatch with config branch" {

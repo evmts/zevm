@@ -3,8 +3,45 @@ const primitives = @import("primitives");
 
 const MAX_EXTRA_DATA_BYTES: usize = 32;
 
+pub const GenesisInfo = struct {
+    genesis_time: u64,
+    genesis_validators_root: [32]u8,
+};
+
+pub const BeaconHeaderInfo = struct {
+    root: [32]u8,
+    slot: u64,
+};
+
 pub const BeaconApi = struct {
     endpoint_url: []const u8,
+
+    pub fn getGenesis(
+        self: BeaconApi,
+        allocator: std.mem.Allocator,
+    ) !GenesisInfo {
+        const url = try self.buildGenesisUrl(allocator);
+        defer allocator.free(url);
+
+        const response = try self.httpGet(allocator, url);
+        defer allocator.free(response.body);
+
+        return try parseGenesisResponse(allocator, response.body);
+    }
+
+    pub fn getHeader(
+        self: BeaconApi,
+        allocator: std.mem.Allocator,
+        block_root: [32]u8,
+    ) !BeaconHeaderInfo {
+        const url = try self.buildHeaderUrl(allocator, block_root);
+        defer allocator.free(url);
+
+        const response = try self.httpGet(allocator, url);
+        defer allocator.free(response.body);
+
+        return try parseHeaderResponse(allocator, response.body);
+    }
 
     pub fn getBootstrap(
         self: BeaconApi,
@@ -76,6 +113,40 @@ pub const BeaconApi = struct {
             allocator,
             "{s}/eth/v1/beacon/light_client/bootstrap/{s}",
             .{ endpoint, checkpoint_hex[0..] },
+        );
+    }
+
+    pub fn buildGenesisUrl(
+        self: BeaconApi,
+        allocator: std.mem.Allocator,
+    ) ![]u8 {
+        const endpoint = endpointWithoutTrailingSlash(self.endpoint_url);
+        if (endpoint.len == 0) {
+            return error.InvalidEndpointUrl;
+        }
+
+        return try std.fmt.allocPrint(
+            allocator,
+            "{s}/eth/v1/beacon/genesis",
+            .{endpoint},
+        );
+    }
+
+    pub fn buildHeaderUrl(
+        self: BeaconApi,
+        allocator: std.mem.Allocator,
+        block_root: [32]u8,
+    ) ![]u8 {
+        const endpoint = endpointWithoutTrailingSlash(self.endpoint_url);
+        if (endpoint.len == 0) {
+            return error.InvalidEndpointUrl;
+        }
+
+        const root_hex = bytesToHex(32, block_root);
+        return try std.fmt.allocPrint(
+            allocator,
+            "{s}/eth/v1/beacon/headers/{s}",
+            .{ endpoint, root_hex[0..] },
         );
     }
 
@@ -238,6 +309,40 @@ pub fn parseBootstrapResponse(
     json_response: []const u8,
 ) !primitives.LightClientUpdate.LightClientBootstrap {
     return parseBootstrapResponseWithFork(allocator, json_response, null);
+}
+
+pub fn parseGenesisResponse(
+    allocator: std.mem.Allocator,
+    json_response: []const u8,
+) !GenesisInfo {
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_response, .{
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+
+    const data = try getDataField(parsed.value);
+    return .{
+        .genesis_time = try parseU64(try getStringField(data, "genesis_time")),
+        .genesis_validators_root = try hexToBytes(32, try getStringField(data, "genesis_validators_root")),
+    };
+}
+
+pub fn parseHeaderResponse(
+    allocator: std.mem.Allocator,
+    json_response: []const u8,
+) !BeaconHeaderInfo {
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_response, .{
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+
+    const data = try getDataField(parsed.value);
+    const header = try getObjectField(data, "header");
+    const message = try getObjectField(header, "message");
+    return .{
+        .root = try hexToBytes(32, try getStringField(data, "root")),
+        .slot = try parseU64(try getStringField(message, "slot")),
+    };
 }
 
 pub fn parseBootstrapResponseWithFork(

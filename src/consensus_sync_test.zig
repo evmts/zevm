@@ -83,6 +83,100 @@ test "checkpointAgeInfo records stale startup warning fields" {
     try std.testing.expect(info.stale);
 }
 
+test "checkpoint age derives from beacon genesis and header data" {
+    var config = testConfig(0, 120);
+    config.genesis_validators_root = [_]u8{0x44} ** 32;
+    var engine = consensus_sync.ConsensusSyncEngine.init(config);
+
+    const checkpoint = [_]u8{0xaa} ** 32;
+    const info = try engine.checkpointAgeInfoFromBeaconData(
+        .{
+            .genesis_time = 1_000,
+            .genesis_validators_root = [_]u8{0x44} ** 32,
+        },
+        .{
+            .root = checkpoint,
+            .slot = 5,
+        },
+        checkpoint,
+        1_180,
+    );
+
+    try std.testing.expectEqual(@as(u64, 1_060), info.checkpoint_time_seconds);
+    try std.testing.expectEqual(@as(u64, 1_180), info.startup_time_seconds);
+    try std.testing.expectEqual(@as(u64, 120), info.age_seconds);
+    try std.testing.expect(!info.stale);
+}
+
+test "checkpoint age rejects mismatched beacon network" {
+    var config = testConfig(0, 120);
+    config.genesis_validators_root = [_]u8{0x44} ** 32;
+    var engine = consensus_sync.ConsensusSyncEngine.init(config);
+
+    try std.testing.expectError(
+        error.ConsensusNetworkMismatch,
+        engine.checkpointAgeInfoFromBeaconData(
+            .{
+                .genesis_time = 1_000,
+                .genesis_validators_root = [_]u8{0x45} ** 32,
+            },
+            .{
+                .root = [_]u8{0xaa} ** 32,
+                .slot = 5,
+            },
+            [_]u8{0xaa} ** 32,
+            1_180,
+        ),
+    );
+}
+
+test "checkpoint age rejects header root mismatch" {
+    var config = testConfig(0, 120);
+    config.genesis_validators_root = [_]u8{0x44} ** 32;
+    var engine = consensus_sync.ConsensusSyncEngine.init(config);
+
+    try std.testing.expectError(
+        error.CheckpointRootMismatch,
+        engine.checkpointAgeInfoFromBeaconData(
+            .{
+                .genesis_time = 1_000,
+                .genesis_validators_root = [_]u8{0x44} ** 32,
+            },
+            .{
+                .root = [_]u8{0xab} ** 32,
+                .slot = 5,
+            },
+            [_]u8{0xaa} ** 32,
+            1_180,
+        ),
+    );
+}
+
+test "strict checkpoint age rejects stale startup while non-strict warns and continues" {
+    const checkpoint = [_]u8{0xaa} ** 32;
+    const stale_info = consensus_sync.CheckpointAgeInfo{
+        .checkpoint_time_seconds = 1_000,
+        .startup_time_seconds = 1_121,
+        .age_seconds = 121,
+        .max_checkpoint_age_seconds = 120,
+        .stale = true,
+    };
+    const context = consensus_sync.CheckpointStartupContext{ .source = "test" };
+
+    var non_strict_config = testConfig(0, 120);
+    non_strict_config.strict_checkpoint_age = false;
+    var non_strict = consensus_sync.ConsensusSyncEngine.init(non_strict_config);
+    try non_strict.enforceStartupCheckpointAge(checkpoint, context, stale_info);
+
+    var strict_config = testConfig(0, 120);
+    strict_config.strict_checkpoint_age = true;
+    var strict = consensus_sync.ConsensusSyncEngine.init(strict_config);
+    try std.testing.expectError(
+        error.CheckpointTooOld,
+        strict.enforceStartupCheckpointAge(checkpoint, context, stale_info),
+    );
+}
+
 test "ConsensusSyncEngine initialization has expected defaults" {
     var engine = consensus_sync.ConsensusSyncEngine.init(testConfig(0, 1_209_600));
 

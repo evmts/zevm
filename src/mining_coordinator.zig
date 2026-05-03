@@ -42,6 +42,7 @@ pub const MiningMode = enum {
 pub const MiningBlockOptions = struct {
     prevrandao: u256 = 0,
     blob_gas_used: u64 = 0,
+    block_hashes: []const [32]u8 = &.{},
     dev_runtime: ?*dev_runtime.DevRuntime = null,
 };
 
@@ -195,6 +196,7 @@ pub const MiningCoordinator = struct {
     current_timestamp: u64,
     block_gas_limit: u64,
     chain_id: u256,
+    chain_config: hardfork_schedule.ChainConfig,
     coinbase: primitives.Address,
     current_base_fee_per_gas: ?u256,
     current_excess_blob_gas: u64,
@@ -211,6 +213,7 @@ pub const MiningCoordinator = struct {
             .current_timestamp = 1000,
             .block_gas_limit = 30_000_000,
             .chain_id = 1,
+            .chain_config = hardfork_schedule.MAINNET_CHAIN_CONFIG,
             .coinbase = primitives.Address{ .bytes = [_]u8{0xCB} ++ [_]u8{0} ** 19 },
             .current_base_fee_per_gas = null,
             .current_excess_blob_gas = 0,
@@ -240,7 +243,7 @@ pub const MiningCoordinator = struct {
     }
 
     pub fn blockContext(self: *const MiningCoordinator, options: MiningBlockOptions) guillotine_mini.BlockContext {
-        const active_hardfork = resolveHardfork(self.current_block_number, self.current_timestamp);
+        const active_hardfork = resolveHardforkWithConfig(self.chain_config, self.current_block_number, self.current_timestamp);
         const block_base_fee = currentBlockBaseFee(self.current_base_fee_per_gas, active_hardfork);
         const excess_blob_gas = if (active_hardfork.isAtLeast(.CANCUN)) self.current_excess_blob_gas else 0;
 
@@ -254,6 +257,7 @@ pub const MiningCoordinator = struct {
             .block_gas_limit = self.block_gas_limit,
             .block_base_fee = block_base_fee,
             .blob_base_fee = nextBlobBaseFee(excess_blob_gas, active_hardfork),
+            .block_hashes = options.block_hashes,
         };
     }
 
@@ -301,7 +305,7 @@ pub const MiningCoordinator = struct {
         options: MiningBlockOptions,
     ) !block_builder.BlockResult {
         const block_ctx = block_builder.blockContextWithEnvironmentOverrides(options.dev_runtime, self.blockContext(options));
-        const active_hardfork = resolveHardfork(block_ctx.block_number, block_ctx.block_timestamp);
+        const active_hardfork = resolveHardforkWithConfig(self.chain_config, block_ctx.block_number, block_ctx.block_timestamp);
         const block_base_fee = block_ctx.block_base_fee;
 
         const result = try block_builder.buildBlockWithOptions(
@@ -310,7 +314,10 @@ pub const MiningCoordinator = struct {
             host_iface,
             self.pending_txs.items,
             block_ctx,
-            .{ .dev_runtime = options.dev_runtime },
+            .{
+                .dev_runtime = options.dev_runtime,
+                .hardfork_config = self.chain_config,
+            },
         );
 
         self.pending_txs.clearRetainingCapacity();
@@ -371,7 +378,7 @@ pub const MiningCoordinator = struct {
         blob_gas_used: u64,
         block_gas_limit: u64,
     ) void {
-        const next_hardfork = resolveHardfork(self.current_block_number + 1, self.current_timestamp + 1);
+        const next_hardfork = resolveHardforkWithConfig(self.chain_config, self.current_block_number + 1, self.current_timestamp + 1);
         if (next_hardfork.isBefore(.LONDON)) {
             self.current_base_fee_per_gas = null;
         } else if (active_hardfork.isBefore(.LONDON)) {
