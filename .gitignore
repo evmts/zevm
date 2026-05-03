@@ -10,6 +10,8 @@ tevm-monorepo
 effect-repo/
 
 .crush/
+.claude/
+.jj/
 
 .scratch/
 # Worktrees directory is temporarily ignored but compiled artifacts should still be prevented
@@ -98,6 +100,7 @@ _
 
 # zig
 .zig-cache/
+.zig-cache-codex-check/
 zig-out/
 zig-cache/
 /bin/

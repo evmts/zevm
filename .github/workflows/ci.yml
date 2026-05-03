@@ -174,7 +174,7 @@ jobs:
   release-assets:
     name: Published Release Asset Validation
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 120
     if: github.event_name == 'release'
     env:
       GH_TOKEN: ${{ github.token }}
@@ -275,6 +275,14 @@ jobs:
         with:
           version: ${{ steps.release_tuple.outputs.zig_version }}
 
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+
       - name: Install native build dependencies
         run: sudo apt-get update && sudo apt-get install -y cargo perl rustc
 
@@ -285,5 +293,13 @@ jobs:
           test "$(git -C ../voltaire rev-parse HEAD)" = "${{ steps.release_tuple.outputs.voltaire_revision }}"
           test "$(git -C ../guillotine-mini rev-parse HEAD)" = "${{ steps.release_tuple.outputs.guillotine_mini_revision }}"
           test "$(zig version)" = "${{ steps.release_tuple.outputs.zig_version }}"
-          zig build verify-fast
+          zig build verify
           zig build qualification-check -- --require-covered
+
+      - name: Hive rpc-compat smoke against materialized tuple
+        working-directory: zevm
+        run: bun tools/hive_rpc_compat_smoke.ts
+
+      - name: Dirty worktree preflight
+        working-directory: zevm
+        run: git diff --exit-code -- .

@@ -6,7 +6,7 @@
       "name": "ethereum-tests-state",
       "path": "ethereum-tests/LegacyTests/*/GeneralStateTests",
       "status": "partial",
-      "reason": "GeneralStateTests populated via git submodule update; active legacy cases now execute every post fork case and compare state root plus logs hash.",
+      "reason": "GeneralStateTests populated via git submodule update; active legacy cases now execute every post fork case in active directories and compare state root plus logs hash.",
       "activeCases": [
         "LegacyTests/Cancun/GeneralStateTests/stArgsZeroOneBalance/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stAttackTest/*.json",
@@ -32,13 +32,6 @@
         "LegacyTests/Cancun/GeneralStateTests/stStackTests/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stStaticFlagEnabled/*.json",
         "LegacyTests/Cancun/GeneralStateTests/stTransitionTest/*.json"
-      ],
-      "quarantined": [
-        {
-          "path": "LegacyTests/Cancun/GeneralStateTests/stPreCompiledContracts/modexpTests.json",
-          "reason": "MODEXP oversized-length vectors require full arbitrary-precision big-integer precompile semantics; currently unimplemented",
-          "unquarantine": "implement full MODEXP big-integer length semantics and verify all post cases pass"
-        }
       ],
       "remaining": [
         "walk stExtCodeHash after fixing dynamicAccountOverwriteEmpty Cancun state-root mismatch exposed by external verification",
@@ -104,11 +97,13 @@
         "execution-apis/tests/eth_getStorageAt/get-storage-unknown-account.io",
         "execution-apis/tests/eth_getTransactionCount/get-nonce-unknown-account.io",
         "execution-apis/tests/eth_syncing/check-syncing.io",
-        "execution-apis/tests/net_version/get-network-id.io"
+        "execution-apis/tests/net_version/get-network-id.io",
+        "execution-apis/tests/headfcu.json"
       ],
       "remaining": [
-        "materialize the execution-apis chain.rlp/genesis/head forkchoice setup in ZEVM",
-        "map hive client lifecycle onto the zevm binary",
+        "phase-1 query-only chain.rlp import intentionally does not execute imported payloads into ZEVM state",
+        "phase-1 query-only chain.rlp import intentionally does not index receipts and logs for imported blocks",
+        "implement Engine payload methods before promoting full imported-chain lifecycle coverage",
         "run every rpc-compat .io transcript, including block, receipt, log, call, estimate, and sendRawTransaction methods"
       ]
     }

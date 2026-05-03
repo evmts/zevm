@@ -1,6 +1,6 @@
 {
   "schemaVersion": "zevm-release-qualification-map.v1",
-  "updated": "2026-05-01",
+  "updated": "2026-05-03",
   "prdSource": "docs/specs/prd.md#35-release-qualification-and-verification-acceptance-criteria",
   "records": [
     {
@@ -10,7 +10,9 @@
       "assertionType": "release-asset-validation",
       "assertionIdentifier": "zig build; zig build test",
       "expectedContractOutcome": "Candidate source state builds the zevm binary and default Zig test graph without ad-hoc dependency or path edits.",
-      "coverageStatus": "covered"
+      "coverageStatus": "blocked",
+      "gapReason": "Local macOS launch policy prevents newly built executables from reaching main, so zig build test cannot complete on this host; sibling dependencies are also not clean/pinned for release qualification.",
+      "ownerTicket": ".smithers/tickets/063-fix-built-executable-launch-hang-in-test-gates.md"
     },
     {
       "surfaceId": "RELEASE_METADATA_RELEASE_TUPLE_JSON",
@@ -100,7 +102,9 @@
       "assertionType": "default-graph-test",
       "assertionIdentifier": "src/rpc/listener_smoke_test.zig:trusted mode serves JSON-RPC over a real TCP listener; trusted mode returns 204 for a notification over a real TCP listener",
       "expectedContractOutcome": "A release verification test binds the real HTTP listener socket in trusted mode and completes a JSON-RPC request over TCP.",
-      "coverageStatus": "covered"
+      "coverageStatus": "blocked",
+      "gapReason": "The listener smoke test exists in the default graph, but execution is currently blocked on this macOS host by the built-executable launch-policy failure.",
+      "ownerTicket": ".smithers/tickets/063-fix-built-executable-launch-hang-in-test-gates.md"
     },
     {
       "surfaceId": "RPC_SHIPPING_LISTENER_SMOKE_LIGHT_CHECKPOINT_RESUME",
@@ -109,7 +113,9 @@
       "assertionType": "default-graph-test",
       "assertionIdentifier": "src/rpc/listener_smoke_test.zig:light mode restarts from persisted checkpoint over a real TCP listener",
       "expectedContractOutcome": "A release verification test binds the real HTTP listener socket in light mode and validates startup plus restart/resume from a persisted checkpoint input path.",
-      "coverageStatus": "covered"
+      "coverageStatus": "blocked",
+      "gapReason": "The light listener restart/resume smoke test exists in the default graph, but execution is currently blocked on this macOS host by the built-executable launch-policy failure.",
+      "ownerTicket": ".smithers/tickets/063-fix-built-executable-launch-hang-in-test-gates.md"
     },
     {
       "surfaceId": "RPC_ENVELOPE_AND_ERROR_TUPLES",
@@ -173,6 +179,28 @@
       "assertionIdentifier": "src/rpc/dispatcher_test.zig; src/rpc/handlers/simulation_test.zig",
       "expectedContractOutcome": "Out-of-contract methods return method-not-found, and phase-1 light-mode unsupported trusted families return the documented mode-unsupported error.",
       "coverageStatus": "covered"
+    },
+    {
+      "surfaceId": "EXTERNAL_ETHEREUM_FIXTURE_CONFORMANCE",
+      "surfaceSection": "PRD 3.5",
+      "surfaceCategory": "runtime",
+      "assertionType": "default-graph-test",
+      "assertionIdentifier": ".smithers/external-test-suites.json; tools/external_verify.zig",
+      "expectedContractOutcome": "Official Ethereum state, blockchain, and execution-spec fixture coverage either passes in the release gate or has explicit phase-1 exclusions.",
+      "coverageStatus": "gap",
+      "gapReason": "The active external suites are still partial and the full fixture corpus is not yet covered by the release gate.",
+      "ownerTicket": ".smithers/tickets/018-expand-ethereum-fixture-conformance.md"
+    },
+    {
+      "surfaceId": "HIVE_RPC_COMPAT_FULL_LIFECYCLE",
+      "surfaceSection": "PRD 3.5",
+      "surfaceCategory": "method",
+      "assertionType": "default-graph-test",
+      "assertionIdentifier": ".smithers/external-test-suites.json; tools/hive_rpc_compat_smoke.ts",
+      "expectedContractOutcome": "Hive rpc-compat lifecycle coverage either passes in the release gate or has explicit phase-1 exclusions.",
+      "coverageStatus": "gap",
+      "gapReason": "The current Hive command is a smoke subset; full rpc-compat lifecycle coverage is not wired as a release gate and chain.rlp-dependent state/receipt/log behavior is explicitly out of phase-1 contract.",
+      "ownerTicket": ".smithers/tickets/019-integrate-real-hive-rpc-compat-lifecycle.md"
     }
   ]
 }

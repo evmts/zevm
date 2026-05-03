@@ -78,6 +78,8 @@ const hive_rpc_fixture_paths = [_][]const u8{
     "execution-apis/tests/net_version/get-network-id.io",
 };
 
+const hive_rpc_head_forkchoice_path = "execution-apis/tests/headfcu.json";
+
 // External fixture expansion remains tracked by release-readiness tickets:
 // state/block fixture discovery, broader legacy-state coverage, and the
 // remaining rpc-compat .io lifecycle inputs are not complete yet.
@@ -666,11 +668,6 @@ fn runLegacyCancunStateFixture(
             });
             defer allocator.free(task_label);
             if (ctx.claimTask(task_label)) |task_id| {
-                if (legacyPostCaseSkipReason(label_path, fixture_name)) |reason| {
-                    ctx.skipTask(task_id, "legacy-state", task_label, reason);
-                    ran += 1;
-                    continue;
-                }
                 const started_ns = ctx.startTask(task_id, "legacy-state", task_label);
                 runLegacyStatePostCase(allocator, fixture, post_case, hardfork, ctx.options.dump_state_on_mismatch) catch |err| {
                     ctx.failTask(task_id, "legacy-state", task_label, started_ns, err);
@@ -683,14 +680,6 @@ fn runLegacyCancunStateFixture(
     }
 
     if (ran == 0) return VerifyError.InvalidFixture;
-}
-
-fn legacyPostCaseSkipReason(label_path: []const u8, fixture_name: []const u8) ?[]const u8 {
-    _ = fixture_name;
-    if (std.mem.endsWith(u8, label_path, "stPreCompiledContracts/modexpTests.json")) {
-        return "MODEXP oversized-length vectors are quarantined pending full big-integer precompile semantics";
-    }
-    return null;
 }
 
 fn runLegacyStatePostCase(
@@ -990,26 +979,44 @@ fn runHiveRpcCompatibilityFixtures(allocator: std.mem.Allocator, repo_root: []co
     defer allocator.free(forkenv_path);
     var forkenv = try readJson(allocator, forkenv_path);
     defer forkenv.deinit();
-    const chain_id_text = try stringField(forkenv.value, "HIVE_CHAIN_ID");
+    const genesis_path = try std.fs.path.join(allocator, &.{ repo_root, "execution-apis/tests/genesis.json" });
+    defer allocator.free(genesis_path);
+    const chain_rlp_path = try std.fs.path.join(allocator, &.{ repo_root, "execution-apis/tests/chain.rlp" });
+    defer allocator.free(chain_rlp_path);
 
-    const port: u16 = 18545;
-    var port_buf: [16]u8 = undefined;
-    const port_arg = try std.fmt.bufPrint(&port_buf, "{d}", .{port});
-    var child = std.process.Child.init(&.{
-        zevm_bin,
-        "--host",
-        "127.0.0.1",
-        "--port",
-        port_arg,
-        "--chain-id",
-        chain_id_text,
-    }, allocator);
+    const ports = try reserveDistinctLoopbackPorts();
+    const port = ports.rpc;
+    const engine_port = ports.engine;
+    const config_path = try writeHiveRpcCompatibilityConfig(allocator, repo_root, forkenv.value, port, engine_port, genesis_path, chain_rlp_path);
+    defer {
+        std.fs.cwd().deleteFile(config_path) catch {};
+        allocator.free(config_path);
+    }
+
+    var args = std.ArrayList([]const u8).empty;
+    defer args.deinit(allocator);
+    try args.append(allocator, zevm_bin);
+    try args.append(allocator, "--config");
+    try args.append(allocator, config_path);
+
+    var child = std.process.Child.init(args.items, allocator);
     child.cwd = repo_root;
     child.stdin_behavior = .Close;
     child.stdout_behavior = .Close;
     child.stderr_behavior = .Close;
     try child.spawn();
     defer _ = child.kill() catch {};
+
+    if (ctx.claimTask(hive_rpc_head_forkchoice_path)) |task_id| {
+        const started_ns = ctx.startTask(task_id, "hive-rpc-compat", hive_rpc_head_forkchoice_path);
+        const path = try std.fs.path.join(allocator, &.{ repo_root, hive_rpc_head_forkchoice_path });
+        defer allocator.free(path);
+        runHiveHeadForkchoice(allocator, engine_port, path) catch |err| {
+            ctx.failTask(task_id, "hive-rpc-compat", hive_rpc_head_forkchoice_path, started_ns, err);
+            return err;
+        };
+        ctx.finishTask(task_id, "hive-rpc-compat", started_ns);
+    }
 
     for (hive_rpc_fixture_paths) |relative_path| {
         const path = try std.fs.path.join(allocator, &.{ repo_root, relative_path });
@@ -1027,6 +1034,163 @@ fn runHiveRpcCompatibilityFixtures(allocator: std.mem.Allocator, repo_root: []co
         };
         ctx.finishTask(task_id, "hive-rpc-compat", started_ns);
     }
+}
+
+const ReservedPorts = struct {
+    rpc: u16,
+    engine: u16,
+};
+
+fn writeHiveRpcCompatibilityConfig(
+    allocator: std.mem.Allocator,
+    repo_root: []const u8,
+    forkenv: std.json.Value,
+    rpc_port: u16,
+    engine_port: u16,
+    genesis_path: []const u8,
+    chain_rlp_path: []const u8,
+) ![]u8 {
+    const temp_dir = try std.fs.path.join(allocator, &.{ repo_root, ".zig-cache", "tmp" });
+    defer allocator.free(temp_dir);
+    try std.fs.cwd().makePath(temp_dir);
+
+    const timestamp = std.time.nanoTimestamp();
+    const file_name = try std.fmt.allocPrint(allocator, "external-verify-hive-rpc-{d}.json", .{timestamp});
+    defer allocator.free(file_name);
+    const config_path = try std.fs.path.join(allocator, &.{ temp_dir, file_name });
+    errdefer allocator.free(config_path);
+
+    var out = std.Io.Writer.Allocating.init(allocator);
+    defer out.deinit();
+    const writer = &out.writer;
+
+    const chain_id = try forkenvU64(forkenv, "HIVE_CHAIN_ID");
+    const json_max_i64: u64 = 9223372036854775807;
+
+    try writer.print(
+        \\{{
+        \\  "rpc": {{ "host": "127.0.0.1", "port": {d} }},
+        \\  "engineRpc": {{ "host": "127.0.0.1", "port": {d} }},
+        \\  "mode": {{
+        \\    "trusted": {{
+        \\      "chainId": {d},
+        \\      "blobBaseFee": "1",
+        \\      "mining": {{ "type": "manual" }},
+        \\      "genesis":
+    , .{ rpc_port, engine_port, chain_id });
+    try std.json.Stringify.value(genesis_path, .{}, writer);
+    try writer.writeAll(
+        \\
+        \\,
+        \\      "chainRlp":
+    );
+    try std.json.Stringify.value(chain_rlp_path, .{}, writer);
+    try writer.print(
+        \\,
+        \\      "hardfork": {{
+        \\        "homesteadBlock": {d},
+        \\        "tangerineWhistleBlock": {d},
+        \\        "spuriousDragonBlock": {d},
+        \\        "byzantiumBlock": {d},
+        \\        "petersburgBlock": {d},
+        \\        "istanbulBlock": {d},
+        \\        "muirGlacierBlock": {d},
+        \\        "berlinBlock": {d},
+        \\        "londonBlock": {d},
+        \\        "arrowGlacierBlock": {d},
+        \\        "grayGlacierBlock": {d},
+        \\        "mergeBlock": {d},
+        \\        "shanghaiTimestamp": {d},
+        \\        "cancunTimestamp": {d},
+        \\        "pragueTimestamp": {d}
+        \\      }}
+        \\    }}
+        \\  }}
+        \\}}
+        \\
+    , .{
+        try forkenvU64Default(forkenv, "HIVE_FORK_HOMESTEAD", 0),
+        try forkenvU64Default(forkenv, "HIVE_FORK_TANGERINE", 0),
+        try forkenvU64Default(forkenv, "HIVE_FORK_SPURIOUS", 0),
+        try forkenvU64Default(forkenv, "HIVE_FORK_BYZANTIUM", 0),
+        try forkenvU64Default(forkenv, "HIVE_FORK_PETERSBURG", 0),
+        try forkenvU64Default(forkenv, "HIVE_FORK_ISTANBUL", 0),
+        try forkenvU64Default(forkenv, "HIVE_FORK_MUIR_GLACIER", 0),
+        try forkenvU64Default(forkenv, "HIVE_FORK_BERLIN", 0),
+        try forkenvU64Default(forkenv, "HIVE_FORK_LONDON", 0),
+        try forkenvU64Default(forkenv, "HIVE_FORK_ARROW_GLACIER", 0),
+        try forkenvU64Default(forkenv, "HIVE_FORK_GRAY_GLACIER", 0),
+        try forkenvU64Default(forkenv, "HIVE_MERGE_BLOCK_ID", 0),
+        try forkenvU64Default(forkenv, "HIVE_SHANGHAI_TIMESTAMP", 0),
+        try forkenvU64Default(forkenv, "HIVE_CANCUN_TIMESTAMP", 0),
+        try forkenvU64Default(forkenv, "HIVE_PRAGUE_TIMESTAMP", json_max_i64),
+    });
+
+    const body = try out.toOwnedSlice();
+    defer allocator.free(body);
+
+    var file = try std.fs.cwd().createFile(config_path, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll(body);
+
+    return config_path;
+}
+
+fn forkenvU64(forkenv: std.json.Value, name: []const u8) !u64 {
+    const object = switch (forkenv) {
+        .object => |object| object,
+        else => return VerifyError.InvalidFixture,
+    };
+    return parseDecimalU64Json(object.get(name) orelse return VerifyError.MissingField);
+}
+
+fn forkenvU64Default(forkenv: std.json.Value, name: []const u8, default: u64) !u64 {
+    const object = switch (forkenv) {
+        .object => |object| object,
+        else => return VerifyError.InvalidFixture,
+    };
+    const value = object.get(name) orelse return default;
+    return parseDecimalU64Json(value);
+}
+
+fn parseDecimalU64Json(value: std.json.Value) !u64 {
+    return switch (value) {
+        .integer => |integer| blk: {
+            if (integer < 0) return VerifyError.InvalidQuantity;
+            break :blk @intCast(integer);
+        },
+        .string => |text| std.fmt.parseInt(u64, text, 10) catch VerifyError.InvalidQuantity,
+        else => VerifyError.InvalidQuantity,
+    };
+}
+
+fn runHiveHeadForkchoice(allocator: std.mem.Allocator, engine_port: u16, path: []const u8) !void {
+    const body = try std.fs.cwd().readFileAlloc(allocator, path, 64 * 1024);
+    defer allocator.free(body);
+
+    var parsed_request = std.json.parseFromSlice(std.json.Value, allocator, body, .{
+        .allocate = .alloc_always,
+    }) catch return VerifyError.InvalidFixture;
+    defer parsed_request.deinit();
+    const params = try field(parsed_request.value, "params");
+    if (params != .array or params.array.items.len < 1) return VerifyError.InvalidFixture;
+    const head_hash = try stringField(params.array.items[0], "headBlockHash");
+
+    const response_text = try waitForRpc(allocator, engine_port, body);
+    defer allocator.free(response_text);
+    var parsed_response = std.json.parseFromSlice(std.json.Value, allocator, response_text, .{
+        .allocate = .alloc_always,
+    }) catch return VerifyError.UnexpectedRpcResponse;
+    defer parsed_response.deinit();
+
+    const result = try field(parsed_response.value, "result");
+    const payload_status = try field(result, "payloadStatus");
+    const status = try stringField(payload_status, "status");
+    if (!std.mem.eql(u8, status, "VALID")) return VerifyError.UnexpectedRpcResponse;
+    const latest_valid_hash = try stringField(payload_status, "latestValidHash");
+    if (!std.mem.eql(u8, latest_valid_hash, head_hash)) return VerifyError.UnexpectedRpcResponse;
+    const payload_id = try field(result, "payloadId");
+    if (payload_id != .null) return VerifyError.UnexpectedRpcResponse;
 }
 
 const RpcIoMessage = struct {
@@ -1097,6 +1261,19 @@ fn runRpcIoTest(allocator: std.mem.Allocator, port: u16, test_case: RpcIoTest) !
     }
 
     if (response != null) return VerifyError.InvalidFixture;
+}
+
+fn reserveDistinctLoopbackPorts() !ReservedPorts {
+    const address = try std.net.Address.parseIp("127.0.0.1", 0);
+    var rpc_server = try address.listen(.{});
+    defer rpc_server.deinit();
+    var engine_server = try address.listen(.{});
+    defer engine_server.deinit();
+
+    return .{
+        .rpc = rpc_server.listen_address.getPort(),
+        .engine = engine_server.listen_address.getPort(),
+    };
 }
 
 fn expectJsonEqual(allocator: std.mem.Allocator, expected_text: []const u8, actual_text: []const u8) !void {
@@ -1803,12 +1980,23 @@ fn hexBytes(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
 
 fn waitForRpc(allocator: std.mem.Allocator, port: u16, body: []const u8) ![]u8 {
     var attempt: usize = 0;
-    while (attempt < 50) : (attempt += 1) {
+    var last_error: ?anyerror = null;
+    while (attempt < 100) : (attempt += 1) {
         if (sendRpcRequest(allocator, port, body)) |response| {
             return response;
-        } else |_| {
+        } else |err| {
+            last_error = err;
             std.Thread.sleep(100 * std.time.ns_per_ms);
         }
+    }
+    if (last_error) |err| {
+        std.debug.print("external-verify: rpc smoke failed port={d} attempts={d} last_error={s}\n", .{
+            port,
+            attempt,
+            @errorName(err),
+        });
+    } else {
+        std.debug.print("external-verify: rpc smoke failed port={d} attempts={d} last_error=none\n", .{ port, attempt });
     }
     return VerifyError.RpcSmokeFailed;
 }
