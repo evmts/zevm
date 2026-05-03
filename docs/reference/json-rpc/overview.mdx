@@ -31,8 +31,12 @@ GA posture for this page is scoped to that source-build RPC contract only.
 - JSON-RPC success and error envelopes return HTTP `200`
 - notification-only request or notification-only batch returns HTTP `204` with empty body
 - JSON-RPC responses use content type `application/json`
+- request bodies larger than `1,048,576` bytes return HTTP `413` with no JSON-RPC body
+- HTTP headers are capped by an `8,192` byte read buffer; oversized or malformed headers close the connection without a JSON-RPC body
+- listener concurrency is bounded at `64` active TCP connections; each connection has `15,000` ms read and write socket timeouts
+- slow clients do not block unrelated accepted clients; JSON-RPC handler dispatch is serialized within one ZEVM process to protect runtime state
 - WebSocket transport is unsupported; transport absence is handled at HTTP transport level, not as JSON-RPC `-32010`
-- For transport-level debugging/remediation of `404`/`405`/`415`/`204`, see [Troubleshooting -> HTTP Transport Statuses (JSON-RPC)](../../quickstart/troubleshooting#http-transport-statuses-json-rpc)
+- For transport-level debugging/remediation of `404`/`405`/`413`/`415`/`204`, see [Troubleshooting -> HTTP Transport Statuses (JSON-RPC)](../../quickstart/troubleshooting#http-transport-statuses-json-rpc)
 
 Canonical ZEVM-owned transport/parser shipping-path requirement:
 
@@ -161,7 +165,7 @@ Startup policy context:
 - Mining/txpool controls: trusted `zevm_*` mining and txpool controls (plus accepted aliases)
 - Txpool introspection: `txpool_content`, `txpool_status`, `txpool_inspect`
 - Block-environment/time/reset/fork-source controls: trusted `zevm_*` block-environment/time/reset/fork-source controls (plus accepted aliases)
-- Queries: `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getBlockTransactionCountByNumber`, `eth_getBlockTransactionCountByHash`, `eth_getTransactionByHash`, `eth_getTransactionByBlockNumberAndIndex`, `eth_getTransactionByBlockHashAndIndex`, `eth_getTransactionReceipt`, `eth_getBlockReceipts`, `eth_getLogs`
+- Queries: `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getBlockTransactionCountByNumber`, `eth_getBlockTransactionCountByHash`, `eth_getUncleCountByBlockNumber`, `eth_getUncleCountByBlockHash`, `eth_getTransactionByHash`, `eth_getTransactionByBlockNumberAndIndex`, `eth_getTransactionByBlockHashAndIndex`, `eth_getTransactionReceipt`, `eth_getBlockReceipts`, `eth_getLogs`
 - Account/state/chain-id/snapshot/impersonation/funding/metadata controls: trusted `zevm_*` account/state/chain-id/snapshot/impersonation/funding/metadata controls (plus accepted aliases)
 
 Snapshot/revert boundary in trusted mode: `zevm_snapshot`/`zevm_revert` affect trusted local runtime state only, do not capture light-mode sync/checkpoint state, and do not mutate remote fork-source state.

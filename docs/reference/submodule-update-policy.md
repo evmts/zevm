@@ -43,8 +43,8 @@ Reference-only submodules were intentionally left pinned.
 Verification result for this refresh batch:
 - `zig build verify-fast`: pass
 - `zig build verify`: pass
-- External verifier summary: `discovered=18186 selected=18186 completed=17551 quarantined=635 failed=0`
-- Active legacy state-test expansion since the refresh: `stShift`
-- Quarantined fixtures: 635 `MODEXP` oversized-length vectors, still tracked by the external verifier quarantine reason
+- External verifier summary after MODEXP quarantine removal: `discovered=18186 selected=18186 completed=18186 quarantined=0 failed=0`
+- Active legacy state-test expansion since the refresh: `stShift`; `stPreCompiledContracts/modexpTests.json`
+- Quarantined fixtures: 0
 - Attempted but not yet active: `stExtCodeHash/dynamicAccountOverwriteEmpty.json` has a Cancun state-root mismatch; `stCreate2/CREATE2_FirstByte_loop.json` has Cancun/Shanghai state-root mismatches
 - Failed fixtures: 0

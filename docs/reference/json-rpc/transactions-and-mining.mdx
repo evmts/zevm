@@ -45,6 +45,7 @@ Rules:
 - `eth_sendTransaction` produces legacy type `0x0`
 - `eth_sendRawTransaction` accepts only legacy raw transactions
 - typed EIP-2718 envelopes (`0x1`, `0x2`, `0x3`, or unknown type byte) return `-32602`
+- intrinsic gas and EIP-3860 initcode limits are evaluated against the trusted runtime's configured hardfork policy
 
 ## Submission Methods
 
@@ -57,6 +58,7 @@ Submission signing and routing rules:
 
 - `eth_sendTransaction` signer scope is the union of managed trusted accounts, the manual impersonation set (`zevm_impersonateAccount` adds, `zevm_stopImpersonatingAccount` removes), and all addresses while auto impersonation is enabled
 - with auto impersonation disabled, `eth_sendTransaction` for an unmanaged `from` not in the manual impersonation set fails at runtime with `-32603`
+- unmanaged impersonated `eth_sendTransaction` uses an unsigned legacy envelope plus explicit sender metadata; txpool output, mined transaction queries, full block transaction hydration, and receipts report that metadata sender
 - `eth_sendRawTransaction` is for externally signed legacy raw transactions (`0x0`) and does not use managed-account signing
 
 ## Mining And Txpool Methods
@@ -141,7 +143,7 @@ Trusted txpool introspection compatibility methods:
 - snapshot/revert boundary (`zevm_snapshot` / `zevm_revert`): captures and restores trusted local runtime state only (local chain/state/journal, receipt/log indexes, pending tx pool, mining/block-environment overrides, impersonation, and time controls)
 - snapshot/revert does not capture light-mode sync/checkpoint state and does not mutate remote fork-source state
 - pinned fork-block preservation: when current fork config is pinned (`blockNumber` non-null), the same pinned block remains active after URL update
-- fork URL changes do not infer `chainId`; `chainId` remains under trusted-mode chain-id controls (for example `zevm_setChainId`)
+- fork URL changes do not infer `chainId` or hardfork policy; `chainId` remains under trusted-mode chain-id controls (for example `zevm_setChainId`), and hardfork policy remains the startup/configured trusted policy
 
 ## Mining Semantics
 
@@ -156,6 +158,8 @@ Trusted txpool introspection compatibility methods:
 - `auto`: accepted executable tx triggers immediate sealing of one block; no timer-based empty blocks
 - `manual`: transactions queue; blocks seal only through explicit mine RPC
 - `interval`: one block every configured `blockTime` seconds, including empty blocks
+
+Interval mining starts when trusted mode starts with interval config or when `zevm_setIntervalMining` enables it. Setting automine/manual mode or `zevm_setIntervalMining(["0x0"])` stops the interval timer before the control call returns.
 
 Explicit mine calls are valid in all mining modes and mine immediately.
 

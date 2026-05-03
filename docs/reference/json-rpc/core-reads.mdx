@@ -32,6 +32,8 @@ This page defines trusted-mode core reads and marks the subset that is also avai
 
 Malformed selectors return `-32602`.
 
+For trusted-mode state-backed reads (`eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, and `eth_getTransactionCount`), selectors must resolve to the current local head. `latest`, `pending`, `safe`, and `finalized` are accepted because they alias the head; `earliest` is accepted only while the current head is genesis; numeric selectors are accepted only when equal to the current head. Other resolved non-head selectors return `-32602`.
+
 ## Shared Read Methods (Trusted + Light)
 
 These methods exist in both modes.
@@ -46,6 +48,8 @@ For this table, the `Errors` column is trusted-mode scoped. In light mode, these
 | `eth_getCode` | `[address, block]` | `HexData` | trusted mode: `-32602` malformed address or selector; light mode: see [Verified Light-Mode Reads](./verified-light-mode-reads) |
 | `eth_getStorageAt` | `[address, slot, block]` | `Bytes32` | trusted mode: `-32602` malformed address, slot, or selector; light mode: see [Verified Light-Mode Reads](./verified-light-mode-reads) |
 | `eth_getTransactionCount` | `[address, block]` | `QuantityHex` | trusted mode: `-32602` malformed address or selector; light mode: see [Verified Light-Mode Reads](./verified-light-mode-reads) |
+
+Trusted-mode state-backed read selectors follow the current-head-only constraint above.
 
 ## Trusted-Only Read Extensions
 

@@ -186,6 +186,8 @@ Field contract:
 - malformed addresses, quantities, bytes, selectors, tuple lengths, or object fields return `-32602`
 - `zevm_revert` returns `false` for unknown snapshot id
 - all methods and aliases above return `-32010` in light mode
+- `zevm_snapshot`/`zevm_revert` capture and restore trusted local runtime state: local chain, state/journal, receipt/log indexes, pending tx pool, mining and block-environment overrides, impersonation, and time controls
+- `zevm_snapshot`/`zevm_revert` do not capture light-mode consensus/checkpoint-sync state and do not mutate remote fork-source state
 
 ## Impersonation Semantics
 
@@ -194,6 +196,7 @@ Field contract:
 - `zevm_autoImpersonateAccount([false])` disables automatic impersonation; signer scope then falls back to managed trusted accounts plus the current manual impersonation set
 - toggling `zevm_autoImpersonateAccount` does not clear or mutate manual impersonation entries
 - `zevm_stopImpersonatingAccount` affects only the manual impersonation set; while auto impersonation is enabled, sends from that address remain allowed
+- unmanaged impersonated `eth_sendTransaction` is accepted as an unsigned legacy envelope whose explicit sender metadata is preserved in txpool, mined transaction, block hydration, and receipt results
 
 ## Example: `zevm_setBalance`
 

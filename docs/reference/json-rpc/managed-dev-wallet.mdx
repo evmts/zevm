@@ -19,7 +19,7 @@ This page defines ZEVM trusted mode's exact deterministic managed dev-wallet con
 - initial index: `0`
 - account count: `10`
 - `eth_accounts` returns the managed addresses below in ascending index order
-- `eth_sendTransaction` may sign only for these managed accounts, unless impersonation is active
+- `eth_sendTransaction` signs only for these managed accounts; unmanaged impersonated sends use explicit sender metadata with an unsigned legacy envelope
 
 ## Managed Accounts (Exact)
 

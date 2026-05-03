@@ -17,6 +17,11 @@ Use the JSON-RPC contract for exact request/response tuples and method-level err
 - `POST /` must use content type `application/json` (media-type parameters allowed); unsupported or missing content type returns HTTP `415` with no JSON-RPC body
 - JSON-RPC success and error envelopes return HTTP `200`
 - notification-only request or notification-only batch returns HTTP `204` with empty body
+- request bodies larger than `1,048,576` bytes return HTTP `413` with no JSON-RPC body
+- HTTP headers are read through an `8,192` byte buffer; oversized or malformed headers close the connection without a JSON-RPC body
+- the phase-1 listener has a fixed `64` active TCP connection limit, `15,000` ms read timeout, and `15,000` ms write timeout
+- connection handling is concurrent up to the active connection limit; JSON-RPC handler dispatch is serialized per process to protect runtime state
+- server shutdown stops the accept loop, shuts down active connection sockets, and waits for active connection handlers to exit before listener deinit returns
 - one canonical ZEVM-owned HTTP transport/parser stack is the shipping path for request parsing and envelope dispatch; divergent production parser stacks are outside the phase-1 contract
 - whenever a JSON body is returned, content type is `application/json`
 

@@ -46,6 +46,11 @@ It defines:
 - JSON-RPC success responses -> HTTP `200`
 - JSON-RPC error responses -> HTTP `200`
 - notification-only request or notification-only batch -> HTTP `204` with empty body
+- request body limit is `1,048,576` bytes; larger bodies return HTTP `413` with no JSON-RPC body
+- HTTP header read buffer limit is `8,192` bytes; oversized or malformed headers close the connection without a JSON-RPC body
+- listener accepts up to `64` active TCP connections; slow clients are isolated at the connection layer and do not block other accepted clients
+- accepted connections use `15,000` ms read and write socket timeouts
+- handler dispatch is serialized within a ZEVM process so concurrent transport connections cannot race the runtime state
 - one canonical ZEVM-owned HTTP transport/parser stack is the shipping path for request parsing and envelope dispatch; divergent production parser stacks are out of contract for phase 1
 - whenever a JSON-RPC body is returned, content type is `application/json`
 
@@ -151,6 +156,7 @@ Pending-alias rule in trusted mode:
 
 - there is no separate pending block view for selector-based queries
 - any trusted-mode method that accepts a block selector and receives `pending` must resolve it exactly as `latest`
+- methods that need trusted state snapshots may further constrain selectors to the current head; those method-specific constraints are documented in the method section
 
 ### 6.2 Light selectors and retained history
 
@@ -230,6 +236,7 @@ Submission contract:
 - `eth_sendTransaction` produces legacy `0x0` transactions
 - `eth_sendRawTransaction` accepts only legacy raw transactions
 - typed EIP-2718 envelopes (`0x1`, `0x2`, `0x3`, or unknown type byte) are unsupported and fail with `-32602`
+- transaction admission computes intrinsic gas and EIP-3860 initcode limits from the runtime-owned hardfork policy configured at trusted startup
 
 ### 7.3 StateOverrideSet
 
@@ -546,6 +553,8 @@ Readiness and head-coherence invariants:
 | `eth_blobBaseFee` | `[]` or omitted | `QuantityHex` | `-32602` for non-empty params |
 | `eth_feeHistory` | `[blockCount, newestBlock]` or `[blockCount, newestBlock, rewardPercentiles]` | `FeeHistoryResult` | `-32602` on malformed count, selector, or percentiles |
 
+Trusted-mode state-backed reads (`eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, and `eth_getTransactionCount`) are current-head only. `latest`, `pending`, `safe`, and `finalized` are accepted because they alias the head; `earliest` is accepted only while the current head is genesis; numeric selectors are accepted only when equal to the current head. Other resolved non-head selectors return `-32602`.
+
 ### 8.2 Simulation
 
 | Method | Exact params | Exact result | Errors |
@@ -560,14 +569,26 @@ Simulation semantics:
 - success path:
   - `eth_call` returns `HexData`
   - `eth_estimateGas` returns `QuantityHex`
-- runtime execution failure path (for example revert/out-of-gas/invalid execution in simulation context): JSON-RPC error `-32603` with no `result`
-- phase-1 implementation-defined details:
-  - exact `error.message` text and optional `error.data` payload for runtime execution failure
-  - gas-search strategy and tie-breaking used by `eth_estimateGas`
-  - internal defaults for omitted simulation fields (`from`, `gas`, `gasPrice`, `value`, `nonce`) beyond this document's required validation and tuple contract
+- runtime execution failure path (for example revert/out-of-gas/invalid execution in simulation context): JSON-RPC error `-32603` with message `Internal error`, no `result`, and no revert-data result payload
+- omitted transaction field defaults:
+  - `from`: trusted runtime coinbase
+  - `gas`: selected simulation block gas limit
+  - `gasPrice`: trusted runtime gas price
+  - `value`: `0x0`
+  - `nonce`: no nonce check
+  - `data`/`input`: empty bytes
+- create semantics:
+  - omitted `to` or `to: null` executes the request as contract creation
+  - create simulations use the sender's current nonce for CREATE address and collision semantics
+  - created code and the temporary sender nonce increment are reverted before the response
+- gas estimation:
+  - computes intrinsic gas for the runtime-owned active hardfork and whether the request is create or call
+  - uses the explicit `gas` value as the upper bound when present; otherwise uses the selected simulation block gas limit
+  - rejects upper bounds below intrinsic gas or above the selected block gas limit with `-32603`
+  - requires the upper bound to execute successfully, then binary-searches for the lowest successful gas limit in `[intrinsic, upperBound]`
 - block environment:
   - current-head simulations use the trusted runtime chain ID, coinbase, head block number, head timestamp, gas limit, base fee, blob base fee, and active one-shot block-environment overrides
-  - non-head numeric selectors use the stored block header environment while still executing on the current trusted state overlay
+  - state-backed simulation is current-head only; selectors that resolve to a non-head block return `-32602`
   - omitted `gas` defaults to the selected simulation block gas limit
 
 ### 8.3 Submission
@@ -583,6 +604,7 @@ Submission outcome semantics:
 - runtime rejection: ZEVM returns JSON-RPC error `-32603`
 - runtime rejection must not include a tx hash result (`result` is absent)
 - `eth_sendTransaction` signer scope is managed trusted accounts plus currently impersonated accounts; unmanaged non-impersonated `from` is a runtime rejection (`-32603`)
+- unmanaged impersonated `eth_sendTransaction` uses an unsigned legacy envelope plus explicit sender metadata in the trusted txpool/receipt indexes; txpool content, mined transaction queries, block full-transaction hydration, and receipts must report that metadata sender rather than recovering from zero signature fields
 - phase-1 implementation-defined for runtime rejection: exact reason classification and `error.message` text
 
 ### 8.4 Queries
@@ -593,6 +615,8 @@ Submission outcome semantics:
 | `eth_getBlockByHash` | `[blockHash, fullTransactions]` | block object or `null` | `-32602` malformed hash/boolean |
 | `eth_getBlockTransactionCountByHash` | `[blockHash]` | `QuantityHex` or `null` | `-32602` malformed hash |
 | `eth_getBlockTransactionCountByNumber` | `[block]` | `QuantityHex` or `null` | `-32602` malformed selector |
+| `eth_getUncleCountByBlockHash` | `[blockHash]` | `QuantityHex` | `-32602` malformed hash |
+| `eth_getUncleCountByBlockNumber` | `[block]` | `QuantityHex` | `-32602` malformed selector |
 | `eth_getTransactionByHash` | `[transactionHash]` | tx object or `null` | `-32602` malformed hash |
 | `eth_getTransactionByBlockHashAndIndex` | `[blockHash, index]` | tx object or `null` | `-32602` malformed hash/index |
 | `eth_getTransactionByBlockNumberAndIndex` | `[block, index]` | tx object or `null` | `-32602` malformed selector/index |
@@ -603,8 +627,9 @@ Submission outcome semantics:
 Query selector behavior:
 
 - for trusted selector-based queries, `pending` resolves exactly as `latest` (compatibility alias only)
-- `eth_getBlockByNumber("pending", ...)`, `eth_getBlockTransactionCountByNumber("pending")`, `eth_getTransactionByBlockNumberAndIndex("pending", ...)`, and `eth_getBlockReceipts("pending")` therefore query the current canonical head block, not a separate mempool/pending block
+- `eth_getBlockByNumber("pending", ...)`, `eth_getBlockTransactionCountByNumber("pending")`, `eth_getUncleCountByBlockNumber("pending")`, `eth_getTransactionByBlockNumberAndIndex("pending", ...)`, and `eth_getBlockReceipts("pending")` therefore query the current canonical head block, not a separate mempool/pending block
 - `eth_getBlockTransactionCountByHash`, `eth_getBlockTransactionCountByNumber`, `eth_getTransactionByBlockHashAndIndex`, and `eth_getTransactionByBlockNumberAndIndex` return `null` when the referenced canonical block is not found
+- `eth_getUncleCountByBlockHash` and `eth_getUncleCountByBlockNumber` return `0x0` for unknown blocks and for all ZEVM-produced post-Merge blocks
 - `eth_getTransactionByBlockHashAndIndex` and `eth_getTransactionByBlockNumberAndIndex` return `null` when `index` is out of range for a found block
 - `eth_getTransactionByHash` is canonical-mined only and returns `null` for txpool-only pending entries
 - `eth_getTransactionReceipt` is mined-only and returns `null` until inclusion
@@ -626,6 +651,18 @@ These methods are intentionally exposed in trusted mode as compatibility helpers
 | `txpool_content` | `[]` or omitted | geth-style pending/queued txpool content object | `-32602` for non-empty params |
 | `txpool_status` | `[]` or omitted | object with `pending` and `queued` `QuantityHex` counts | `-32602` for non-empty params |
 | `txpool_inspect` | `[]` or omitted | geth-style pending/queued summary object | `-32602` for non-empty params |
+
+### 8.6 Engine API listener methods
+
+The Engine API listener is trusted-mode only and disabled unless startup config enables `engineRpc` or CLI `--engine-host` / `--engine-port`.
+
+| Method | Exact params | Exact result | Errors |
+| --- | --- | --- | --- |
+| `engine_exchangeCapabilities` | `[capabilities]` where `capabilities` is an array of strings | array of implemented Engine method names | `-32602` for malformed params |
+| `engine_exchangeTransitionConfigurationV1` | `[config]` where `config` is an object | object echo of the supplied transition config | `-32602` for malformed params |
+| `engine_forkchoiceUpdatedV1` / `engine_forkchoiceUpdatedV2` / `engine_forkchoiceUpdatedV3` | `[forkchoiceState]` or `[forkchoiceState, null]` | `{ payloadStatus, payloadId: null }` | `-32602` for malformed params or non-null payload attributes |
+
+`forkchoiceState` must include `headBlockHash`, `safeBlockHash`, and `finalizedBlockHash` as `Hash32` strings. `safeBlockHash` and `finalizedBlockHash` may be zero hashes. A known local `headBlockHash` returns `VALID` and updates the canonical head; unknown referenced hashes return `SYNCING`. Payload building, `engine_newPayload*`, `engine_getPayload*`, payload-body methods, and blob/body retrieval are out of phase-1 contract and return `-32601` (`Method not found`) when called.
 
 ## 9. Trusted-Mode `zevm_*` Methods
 
@@ -862,6 +899,7 @@ Rules:
   - invalidates previously created snapshot IDs
   - clears impersonation state and one-shot time/timestamp overrides
   - keeps configured startup `chainId` unchanged
+  - keeps the startup/configured hardfork policy unchanged
 - fork config object semantics:
   - `{ "url": "https://..." }`: enable fork backing at upstream head
   - `{ "url": "https://...", "blockNumber": "0x..." }`: enable fork backing pinned to that block
@@ -887,6 +925,7 @@ Rules:
 - `zevm_autoImpersonateAccount([false])` disables automatic impersonation; signer scope then falls back to managed accounts plus the current manual impersonation set
 - toggling `zevm_autoImpersonateAccount` does not clear or mutate manual impersonation entries
 - `zevm_stopImpersonatingAccount` affects only the manual impersonation set; while auto impersonation is enabled, sends from that address remain allowed
+- unmanaged impersonated `eth_sendTransaction` persists explicit sender metadata for an unsigned legacy envelope, and all txpool, mined transaction, block hydration, and receipt responses must use that metadata sender
 
 ## 10. Trusted Mining Semantics
 
@@ -910,6 +949,7 @@ Rules:
   - trigger: periodic timer every configured `blockTime` seconds
   - effect: one block per tick
   - empty blocks: allowed and expected when no executable tx is pending
+  - lifecycle: startup interval config and `zevm_setIntervalMining` own exactly one runtime timer; switching to auto/manual or setting interval `0` stops it
 
 Explicit mine calls are valid in all mining modes and mine immediately.
 

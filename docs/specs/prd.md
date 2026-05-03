@@ -183,6 +183,7 @@ Trusted-mode defaults:
 - `maxPriorityFeePerGas`: `1000000000`
 - `blockGasLimit`: `30000000`
 - mining mode: `auto`
+- hardfork policy: explicit dev schedule with Cancun active from genesis and Prague/Osaka inactive until configured
 
 Managed dev-wallet contract (exact):
 
@@ -291,6 +292,8 @@ Implementation support context (non-normative): `docs/specs/internal/startup-and
 | `--mode` | `trusted` or `light` | `trusted` (effective only when neither user-supplied `--mode` nor `--config` selects mode; if `--config` is provided it must include exactly one `mode` branch, and user-supplied `--mode` must match that branch) |
 | `--host` | bind host | `127.0.0.1` |
 | `--port` | TCP port | `8545` |
+| `--engine-host` | Engine API bind host | disabled unless Engine API is enabled |
+| `--engine-port` | Engine API TCP port | `8551` when Engine API is enabled |
 
 ### 5.2 Trusted-mode CLI
 
@@ -308,6 +311,10 @@ Implementation support context (non-normative): `docs/specs/internal/startup-and
 | `--block-time` | seconds (`u64`) | none |
 | `--fork-url` | execution RPC URL | none |
 | `--fork-block-number` | `u64` | none |
+| `--genesis` | genesis JSON path | none |
+| `--chain-rlp` | concatenated RLP block stream path | none |
+| `--engine-host` | Engine API bind host | disabled unless Engine API is enabled |
+| `--engine-port` | Engine API TCP port | `8551` when Engine API is enabled |
 
 Trusted-mode validation:
 
@@ -315,6 +322,8 @@ Trusted-mode validation:
 - `--block-time` is invalid for `auto` and `manual`
 - `--fork-block-number` is invalid without `--fork-url`
 - when `--fork-url` is provided and `--fork-block-number` is omitted, startup forking uses unpinned upstream-head (`latest`) semantics
+- `--genesis`, `--chain-rlp`, `--engine-host`, and `--engine-port` are trusted-mode only
+- Engine API is disabled unless `--engine-host`, `--engine-port`, or top-level config `engineRpc` is supplied
 - trusted-only flags are invalid in light mode
 - trusted startup fork block numbers use decimal `u64` in CLI/config (`--fork-block-number`, `mode.trusted.fork.blockNumber`)
 - runtime `zevm_reset` uses `QuantityHex` for `forkConfig.blockNumber`; example: startup decimal `1000000` corresponds to JSON-RPC `"blockNumber": "0xf4240"`
@@ -380,6 +389,11 @@ Trusted-mode example:
       "maxPriorityFeePerGas": "1000000000",
       "blockGasLimit": 30000000,
       "mining": { "type": "auto" },
+      "hardfork": {
+        "cancunTimestamp": 0,
+        "pragueTimestamp": 9223372036854775807,
+        "osakaTimestamp": 9223372036854775807
+      },
       "fork": null
     }
   }
@@ -408,7 +422,7 @@ Light-mode example:
 Config rules:
 
 - allowed top-level keys are `rpc` and `mode`; unknown top-level keys are invalid
-- unknown keys inside `rpc`, `mode`, `mode.trusted`, `mode.light`, and trusted structured objects (`mining`, `fork`) are invalid
+- unknown keys inside `rpc`, `mode`, `mode.trusted`, `mode.light`, and trusted structured objects (`mining`, `hardfork`, `fork`) are invalid
 - `rpc` is optional; when omitted, shared defaults apply (`host = 127.0.0.1`, `port = 8545`)
 - when `rpc` is present, `host` and `port` default independently if omitted
 - `mode` must contain exactly one of `trusted` or `light`
@@ -420,6 +434,8 @@ Trusted config object sub-shapes (exact):
 
 - `mode.trusted.mining` must be exactly one of `{ "type": "auto" }`, `{ "type": "manual" }`, or `{ "type": "interval", "blockTime": <u64> }`
 - for `mode.trusted.mining`, `blockTime` is required only for `type = "interval"` and invalid for `type = "auto"` and `type = "manual"`
+- `mode.trusted.hardfork` is an optional object of decimal `u64` activation overrides; allowed keys are `homesteadBlock`, `daoBlock`, `tangerineWhistleBlock`, `spuriousDragonBlock`, `byzantiumBlock`, `petersburgBlock`, `istanbulBlock`, `muirGlacierBlock`, `berlinBlock`, `londonBlock`, `arrowGlacierBlock`, `grayGlacierBlock`, `mergeBlock`, `shanghaiTimestamp`, `cancunTimestamp`, `pragueTimestamp`, `osakaTimestamp`, and `secondsPerSlot`
+- default hardfork policy is explicit: `chainId = 1` uses the mainnet activation schedule, while non-mainnet trusted defaults use a dev schedule with Cancun active from genesis and Prague/Osaka inactive until configured
 - `mode.trusted.fork` must be exactly one of `null`, `{ "url": "<execution-rpc-url>" }`, or `{ "url": "<execution-rpc-url>", "blockNumber": <u64> }`
 - for `mode.trusted.fork`, `blockNumber` is invalid without `url`
 - for `mode.trusted.fork`, `{ "url": "<execution-rpc-url>" }` uses unpinned upstream-head (`latest`) semantics; adding `blockNumber` pins fork reads to that block
@@ -449,6 +465,7 @@ CLI/config merge rules:
 Structured trusted-setting resolution:
 
 - `mining` resolves as one unit from CLI `--mining` and `--block-time`; if either flag is present, ZEVM builds `mining` from CLI and ignores `mode.trusted.mining`
+- `hardfork` has no phase-1 CLI flags; ZEVM starts from the default schedule for the resolved `chainId`, then applies any `mode.trusted.hardfork` field overrides
 - `fork` resolves as one unit from CLI `--fork-url` and `--fork-block-number`; if either flag is present, ZEVM builds `fork` from CLI and ignores `mode.trusted.fork`
 - when no related CLI flags are present for that unit, ZEVM uses config value for that unit, then mode default
 - resolved trusted `fork` with `url` and no `blockNumber` uses unpinned upstream-head (`latest`) semantics; resolved trusted `fork` with `blockNumber` is pinned to that block
@@ -555,6 +572,17 @@ ZEVM must fail before opening the HTTP listener for invalid startup input, inclu
 - phase 1 does not define dedicated CLI/config controls for startup log level, log file paths, or alternative log sinks
 - any capture/routing of startup `stderr` output is external process/shell responsibility
 
+### 5.10 Runtime observability surface
+
+- runtime logs are JSON records on process `stderr`
+- request telemetry uses `scope = "rpc"` and message fields: `rpc_request`, `method`, `id_present`, `batch_size`, `status`, `error_code`, `duration_us`, and `mode`
+- listener lifecycle logs use `scope = "rpc"` for bind/stop, accept failures, connection accept/close, timeout setup failures, and connection-level failures
+- mining logs use `scope = "mining"` for interval-mining lifecycle/tick failures and mined blocks (`number`, `hash`, `tx_count`, `gas_used`, `pool_pending`, `pool_queued`, `mode`)
+- tx submission logs use `scope = "txpool"` for accepted transactions (`source`, `hash`, `sender`, `nonce`, `gas_limit`, `pool_pending`, `pool_queued`, `mining_mode`)
+- light sync logs use `scope = "consensus_sync"` for checkpoint selection, stale checkpoint warnings, sync status transitions, upstream request failures, proof verification failures, checkpoint advancement, and sync failures
+- trusted fork upstream failures use `scope = "fork"` and include method/error context without logging upstream URLs or request params
+- runtime logs must not include raw JSON-RPC bodies, request params, private keys, raw transaction bytes, auth-bearing upstream URLs, or proof payload bodies by default
+
 ## 6. JSON-RPC Transport
 
 Implementation support context (non-normative): `docs/specs/internal/transport-and-error-semantics.md`.
@@ -569,6 +597,10 @@ Transport requirements:
 - JSON-RPC success and error envelopes: HTTP `200`
 - notification-only request/batch: HTTP `204`, empty body
 - batch responses preserve the input order of batch entries that include `id`
+- request bodies larger than `1,048,576` bytes: HTTP `413`, empty body
+- phase-1 transport limits are fixed: `8,192` byte HTTP header buffer, `64` active TCP connections, `15,000` ms read timeout, and `15,000` ms write timeout
+- slow clients must not block unrelated accepted clients; JSON-RPC handler dispatch remains serialized within one ZEVM process to avoid runtime-state races
+- production server lifecycle must expose a stop hook that stops accepting, shuts down active connection sockets, and waits for active handlers before listener deinit returns
 - one canonical ZEVM-owned HTTP transport/parser stack is the shipping path for request parsing and envelope dispatch; divergent production parser stacks are out of contract for phase 1
 - JSON-RPC envelope semantics (single requests, batches, empty-batch behavior, notifications, mixed batches, ordering, and `id` handling) are defined in `docs/specs/json-rpc-contract.md` and are authoritative
 

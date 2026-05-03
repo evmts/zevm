@@ -26,14 +26,26 @@ Execution outcome semantics:
 - success path:
   - `eth_call` returns `HexData`
   - `eth_estimateGas` returns `QuantityHex`
-- runtime execution failure path (for example revert, out-of-gas, invalid execution in simulation context): JSON-RPC `-32603` with no `result`
-- phase-1 implementation-defined details:
-  - exact `error.message` text and optional `error.data` payload for runtime execution failure
-  - gas-search strategy and tie-breaking used by `eth_estimateGas`
-  - internal defaults for omitted simulation fields beyond the required tuple/validation contract on this page
+- runtime execution failure path (for example revert, out-of-gas, invalid execution in simulation context): JSON-RPC `-32603` with message `Internal error`, no `result`, and no revert-data result payload
+- omitted transaction field defaults:
+  - `from`: trusted runtime coinbase
+  - `gas`: selected simulation block gas limit
+  - `gasPrice`: trusted runtime gas price
+  - `value`: `0x0`
+  - `nonce`: no nonce check
+  - `data`/`input`: empty bytes
+- create semantics:
+  - omitted `to` or `to: null` executes the request as contract creation
+  - create simulations use the sender's current nonce for CREATE address and collision semantics
+  - created code and the temporary sender nonce increment are reverted before the response
+- gas estimation:
+  - computes intrinsic gas for the runtime-owned active hardfork and whether the request is create or call
+  - uses the explicit `gas` value as the upper bound when present; otherwise uses the selected simulation block gas limit
+  - rejects upper bounds below intrinsic gas or above the selected block gas limit with `-32603`
+  - requires the upper bound to execute successfully, then binary-searches for the lowest successful gas limit in `[intrinsic, upperBound]`
 - block environment:
   - current-head simulations use the trusted runtime chain ID, coinbase, head block number, head timestamp, gas limit, base fee, blob base fee, and active one-shot block-environment overrides
-  - non-head numeric selectors use the stored block header environment while still executing on the current trusted state overlay
+  - state-backed simulation is current-head only; selectors that resolve to a non-head block return `-32602`
   - omitted `gas` defaults to the selected simulation block gas limit
 
 ## `TransactionRequest`
@@ -56,7 +68,7 @@ Rules:
 - `data` and `input` may both be omitted
 - if both are present, they must be byte-identical
 - any field not listed above returns `-32602`
-- unsupported request fields and return `-32602`: `maxFeePerGas`, `maxPriorityFeePerGas`, `maxFeePerBlobGas`, `blobVersionedHashes`, `accessList`, `authorizationList`, `type`, `chainId`
+- unsupported request fields return `-32602`: `maxFeePerGas`, `maxPriorityFeePerGas`, `maxFeePerBlobGas`, `blobVersionedHashes`, `accessList`, `authorizationList`, `type`, `chainId`
 
 ## `StateOverrideSet`
 
@@ -90,10 +102,10 @@ Simulation selectors use trusted-mode selector semantics:
 
 - `latest`: current local head
 - `pending`, `safe`, `finalized`: aliases of `latest`
-- `earliest`: block `0`
-- numeric quantity: exact local block number
+- `earliest`: block `0`, accepted only while the current head is genesis
+- numeric quantity: accepted only when equal to the current local head
 
-Malformed selectors return `-32602`.
+Malformed selectors and selectors that resolve to a non-head block return `-32602`.
 
 ## Example: `eth_call`
 

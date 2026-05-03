@@ -19,6 +19,8 @@ This page supports `docs/specs/prd.md` and `docs/specs/json-rpc-contract.md`.
 | `--mode` | `trusted` or `light` | `trusted` (effective only when neither user-supplied `--mode` nor `--config` selects mode; if `--config` is provided it must include exactly one `mode` branch, and user-supplied `--mode` must match that branch) |
 | `--host` | bind host | `127.0.0.1` |
 | `--port` | TCP port | `8545` |
+| `--engine-host` | Engine API bind host | disabled unless Engine API is enabled |
+| `--engine-port` | Engine API TCP port | `8551` when Engine API is enabled |
 
 ## 3. Trusted CLI And Config
 
@@ -36,13 +38,21 @@ Trusted CLI flags:
 - `--block-time`
 - `--fork-url`
 - `--fork-block-number`
+- `--genesis`
+- `--chain-rlp`
+- `--engine-host`
+- `--engine-port`
 
 Trusted config branch: `mode.trusted`
 
 Resolved config sub-shapes:
 
+- top-level `engineRpc`: optional `{ "host": "127.0.0.1", "port": 8551 }`; enables a trusted-mode Engine API listener
 - `mining`: `{ "type": "auto" }`, `{ "type": "manual" }`, or `{ "type": "interval", "blockTime": <u64> }`
+- `hardfork`: object of optional activation overrides using camelCase keys (`homesteadBlock`, `daoBlock`, `tangerineWhistleBlock`, `spuriousDragonBlock`, `byzantiumBlock`, `petersburgBlock`, `istanbulBlock`, `muirGlacierBlock`, `berlinBlock`, `londonBlock`, `arrowGlacierBlock`, `grayGlacierBlock`, `mergeBlock`, `shanghaiTimestamp`, `cancunTimestamp`, `pragueTimestamp`, `osakaTimestamp`, `secondsPerSlot`)
 - `fork`: `null`, `{ "url": "https://..." }`, or `{ "url": "https://...", "blockNumber": <u64> }`
+- `genesis`: `null` or a path to a genesis JSON file whose top-level `alloc` object seeds trusted-mode state
+- `chainRlp`: `null` or a path to a concatenated RLP block stream imported after genesis as query-only block history
 
 Validation:
 
@@ -53,6 +63,11 @@ Validation:
 - `coinbaseIndex` must be `0..9`
 - trusted startup fork block numbers use decimal `u64` in CLI/config (`--fork-block-number`, `mode.trusted.fork.blockNumber`)
 - runtime `zevm_reset` uses `QuantityHex` for `forkConfig.blockNumber`; example: startup decimal `1000000` corresponds to JSON-RPC `"blockNumber": "0xf4240"`
+- trusted hardfork activation values use decimal `u64` in config; omitted `hardfork` fields inherit from the resolved chain default
+- default hardfork policy is explicit: `chainId = 1` uses the mainnet activation schedule, while non-mainnet trusted defaults use a dev schedule with Cancun active from genesis and Prague/Osaka inactive until configured
+- trusted `genesis` paths resolve by field precedence (`--genesis` over `mode.trusted.genesis`); when present, ZEVM imports account `balance`/`wei`, `nonce`, `code`, and `storage` from the file instead of pre-funding the deterministic dev accounts
+- trusted `chainRlp` paths resolve by field precedence (`--chain-rlp` over `mode.trusted.chainRlp`); when present, ZEVM imports the stream after genesis as query-only block history, sets the canonical head to the last imported block, and does not materialize imported state, receipts, or logs
+- trusted Engine API is disabled unless `--engine-host`, `--engine-port`, or top-level `engineRpc` is supplied; it is invalid in light mode
 
 ## 4. Light CLI And Config
 
@@ -106,13 +121,14 @@ Startup consensus-network handshake (before listener):
 ## 5. Config File Rules
 
 - allowed top-level keys are `rpc` and `mode`; unknown top-level keys are invalid
-- unknown keys inside `rpc`, `mode`, `mode.trusted`, `mode.light`, and trusted structured objects (`mining`, `fork`) are invalid
+- unknown keys inside `rpc`, `mode`, `mode.trusted`, `mode.light`, and trusted structured objects (`mining`, `hardfork`, `fork`) are invalid
 - `rpc` is optional; when omitted, defaults are `host = 127.0.0.1`, `port = 8545`
 - when `rpc` is present, `host` and `port` default independently if omitted
 - `mode` must contain exactly one of `trusted` or `light`
 - config with both is invalid
 - config with neither is invalid
-- explicit `--config` load failure (missing file, unreadable file, invalid JSON) is startup failure
+- explicit `--config` load failure (missing file, unreadable file, malformed JSON, schema failure, or validation failure) is startup failure
+- explicit `--config` load failures must emit one startup error record on process `stderr` naming the config path and failure class before exiting non-zero
 
 ## 6. Precedence
 
@@ -138,7 +154,10 @@ Merge clarifications:
 Structured trusted-setting resolution:
 
 - `mining` resolves as one unit from CLI `--mining` and `--block-time`; if either flag is present, ZEVM builds `mining` from CLI and ignores `mode.trusted.mining`
+- `hardfork` has no phase-1 CLI flags; ZEVM starts from the default schedule for the resolved `chainId`, then applies any `mode.trusted.hardfork` field overrides
 - `fork` resolves as one unit from CLI `--fork-url` and `--fork-block-number`; if either flag is present, ZEVM builds `fork` from CLI and ignores `mode.trusted.fork`
+- `genesis` resolves as one field from CLI `--genesis`, then config `mode.trusted.genesis`, then absent
+- `chainRlp` resolves as one field from CLI `--chain-rlp`, then config `mode.trusted.chainRlp`, then absent
 - when no related CLI flags are present for that unit, ZEVM uses config value for that unit, then mode default
 - resolved trusted `fork` with `url` and no `blockNumber` uses unpinned upstream-head (`latest`) semantics; resolved trusted `fork` with `blockNumber` is pinned to that block
 

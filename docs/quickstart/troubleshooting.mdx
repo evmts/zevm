@@ -27,6 +27,7 @@ journalctl -u zevm.service -b --no-pager
 ```
 
 When startup fails before listener bind (or warns about non-strict stale checkpoint policy), check captured `stderr` first.
+For `--config` failures, the startup error record includes the config `path`, a `failureClass` such as `missing-file`, `malformed-json`, `schema`, or `validation`, and the underlying error name.
 
 ## RPC Request Logs
 
@@ -50,6 +51,20 @@ Fields:
 | `mode` | active runtime mode: `trusted`, `light`, or `unknown` |
 
 Request params and raw request bodies are not logged by default.
+
+## Runtime Event Logs
+
+Runtime events also use JSON log records on process `stderr`. Important scopes:
+
+| Scope | Events |
+| --- | --- |
+| `rpc` | listener bind/stop, accept failures, connection accept/close, timeout setup failures, connection failures, request telemetry |
+| `mining` | interval mining start/stop/tick failures, mined block number/hash, included tx count, gas used, and remaining txpool counts |
+| `txpool` | accepted `eth_sendTransaction` / `eth_sendRawTransaction` hash, sender, nonce, gas limit, txpool counts, and active mining mode |
+| `consensus_sync` | light checkpoint selection, stale checkpoint warnings, sync status transitions, upstream request failures, proof verification failures, checkpoint advancement |
+| `fork` | trusted fork upstream request/response failures by method |
+
+Logs intentionally omit raw JSON-RPC bodies, request params, private keys, raw transaction bytes, auth-bearing upstream URLs, and proof payload bodies.
 
 ## Build And Startup Issues
 
@@ -137,6 +152,7 @@ These HTTP statuses are transport-level behavior, not JSON-RPC error objects.
 | `404` | Request path does not match the ZEVM JSON-RPC endpoint (`/`) | Send requests to `/` (for example `http://127.0.0.1:8545/`), remove extra path segments (`/rpc`, `/v1`, etc.), and check reverse-proxy path rewrites |
 | `405` | Request to `/` used a method other than `POST` | Use `POST` for JSON-RPC calls; update client/proxy health checks that currently use `GET` on `/` |
 | `415` | `POST /` request has missing/unsupported `Content-Type` | Set `Content-Type: application/json` (parameters like `application/json; charset=utf-8` are allowed) and ensure proxies do not strip or overwrite the header |
+| `413` | Request body is larger than `1,048,576` bytes | Split the request, reduce batch size, or move oversized tooling payloads outside the JSON-RPC call |
 | `204` | Notification-only request (or notification-only batch), so ZEVM returns no JSON-RPC body by design | Include an `id` if you expect a JSON-RPC response payload; keep notification calls id-less when no response is needed |
 
 Quick transport checks:
@@ -154,6 +170,13 @@ curl -i -X GET http://127.0.0.1:8545/
 curl -i -X POST http://127.0.0.1:8545/ \
   -H 'content-type: text/plain' \
   --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}'
+
+# 413: body larger than the fixed 1 MiB transport limit
+python3 - <<'PY' | curl -i -X POST http://127.0.0.1:8545/ \
+  -H 'content-type: application/json' \
+  --data-binary @-
+print(' ' * 1048577)
+PY
 
 # 204: notification (no id)
 curl -i -X POST http://127.0.0.1:8545/ \

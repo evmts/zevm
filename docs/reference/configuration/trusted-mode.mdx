@@ -42,6 +42,8 @@ Trusted mode is the default runtime. It provides local execution and local mutat
 | `--block-time` | `mode.trusted.mining.blockTime` | seconds (`u64`) | none |
 | `--fork-url` | `mode.trusted.fork.url` | execution RPC URL | none |
 | `--fork-block-number` | `mode.trusted.fork.blockNumber` | `u64` | none (when omitted with `--fork-url`, follow upstream head) |
+| `--genesis` | `mode.trusted.genesis` | genesis JSON path | none |
+| `--chain-rlp` | `mode.trusted.chainRlp` | concatenated RLP block stream path | none |
 
 Fork block-number representation bridge: startup CLI/config values are decimal `u64`, while JSON-RPC `zevm_reset` uses `QuantityHex` for `forkConfig.blockNumber` (example: `22000000` -> `"0x14fb180"`).
 
@@ -79,12 +81,47 @@ null
 
 When `fork.url` is set and `fork.blockNumber` is omitted, ZEVM follows the upstream head by default.
 
+## Genesis Allocation
+
+`mode.trusted.genesis` accepts a path to a genesis JSON file:
+
+```json
+{ "genesis": "/path/to/genesis.json" }
+```
+
+ZEVM reads the file at startup and imports the top-level `alloc` object. Account entries support `balance` or legacy `wei`, and optional `nonce`, `code`, and `storage` fields. Supplying a genesis file replaces default dev-account pre-funding; the deterministic managed accounts still exist for signing and `eth_accounts`.
+
+## Chain RLP Import
+
+`mode.trusted.chainRlp` accepts a path to a concatenated RLP block stream:
+
+```json
+{ "chainRlp": "/path/to/chain.rlp" }
+```
+
+ZEVM imports the stream after genesis initialization as query-only block history and advances the canonical head to the last imported block. Imported block bodies retain raw transaction envelopes for block transaction arrays and transaction-by-block/index lookups.
+
+`chainRlp` does not execute imported transactions, validate post-state roots, materialize account/storage state, or populate receipt/log indexes in phase 1. State-backed reads, `eth_call`, `eth_estimateGas`, receipts, and logs continue to use the local runtime state created from genesis plus subsequent local transactions. The startup log emits `chain_rlp_query_only_imported` with `state_materialized=false`, `receipts_indexed=false`, and `logs_indexed=false` whenever this path is used.
+
+## Engine API Listener
+
+Trusted mode can expose a second plain-HTTP Engine API listener with top-level `engineRpc` or CLI `--engine-host` / `--engine-port`:
+
+```json
+{ "engineRpc": { "host": "127.0.0.1", "port": 8551 } }
+```
+
+The implemented Engine surface covers capability exchange, transition configuration exchange, and forkchoice updates that validate referenced hashes against ZEVM's local block history. It does not make ZEVM a full consensus-client-facing execution engine yet; payload execution, payload building, payload-body methods, and blob/body retrieval remain outside the phase-1 surface and return method-not-found when called.
+
 ## Validation Rules
 
 - `--block-time` is required when `--mining interval`
 - `--block-time` is invalid for `auto` and `manual`
 - `--fork-block-number` is invalid without `--fork-url`
 - `--fork-url` without `--fork-block-number` is valid and follows upstream head
+- `--genesis` is trusted-mode only and must point to a readable genesis file
+- `--chain-rlp` is trusted-mode only, query-only in phase 1, and the stream must link to the configured genesis/imported parent chain
+- `--engine-host`, `--engine-port`, and top-level `engineRpc` are trusted-mode only
 - trusted-only flags are invalid in light mode
 - `coinbaseIndex` must be within `0..9`
 
@@ -104,7 +141,9 @@ When `fork.url` is set and `fork.blockNumber` is omitted, ZEVM follows the upstr
       "maxPriorityFeePerGas": "1000000000",
       "blockGasLimit": 30000000,
       "mining": { "type": "interval", "blockTime": 12 },
-      "fork": { "url": "https://rpc.example", "blockNumber": 22000000 }
+      "fork": { "url": "https://rpc.example", "blockNumber": 22000000 },
+      "genesis": "./genesis.json",
+      "chainRlp": "./chain.rlp"
     }
   }
 }
@@ -119,7 +158,9 @@ zevm \
   --mining interval \
   --block-time 12 \
   --fork-url https://rpc.example \
-  --fork-block-number 22000000
+  --fork-block-number 22000000 \
+  --genesis ./genesis.json \
+  --chain-rlp ./chain.rlp
 ```
 
 ## Related Pages

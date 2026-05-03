@@ -22,6 +22,33 @@ zig build verify
 
 `zig build dependency-preflight` validates the sibling `../voltaire` and `../guillotine-mini` worktrees, rejects dirty dependency checkouts by default, reports their full commit IDs, and can validate expected dependency revisions with `--voltaire-revision` and `--guillotine-mini-revision`. `zig build test` also runs the test-graph checker, which fails if any `src/**/*_test.zig` file is not reachable from `src/root.zig`. `zig build verify-fast` runs that default unit/integration test graph. `zig build qualification-check` validates the release qualification map schema and covered-row evidence references, but it does not execute the referenced behavioral tests by itself. `zig build verify` runs `verify-fast` and the active official external suite slices described by `.smithers/active-tests.json` and `.smithers/external-test-suites.json`.
 
+## Smithers Workflow Tooling
+
+The local Smithers workflow workspace is validated separately from the Zig release gates:
+
+```bash
+cd .smithers
+bun install
+bun run typecheck
+bun run workflow:list
+```
+
+The expected workflow-list smoke output is:
+
+```text
+$ smithers workflow list
+workflows[0]:
+```
+
+The Kanban workflow runs every markdown ticket under `.smithers/tickets/` in worktree branches. Invoke it only when the maintainer wants the workflow to begin ticket execution:
+
+```bash
+cd .smithers
+bun run workflow:run -- kanban --input '{"maxConcurrency":3}' --detach --log-dir ./.logs/smithers
+```
+
+Detached runs print a Smithers run identifier and write the NDJSON event log under `./.logs/smithers/`. Use that run identifier with `bun run workflow:run -- kanban --resume <run-id>` if the run needs to be resumed.
+
 ## Pull Request And Main Branch Gates
 
 The root `CI` workflow runs these checks for pull requests and pushes to `main`:
@@ -45,7 +72,7 @@ zig build qualification-check -- --require-covered
 zig build verify
 ```
 
-This is the required CI path for release-candidate confidence. It currently verifies the active official suite coverage and quarantine policy recorded in `.smithers/external-test-suites.json`; it is not a claim that every Hive simulator or every Ethereum fixture directory is already fully active.
+This is the required CI path for release-candidate confidence. It currently verifies the active official suite coverage recorded in `.smithers/external-test-suites.json`; it is not a claim that every Hive simulator or every Ethereum fixture directory is already fully active.
 
 Those same tag, manual, and scheduled workflows also run the Hive RPC compat smoke job described below.
 
@@ -57,11 +84,11 @@ For the CI-friendly Hive lifecycle smoke, run:
 bun tools/hive_rpc_compat_smoke.ts
 ```
 
-The script builds a local `zevm/hive-client:local` image from this checkout, mounts `../voltaire` and `../guillotine-mini` as Docker build contexts, builds the Hive runner, and runs ZEVM through `ethereum/rpc-compat` for the active transcript subset. The client wrapper provides the Hive-required HTTP JSON-RPC port `8545` and a minimal Engine API `8551` response for the simulator's initial forkchoice update.
+The script builds a local `zevm/hive-client:local` image from this checkout, mounts `../voltaire` and `../guillotine-mini` as Docker build contexts, builds the Hive runner, and runs ZEVM through `ethereum/rpc-compat` for the active transcript subset. The client wrapper provides the Hive-required HTTP JSON-RPC port `8545`, translates Hive fork-schedule environment variables into ZEVM trusted-mode config, forwards mounted Hive `genesis.json` and `chain.rlp` into ZEVM startup when present, and enables ZEVM's native Engine API listener on `8551` for the simulator's initial forkchoice update.
 
 CI runs this same command in the `Hive RPC Compat Smoke` job for tag pushes, manual dispatches, and the weekly scheduled workflow.
 
-This smoke does not import Hive `genesis.json` or `chain.rlp` into ZEVM yet. Full rpc-compat coverage remains gated on materializing that fixture chain in ZEVM and expanding beyond the active transcript subset.
+This smoke now exercises ZEVM's startup import path for Hive `genesis.json` and `chain.rlp`, plus ZEVM-owned Engine forkchoice validation against imported block history, but it is still not full rpc-compat coverage. Phase-1 `chain.rlp` handling is query-only: imported chains are decoded into canonical block history, while full execution, receipt/log indexing, imported-state reads, Engine payload methods, and expansion beyond the active transcript subset remain outside the current contract. Unsupported Engine payload/body methods are expected to return method-not-found rather than partially implemented lifecycle responses.
 
 ## Published Release Asset Gate
 
@@ -75,7 +102,8 @@ When a GitHub release is published, CI validates the release metadata publicatio
 - tuple dependency revisions are 40-hex commit identifiers
 - Voltaire and Guillotine Mini are checked out at the exact tuple revisions
 - Zig is installed at the exact tuple `zigVersion`
-- `zig build verify-fast` and `zig build qualification-check -- --require-covered` pass against the materialized tuple
+- `zig build verify` and `zig build qualification-check -- --require-covered` pass against the materialized tuple
+- `bun tools/hive_rpc_compat_smoke.ts` passes against the materialized tuple
 - default light-mode checkpoints are 32-byte `0x` hashes for `mainnet`, `sepolia`, and `holesky`
 
 If any item fails, the release metadata is invalid for canonical reproducibility claims.

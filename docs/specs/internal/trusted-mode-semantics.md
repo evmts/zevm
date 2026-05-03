@@ -30,12 +30,24 @@ Trusted defaults:
 - `maxPriorityFeePerGas`: `1000000000`
 - `blockGasLimit`: `30000000`
 - mining mode: `auto`
+- hardfork policy: explicit dev schedule with Cancun active from genesis and Prague/Osaka inactive until configured
+- genesis allocation: absent; default startup pre-funds the deterministic managed accounts
 
 The exact account/address/private-key table is part of the product contract and is defined in `docs/specs/prd.md`, then reflected by RPC behavior (`eth_accounts`, signing scope).
+
+If trusted startup supplies a genesis JSON file, ZEVM imports the file's top-level `alloc` object into the local state before computing the genesis state root. Alloc entries support `balance` or legacy `wei`, plus optional `nonce`, `code`, and `storage`. This replaces default dev-account pre-funding, but the deterministic managed accounts remain the signing scope.
+
+If trusted startup supplies a chain RLP stream, ZEVM imports each encoded block after genesis initialization as query-only block history and advances the canonical head to the last imported block. Imported block bodies retain raw transaction envelopes for block transaction arrays and transaction-by-block/index reads.
+
+Phase-1 chain RLP import does not execute imported transactions, validate post-state roots, materialize account/storage state, or populate receipt/log indexes. State-backed reads, simulation, receipts, and logs remain bound to genesis plus subsequent local execution. Startup logs must identify this path as query-only.
+
+If trusted startup enables `engineRpc`, ZEVM binds a second plain-HTTP Engine API listener. The implemented Engine surface is intentionally narrow: capability exchange, transition configuration exchange, and forkchoice updates that validate referenced hashes against local block history. Full Engine payload execution/building and blob/body retrieval are not release-ready.
 
 ## 3. Fee Model And Tx Types
 
 Phase-1 trusted submission supports only legacy tx type `0x0`.
+
+Transaction admission, simulation, mining, and block persistence use the same runtime-owned hardfork policy. `chainId = 1` defaults to the mainnet activation schedule; non-mainnet trusted defaults use the dev Cancun schedule unless `mode.trusted.hardfork` overrides activation fields.
 
 For `TransactionRequest`:
 
@@ -54,6 +66,8 @@ Mining modes are exact:
 - `auto`: tx submission of an executable tx triggers immediate single-block mining pass; no timer empty blocks
 - `manual`: no background mining; mine only on explicit mine RPC
 - `interval`: periodic mining every configured `blockTime`; empty blocks are allowed
+
+The trusted runtime owns the interval timer. It starts from startup interval config or interval-mining RPC controls, and it stops when mining mode switches to auto/manual or the runtime shuts down.
 
 Shared invariants:
 

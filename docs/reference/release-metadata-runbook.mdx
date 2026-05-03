@@ -274,11 +274,12 @@ Then run the release reproducibility gate from the materialized ZEVM checkout:
 
 ```bash
 cd zevm
-zig build verify-fast
+zig build verify
 zig build qualification-check -- --require-covered
+bun tools/hive_rpc_compat_smoke.ts
 ```
 
-If any checkout, `zig version`, build, or qualification command fails, the tuple is not valid reproducibility evidence for canonical release claims.
+If any checkout, `zig version`, build, qualification command, or Hive smoke fails, the tuple is not valid reproducibility evidence for canonical release claims.
 
 ## 5. Record Provenance In An Operator Manifest
 

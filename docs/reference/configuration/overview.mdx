@@ -35,12 +35,16 @@ Phase 1 remains source-build only; packaged binaries/installers/distribution-cha
 | `--mode` | `trusted` or `light` | `trusted` (effective only when neither `--config` nor explicit `--mode` is supplied) |
 | `--host` | bind host | `127.0.0.1` |
 | `--port` | TCP port | `8545` |
+| `--engine-host` | Engine API bind host | disabled unless `--engine-host`, `--engine-port`, or top-level `engineRpc` is supplied |
+| `--engine-port` | Engine API TCP port | `8551` when Engine API is enabled |
 
 ## RPC Exposure And Hardening
 
-ZEVM phase 1 serves JSON-RPC over plain HTTP only. ZEVM does not provide built-in TLS or JSON-RPC authentication.
+ZEVM phase 1 serves JSON-RPC over plain HTTP only. ZEVM does not provide built-in TLS, JWT, or JSON-RPC authentication.
 `--host 127.0.0.1` keeps the listener local to the machine.
 Binding `--host` to a non-loopback interface (for example, `0.0.0.0`) exposes RPC to any network path that can reach that interface.
+
+The optional Engine API listener is trusted-mode only and is disabled by default. Enable it with CLI `--engine-host` / `--engine-port` or a top-level config `engineRpc` object. Exposing the Engine API on a reachable interface is unsafe without an external authenticated proxy or isolated network.
 
 Recommended phase-1 operator pattern:
 
@@ -85,10 +89,13 @@ server {
 This pattern keeps TLS/auth/IP filtering in the proxy layer while ZEVM remains plain HTTP on local/private transport in phase 1.
 For a light-mode operator checklist, see [Light-Mode Configuration -> RPC Exposure And Hardening](./light-mode#rpc-exposure-and-hardening).
 
+Phase-1 transport limits are fixed, not configurable: `64` active TCP connections, `15,000` ms read/write socket timeouts, `8,192` byte HTTP header buffer, and `1,048,576` byte request body limit. Larger request bodies return HTTP `413` without a JSON-RPC body.
+
 ## Startup Logging Surfaces (Phase 1)
 
 Phase 1 has no dedicated ZEVM startup log-level or log-path knobs in the CLI/config contract.
 Operator startup diagnostics come from process `stderr` capture in shell redirection or service-manager logging.
+Explicit `--config` load failures emit one startup error record before exit. The record names the config path and includes a `failureClass` such as `missing-file`, `unreadable-file`, `malformed-json`, `schema`, or `validation`.
 For concrete capture examples and failure triage flow, see [Troubleshooting -> Capture Startup Logs (Phase 1)](../../quickstart/troubleshooting#capture-startup-logs-phase-1).
 
 ## Config File Schema
@@ -100,6 +107,7 @@ For concrete capture examples and failure triage flow, see [Troubleshooting -> C
 ```json
 {
   "rpc": { "host": "127.0.0.1", "port": 8545 },
+  "engineRpc": { "host": "127.0.0.1", "port": 8551 },
   "mode": {
     "trusted": {
       "chainId": 31337,
@@ -111,11 +119,24 @@ For concrete capture examples and failure triage flow, see [Troubleshooting -> C
       "maxPriorityFeePerGas": "1000000000",
       "blockGasLimit": 30000000,
       "mining": { "type": "auto" },
-      "fork": null
+      "hardfork": {
+        "cancunTimestamp": 0,
+        "pragueTimestamp": 9223372036854775807,
+        "osakaTimestamp": 9223372036854775807
+      },
+      "fork": null,
+      "genesis": null,
+      "chainRlp": null
     }
   }
 }
 ```
+
+Trusted hardfork policy is explicit and owned by the runtime. `chainId = 1` defaults to the mainnet activation schedule; any other trusted chain defaults to a dev schedule with Cancun active from genesis and Prague/Osaka inactive. `mode.trusted.hardfork` can override any activation field with decimal `u64` values: `homesteadBlock`, `daoBlock`, `tangerineWhistleBlock`, `spuriousDragonBlock`, `byzantiumBlock`, `petersburgBlock`, `istanbulBlock`, `muirGlacierBlock`, `berlinBlock`, `londonBlock`, `arrowGlacierBlock`, `grayGlacierBlock`, `mergeBlock`, `shanghaiTimestamp`, `cancunTimestamp`, `pragueTimestamp`, `osakaTimestamp`, and `secondsPerSlot`.
+
+`mode.trusted.genesis` or CLI `--genesis` points at a genesis JSON file and imports its `alloc` object at startup. Alloc entries may use `balance` or legacy `wei`, plus optional `nonce`, `code`, and `storage`. When a genesis file is supplied, ZEVM seeds state from that allocation instead of pre-funding the deterministic dev accounts; the managed signing accounts remain available through `eth_accounts`.
+
+`mode.trusted.chainRlp` or CLI `--chain-rlp` points at a concatenated RLP block stream. ZEVM imports those blocks after genesis as query-only block history, makes the imported head canonical, and keeps decoded transaction bodies available for block and transaction-by-position reads. It does not execute imported transactions or materialize imported state, receipts, or logs in phase 1.
 
 ### Light-mode config shape
 
@@ -148,10 +169,11 @@ For concrete capture examples and failure triage flow, see [Troubleshooting -> C
 
 ## Config Key Validation
 
-- allowed top-level keys are `rpc` and `mode`; unknown top-level keys are invalid
-- unknown keys inside `rpc`, `mode`, `mode.trusted`, `mode.light`, and trusted structured objects (`mining`, `fork`) are invalid
+- allowed top-level keys are `rpc`, `engineRpc`, and `mode`; unknown top-level keys are invalid
+- unknown keys inside `rpc`, `engineRpc`, `mode`, `mode.trusted`, `mode.light`, and trusted structured objects (`mining`, `hardfork`, `fork`) are invalid
 - `rpc` is optional; when omitted, shared defaults apply (`host = 127.0.0.1`, `port = 8545`)
 - when `rpc` is present, `host` and `port` default independently if omitted
+- `engineRpc` is optional and trusted-mode only; when present, omitted `host` defaults to the main RPC host and omitted `port` defaults to `8551`
 
 ## Startup Precedence
 
@@ -168,7 +190,10 @@ Because of that ordering, parser defaults cannot create a mode-branch conflict w
 Structured trusted-setting resolution:
 
 - `mining` resolves as one unit from CLI `--mining` and `--block-time`; if either flag is explicitly supplied, ZEVM builds `mining` from CLI and ignores `mode.trusted.mining`
+- `hardfork` has no phase-1 CLI flags; ZEVM starts from the default schedule for the resolved `chainId`, then applies any `mode.trusted.hardfork` field overrides
 - `fork` resolves as one unit from CLI `--fork-url` and `--fork-block-number`; if either flag is explicitly supplied, ZEVM builds `fork` from CLI and ignores `mode.trusted.fork`
+- `genesis` resolves by normal field precedence from CLI `--genesis`, then `mode.trusted.genesis`, then absent
+- `chainRlp` resolves by normal field precedence from CLI `--chain-rlp`, then `mode.trusted.chainRlp`, then absent
 - when no related CLI flags are present for that unit, ZEVM uses config value for that unit, then mode default
 
 ## Light-Mode Checkpoint Resolution

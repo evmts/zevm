@@ -43,6 +43,8 @@ Selector alias scope on this page:
 | `eth_getBlockByHash` | `[blockHash, fullTransactions]` | block object or `null` | unknown block -> `null`; malformed hash/boolean -> `-32602` |
 | `eth_getBlockTransactionCountByNumber` | `[block]` | `QuantityHex` or `null` | unknown block -> `null`; malformed selector -> `-32602` |
 | `eth_getBlockTransactionCountByHash` | `[blockHash]` | `QuantityHex` or `null` | unknown block -> `null`; malformed hash -> `-32602` |
+| `eth_getUncleCountByBlockNumber` | `[block]` | `QuantityHex` | unknown block -> `0x0`; malformed selector -> `-32602` |
+| `eth_getUncleCountByBlockHash` | `[blockHash]` | `QuantityHex` | unknown block -> `0x0`; malformed hash -> `-32602` |
 | `eth_getTransactionByHash` | `[transactionHash]` | transaction object or `null` | unknown tx -> `null`; malformed hash -> `-32602` |
 | `eth_getTransactionByBlockNumberAndIndex` | `[block, index]` | transaction object or `null` | unknown block or out-of-range index -> `null`; malformed selector/index -> `-32602` |
 | `eth_getTransactionByBlockHashAndIndex` | `[blockHash, index]` | transaction object or `null` | unknown block or out-of-range index -> `null`; malformed hash/index -> `-32602` |
@@ -53,6 +55,7 @@ Selector alias scope on this page:
 Lookup behavior:
 
 - `eth_getBlockTransactionCountByNumber` and `eth_getBlockTransactionCountByHash` return `null` when the target block is unknown
+- `eth_getUncleCountByBlockNumber` and `eth_getUncleCountByBlockHash` return `0x0` for unknown blocks and for ZEVM-produced post-Merge blocks
 - `eth_getTransactionByBlockNumberAndIndex` and `eth_getTransactionByBlockHashAndIndex` return `null` when the target block is unknown or the zero-based `index` is out of range for that block
 - index params for `eth_getTransactionByBlockNumberAndIndex` and `eth_getTransactionByBlockHashAndIndex` must be `QuantityHex` and are interpreted as zero-based transaction positions within the resolved canonical block
 - `eth_getTransactionByHash` does not surface txpool-only pending entries; it returns `null` until a transaction is canonical in a mined block
