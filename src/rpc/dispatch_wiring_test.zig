@@ -3,6 +3,7 @@ const jsonrpc = @import("jsonrpc");
 const primitives = @import("primitives");
 const dispatcher = @import("dispatcher.zig");
 const dispatch_wiring = @import("dispatch_wiring.zig");
+const genesis_mod = @import("../genesis.zig");
 const light_proof = @import("../light_proof.zig");
 const mining = @import("../mining.zig");
 const runtime_mod = @import("../node/runtime.zig");
@@ -82,6 +83,29 @@ fn dispatchOneStringParam(
     defer request.deinit(std.testing.allocator);
 
     return dispatcher.dispatch(std.testing.allocator, request, handlers);
+}
+
+fn rpcBlockNumber(handlers: *const dispatcher.HandlerRegistry) !u64 {
+    var request = try makeRequest("eth_blockNumber", null);
+    defer request.deinit(std.testing.allocator);
+
+    var response = try dispatcher.dispatch(std.testing.allocator, request, handlers);
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expect(response.error_value == null);
+    const quantity = response.result.?.string;
+    if (!std.mem.startsWith(u8, quantity, "0x")) return error.InvalidQuantity;
+    if (quantity.len == 2) return error.InvalidQuantity;
+    return std.fmt.parseInt(u64, quantity[2..], 16);
+}
+
+fn waitForRpcBlockNumberAtLeast(handlers: *const dispatcher.HandlerRegistry, target: u64) !void {
+    const deadline = std.time.nanoTimestamp() + 4 * std.time.ns_per_s;
+    while (std.time.nanoTimestamp() < deadline) {
+        if ((try rpcBlockNumber(handlers)) >= target) return;
+        std.Thread.sleep(25 * std.time.ns_per_ms);
+    }
+    return error.TimeoutWaitingForIntervalMining;
 }
 
 fn addPooledTransaction(rt: *runtime_mod.NodeRuntime, sender: primitives.Address, hash: [32]u8) !void {
@@ -309,10 +333,10 @@ fn contractProbeParams(allocator: std.mem.Allocator, method: []const u8) !?std.j
     if (std.mem.eql(u8, method, "eth_getBlockByHash")) {
         return try arrayParams(allocator, &.{ hash32Value(), .{ .bool = false } });
     }
-    if (methodIs(method, &.{ "eth_getBlockTransactionCountByHash", "eth_getTransactionByHash", "eth_getTransactionReceipt" })) {
+    if (methodIs(method, &.{ "eth_getBlockTransactionCountByHash", "eth_getUncleCountByBlockHash", "eth_getTransactionByHash", "eth_getTransactionReceipt" })) {
         return try arrayParams(allocator, &.{hash32Value()});
     }
-    if (std.mem.eql(u8, method, "eth_getBlockTransactionCountByNumber")) {
+    if (methodIs(method, &.{ "eth_getBlockTransactionCountByNumber", "eth_getUncleCountByBlockNumber" })) {
         return try arrayParams(allocator, &.{.{ .string = "latest" }});
     }
     if (std.mem.eql(u8, method, "eth_getTransactionByBlockHashAndIndex")) {
@@ -481,6 +505,11 @@ fn hash32Value() std.json.Value {
     return .{ .string = "0x0000000000000000000000000000000000000000000000000000000000000000" };
 }
 
+fn hashText(allocator: std.mem.Allocator, hash: [32]u8) ![]u8 {
+    const hex = std.fmt.bytesToHex(hash, .lower);
+    return std.fmt.allocPrint(allocator, "0x{s}", .{&hex});
+}
+
 fn bytes32Value() std.json.Value {
     return .{ .string = "0x0000000000000000000000000000000000000000000000000000000000000000" };
 }
@@ -633,7 +662,7 @@ test "installed dispatch wiring keeps independent runtime contexts" {
 test "installed dispatch wiring reaches runtime-backed eth_feeHistory" {
     var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();
-    rt.head_block_number = 2;
+    try rt.mineBlocks(2, 0);
 
     var handlers = dispatcher.HandlerRegistry{};
     dispatch_wiring.install(&handlers, &rt);
@@ -660,11 +689,107 @@ test "installed dispatch wiring reaches runtime-backed eth_feeHistory" {
     try std.testing.expectEqualStrings("0x2", (try getObjectField(result, "oldestBlock")).string);
     try std.testing.expectEqual(@as(usize, 2), (try getObjectField(result, "baseFeePerGas")).array.items.len);
     try std.testing.expectEqual(@as(usize, 1), (try getObjectField(result, "gasUsedRatio")).array.items.len);
+    try std.testing.expectEqual(@as(usize, 2), (try getObjectField(result, "baseFeePerBlobGas")).array.items.len);
+    try std.testing.expectEqual(@as(usize, 1), (try getObjectField(result, "blobGasUsedRatio")).array.items.len);
 
     const reward = (try getObjectField(result, "reward")).array.items;
     try std.testing.expectEqual(@as(usize, 1), reward.len);
     try std.testing.expectEqual(@as(usize, 2), reward[0].array.items.len);
-    try std.testing.expect(result.object.get("baseFeePerBlobGas") == null);
+}
+
+test "installed dispatch wiring rejects params for no-param trusted methods" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    const methods = [_][]const u8{
+        "eth_chainId",
+        "eth_blockNumber",
+        "eth_gasPrice",
+        "eth_maxPriorityFeePerGas",
+        "eth_blobBaseFee",
+        "eth_coinbase",
+        "eth_accounts",
+        "zevm_snapshot",
+        "anvil_snapshot",
+        "evm_snapshot",
+    };
+
+    for (&methods) |method| {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .string = "0x0" });
+        try expectInvalidParamsRpc(&handlers, method, .{ .array = params });
+    }
+}
+
+test "installed dispatch wiring routes uncle count methods" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .string = "latest" });
+
+        var request = try makeRequest("eth_getUncleCountByBlockNumber", .{ .array = params });
+        defer request.deinit(std.testing.allocator);
+        var response = try dispatcher.dispatch(std.testing.allocator, request, &handlers);
+        defer response.deinit(std.testing.allocator);
+
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expectEqualStrings("0x0", response.result.?.string);
+    }
+
+    {
+        const genesis = (try rt.blockchain.getBlockByNumber(0)).?;
+        const hash_hex = std.fmt.bytesToHex(genesis.hash, .lower);
+        const hash_param = try std.fmt.allocPrint(std.testing.allocator, "0x{s}", .{hash_hex[0..]});
+        defer std.testing.allocator.free(hash_param);
+
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .string = hash_param });
+
+        var request = try makeRequest("eth_getUncleCountByBlockHash", .{ .array = params });
+        defer request.deinit(std.testing.allocator);
+        var response = try dispatcher.dispatch(std.testing.allocator, request, &handlers);
+        defer response.deinit(std.testing.allocator);
+
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expectEqualStrings("0x0", response.result.?.string);
+    }
+}
+
+test "installed dispatch wiring reads managed accounts from runtime" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+    rt.managed_accounts[0] = genesis_mod.DEV_ACCOUNTS[1];
+
+    {
+        var response = try dispatchForTest(&rt, "eth_accounts", null);
+        defer response.deinit(std.testing.allocator);
+
+        try std.testing.expect(response.error_value == null);
+        const accounts = response.result.?.array.items;
+        try std.testing.expectEqual(@as(usize, 10), accounts.len);
+        try std.testing.expectEqualStrings("0x70997970c51812dc3a010c7d01b50e0d17dc79c8", accounts[0].string);
+    }
+
+    {
+        var response = try dispatchForTest(&rt, "zevm_nodeInfo", null);
+        defer response.deinit(std.testing.allocator);
+
+        try std.testing.expect(response.error_value == null);
+        const object = response.result.?.object;
+        const accounts = (try objectField(&object, "managedAccounts")).array.items;
+        try std.testing.expectEqualStrings("0x70997970c51812dc3a010c7d01b50e0d17dc79c8", accounts[0].string);
+    }
 }
 
 test "installed dispatch wiring returns eth_getStorageAt as 32-byte data" {
@@ -1192,6 +1317,7 @@ const LightProofFixtureMode = enum {
 const LightProofFixture = struct {
     mode: LightProofFixtureMode = .valid_empty,
     code: []const u8 = "",
+    expected_block_tag: ?[]const u8 = null,
 
     fn resolver(self: *LightProofFixture) light_proof.RpcResolver {
         return .{
@@ -1206,6 +1332,12 @@ const LightProofFixture = struct {
         request: light_proof.RpcRequest,
     ) ![]u8 {
         const self: *LightProofFixture = @ptrCast(@alignCast(context orelse return error.InvalidContext));
+        if (self.expected_block_tag) |block_tag| {
+            const expected_tail = try std.fmt.allocPrint(allocator, "\"{s}\"]", .{block_tag});
+            defer allocator.free(expected_tail);
+            if (std.mem.indexOf(u8, request.params_json, expected_tail) == null) return error.InvalidBlockTag;
+        }
+
         if (self.mode == .malformed) {
             return allocator.dupe(u8, "{\"nonce\":\"0x0\"}");
         }
@@ -1287,12 +1419,29 @@ fn parseTestAddress(text: []const u8) !primitives.Address {
     return .{ .bytes = bytes };
 }
 
-fn setLightExecutionHead(rt: *runtime_mod.NodeRuntime, block_number: u64, state_root: [32]u8) void {
+fn setLightExecutionHead(rt: *runtime_mod.NodeRuntime, block_number: u64, state_root: [32]u8) !void {
+    try setLightExecutionHeads(
+        rt,
+        .{ .block_number = block_number, .state_root = state_root },
+        .{ .block_number = block_number, .state_root = state_root },
+        .{ .block_number = block_number, .state_root = state_root },
+    );
+}
+
+fn setLightExecutionHeads(
+    rt: *runtime_mod.NodeRuntime,
+    optimistic: runtime_mod.LightReadHead,
+    safe: runtime_mod.LightReadHead,
+    finalized: runtime_mod.LightReadHead,
+) !void {
     if (rt.light) |*light| {
-        light.engine.store.optimistic_header.execution.block_number = block_number;
-        light.engine.store.optimistic_header.execution.state_root = state_root;
-        light.engine.store.finalized_header.execution.block_number = block_number;
-        light.engine.store.finalized_header.execution.state_root = state_root;
+        light.engine.store.optimistic_header.execution.block_number = optimistic.block_number;
+        light.engine.store.optimistic_header.execution.state_root = optimistic.state_root;
+        light.engine.store.finalized_header.execution.block_number = finalized.block_number;
+        light.engine.store.finalized_header.execution.state_root = finalized.state_root;
+        try rt.recordLightReadHead(finalized);
+        try rt.setLightSafeReadHead(safe);
+        try rt.recordLightReadHead(optimistic);
     }
 }
 
@@ -1455,7 +1604,7 @@ test "light mode proof-backed empty account reads verify against state root" {
     var rt = try initLightRuntime(&fixture);
     defer rt.deinit();
     try rt.setLightSyncProgress(.synced, 12, 11, 10, 10_000);
-    setLightExecutionHead(&rt, 10_000, primitives.AccountState.EMPTY_TRIE_ROOT);
+    try setLightExecutionHead(&rt, 10_000, primitives.AccountState.EMPTY_TRIE_ROOT);
 
     var params = std.json.Array.init(std.testing.allocator);
     defer params.deinit();
@@ -1498,6 +1647,103 @@ test "light mode proof-backed empty account reads verify against state root" {
         "0x0000000000000000000000000000000000000000000000000000000000000000",
         storage_response.result.?.string,
     );
+}
+
+test "light mode earliest and numeric zero resolve retained genesis head" {
+    var fixture = LightProofFixture{ .expected_block_tag = "0x0" };
+    var rt = try initLightRuntime(&fixture);
+    defer rt.deinit();
+    try rt.setLightSyncProgress(.synced, 12, 11, 10, 10_000);
+    try rt.recordLightReadHead(.{
+        .block_number = 0,
+        .state_root = primitives.AccountState.EMPTY_TRIE_ROOT,
+    });
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(validAddress());
+        try params.append(.{ .string = "earliest" });
+
+        var response = try dispatchForTest(&rt, "eth_getBalance", .{ .array = params });
+        defer response.deinit(std.testing.allocator);
+
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expectEqualStrings("0x0", response.result.?.string);
+    }
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(validAddress());
+        try params.append(.{ .string = "0x0" });
+
+        var response = try dispatchForTest(&rt, "eth_getBalance", .{ .array = params });
+        defer response.deinit(std.testing.allocator);
+
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expectEqualStrings("0x0", response.result.?.string);
+    }
+}
+
+test "light mode safe and finalized selectors use distinct heads" {
+    var fixture = LightProofFixture{};
+    var rt = try initLightRuntime(&fixture);
+    defer rt.deinit();
+    try rt.setLightSyncProgress(.synced, 12, 11, 10, 10_000);
+    try setLightExecutionHeads(
+        &rt,
+        .{ .block_number = 10_000, .state_root = primitives.AccountState.EMPTY_TRIE_ROOT },
+        .{ .block_number = 9_500, .state_root = primitives.AccountState.EMPTY_TRIE_ROOT },
+        .{ .block_number = 9_000, .state_root = [_]u8{0x42} ** 32 },
+    );
+
+    {
+        fixture.expected_block_tag = "0x251c";
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(validAddress());
+        try params.append(.{ .string = "safe" });
+
+        var response = try dispatchForTest(&rt, "eth_getBalance", .{ .array = params });
+        defer response.deinit(std.testing.allocator);
+
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expectEqualStrings("0x0", response.result.?.string);
+    }
+
+    {
+        fixture.expected_block_tag = "0x2328";
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(validAddress());
+        try params.append(.{ .string = "finalized" });
+
+        try expectErrorCode(&rt, "eth_getBalance", .{ .array = params }, dispatcher.RuntimeErrorCode.PROOF_VERIFY_FAILED);
+    }
+}
+
+test "light mode numeric selector resolves retained lower boundary head" {
+    var fixture = LightProofFixture{ .expected_block_tag = "0x712" };
+    var rt = try initLightRuntime(&fixture);
+    defer rt.deinit();
+    try rt.setLightSyncProgress(.synced, 12, 11, 10, 10_000);
+    try setLightExecutionHead(&rt, 10_000, primitives.AccountState.EMPTY_TRIE_ROOT);
+    try rt.recordLightReadHead(.{
+        .block_number = 1_810,
+        .state_root = primitives.AccountState.EMPTY_TRIE_ROOT,
+    });
+
+    var params = std.json.Array.init(std.testing.allocator);
+    defer params.deinit();
+    try params.append(validAddress());
+    try params.append(.{ .string = "0x712" });
+
+    var response = try dispatchForTest(&rt, "eth_getBalance", .{ .array = params });
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expect(response.error_value == null);
+    try std.testing.expectEqualStrings("0x0", response.result.?.string);
 }
 
 test "installed dispatch wiring handles automine aliases" {
@@ -1584,6 +1830,36 @@ test "installed dispatch wiring handles interval mining aliases" {
     }
 }
 
+test "installed dispatch wiring interval mining seals periodically and stops on manual mode" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .string = "0x1" });
+        try expectBoolRpc(&handlers, "zevm_setIntervalMining", .{ .array = params });
+    }
+
+    try waitForRpcBlockNumberAtLeast(&handlers, 1);
+    const mined_head = try rpcBlockNumber(&handlers);
+    try std.testing.expect(mined_head >= 1);
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .bool = false });
+        try expectBoolRpc(&handlers, "evm_setAutomine", .{ .array = params });
+    }
+
+    const stopped_head = try rpcBlockNumber(&handlers);
+    std.Thread.sleep(1200 * std.time.ns_per_ms);
+    try std.testing.expectEqual(stopped_head, try rpcBlockNumber(&handlers));
+}
+
 test "installed dispatch wiring handles state and metadata helper aliases" {
     var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();
@@ -1643,6 +1919,128 @@ test "installed dispatch wiring handles state and metadata helper aliases" {
         const fork_object = (try objectField(&object, "fork")).object;
         try std.testing.expect(!(try objectField(&fork_object, "enabled")).bool);
     }
+}
+
+test "engine capabilities expose implemented engine methods" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var capabilities = std.json.Array.init(allocator);
+    try capabilities.append(.{ .string = "engine_newPayloadV3" });
+
+    var params = std.json.Array.init(allocator);
+    try params.append(.{ .array = capabilities });
+
+    var request = try makeRequest("engine_exchangeCapabilities", .{ .array = params });
+    defer request.deinit(std.testing.allocator);
+
+    var response = try dispatcher.dispatch(std.testing.allocator, request, &handlers);
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expect(response.error_value == null);
+    const result = response.result.?.array.items;
+    var found_forkchoice = false;
+    var found_new_payload = false;
+    for (result) |item| {
+        if (std.mem.eql(u8, item.string, "engine_forkchoiceUpdatedV3")) found_forkchoice = true;
+        if (std.mem.eql(u8, item.string, "engine_newPayloadV3")) found_new_payload = true;
+    }
+    try std.testing.expect(found_forkchoice);
+    try std.testing.expect(!found_new_payload);
+}
+
+test "unsupported engine lifecycle methods return method not found" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    const methods = [_][]const u8{
+        "engine_newPayloadV1",
+        "engine_newPayloadV2",
+        "engine_newPayloadV3",
+        "engine_getPayloadV1",
+        "engine_getPayloadV2",
+        "engine_getPayloadBodiesByHashV1",
+        "engine_getPayloadBodiesByRangeV1",
+    };
+
+    for (methods) |method| {
+        try expectErrorCode(&rt, method, null, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND);
+    }
+}
+
+test "engine forkchoice validates against known canonical blocks" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    const head = try rt.blockchain.getCanonicalHeadBlock();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const head_text = try hashText(allocator, head.hash);
+
+    var forkchoice = std.json.ObjectMap.init(allocator);
+    try forkchoice.put("headBlockHash", .{ .string = head_text });
+    try forkchoice.put("safeBlockHash", hash32Value());
+    try forkchoice.put("finalizedBlockHash", hash32Value());
+
+    var params = std.json.Array.init(allocator);
+    try params.append(.{ .object = forkchoice });
+    try params.append(.null);
+
+    var request = try makeRequest("engine_forkchoiceUpdatedV3", .{ .array = params });
+    defer request.deinit(std.testing.allocator);
+
+    var response = try dispatcher.dispatch(std.testing.allocator, request, &handlers);
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expect(response.error_value == null);
+    const payload_status = try getObjectField(response.result.?, "payloadStatus");
+    try std.testing.expectEqualStrings("VALID", (try getObjectField(payload_status, "status")).string);
+    try std.testing.expectEqualStrings(head_text, (try getObjectField(payload_status, "latestValidHash")).string);
+    try std.testing.expectEqual(head.header.number, rt.head_block_number);
+}
+
+test "engine forkchoice reports syncing for unknown head" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var forkchoice = std.json.ObjectMap.init(allocator);
+    try forkchoice.put("headBlockHash", .{ .string = "0x1111111111111111111111111111111111111111111111111111111111111111" });
+    try forkchoice.put("safeBlockHash", hash32Value());
+    try forkchoice.put("finalizedBlockHash", hash32Value());
+
+    var params = std.json.Array.init(allocator);
+    try params.append(.{ .object = forkchoice });
+    try params.append(.null);
+
+    var request = try makeRequest("engine_forkchoiceUpdatedV3", .{ .array = params });
+    defer request.deinit(std.testing.allocator);
+
+    var response = try dispatcher.dispatch(std.testing.allocator, request, &handlers);
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expect(response.error_value == null);
+    const payload_status = try getObjectField(response.result.?, "payloadStatus");
+    try std.testing.expectEqualStrings("SYNCING", (try getObjectField(payload_status, "status")).string);
+    try std.testing.expectEqual(.null, try getObjectField(payload_status, "latestValidHash"));
 }
 
 test "installed dispatch wiring mines empty blocks through aliases" {

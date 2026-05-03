@@ -24,7 +24,10 @@ fn installHandlers(rt: *runtime_mod.NodeRuntime, handlers: *dispatcher.HandlerRe
 }
 
 fn postJson(address: std.net.Address, body: []const u8) !RawHttpResponse {
-    const allocator = std.testing.allocator;
+    return postJsonWithAllocator(std.testing.allocator, address, body);
+}
+
+fn postJsonWithAllocator(allocator: std.mem.Allocator, address: std.net.Address, body: []const u8) !RawHttpResponse {
     const stream = try std.net.tcpConnectToAddress(address);
     defer stream.close();
 
@@ -101,6 +104,25 @@ fn contentLength(headers: []const u8) !?usize {
 
     return null;
 }
+
+const AsyncPost = struct {
+    address: std.net.Address,
+    body: []const u8,
+    done: std.Thread.Semaphore = .{},
+    result: anyerror!u16 = error.NotStarted,
+
+    fn run(self: *AsyncPost) void {
+        var response = postJsonWithAllocator(std.heap.page_allocator, self.address, self.body) catch |err| {
+            self.result = err;
+            self.done.post();
+            return;
+        };
+        defer response.deinit(std.heap.page_allocator);
+
+        self.result = response.status_code;
+        self.done.post();
+    }
+};
 
 fn parseBody(body: []const u8) !std.json.Parsed(std.json.Value) {
     return std.json.parseFromSlice(std.json.Value, std.testing.allocator, body, .{
@@ -199,6 +221,69 @@ test "trusted mode returns 204 for a notification over a real TCP listener" {
 
     try std.testing.expectEqual(@as(u16, 204), response.status_code);
     try std.testing.expectEqual(@as(usize, 0), response.body.len);
+}
+
+test "slow client does not block another TCP client" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, .{});
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    installHandlers(&rt, &handlers);
+
+    var listener = try server.TestListener.init(std.testing.allocator, "127.0.0.1", &handlers);
+    defer listener.deinit();
+    try listener.start();
+
+    var slow_stream: ?std.net.Stream = try std.net.tcpConnectToAddress(listener.address());
+    defer if (slow_stream) |stream| stream.close();
+    try slow_stream.?.writeAll(
+        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 64\r\n",
+    );
+
+    var request = AsyncPost{
+        .address = listener.address(),
+        .body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_chainId\"}",
+    };
+    const thread = try std.Thread.spawn(.{}, AsyncPost.run, .{&request});
+
+    request.done.timedWait(2 * std.time.ns_per_s) catch |err| switch (err) {
+        error.Timeout => {
+            slow_stream.?.close();
+            slow_stream = null;
+            thread.join();
+            return error.ConcurrentRequestBlockedBySlowClient;
+        },
+    };
+    thread.join();
+
+    try std.testing.expectEqual(@as(u16, 200), try request.result);
+}
+
+test "listener stop unblocks accept loop and active slow connections" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, .{});
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    installHandlers(&rt, &handlers);
+
+    var listener = try server.TestListener.init(std.testing.allocator, "127.0.0.1", &handlers);
+    defer listener.deinit();
+    try listener.start();
+
+    const slow_stream = try std.net.tcpConnectToAddress(listener.address());
+    defer slow_stream.close();
+    try slow_stream.writeAll(
+        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 64\r\n",
+    );
+
+    var attempts: usize = 0;
+    while (listener.activeConnectionCountForTest() == 0 and attempts < 100) : (attempts += 1) {
+        std.Thread.sleep(10 * std.time.ns_per_ms);
+    }
+    try std.testing.expect(listener.activeConnectionCountForTest() > 0);
+
+    listener.stop();
+    try std.testing.expectEqual(@as(usize, 0), listener.activeConnectionCountForTest());
 }
 
 test "light mode restarts from persisted checkpoint over a real TCP listener" {

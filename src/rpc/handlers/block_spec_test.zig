@@ -11,6 +11,10 @@ fn makeIntSpec(n: i64) jsonrpc.types.BlockSpec {
     return .{ .value = .{ .integer = n } };
 }
 
+fn makeObjectSpec(obj: std.json.ObjectMap) jsonrpc.types.BlockSpec {
+    return .{ .value = .{ .object = obj } };
+}
+
 fn makeRuntime() !runtime.NodeRuntime {
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
     rt.head_block_number = 10;
@@ -93,4 +97,27 @@ test "resolveBlockNumber: non-minimal quantity is invalid" {
     var rt = try makeRuntime();
     defer rt.deinit();
     try std.testing.expectError(error.InvalidBlockSpec, block_spec.resolveBlockNumber(&rt, makeSpec("0x01")));
+}
+
+test "resolveBlockNumber: hash-shaped string is invalid for tag-only selector" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    try std.testing.expectError(
+        error.InvalidBlockSpec,
+        block_spec.resolveBlockNumber(&rt, makeSpec("0x1111111111111111111111111111111111111111111111111111111111111111")),
+    );
+}
+
+test "resolveBlockNumber: blockHash object is invalid for tag-only selector" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+
+    var obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("blockHash", .{ .string = "0x1111111111111111111111111111111111111111111111111111111111111111" });
+
+    try std.testing.expectError(
+        error.InvalidBlockSpec,
+        block_spec.resolveBlockNumber(&rt, makeObjectSpec(obj)),
+    );
 }

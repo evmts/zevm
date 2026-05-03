@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const jsonrpc = @import("jsonrpc");
+const log = @import("../log.zig");
 const primitives = @import("primitives");
 const rpc_parse = @import("parse.zig");
 const dispatcher_mod = @import("dispatcher.zig");
@@ -53,6 +54,8 @@ fn dispatchMethod(
     params: ?std.json.Value,
 ) anyerror!std.json.Value {
     const rt: *runtime_mod.NodeRuntime = @ptrCast(@alignCast(context orelse return error.MethodNotFound));
+    rt.runtime_mutex.lock();
+    defer rt.runtime_mutex.unlock();
 
     if (rt.mode == .light) {
         return dispatchLightMethod(allocator, rt, method_name, params);
@@ -60,6 +63,9 @@ fn dispatchMethod(
     if (std.mem.eql(u8, method_name, "zevm_lightSyncStatus")) {
         try validateNoParams(params);
         return error.ModeUnsupported;
+    }
+    if (isEngineNamespaceMethod(method_name)) {
+        return dispatchEngineMethod(allocator, rt, method_name, params);
     }
 
     if (std.mem.eql(u8, method_name, "web3_clientVersion")) {
@@ -93,18 +99,23 @@ fn dispatchMethod(
     }
 
     if (std.mem.eql(u8, method_name, "eth_chainId")) {
+        try validateNoParams(params);
         return hexQuantity(allocator, rt.chain_id);
     }
     if (std.mem.eql(u8, method_name, "eth_blockNumber")) {
+        try validateNoParams(params);
         return hexQuantity(allocator, rt.head_block_number);
     }
     if (std.mem.eql(u8, method_name, "eth_gasPrice")) {
+        try validateNoParams(params);
         return hexU256(allocator, rt.gas_price);
     }
     if (std.mem.eql(u8, method_name, "eth_maxPriorityFeePerGas")) {
+        try validateNoParams(params);
         return hexU256(allocator, rt.max_priority_fee);
     }
     if (std.mem.eql(u8, method_name, "eth_blobBaseFee")) {
+        try validateNoParams(params);
         return hexU256(allocator, currentBlobBaseFee(rt));
     }
     if (std.mem.eql(u8, method_name, "eth_feeHistory")) {
@@ -113,10 +124,12 @@ fn dispatchMethod(
         return eth_read.handleEthFeeHistoryValue(allocator, rt, fee_history_params);
     }
     if (std.mem.eql(u8, method_name, "eth_coinbase")) {
+        try validateNoParams(params);
         return addressString(allocator, rt.coinbase);
     }
     if (std.mem.eql(u8, method_name, "eth_accounts")) {
-        return accountsResponse(allocator);
+        try validateNoParams(params);
+        return accountsResponse(allocator, rt);
     }
     if (std.mem.eql(u8, method_name, "eth_mining")) {
         try validateNoParams(params);
@@ -131,24 +144,44 @@ fn dispatchMethod(
         return .{ .string = try allocator.dupe(u8, "0x41") };
     }
     if (std.mem.eql(u8, method_name, "eth_getBalance")) {
-        const args = try parseAddrAndBlockArgs(params);
-        const balance = try rt.getBalance(args.address);
-        return hexU256(allocator, balance);
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const result = try eth_read.handleEthGetBalance(
+            arena.allocator(),
+            rt,
+            try eth_read.parseEthGetBalanceParams(params),
+        );
+        return typedResultToJsonValue(allocator, result);
     }
     if (std.mem.eql(u8, method_name, "eth_getTransactionCount")) {
-        const args = try parseAddrAndBlockArgs(params);
-        const nonce = try rt.getNonce(args.address);
-        return hexQuantity(allocator, nonce);
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const result = try eth_read.handleEthGetTransactionCount(
+            arena.allocator(),
+            rt,
+            try eth_read.parseEthGetTransactionCountParams(params),
+        );
+        return typedResultToJsonValue(allocator, result);
     }
     if (std.mem.eql(u8, method_name, "eth_getCode")) {
-        const args = try parseAddrAndBlockArgs(params);
-        const code = try rt.getCode(args.address);
-        return hexBytes(allocator, code);
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const result = try eth_read.handleEthGetCode(
+            arena.allocator(),
+            rt,
+            try eth_read.parseEthGetCodeParams(params),
+        );
+        return typedResultToJsonValue(allocator, result);
     }
     if (std.mem.eql(u8, method_name, "eth_getStorageAt")) {
-        const args = try parseStorageArgs(params);
-        const value = try rt.getStorage(args.address, args.slot);
-        return dataHexU256(allocator, value);
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const result = try eth_read.handleEthGetStorageAt(
+            arena.allocator(),
+            rt,
+            try eth_read.parseEthGetStorageAtParams(params),
+        );
+        return typedResultToJsonValue(allocator, result);
     }
     if (std.mem.eql(u8, method_name, "eth_sendTransaction")) {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -218,6 +251,28 @@ fn dispatchMethod(
             arena.allocator(),
             &ctx,
             try parseGetBlockTransactionCountByNumberParams(params),
+        );
+        return typedResultToJsonValue(allocator, result);
+    }
+    if (std.mem.eql(u8, method_name, "eth_getUncleCountByBlockHash")) {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        var ctx = blockQueryContext(rt);
+        const result = try block_query_handlers.handleGetUncleCountByBlockHash(
+            arena.allocator(),
+            &ctx,
+            try parseGetUncleCountByBlockHashParams(allocator, params),
+        );
+        return typedResultToJsonValue(allocator, result);
+    }
+    if (std.mem.eql(u8, method_name, "eth_getUncleCountByBlockNumber")) {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        var ctx = blockQueryContext(rt);
+        const result = try block_query_handlers.handleGetUncleCountByBlockNumber(
+            arena.allocator(),
+            &ctx,
+            try parseGetUncleCountByBlockNumberParams(params),
         );
         return typedResultToJsonValue(allocator, result);
     }
@@ -426,6 +481,7 @@ fn dispatchMethod(
         return hexQuantity(allocator, try rt.setTime(timestamp));
     }
     if (methodIs(method_name, &.{ "zevm_snapshot", "anvil_snapshot", "evm_snapshot" })) {
+        try validateNoParams(params);
         return hexQuantity(allocator, try rt.snapshot());
     }
     if (methodIs(method_name, &.{ "zevm_revert", "anvil_revert", "evm_revert" })) {
@@ -459,7 +515,7 @@ fn dispatchMethod(
     }
     if (methodIs(method_name, &.{ "zevm_setAutomine", "anvil_setAutomine", "evm_setAutomine" })) {
         const enabled = try parseSetAutomineArgs(params);
-        rt.setAutomine(enabled);
+        try rt.setAutomine(enabled);
         return .{ .bool = true };
     }
     if (methodIs(method_name, &.{ "zevm_getIntervalMining", "anvil_getIntervalMining" })) {
@@ -468,7 +524,7 @@ fn dispatchMethod(
     }
     if (methodIs(method_name, &.{ "zevm_setIntervalMining", "anvil_setIntervalMining", "evm_setIntervalMining" })) {
         const seconds = try parseSetIntervalMiningArgs(params);
-        rt.setIntervalMining(seconds);
+        try rt.setIntervalMining(seconds);
         return .{ .bool = true };
     }
     if (methodIs(method_name, &.{ "zevm_metadata", "anvil_metadata", "hardhat_metadata" })) {
@@ -547,6 +603,167 @@ fn lightStatusText(status: @import("../consensus_sync.zig").SyncStatus) []const 
     };
 }
 
+const engine_supported_methods = [_][]const u8{
+    "engine_exchangeCapabilities",
+    "engine_exchangeTransitionConfigurationV1",
+    "engine_forkchoiceUpdatedV1",
+    "engine_forkchoiceUpdatedV2",
+    "engine_forkchoiceUpdatedV3",
+};
+
+const EngineForkchoiceState = struct {
+    head_hash: [32]u8,
+    safe_hash: [32]u8,
+    finalized_hash: [32]u8,
+};
+
+fn isEngineNamespaceMethod(method_name: []const u8) bool {
+    return std.mem.startsWith(u8, method_name, "engine_");
+}
+
+fn dispatchEngineMethod(
+    allocator: std.mem.Allocator,
+    rt: *runtime_mod.NodeRuntime,
+    method_name: []const u8,
+    params: ?std.json.Value,
+) !std.json.Value {
+    if (std.mem.eql(u8, method_name, "engine_exchangeCapabilities")) {
+        try validateEngineCapabilitiesParams(params);
+        return engineCapabilitiesValue(allocator);
+    }
+    if (std.mem.eql(u8, method_name, "engine_exchangeTransitionConfigurationV1")) {
+        const transition_config = try parseEngineTransitionConfig(params);
+        return cloneJsonValue(allocator, transition_config);
+    }
+    if (methodIs(method_name, &.{
+        "engine_forkchoiceUpdatedV1",
+        "engine_forkchoiceUpdatedV2",
+        "engine_forkchoiceUpdatedV3",
+    })) {
+        const state = try parseEngineForkchoiceParams(params);
+        return applyEngineForkchoice(allocator, rt, method_name, state);
+    }
+
+    return error.MethodNotFound;
+}
+
+fn validateEngineCapabilitiesParams(params: ?std.json.Value) !void {
+    const items = try paramsArrayItems(params);
+    if (items.len != 1) return error.InvalidParams;
+    const capabilities = switch (items[0]) {
+        .array => |array| array.items,
+        else => return error.InvalidParams,
+    };
+    for (capabilities) |capability| {
+        if (capability != .string) return error.InvalidParams;
+    }
+}
+
+fn engineCapabilitiesValue(allocator: std.mem.Allocator) !std.json.Value {
+    var array = std.json.Array.init(allocator);
+    errdefer {
+        for (array.items) |*item| {
+            deinitJsonValue(allocator, item);
+        }
+        array.deinit();
+    }
+    for (engine_supported_methods) |method| {
+        try array.append(.{ .string = try allocator.dupe(u8, method) });
+    }
+    return .{ .array = array };
+}
+
+fn parseEngineTransitionConfig(params: ?std.json.Value) !std.json.Value {
+    const items = try paramsArrayItems(params);
+    if (items.len != 1 or items[0] != .object) return error.InvalidParams;
+    return items[0];
+}
+
+fn parseEngineForkchoiceParams(params: ?std.json.Value) !EngineForkchoiceState {
+    const items = try paramsArrayItems(params);
+    if (items.len < 1 or items.len > 2) return error.InvalidParams;
+    if (items.len == 2 and items[1] != .null) return error.InvalidParams;
+
+    const object = switch (items[0]) {
+        .object => |object| object,
+        else => return error.InvalidParams,
+    };
+    return .{
+        .head_hash = try rpc_parse.parseHash32Value(object.get("headBlockHash") orelse return error.InvalidParams),
+        .safe_hash = try rpc_parse.parseHash32Value(object.get("safeBlockHash") orelse return error.InvalidParams),
+        .finalized_hash = try rpc_parse.parseHash32Value(object.get("finalizedBlockHash") orelse return error.InvalidParams),
+    };
+}
+
+fn applyEngineForkchoice(
+    allocator: std.mem.Allocator,
+    rt: *runtime_mod.NodeRuntime,
+    method_name: []const u8,
+    state: EngineForkchoiceState,
+) !std.json.Value {
+    const head_block = rt.blockchain.getBlockLocal(state.head_hash) orelse {
+        return engineForkchoiceResult(allocator, "SYNCING", null, null);
+    };
+    if (!hashIsZero(state.safe_hash) and rt.blockchain.getBlockLocal(state.safe_hash) == null) {
+        return engineForkchoiceResult(allocator, "SYNCING", null, null);
+    }
+    if (!hashIsZero(state.finalized_hash) and rt.blockchain.getBlockLocal(state.finalized_hash) == null) {
+        return engineForkchoiceResult(allocator, "SYNCING", null, null);
+    }
+
+    try rt.blockchain.setCanonicalHead(state.head_hash);
+    rt.head_block_number = head_block.header.number;
+    rt.head_block_timestamp = head_block.header.timestamp;
+    if (head_block.header.base_fee_per_gas) |base_fee| {
+        rt.base_fee = base_fee;
+    }
+
+    const head_hash_hex = std.fmt.bytesToHex(state.head_hash, .lower);
+    log.info(.rpc, "engine_forkchoice_updated method={s} head_block_number={} head_hash=0x{s}", .{
+        method_name,
+        head_block.header.number,
+        &head_hash_hex,
+    });
+    return engineForkchoiceResult(allocator, "VALID", state.head_hash, null);
+}
+
+fn engineForkchoiceResult(
+    allocator: std.mem.Allocator,
+    status: []const u8,
+    latest_valid_hash: ?[32]u8,
+    validation_error: ?[]const u8,
+) !std.json.Value {
+    var payload_status = std.json.ObjectMap.init(allocator);
+    errdefer {
+        var value = std.json.Value{ .object = payload_status };
+        deinitJsonValue(allocator, &value);
+    }
+    try putOwnedJson(&payload_status, allocator, "status", .{ .string = try allocator.dupe(u8, status) });
+    if (latest_valid_hash) |hash| {
+        try putOwnedJson(&payload_status, allocator, "latestValidHash", try hexHash32(allocator, hash));
+    } else {
+        try putOwnedJson(&payload_status, allocator, "latestValidHash", .null);
+    }
+    if (validation_error) |message| {
+        try putOwnedJson(&payload_status, allocator, "validationError", .{ .string = try allocator.dupe(u8, message) });
+    } else {
+        try putOwnedJson(&payload_status, allocator, "validationError", .null);
+    }
+
+    var result = std.json.ObjectMap.init(allocator);
+    errdefer {
+        var value = std.json.Value{ .object = result };
+        deinitJsonValue(allocator, &value);
+    }
+    try putOwnedJson(&result, allocator, "payloadStatus", .{ .object = payload_status });
+    try putOwnedJson(&result, allocator, "payloadId", .null);
+    return .{ .object = result };
+}
+
+fn hashIsZero(hash: [32]u8) bool {
+    return std.mem.eql(u8, hash[0..], primitives.Hash.ZERO[0..]);
+}
+
 const LightBlockSelector = rpc_parse.LightBlockSelector;
 
 const LightAddrBlockArgs = struct {
@@ -618,7 +835,10 @@ fn validateLightRetainedWindow(rt: *const runtime_mod.NodeRuntime, selector: Lig
         .number => |block_number| {
             if (block_number == 0) return;
             const head = rt.head_block_number;
-            const low = if (head > 8190) head - 8190 else 1;
+            const low = if (head > runtime_mod.LIGHT_RETAINED_HISTORY_BACKTRACK)
+                head - runtime_mod.LIGHT_RETAINED_HISTORY_BACKTRACK
+            else
+                1;
             if (block_number < low or block_number > head) return error.InvalidParams;
         },
         else => {},
@@ -682,6 +902,8 @@ fn isLightModeUnsupportedMethod(method_name: []const u8) bool {
         "eth_getBlockByHash",
         "eth_getBlockTransactionCountByHash",
         "eth_getBlockTransactionCountByNumber",
+        "eth_getUncleCountByBlockHash",
+        "eth_getUncleCountByBlockNumber",
         "eth_getTransactionByHash",
         "eth_getTransactionByBlockHashAndIndex",
         "eth_getTransactionByBlockNumberAndIndex",
@@ -929,7 +1151,7 @@ fn validateLightUnsupportedParams(
         if (items[1] != .bool) return error.InvalidParams;
         return;
     }
-    if (std.mem.eql(u8, method_name, "eth_getBlockTransactionCountByNumber")) {
+    if (methodIs(method_name, &.{ "eth_getBlockTransactionCountByNumber", "eth_getUncleCountByBlockNumber" })) {
         const items = try paramsArrayItems(params);
         if (items.len != 1) return error.InvalidParams;
         _ = try parseLightBlockSelectorJson(items[0]);
@@ -953,16 +1175,29 @@ fn validateLightUnsupportedParams(
         if (items.len != 1 or items[0] != .object) return error.InvalidParams;
         return;
     }
+    if (std.mem.eql(u8, method_name, "eth_getBlockByHash")) {
+        const items = try paramsArrayItems(params);
+        if (items.len != 2) return error.InvalidParams;
+        try validateHash32Json(items[0]);
+        if (items[1] != .bool) return error.InvalidParams;
+        return;
+    }
     if (methodIs(method_name, &.{
-        "eth_getBlockByHash",
         "eth_getBlockTransactionCountByHash",
+        "eth_getUncleCountByBlockHash",
         "eth_getTransactionByHash",
-        "eth_getTransactionByBlockHashAndIndex",
         "eth_getTransactionReceipt",
     })) {
         const items = try paramsArrayItems(params);
-        if (items.len == 0) return error.InvalidParams;
+        if (items.len != 1) return error.InvalidParams;
         try validateHash32Json(items[0]);
+        return;
+    }
+    if (std.mem.eql(u8, method_name, "eth_getTransactionByBlockHashAndIndex")) {
+        const items = try paramsArrayItems(params);
+        if (items.len != 2) return error.InvalidParams;
+        try validateHash32Json(items[0]);
+        _ = try parseU64Json(items[1]);
         return;
     }
 }
@@ -1035,17 +1270,8 @@ fn isHash32(text: []const u8) bool {
     return rpc_parse.isHash32(text);
 }
 
-const AddrBlockArgs = struct {
-    address: primitives.Address,
-};
-
 const GetAccountArgs = struct {
     address: primitives.Address,
-};
-
-const StorageArgs = struct {
-    address: primitives.Address,
-    slot: u256,
 };
 
 const AddrU256Args = struct {
@@ -1078,28 +1304,11 @@ fn paramsArrayItems(params: ?std.json.Value) ![]const std.json.Value {
     return rpc_parse.paramsArrayItems(params);
 }
 
-fn parseAddrAndBlockArgs(params: ?std.json.Value) !AddrBlockArgs {
-    const items = try paramsArrayItems(params);
-    if (items.len != 2) return error.InvalidParams;
-    try validateBlockSpecJson(items[1]);
-    return .{ .address = try parseAddressJson(items[0]) };
-}
-
 fn parseGetAccountArgs(params: ?std.json.Value) !GetAccountArgs {
     const items = try paramsArrayItems(params);
     if (items.len != 1 and items.len != 2) return error.InvalidParams;
     if (items.len == 2) try validateBlockSpecJson(items[1]);
     return .{ .address = try parseAddressJson(items[0]) };
-}
-
-fn parseStorageArgs(params: ?std.json.Value) !StorageArgs {
-    const items = try paramsArrayItems(params);
-    if (items.len != 3) return error.InvalidParams;
-    try validateBlockSpecJson(items[2]);
-    return .{
-        .address = try parseAddressJson(items[0]),
-        .slot = try parseStorageSlotJson(items[1]),
-    };
 }
 
 fn parseAddrU256Args(params: ?std.json.Value) !AddrU256Args {
@@ -1269,6 +1478,19 @@ fn typedResultToJsonValue(allocator: std.mem.Allocator, result: anytype) !std.js
     });
 }
 
+fn cloneJsonValue(allocator: std.mem.Allocator, value: std.json.Value) !std.json.Value {
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+
+    var writer = std.Io.Writer.Allocating.init(scratch.allocator());
+    defer writer.deinit();
+
+    try std.json.Stringify.value(value, .{}, &writer.writer);
+    return try std.json.parseFromSliceLeaky(std.json.Value, allocator, writer.written(), .{
+        .allocate = .alloc_always,
+    });
+}
+
 fn parseSendRawTransactionParams(params: ?std.json.Value) !jsonrpc.eth.SendRawTransaction.Params {
     const items = try paramsArrayItems(params);
     if (items.len != 1) return error.InvalidParams;
@@ -1308,6 +1530,22 @@ fn parseGetBlockTransactionCountByHashParams(
 }
 
 fn parseGetBlockTransactionCountByNumberParams(params: ?std.json.Value) !jsonrpc.eth.GetBlockTransactionCountByNumber.Params {
+    const items = try paramsArrayItems(params);
+    if (items.len != 1) return error.InvalidParams;
+    try validateTrustedBlockSelectorValue(items[0]);
+    return .{ .block = .{ .value = items[0] } };
+}
+
+fn parseGetUncleCountByBlockHashParams(
+    allocator: std.mem.Allocator,
+    params: ?std.json.Value,
+) !jsonrpc.eth.GetUncleCountByBlockHash.Params {
+    const items = try paramsArrayItems(params);
+    if (items.len != 1) return error.InvalidParams;
+    return .{ .block_hash = try parseHashJson(allocator, items[0]) };
+}
+
+fn parseGetUncleCountByBlockNumberParams(params: ?std.json.Value) !jsonrpc.eth.GetUncleCountByBlockNumber.Params {
     const items = try paramsArrayItems(params);
     if (items.len != 1) return error.InvalidParams;
     try validateTrustedBlockSelectorValue(items[0]);
@@ -1521,7 +1759,7 @@ fn writeHexLower(out: []u8, src: []const u8) void {
     }
 }
 
-fn accountsResponse(allocator: std.mem.Allocator) !std.json.Value {
+fn accountsResponse(allocator: std.mem.Allocator, rt: *const runtime_mod.NodeRuntime) !std.json.Value {
     var array = std.json.Array.init(allocator);
     errdefer {
         for (array.items) |*item| {
@@ -1529,8 +1767,8 @@ fn accountsResponse(allocator: std.mem.Allocator) !std.json.Value {
         }
         array.deinit();
     }
-    for (runtime_mod.DEFAULT_DEV_ACCOUNTS) |addr| {
-        try array.append(try addressString(allocator, addr));
+    for (0..rt.managedAccountCount()) |index| {
+        try array.append(try addressString(allocator, rt.managedAccountAddress(index)));
     }
     return .{ .array = array };
 }
@@ -1923,7 +2161,7 @@ fn nodeInfoValue(allocator: std.mem.Allocator, rt: *const runtime_mod.NodeRuntim
     try putOwnedJson(&obj, allocator, "chainId", try hexQuantity(allocator, rt.chain_id));
     try putOwnedJson(&obj, allocator, "coinbase", try addressString(allocator, rt.coinbase));
     try putOwnedJson(&obj, allocator, "blockNumber", try hexQuantity(allocator, rt.head_block_number));
-    try putOwnedJson(&obj, allocator, "managedAccounts", try accountsResponse(allocator));
+    try putOwnedJson(&obj, allocator, "managedAccounts", try accountsResponse(allocator, rt));
     try putOwnedJson(&obj, allocator, "mining", try miningInfoValue(allocator, rt));
     try putOwnedJson(&obj, allocator, "fork", try forkInfoValue(allocator, rt));
     return .{ .object = obj };

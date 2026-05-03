@@ -1,9 +1,12 @@
 const std = @import("std");
 const primitives = @import("primitives");
 const jsonrpc = @import("jsonrpc");
+const guillotine_mini = @import("guillotine_mini");
 const runtime = @import("../../node/runtime.zig");
-const genesis = @import("../../genesis.zig");
 const tx_encoding = @import("../../transaction_encoding.zig");
+const tx_processor = @import("../../tx_processor.zig");
+const mining = @import("../../mining.zig");
+const log = @import("../../log.zig");
 const rpc_parse = @import("../parse.zig");
 
 pub const TxSubmissionError = error{
@@ -27,12 +30,6 @@ pub const TxSubmissionError = error{
 
 // EIP-3860: 49152 = 2 * MAX_CODE_SIZE
 const MAX_INITCODE_SIZE: usize = 49152;
-
-const INTRINSIC_TX: u64 = 21_000;
-const INTRINSIC_CREATE: u64 = 32_000;
-const CALLDATA_ZERO_GAS: u64 = 4;
-const CALLDATA_NONZERO_GAS: u64 = 16;
-const INITCODE_WORD_GAS: u64 = 2;
 
 // Phase 1 transaction boundary: only legacy RLP envelopes are accepted on the
 // public RPC surface. EIP-2718 typed envelopes (type bytes 0x01..=0x7f, including
@@ -81,18 +78,18 @@ pub fn handleSendRawTransaction(
     const sender = tx_encoding.recoverLegacySender(arena_alloc, decoded) catch return TxSubmissionError.SenderRecoveryFailed;
 
     const is_create = decoded.to == null;
+    const hardfork = rt.pendingHardfork();
 
     // EIP-3860: cap initcode size for create transactions.
-    if (is_create and decoded.data.len > MAX_INITCODE_SIZE) {
+    if (hardfork.isAtLeast(.SHANGHAI) and is_create and decoded.data.len > MAX_INITCODE_SIZE) {
         return TxSubmissionError.InitcodeTooLarge;
     }
 
-    // Nonce vs state.
     const current_nonce = rt.state.getNonce(sender) catch return TxSubmissionError.StateError;
-    if (current_nonce != decoded.nonce) return TxSubmissionError.NonceMismatch;
+    if (decoded.nonce < current_nonce) return TxSubmissionError.NonceMismatch;
 
     // Intrinsic gas.
-    const intrinsic = computeLegacyIntrinsicGas(is_create, decoded.data);
+    const intrinsic = computeLegacyIntrinsicGas(is_create, decoded.data, hardfork);
     if (intrinsic > decoded.gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
     if (decoded.gas_limit > rt.dev_runtime.config.block_gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
     if (decoded.gas_price < rt.gas_price) return TxSubmissionError.GasPriceBelowMinimum;
@@ -125,8 +122,10 @@ pub fn handleSendRawTransaction(
         error.OutOfMemory => return TxSubmissionError.OutOfMemory,
     };
 
+    logTxAccepted(rt, "sendRawTransaction", sender, decoded.nonce, decoded.gas_limit, tx_hash);
+
     switch (rt.mining_config) {
-        .auto => automine(rt) catch return TxSubmissionError.MiningFailed,
+        .auto => if (decoded.nonce == current_nonce) automine(rt) catch return TxSubmissionError.MiningFailed,
         .manual, .interval => {},
     }
 
@@ -159,13 +158,6 @@ fn parseQuantityU64Value(value: std.json.Value) SendTransactionParseError!u64 {
     return rpc_parse.parseQuantityValue(u64, value) catch error.InvalidTransactionRequest;
 }
 
-fn managedDevPrivateKey(address: primitives.Address) ?[32]u8 {
-    for (genesis.DEV_ACCOUNTS) |account| {
-        if (std.mem.eql(u8, &account.address.bytes, &address.bytes)) return account.private_key;
-    }
-    return null;
-}
-
 pub fn handleSendTransaction(
     allocator: std.mem.Allocator,
     rt: *runtime.NodeRuntime,
@@ -181,7 +173,7 @@ pub fn handleSendTransaction(
 
     const current_nonce = rt.state.getNonce(request.from) catch return TxSubmissionError.StateError;
     const nonce = request.nonce orelse current_nonce;
-    if (current_nonce != nonce) return TxSubmissionError.NonceMismatch;
+    if (nonce < current_nonce) return TxSubmissionError.NonceMismatch;
 
     const gas_price = request.gas_price orelse rt.gas_price;
     if (gas_price < rt.gas_price) return TxSubmissionError.GasPriceBelowMinimum;
@@ -197,7 +189,11 @@ pub fn handleSendTransaction(
         .s = [_]u8{0} ** 32,
     };
 
-    const intrinsic = computeLegacyIntrinsicGas(tx.to == null, tx.data);
+    const hardfork = rt.pendingHardfork();
+    if (hardfork.isAtLeast(.SHANGHAI) and tx.to == null and tx.data.len > MAX_INITCODE_SIZE) {
+        return TxSubmissionError.InitcodeTooLarge;
+    }
+    const intrinsic = computeLegacyIntrinsicGas(tx.to == null, tx.data, hardfork);
     tx.gas_limit = request.gas orelse intrinsic;
     if (intrinsic > tx.gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
     if (tx.gas_limit > rt.dev_runtime.config.block_gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
@@ -207,7 +203,7 @@ pub fn handleSendTransaction(
     const balance = rt.state.getBalance(request.from) catch return TxSubmissionError.StateError;
     if (balance < total_cost) return TxSubmissionError.InsufficientBalance;
 
-    if (managedDevPrivateKey(request.from)) |private_key| {
+    if (rt.managedPrivateKey(request.from)) |private_key| {
         tx = tx_encoding.signLegacyTransaction(allocator, tx, private_key, rt.chain_id) catch return TxSubmissionError.SigningFailed;
     }
 
@@ -235,8 +231,10 @@ pub fn handleSendTransaction(
         error.OutOfMemory => return TxSubmissionError.OutOfMemory,
     };
 
+    logTxAccepted(rt, "sendTransaction", request.from, tx.nonce, tx.gas_limit, tx_hash);
+
     switch (rt.mining_config) {
-        .auto => automine(rt) catch return TxSubmissionError.MiningFailed,
+        .auto => if (tx.nonce == current_nonce) automine(rt) catch return TxSubmissionError.MiningFailed,
         .manual, .interval => {},
     }
 
@@ -358,22 +356,10 @@ fn parseHexDataValue(allocator: std.mem.Allocator, value: std.json.Value) SendTr
     return rpc_parse.parseHexDataBytes(allocator, value) catch error.InvalidTransactionRequest;
 }
 
-// --- Intrinsic gas (legacy only; EIP-2028 calldata) ---------------------
+// --- Intrinsic gas (legacy only) ----------------------------------------
 
-fn computeLegacyIntrinsicGas(is_create: bool, data: []const u8) u64 {
-    var gas: u64 = INTRINSIC_TX;
-    if (is_create) gas += INTRINSIC_CREATE;
-
-    for (data) |b| {
-        gas += if (b == 0) CALLDATA_ZERO_GAS else CALLDATA_NONZERO_GAS;
-    }
-
-    if (is_create) {
-        const word_count = (data.len + 31) / 32;
-        gas += INITCODE_WORD_GAS * @as(u64, @intCast(word_count));
-    }
-
-    return gas;
+fn computeLegacyIntrinsicGas(is_create: bool, data: []const u8, hardfork: guillotine_mini.Hardfork) u64 {
+    return tx_processor.intrinsicGasForFork(data, is_create, hardfork);
 }
 
 fn keccak(input: []const u8) [32]u8 {
@@ -386,6 +372,36 @@ fn keccak(input: []const u8) [32]u8 {
 
 fn computeTxHash(raw_bytes: []const u8) [32]u8 {
     return keccak(raw_bytes);
+}
+
+fn logTxAccepted(
+    rt: *runtime.NodeRuntime,
+    source: []const u8,
+    sender: primitives.Address,
+    nonce: u64,
+    gas_limit: u64,
+    tx_hash: [32]u8,
+) void {
+    const hash_hex = std.fmt.bytesToHex(tx_hash, .lower);
+    const sender_hex = std.fmt.bytesToHex(sender.bytes, .lower);
+    log.info(.txpool, "tx_accepted source={s} hash=0x{s} sender=0x{s} nonce={} gas_limit={} pool_pending={} pool_queued={} mining_mode={s}", .{
+        source,
+        hash_hex[0..],
+        sender_hex[0..],
+        nonce,
+        gas_limit,
+        rt.pool.pendingCount(),
+        rt.pool.queuedCount(),
+        miningConfigName(rt.mining_config),
+    });
+}
+
+fn miningConfigName(config: mining.MiningConfig) []const u8 {
+    return switch (config) {
+        .auto => "auto",
+        .manual => "manual",
+        .interval => "interval",
+    };
 }
 
 fn automine(rt: *runtime.NodeRuntime) !void {

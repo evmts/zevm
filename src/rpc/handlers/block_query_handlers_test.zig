@@ -11,6 +11,58 @@ fn makeBlockSpec(tag: []const u8) jsonrpc.types.BlockSpec {
     return .{ .value = .{ .string = tag } };
 }
 
+fn addBlock(
+    allocator: std.mem.Allocator,
+    bc: *blockchain_mod.Blockchain,
+    parent_hash: [32]u8,
+    number: u64,
+) !primitives.Block.Block {
+    var header = primitives.BlockHeader.BlockHeader{
+        .parent_hash = parent_hash,
+        .number = number,
+        .timestamp = number * 12,
+        .gas_limit = 30_000_000,
+        .base_fee_per_gas = 1_000_000_000,
+    };
+    _ = &header;
+    const body = primitives.BlockBody.init();
+    const block = try primitives.Block.from(&header, &body, allocator);
+    try bc.putBlock(block);
+    try bc.setCanonicalHead(block.hash);
+    return block;
+}
+
+fn makeTestReceipt(
+    allocator: std.mem.Allocator,
+    tx_hash: [32]u8,
+    block_hash: [32]u8,
+    block_number: u64,
+) !primitives.Receipt.Receipt {
+    const logs = try allocator.alloc(primitives.EventLog.EventLog, 0);
+    var bloom: [256]u8 = undefined;
+    @memset(&bloom, 0);
+
+    return .{
+        .transaction_hash = tx_hash,
+        .transaction_index = 0,
+        .block_hash = block_hash,
+        .block_number = block_number,
+        .sender = primitives.Address.ZERO_ADDRESS,
+        .to = null,
+        .cumulative_gas_used = 21_000,
+        .gas_used = 21_000,
+        .contract_address = null,
+        .logs = logs,
+        .logs_bloom = bloom,
+        .status = primitives.Receipt.TransactionStatus{ .success = true, .gas_used = 21_000 },
+        .root = null,
+        .effective_gas_price = 1_000_000_000,
+        .type = .legacy,
+        .blob_gas_used = null,
+        .blob_gas_price = null,
+    };
+}
+
 fn setupCtx(allocator: std.mem.Allocator) !struct {
     rt: runtime.NodeRuntime,
     bc: blockchain_mod.Blockchain,
@@ -87,6 +139,11 @@ test "handleGetBlockByNumber: returns genesis at earliest" {
         .{ .block = makeBlockSpec("earliest"), .hydrated_transactions = false },
     );
     try std.testing.expect(result.block != null);
+    try std.testing.expectEqualSlices(
+        u8,
+        &primitives.BlockHeader.EMPTY_OMMERS_HASH,
+        &result.block.?.sha3Uncles.bytes,
+    );
 }
 
 test "handleGetBlockByNumber: returns block at latest" {
@@ -230,6 +287,40 @@ test "handleGetBlockReceipts: returns null for missing block" {
         .{ .block = makeBlockSpec("0x999") },
     );
     try std.testing.expect(result.value == null);
+}
+
+test "handleGetBlockReceipts: hash selector resolves exact historical block" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var state = try setupCtx(allocator);
+    defer state.deinit(allocator);
+
+    const genesis = (try state.bc.getBlockByNumber(0)).?;
+    const block_one = try addBlock(allocator, &state.bc, genesis.hash, 1);
+    const block_two = try addBlock(allocator, &state.bc, block_one.hash, 2);
+
+    var receipt = try makeTestReceipt(allocator, [_]u8{0x11} ** 32, block_one.hash, 1);
+    defer receipt.deinit(allocator);
+    try state.ri.putBlockReceipts(allocator, block_one.hash, &[_]primitives.Receipt.Receipt{receipt});
+    try state.ri.putBlockReceipts(allocator, block_two.hash, &.{});
+
+    const hash_hex = std.fmt.bytesToHex(block_one.hash, .lower);
+    const selector = try std.fmt.allocPrint(allocator, "0x{s}", .{hash_hex[0..]});
+    defer allocator.free(selector);
+
+    var ctx = state.getCtx();
+    const result = try block_query_handlers.handleGetBlockReceipts(
+        arena.allocator(),
+        &ctx,
+        .{ .block = makeBlockSpec(selector) },
+    );
+
+    try std.testing.expect(result.value != null);
+    try std.testing.expectEqual(@as(usize, 1), result.value.?.len);
+    try std.testing.expectEqualStrings("0x1", result.value.?[0].blockNumber.value.string);
+    try std.testing.expectEqualSlices(u8, &block_one.hash, &result.value.?[0].blockHash.bytes);
 }
 
 // ============================================================================

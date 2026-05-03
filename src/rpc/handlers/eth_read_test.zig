@@ -2,6 +2,7 @@ const std = @import("std");
 const jsonrpc = @import("jsonrpc");
 const eth_read = @import("eth_read.zig");
 const runtime = @import("../../node/runtime.zig");
+const genesis = @import("../../genesis.zig");
 
 fn makeBlockSpec(tag: []const u8) jsonrpc.types.BlockSpec {
     return .{ .value = .{ .string = tag } };
@@ -90,6 +91,60 @@ test "eth_getBalance returns 0 for unknown address" {
     try expectQuantityStr(result.value, "0x0");
 }
 
+test "state read handlers reject non-head selectors" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+    try rt.mineBlocks(1, 0);
+
+    const address = jsonrpc.types.Address{ .bytes = runtime.DEFAULT_DEV_ACCOUNTS[0].bytes };
+    const historical = makeBlockSpec("0x0");
+
+    try std.testing.expectError(error.InvalidParams, eth_read.handleEthGetBalance(
+        arena.allocator(),
+        &rt,
+        .{ .address = address, .block = historical },
+    ));
+    try std.testing.expectError(error.InvalidParams, eth_read.handleEthGetCode(
+        arena.allocator(),
+        &rt,
+        .{ .address = address, .block = historical },
+    ));
+    try std.testing.expectError(error.InvalidParams, eth_read.handleEthGetStorageAt(
+        arena.allocator(),
+        &rt,
+        .{
+            .address = address,
+            .storage_slot = .{ .value = .{ .string = "0x0" } },
+            .block = historical,
+        },
+    ));
+    try std.testing.expectError(error.InvalidParams, eth_read.handleEthGetTransactionCount(
+        arena.allocator(),
+        &rt,
+        .{ .address = address, .block = historical },
+    ));
+}
+
+test "state read handlers accept current numeric selector" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+    try rt.mineBlocks(1, 0);
+
+    const result = try eth_read.handleEthGetTransactionCount(
+        arena.allocator(),
+        &rt,
+        .{
+            .address = .{ .bytes = runtime.DEFAULT_DEV_ACCOUNTS[0].bytes },
+            .block = makeBlockSpec("0x1"),
+        },
+    );
+    try expectQuantityStr(result.value, "0x0");
+}
+
 // --- AC: eth_getTransactionCount reads nonce ---
 
 test "eth_getTransactionCount returns 0 for fresh account" {
@@ -131,6 +186,17 @@ test "eth_accounts returns 10 dev accounts" {
     try std.testing.expectEqual(@as(usize, 10), result.value.len);
     try std.testing.expectEqual(runtime.DEFAULT_DEV_ACCOUNTS[0].bytes, result.value[0].bytes);
     try std.testing.expectEqual(runtime.DEFAULT_DEV_ACCOUNTS[9].bytes, result.value[9].bytes);
+}
+
+test "eth_accounts reads managed accounts from runtime" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+    rt.managed_accounts[0] = genesis.DEV_ACCOUNTS[1];
+
+    const result = try eth_read.handleEthAccounts(std.testing.allocator, &rt, .{});
+    defer std.testing.allocator.free(result.value);
+
+    try std.testing.expectEqual(genesis.DEV_ACCOUNTS[1].address.bytes, result.value[0].bytes);
 }
 
 // --- AC: eth_gasPrice returns valid hex quantity ---
@@ -205,12 +271,40 @@ test "eth_feeHistory returns correct shape" {
     try std.testing.expectEqual(@as(f64, 0.0), result.gas_used_ratio[0]);
 }
 
+test "eth_feeHistory uses mined block base fee history" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    rt.base_fee = 7;
+    try rt.mineBlocks(1, 0);
+    rt.base_fee = 11;
+    try rt.mineBlocks(1, 0);
+
+    const result = try eth_read.handleEthFeeHistory(
+        arena.allocator(),
+        &rt,
+        .{
+            .block_count = .{ .value = .{ .string = "0x2" } },
+            .newest_block = makeBlockSpec("latest"),
+        },
+    );
+
+    try std.testing.expectEqual(@as(usize, 3), result.base_fee_per_gas.len);
+    try expectQuantityStr(result.base_fee_per_gas[0], "0x7");
+    try expectQuantityStr(result.base_fee_per_gas[1], "0xb");
+    try expectQuantityStr(result.base_fee_per_gas[2], "0xa");
+    try std.testing.expectEqual(@as(usize, 3), result.base_fee_per_blob_gas.?.len);
+    try std.testing.expectEqual(@as(usize, 2), result.blob_gas_used_ratio.?.len);
+}
+
 test "eth_feeHistory truncates large count and genesis range" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();
-    rt.head_block_number = 3;
+    try rt.mineBlocks(3, 0);
 
     const result = try eth_read.handleEthFeeHistory(
         arena.allocator(),
@@ -226,12 +320,28 @@ test "eth_feeHistory truncates large count and genesis range" {
     try std.testing.expectEqual(@as(usize, 4), result.gas_used_ratio.len);
 }
 
+test "eth_feeHistory rejects missing numeric newest block" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    try std.testing.expectError(error.InvalidParams, eth_read.handleEthFeeHistory(
+        arena.allocator(),
+        &rt,
+        .{
+            .block_count = .{ .value = .{ .string = "0x1" } },
+            .newest_block = makeBlockSpec("0x999"),
+        },
+    ));
+}
+
 test "eth_feeHistory includes reward when empty percentiles are provided" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();
-    rt.head_block_number = 2;
+    try rt.mineBlocks(2, 0);
 
     const percentiles = [_]f64{};
     const result = try eth_read.handleEthFeeHistory(

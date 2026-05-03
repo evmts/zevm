@@ -36,96 +36,316 @@ pub const RequestTelemetryFields = struct {
     mode: []const u8,
 };
 
+pub const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
+pub const MAX_HTTP_HEAD_BYTES: usize = 8192;
+pub const DEFAULT_MAX_ACTIVE_CONNECTIONS: usize = 64;
+pub const DEFAULT_READ_TIMEOUT_MS: u32 = 15_000;
+pub const DEFAULT_WRITE_TIMEOUT_MS: u32 = 15_000;
+
+const CONNECTION_SLOT_WAIT_NS = 50 * std.time.ns_per_ms;
+
+pub const TransportLimits = struct {
+    max_active_connections: usize = DEFAULT_MAX_ACTIVE_CONNECTIONS,
+    read_timeout_ms: u32 = DEFAULT_READ_TIMEOUT_MS,
+    write_timeout_ms: u32 = DEFAULT_WRITE_TIMEOUT_MS,
+    max_request_body_bytes: usize = MAX_REQUEST_BODY_BYTES,
+};
+
 const json_content_type_header = std.http.Header{
     .name = "content-type",
     .value = "application/json",
 };
 
 pub fn run(allocator: std.mem.Allocator, server_config: ServerConfig, handlers: *const dispatcher.HandlerRegistry) !void {
-    const address = try std.net.Address.parseIp(server_config.host, server_config.port);
-    var tcp_server = try address.listen(.{ .reuse_address = true });
-    defer tcp_server.deinit();
+    var listener = try RpcServer.init(allocator, server_config, handlers, .{});
+    defer listener.deinit();
 
-    log.info(.rpc, "listener bound host={s} port={}", .{ server_config.host, server_config.port });
-
-    while (true) {
-        const connection = try tcp_server.accept();
-        handleConnection(allocator, handlers, connection) catch {
-            continue;
-        };
-    }
+    try listener.run();
 }
 
-pub const TestListener = struct {
+pub const RpcServer = struct {
     allocator: std.mem.Allocator,
     tcp_server: std.net.Server,
     handlers: *const dispatcher.HandlerRegistry,
+    limits: TransportLimits,
     stop_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    thread: ?std.Thread = null,
+    accept_thread: ?std.Thread = null,
     serve_error: ?anyerror = null,
+    connection_slots: std.Thread.Semaphore,
+    active_mutex: std.Thread.Mutex = .{},
+    active_cond: std.Thread.Condition = .{},
+    active_head: ?*ConnectionContext = null,
+    active_connections: usize = 0,
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        server_config: ServerConfig,
+        handlers: *const dispatcher.HandlerRegistry,
+        limits: TransportLimits,
+    ) !RpcServer {
+        std.debug.assert(limits.max_active_connections > 0);
+        std.debug.assert(limits.max_request_body_bytes > 0);
+
+        const listen_address = try std.net.Address.parseIp(server_config.host, server_config.port);
+        const tcp_server = try listen_address.listen(.{ .reuse_address = true });
+
+        return .{
+            .allocator = allocator,
+            .tcp_server = tcp_server,
+            .handlers = handlers,
+            .limits = limits,
+            .connection_slots = .{ .permits = limits.max_active_connections },
+        };
+    }
+
+    pub fn run(self: *RpcServer) !void {
+        self.logListenerBound();
+        self.acceptLoop();
+        self.waitForConnections();
+    }
+
+    pub fn start(self: *RpcServer) !void {
+        std.debug.assert(self.accept_thread == null);
+        self.logListenerBound();
+        self.accept_thread = try std.Thread.spawn(.{}, acceptLoop, .{self});
+    }
+
+    pub fn stop(self: *RpcServer) void {
+        self.stop_requested.store(true, .seq_cst);
+        self.unblockAccept();
+        self.shutdownActiveConnections();
+
+        if (self.accept_thread) |thread| {
+            thread.join();
+            self.accept_thread = null;
+        }
+
+        self.waitForConnections();
+        log.info(.rpc, "listener stopped address={any}", .{self.address()});
+    }
+
+    pub fn deinit(self: *RpcServer) void {
+        self.stop();
+        self.tcp_server.deinit();
+    }
+
+    pub fn address(self: *const RpcServer) std.net.Address {
+        return self.tcp_server.listen_address;
+    }
+
+    pub fn activeConnectionCountForTest(self: *RpcServer) usize {
+        return self.activeConnectionCount();
+    }
+
+    fn activeConnectionCount(self: *RpcServer) usize {
+        self.active_mutex.lock();
+        defer self.active_mutex.unlock();
+        return self.active_connections;
+    }
+
+    fn acceptLoop(self: *RpcServer) void {
+        while (!self.stop_requested.load(.seq_cst)) {
+            if (!self.waitForConnectionSlot()) break;
+
+            const connection = self.tcp_server.accept() catch |err| {
+                self.connection_slots.post();
+                if (self.stop_requested.load(.seq_cst)) break;
+
+                self.serve_error = err;
+                log.warn(.rpc, "accept failed address={any} error={s}", .{ self.address(), @errorName(err) });
+                continue;
+            };
+
+            if (self.stop_requested.load(.seq_cst)) {
+                connection.stream.close();
+                self.connection_slots.post();
+                break;
+            }
+
+            self.spawnConnection(connection) catch |err| {
+                self.serve_error = err;
+                log.warn(.rpc, "connection spawn failed remote={any} error={s}", .{ connection.address, @errorName(err) });
+            };
+        }
+    }
+
+    fn waitForConnectionSlot(self: *RpcServer) bool {
+        while (!self.stop_requested.load(.seq_cst)) {
+            self.connection_slots.timedWait(CONNECTION_SLOT_WAIT_NS) catch |err| switch (err) {
+                error.Timeout => continue,
+            };
+            return true;
+        }
+
+        return false;
+    }
+
+    fn spawnConnection(self: *RpcServer, connection: std.net.Server.Connection) !void {
+        var registered = false;
+        errdefer if (!registered) self.connection_slots.post();
+        errdefer connection.stream.close();
+
+        const ctx = try self.allocator.create(ConnectionContext);
+        errdefer self.allocator.destroy(ctx);
+        ctx.* = .{
+            .server = self,
+            .connection = connection,
+        };
+
+        self.registerConnection(ctx);
+        registered = true;
+        errdefer self.unregisterConnection(ctx);
+
+        const thread = try std.Thread.spawn(.{}, connectionThread, .{ctx});
+        thread.detach();
+
+        log.info(.rpc, "connection accepted remote={any} active_connections={}", .{
+            connection.address,
+            self.activeConnectionCount(),
+        });
+    }
+
+    fn registerConnection(self: *RpcServer, ctx: *ConnectionContext) void {
+        self.active_mutex.lock();
+        defer self.active_mutex.unlock();
+
+        ctx.prev = null;
+        ctx.next = self.active_head;
+        if (self.active_head) |head| head.prev = ctx;
+        self.active_head = ctx;
+        self.active_connections += 1;
+    }
+
+    fn unregisterConnection(self: *RpcServer, ctx: *ConnectionContext) void {
+        self.active_mutex.lock();
+        defer self.active_mutex.unlock();
+
+        if (ctx.prev) |prev| {
+            prev.next = ctx.next;
+        } else if (self.active_head == ctx) {
+            self.active_head = ctx.next;
+        }
+
+        if (ctx.next) |next| next.prev = ctx.prev;
+        ctx.prev = null;
+        ctx.next = null;
+
+        std.debug.assert(self.active_connections > 0);
+        self.active_connections -= 1;
+        self.connection_slots.post();
+        self.active_cond.broadcast();
+    }
+
+    fn waitForConnections(self: *RpcServer) void {
+        self.active_mutex.lock();
+        defer self.active_mutex.unlock();
+
+        while (self.active_connections != 0) {
+            self.active_cond.wait(&self.active_mutex);
+        }
+    }
+
+    fn shutdownActiveConnections(self: *RpcServer) void {
+        self.active_mutex.lock();
+        defer self.active_mutex.unlock();
+
+        var node = self.active_head;
+        while (node) |ctx| : (node = ctx.next) {
+            std.posix.shutdown(ctx.connection.stream.handle, .both) catch {};
+        }
+    }
+
+    fn unblockAccept(self: *const RpcServer) void {
+        const stream = std.net.tcpConnectToAddress(self.address()) catch return;
+        stream.close();
+    }
+
+    fn logListenerBound(self: *const RpcServer) void {
+        log.info(.rpc, "listener bound address={any} max_active_connections={} read_timeout_ms={} write_timeout_ms={} max_request_body_bytes={}", .{
+            self.address(),
+            self.limits.max_active_connections,
+            self.limits.read_timeout_ms,
+            self.limits.write_timeout_ms,
+            self.limits.max_request_body_bytes,
+        });
+    }
+};
+
+const ConnectionContext = struct {
+    server: *RpcServer,
+    connection: std.net.Server.Connection,
+    prev: ?*ConnectionContext = null,
+    next: ?*ConnectionContext = null,
+};
+
+pub const TestListener = struct {
+    server: RpcServer,
 
     pub fn init(
         allocator: std.mem.Allocator,
         host: []const u8,
         handlers: *const dispatcher.HandlerRegistry,
     ) !TestListener {
-        const listen_address = try std.net.Address.parseIp(host, 0);
-        const tcp_server = try listen_address.listen(.{ .reuse_address = true });
+        return initWithLimits(allocator, host, handlers, .{});
+    }
+
+    pub fn initWithLimits(
+        allocator: std.mem.Allocator,
+        host: []const u8,
+        handlers: *const dispatcher.HandlerRegistry,
+        limits: TransportLimits,
+    ) !TestListener {
         return .{
-            .allocator = allocator,
-            .tcp_server = tcp_server,
-            .handlers = handlers,
+            .server = try RpcServer.init(allocator, .{
+                .host = host,
+                .port = 0,
+            }, handlers, limits),
         };
     }
 
     pub fn start(self: *TestListener) !void {
         // The accept thread stores this pointer; start only after final placement.
-        std.debug.assert(self.thread == null);
-        self.thread = try std.Thread.spawn(.{}, acceptLoop, .{self});
+        try self.server.start();
     }
 
     pub fn address(self: *const TestListener) std.net.Address {
-        return self.tcp_server.listen_address;
+        return self.server.address();
+    }
+
+    pub fn stop(self: *TestListener) void {
+        self.server.stop();
     }
 
     pub fn deinit(self: *TestListener) void {
-        self.stop();
-        self.tcp_server.deinit();
+        self.server.deinit();
     }
 
-    fn stop(self: *TestListener) void {
-        const thread = self.thread orelse return;
-        self.stop_requested.store(true, .seq_cst);
-        self.unblockAccept();
-        thread.join();
-        self.thread = null;
-    }
-
-    fn unblockAccept(self: *const TestListener) void {
-        const stream = std.net.tcpConnectToAddress(self.address()) catch return;
-        stream.close();
-    }
-
-    fn acceptLoop(self: *TestListener) void {
-        while (!self.stop_requested.load(.seq_cst)) {
-            const connection = self.tcp_server.accept() catch |err| {
-                if (self.stop_requested.load(.seq_cst)) break;
-                self.serve_error = err;
-                continue;
-            };
-
-            if (self.stop_requested.load(.seq_cst)) {
-                connection.stream.close();
-                break;
-            }
-
-            handleConnection(self.allocator, self.handlers, connection) catch |err| {
-                if (self.stop_requested.load(.seq_cst)) break;
-                self.serve_error = err;
-            };
-        }
+    pub fn activeConnectionCountForTest(self: *TestListener) usize {
+        return self.server.activeConnectionCountForTest();
     }
 };
+
+fn connectionThread(ctx: *ConnectionContext) void {
+    const start_ns = std.time.nanoTimestamp();
+    defer ctx.server.allocator.destroy(ctx);
+    defer ctx.connection.stream.close();
+    defer ctx.server.unregisterConnection(ctx);
+
+    setConnectionTimeouts(ctx.connection.stream, ctx.server.limits) catch |err| {
+        log.warn(.rpc, "connection timeout setup failed remote={any} error={s}", .{ ctx.connection.address, @errorName(err) });
+    };
+
+    handleConnection(ctx.server.allocator, ctx.server.handlers, ctx.connection, null, ctx.server.limits) catch |err| {
+        if (!ctx.server.stop_requested.load(.seq_cst)) {
+            log.warn(.rpc, "connection failed remote={any} error={s}", .{ ctx.connection.address, @errorName(err) });
+        }
+    };
+
+    log.info(.rpc, "connection closed remote={any} duration_us={}", .{
+        ctx.connection.address,
+        @divTrunc(elapsedSince(start_ns), 1000),
+    });
+}
 
 pub fn handleHttpRequestForTest(
     allocator: std.mem.Allocator,
@@ -165,6 +385,13 @@ pub fn handleHttpRequestForTestWithOptions(
         };
     }
 
+    if (request.body.len > MAX_REQUEST_BODY_BYTES) {
+        return .{
+            .status = .payload_too_large,
+            .body = null,
+        };
+    }
+
     if (try handlePost(allocator, request.body, handlers)) |response_body| {
         return .{
             .status = .ok,
@@ -183,10 +410,10 @@ fn handleConnection(
     allocator: std.mem.Allocator,
     handlers: *const dispatcher.HandlerRegistry,
     connection: std.net.Server.Connection,
+    dispatch_mutex: ?*std.Thread.Mutex,
+    limits: TransportLimits,
 ) !void {
-    defer connection.stream.close();
-
-    var receive_buffer: [8192]u8 = undefined;
+    var receive_buffer: [MAX_HTTP_HEAD_BYTES]u8 = undefined;
     var send_buffer: [8192]u8 = undefined;
     var connection_reader = connection.stream.reader(&receive_buffer);
     var connection_writer = connection.stream.writer(&send_buffer);
@@ -198,7 +425,8 @@ fn handleConnection(
             else => return err,
         };
 
-        try handleRequest(allocator, handlers, &request);
+        const keep_alive = try handleRequest(allocator, handlers, &request, dispatch_mutex, limits);
+        if (!keep_alive) return;
     }
 }
 
@@ -206,44 +434,74 @@ fn handleRequest(
     allocator: std.mem.Allocator,
     handlers: *const dispatcher.HandlerRegistry,
     request: *std.http.Server.Request,
-) !void {
+    dispatch_mutex: ?*std.Thread.Mutex,
+    limits: TransportLimits,
+) !bool {
     if (!isRootTarget(request.head.target)) {
         try request.respond("", .{
             .status = .not_found,
         });
-        return;
+        return true;
     }
 
     if (request.head.method != .POST) {
         try request.respond("", .{
             .status = .method_not_allowed,
         });
-        return;
+        return true;
     }
 
     if (!isJsonContentType(request.head.content_type)) {
         try request.respond("", .{
             .status = .unsupported_media_type,
         });
-        return;
+        return true;
     }
 
-    const request_body = try readRequestBody(allocator, request);
+    if (request.head.content_length) |content_length| {
+        if (content_length > limits.max_request_body_bytes) {
+            try request.respond("", .{
+                .status = .payload_too_large,
+            });
+            return false;
+        }
+    }
+
+    const request_body = readRequestBody(allocator, request, limits.max_request_body_bytes) catch |err| switch (err) {
+        error.StreamTooLong => {
+            try request.respond("", .{
+                .status = .payload_too_large,
+            });
+            return false;
+        },
+        else => return err,
+    };
     defer allocator.free(request_body);
 
-    if (try handlePost(allocator, request_body, handlers)) |response_body| {
-        defer allocator.free(response_body);
+    const response_body = blk: {
+        if (dispatch_mutex) |mutex| {
+            mutex.lock();
+            defer mutex.unlock();
+            break :blk try handlePost(allocator, request_body, handlers);
+        }
 
-        try request.respond(response_body, .{
+        break :blk try handlePost(allocator, request_body, handlers);
+    };
+
+    if (response_body) |body| {
+        defer allocator.free(body);
+
+        try request.respond(body, .{
             .status = .ok,
             .extra_headers = &[_]std.http.Header{json_content_type_header},
         });
-        return;
+        return true;
     }
 
     try request.respond("", .{
         .status = .no_content,
     });
+    return true;
 }
 
 fn isRootTarget(target: []const u8) bool {
@@ -258,16 +516,40 @@ fn isJsonContentType(content_type: ?[]const u8) bool {
     return std.ascii.eqlIgnoreCase(media_type, "application/json");
 }
 
-fn readRequestBody(allocator: std.mem.Allocator, request: *std.http.Server.Request) ![]u8 {
+fn readRequestBody(allocator: std.mem.Allocator, request: *std.http.Server.Request, max_request_body_bytes: usize) ![]u8 {
     var reader_buffer: [4096]u8 = undefined;
     const reader = try request.readerExpectContinue(&reader_buffer);
 
     var request_body = std.ArrayList(u8).empty;
     errdefer request_body.deinit(allocator);
 
-    try reader.appendRemaining(allocator, &request_body, .limited(1024 * 1024));
+    try reader.appendRemaining(allocator, &request_body, .limited(max_request_body_bytes));
 
     return request_body.toOwnedSlice(allocator);
+}
+
+fn setConnectionTimeouts(stream: std.net.Stream, limits: TransportLimits) !void {
+    if (builtin.os.tag == .wasi) return;
+
+    if (builtin.os.tag == .windows) {
+        const read_timeout_ms = limits.read_timeout_ms;
+        const write_timeout_ms = limits.write_timeout_ms;
+        try std.posix.setsockopt(stream.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&read_timeout_ms));
+        try std.posix.setsockopt(stream.handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&write_timeout_ms));
+        return;
+    }
+
+    const read_timeout = timevalFromMillis(limits.read_timeout_ms);
+    const write_timeout = timevalFromMillis(limits.write_timeout_ms);
+    try std.posix.setsockopt(stream.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&read_timeout));
+    try std.posix.setsockopt(stream.handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&write_timeout));
+}
+
+fn timevalFromMillis(milliseconds: u32) std.posix.timeval {
+    return .{
+        .sec = @intCast(milliseconds / std.time.ms_per_s),
+        .usec = @intCast((milliseconds % std.time.ms_per_s) * 1000),
+    };
 }
 
 fn handlePost(

@@ -64,7 +64,9 @@ pub fn handleEthCall(
     defer parsed.deinit(allocator);
 
     const selected_block_number = try resolveTrustedBlockSelector(rt, parsed.block);
-    const block_ctx = try blockContext(rt, selected_block_number);
+    try ensureCurrentStateSelector(rt, selected_block_number);
+    var recent_block_hashes: [256][32]u8 = undefined;
+    const block_ctx = try blockContext(rt, selected_block_number, &recent_block_hashes);
 
     try rt.state.checkpoint();
     defer rt.state.revert();
@@ -93,7 +95,9 @@ pub fn handleEthEstimateGas(
         try resolveTrustedBlockSelector(rt, block)
     else
         rt.head_block_number;
-    const block_ctx = try blockContext(rt, selected_block_number);
+    try ensureCurrentStateSelector(rt, selected_block_number);
+    var recent_block_hashes: [256][32]u8 = undefined;
+    const block_ctx = try blockContext(rt, selected_block_number, &recent_block_hashes);
 
     try rt.state.checkpoint();
     defer rt.state.revert();
@@ -205,6 +209,10 @@ fn resolveTrustedBlockSelector(rt: *const runtime.NodeRuntime, value: std.json.V
     return rpc_parse.resolveTrustedBlockSelector(rt.head_block_number, value);
 }
 
+fn ensureCurrentStateSelector(rt: *const runtime.NodeRuntime, block_number: u64) !void {
+    if (block_number != rt.head_block_number) return error.InvalidParams;
+}
+
 fn applyStateOverrides(
     allocator: std.mem.Allocator,
     rt: *runtime.NodeRuntime,
@@ -272,7 +280,7 @@ fn estimateGas(
     tx: TransactionRequest,
     block_ctx: guillotine_mini.BlockContext,
 ) !u64 {
-    const intrinsic = intrinsicGas(tx, block_ctx);
+    const intrinsic = intrinsicGas(rt, tx, block_ctx);
     var high = gasLimit(tx, block_ctx);
     if (high < intrinsic or high > block_ctx.block_gas_limit) return error.ExecutionFailed;
 
@@ -303,7 +311,7 @@ fn executeOnce(
     block_ctx: guillotine_mini.BlockContext,
     gas_limit: u64,
 ) !ExecutionResult {
-    const intrinsic = intrinsicGas(tx, block_ctx);
+    const intrinsic = intrinsicGas(rt, tx, block_ctx);
     if (intrinsic > gas_limit or gas_limit > block_ctx.block_gas_limit) return error.ExecutionFailed;
     const execution_gas = gas_limit - intrinsic;
 
@@ -311,8 +319,8 @@ fn executeOnce(
     defer rt.state.revert();
 
     const caller = tx.from orelse rt.coinbase;
+    const current_nonce = rt.state.getNonce(caller) catch return error.ExecutionFailed;
     if (tx.nonce) |nonce| {
-        const current_nonce = rt.state.getNonce(caller) catch return error.ExecutionFailed;
         if (current_nonce != nonce) return error.ExecutionFailed;
     }
 
@@ -324,7 +332,7 @@ fn executeOnce(
     evm.init(
         allocator,
         host,
-        tx_processor.resolveHardfork(block_ctx),
+        rt.hardforkForBlockContext(block_ctx),
         block_ctx,
         caller,
         tx.gas_price orelse rt.gas_price,
@@ -337,8 +345,11 @@ fn executeOnce(
 
     return if (tx.to) |to|
         executeCall(allocator, &evm, &adapter, caller, to, tx, execution_gas, intrinsic)
-    else
-        executeCreate(allocator, &evm, &adapter, tx, execution_gas, intrinsic);
+    else blk: {
+        if (current_nonce == std.math.maxInt(u64)) return error.ExecutionFailed;
+        rt.state.setNonce(caller, current_nonce + 1) catch return error.ExecutionFailed;
+        break :blk try executeCreate(allocator, &evm, &adapter, tx, execution_gas, intrinsic);
+    };
 }
 
 fn executeCall(
@@ -399,11 +410,15 @@ fn gasLimit(tx: TransactionRequest, block_ctx: guillotine_mini.BlockContext) u64
     return tx.gas orelse block_ctx.block_gas_limit;
 }
 
-fn intrinsicGas(tx: TransactionRequest, block_ctx: guillotine_mini.BlockContext) u64 {
-    return tx_processor.intrinsicGasForFork(tx.data, tx.to == null, tx_processor.resolveHardfork(block_ctx));
+fn intrinsicGas(rt: *const runtime.NodeRuntime, tx: TransactionRequest, block_ctx: guillotine_mini.BlockContext) u64 {
+    return tx_processor.intrinsicGasForFork(tx.data, tx.to == null, rt.hardforkForBlockContext(block_ctx));
 }
 
-fn blockContext(rt: *runtime.NodeRuntime, block_number: u64) !guillotine_mini.BlockContext {
+fn blockContext(
+    rt: *runtime.NodeRuntime,
+    block_number: u64,
+    recent_block_hashes: *[256][32]u8,
+) !guillotine_mini.BlockContext {
     if (block_number == rt.head_block_number) {
         const ctx = guillotine_mini.BlockContext{
             .chain_id = rt.chain_id,
@@ -416,11 +431,13 @@ fn blockContext(rt: *runtime.NodeRuntime, block_number: u64) !guillotine_mini.Bl
             .block_base_fee = rt.base_fee,
             .blob_base_fee = rt.blob_base_fee,
         };
-        return block_builder.blockContextWithEnvironmentOverrides(&rt.dev_runtime, ctx);
+        var effective = block_builder.blockContextWithEnvironmentOverrides(&rt.dev_runtime, ctx);
+        effective.block_hashes = try rt.recentBlockHashesForExecution(effective.block_number, recent_block_hashes);
+        return effective;
     }
 
     const block = (try rt.blockchain.getBlockByNumber(block_number)) orelse return error.InvalidParams;
-    return guillotine_mini.BlockContext{
+    var ctx = guillotine_mini.BlockContext{
         .chain_id = rt.chain_id,
         .block_number = block.header.number,
         .block_timestamp = block.header.timestamp,
@@ -431,6 +448,8 @@ fn blockContext(rt: *runtime.NodeRuntime, block_number: u64) !guillotine_mini.Bl
         .block_base_fee = block.header.base_fee_per_gas orelse 0,
         .blob_base_fee = rt.blob_base_fee,
     };
+    ctx.block_hashes = try rt.recentBlockHashesForExecution(ctx.block_number, recent_block_hashes);
+    return ctx;
 }
 
 fn parseAddressValue(value: std.json.Value) !primitives.Address {

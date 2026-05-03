@@ -21,9 +21,6 @@ pub fn resolveBlockNumber(rt: *const runtime.NodeRuntime, block_spec: jsonrpc.ty
             if (std.mem.eql(u8, s, "earliest")) {
                 return 0;
             }
-            if (isHashHex(s)) {
-                return rt.head_block_number;
-            }
             if (isQuantityHex(s)) {
                 const num = parseQuantityHex(u64, s) catch return error.InvalidBlockSpec;
                 return validateInRange(rt, num);
@@ -58,7 +55,7 @@ fn resolveBlockObject(rt: *const runtime.NodeRuntime, obj: std.json.ObjectMap) B
         if (obj.get("requireCanonical")) |canonical| {
             if (canonical != .bool) return error.InvalidBlockSpec;
         }
-        return rt.head_block_number;
+        return error.InvalidBlockSpec;
     }
 
     return error.InvalidBlockSpec;

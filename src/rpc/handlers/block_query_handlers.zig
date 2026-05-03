@@ -5,7 +5,6 @@ const blockchain_mod = @import("blockchain");
 const block_queries = @import("../block_queries.zig");
 const log_index_mod = @import("../../log_index.zig");
 const receipt_index_mod = @import("../../receipt_index.zig");
-const block_spec = @import("block_spec.zig");
 const runtime = @import("../../node/runtime.zig");
 const rpc_parse = @import("../parse.zig");
 
@@ -32,7 +31,13 @@ pub fn handleGetBlockByNumber(
     };
     defer allocator.free(tag);
 
-    const internal = try block_queries.getBlockByNumber(allocator, ctx.blockchain, tag, params.hydrated_transactions);
+    const internal = try block_queries.getBlockByNumberWithReceipts(
+        allocator,
+        ctx.blockchain,
+        ctx.receipt_index,
+        tag,
+        params.hydrated_transactions,
+    );
     if (internal) |resp| {
         return .{ .block = try internalBlockToRpc(allocator, resp) };
     }
@@ -48,7 +53,13 @@ pub fn handleGetBlockByHash(
     ctx: *const BlockQueryContext,
     params: jsonrpc.eth.GetBlockByHash.Params,
 ) !jsonrpc.eth.GetBlockByHash.Result {
-    const internal = try block_queries.getBlockByHash(allocator, ctx.blockchain, params.block_hash.bytes, params.hydrated_transactions);
+    const internal = try block_queries.getBlockByHashWithReceipts(
+        allocator,
+        ctx.blockchain,
+        ctx.receipt_index,
+        params.block_hash.bytes,
+        params.hydrated_transactions,
+    );
     if (internal) |resp| {
         return .{ .block = try internalBlockToRpc(allocator, resp) };
     }
@@ -274,9 +285,10 @@ pub fn handleGetTransactionByBlockHashAndIndex(
     params: jsonrpc.eth.GetTransactionByBlockHashAndIndex.Params,
 ) !jsonrpc.eth.GetTransactionByBlockHashAndIndex.Result {
     const index = parseQuantityToU64(params.transaction_index) catch return error.InvalidParams;
-    const internal = block_queries.getTransactionByBlockHashAndIndex(
+    const internal = block_queries.getTransactionByBlockHashAndIndexWithReceipts(
         allocator,
         ctx.blockchain,
+        ctx.receipt_index,
         params.block_hash.bytes,
         index,
     ) catch |err| return err;
@@ -302,9 +314,10 @@ pub fn handleGetTransactionByBlockNumberAndIndex(
     defer allocator.free(tag);
 
     const index = parseQuantityToU64(params.transaction_index) catch return error.InvalidParams;
-    const internal = block_queries.getTransactionByBlockNumberAndIndex(
+    const internal = block_queries.getTransactionByBlockNumberAndIndexWithReceipts(
         allocator,
         ctx.blockchain,
+        ctx.receipt_index,
         tag,
         index,
     ) catch |err| return err;
@@ -405,7 +418,7 @@ fn internalBlockToRpc(
     return .{
         .hash = hashToRpc(resp.hash),
         .parentHash = hashToRpc(resp.parentHash),
-        .sha3Uncles = hashToRpc([_]u8{0} ** 32),
+        .sha3Uncles = hashToRpc(primitives.BlockHeader.EMPTY_OMMERS_HASH),
         .miner = addrToRpc(resp.miner),
         .stateRoot = hashToRpc(resp.stateRoot),
         .transactionsRoot = hashToRpc(resp.transactionsRoot),

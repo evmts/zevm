@@ -152,6 +152,18 @@ pub fn getBlockByNumber(
     return @as(?BlockResponse, try blockToResponse(allocator, block, full_txs));
 }
 
+pub fn getBlockByNumberWithReceipts(
+    allocator: std.mem.Allocator,
+    bc: *blockchain_mod.Blockchain,
+    ri: *const receipt_index_mod.ReceiptIndex,
+    tag: []const u8,
+    full_txs: bool,
+) !?BlockResponse {
+    const number = resolveBlockTag(bc, tag) orelse return null;
+    const block = (try bc.getBlockByNumber(number)) orelse return null;
+    return @as(?BlockResponse, try blockToResponseWithReceipts(allocator, block, full_txs, ri));
+}
+
 pub fn getBlockByHash(
     allocator: std.mem.Allocator,
     bc: *blockchain_mod.Blockchain,
@@ -160,6 +172,17 @@ pub fn getBlockByHash(
 ) !?BlockResponse {
     const block = (try bc.getBlockByHash(hash)) orelse return null;
     return @as(?BlockResponse, try blockToResponse(allocator, block, full_txs));
+}
+
+pub fn getBlockByHashWithReceipts(
+    allocator: std.mem.Allocator,
+    bc: *blockchain_mod.Blockchain,
+    ri: *const receipt_index_mod.ReceiptIndex,
+    hash: [32]u8,
+    full_txs: bool,
+) !?BlockResponse {
+    const block = (try bc.getBlockByHash(hash)) orelse return null;
+    return @as(?BlockResponse, try blockToResponseWithReceipts(allocator, block, full_txs, ri));
 }
 
 pub fn getBlockTxCountByNumber(
@@ -262,12 +285,37 @@ pub fn getTransactionByHash(
     ri: *const receipt_index_mod.ReceiptIndex,
     tx_hash: [32]u8,
 ) !?TxResponse {
-    const receipt = ri.getByTxHash(tx_hash) orelse return null;
+    const receipt = ri.getByTxHash(tx_hash) orelse return try findTransactionByHashInBlocks(allocator, bc, tx_hash);
     const block = (try bc.getBlockByHash(receipt.block_hash)) orelse {
         // Receipt without block — degrade gracefully.
         return @as(?TxResponse, try txResponseFromReceipt(allocator, receipt, null));
     };
     return @as(?TxResponse, try txResponseFromReceipt(allocator, receipt, block));
+}
+
+fn findTransactionByHashInBlocks(
+    allocator: std.mem.Allocator,
+    bc: *blockchain_mod.Blockchain,
+    tx_hash: [32]u8,
+) !?TxResponse {
+    const head = bc.getHeadBlockNumber() orelse return null;
+    var block_number: u64 = 0;
+    while (block_number <= head) : (block_number += 1) {
+        const block = (try bc.getBlockByNumber(block_number)) orelse continue;
+        for (block.body.transactions, 0..) |tx_data, index| {
+            if (!std.mem.eql(u8, &computeTxHash(tx_data.raw), &tx_hash)) continue;
+            if (index > std.math.maxInt(u32)) return null;
+            return try txResponseFromRaw(
+                allocator,
+                tx_data.raw,
+                block.hash,
+                block.header.number,
+                @intCast(index),
+                null,
+            );
+        }
+    }
+    return null;
 }
 
 pub fn getTransactionByBlockHashAndIndex(
@@ -286,6 +334,28 @@ pub fn getTransactionByBlockHashAndIndex(
         block.hash,
         block.header.number,
         @intCast(index),
+        null,
+    );
+}
+
+pub fn getTransactionByBlockHashAndIndexWithReceipts(
+    allocator: std.mem.Allocator,
+    bc: *blockchain_mod.Blockchain,
+    ri: *const receipt_index_mod.ReceiptIndex,
+    block_hash: [32]u8,
+    index: u64,
+) !?TxResponse {
+    const block = (try bc.getBlockByHash(block_hash)) orelse return null;
+    if (index >= block.body.transactions.len) return null;
+    if (index > std.math.maxInt(u32)) return null;
+    const tx_index: usize = @intCast(index);
+    return try txResponseFromRaw(
+        allocator,
+        block.body.transactions[tx_index].raw,
+        block.hash,
+        block.header.number,
+        @intCast(index),
+        receiptSenderForIndex(ri, block.hash, @intCast(index)),
     );
 }
 
@@ -306,6 +376,29 @@ pub fn getTransactionByBlockNumberAndIndex(
         block.hash,
         block.header.number,
         @intCast(index),
+        null,
+    );
+}
+
+pub fn getTransactionByBlockNumberAndIndexWithReceipts(
+    allocator: std.mem.Allocator,
+    bc: *blockchain_mod.Blockchain,
+    ri: *const receipt_index_mod.ReceiptIndex,
+    tag: []const u8,
+    index: u64,
+) !?TxResponse {
+    const number = resolveBlockTag(bc, tag) orelse return null;
+    const block = (try bc.getBlockByNumber(number)) orelse return null;
+    if (index >= block.body.transactions.len) return null;
+    if (index > std.math.maxInt(u32)) return null;
+    const tx_index: usize = @intCast(index);
+    return try txResponseFromRaw(
+        allocator,
+        block.body.transactions[tx_index].raw,
+        block.hash,
+        block.header.number,
+        @intCast(index),
+        receiptSenderForIndex(ri, block.hash, @intCast(index)),
     );
 }
 
@@ -350,10 +443,23 @@ fn blockToResponse(
     block: primitives.Block.Block,
     full_txs: bool,
 ) !BlockResponse {
+    return blockToResponseWithReceipts(allocator, block, full_txs, null);
+}
+
+fn blockToResponseWithReceipts(
+    allocator: std.mem.Allocator,
+    block: primitives.Block.Block,
+    full_txs: bool,
+    ri: ?*const receipt_index_mod.ReceiptIndex,
+) !BlockResponse {
     const txs: TransactionList = if (full_txs) blk: {
         const full = try allocator.alloc(TxResponse, block.body.transactions.len);
         for (block.body.transactions, 0..) |tx_data, i| {
-            full[i] = try txResponseFromRaw(allocator, tx_data.raw, block.hash, block.header.number, @intCast(i));
+            const fallback_sender = if (ri) |receipt_index|
+                receiptSenderForIndex(receipt_index, block.hash, @intCast(i))
+            else
+                null;
+            full[i] = try txResponseFromRaw(allocator, tx_data.raw, block.hash, block.header.number, @intCast(i), fallback_sender);
         }
         break :blk .{ .full = full };
     } else blk: {
@@ -397,11 +503,18 @@ fn txResponseFromRaw(
     block_hash: [32]u8,
     block_number: u64,
     index: u32,
+    fallback_sender: ?primitives.Address.Address,
 ) !TxResponse {
     if (detectTxTypeField(raw) == 0 and raw.len > 0 and raw[0] >= 0xc0) {
         if (tx_encoding.decodeLegacyEnvelope(raw)) |tx| {
-            return txResponseFromLegacy(allocator, raw, tx, block_hash, block_number, index, null);
-        } else |_| {}
+            return txResponseFromLegacy(allocator, raw, tx, block_hash, block_number, index, fallback_sender);
+        } else |_| {
+            if (fallback_sender != null) {
+                if (tx_encoding.decodeLegacyEnvelopeAllowInvalidSignature(raw)) |tx| {
+                    return txResponseFromLegacy(allocator, raw, tx, block_hash, block_number, index, fallback_sender);
+                } else |_| {}
+            }
+        }
     }
 
     return .{
@@ -431,6 +544,16 @@ fn txResponseFromRaw(
     };
 }
 
+fn receiptSenderForIndex(
+    ri: *const receipt_index_mod.ReceiptIndex,
+    block_hash: [32]u8,
+    index: u32,
+) ?primitives.Address.Address {
+    const receipts = ri.getByBlockHash(block_hash) orelse return null;
+    if (index >= receipts.len) return null;
+    return receipts[index].sender;
+}
+
 fn txResponseFromReceipt(
     allocator: std.mem.Allocator,
     receipt: primitives.Receipt.Receipt,
@@ -454,7 +577,19 @@ fn txResponseFromReceipt(
                         receipt.transaction_index,
                         receipt.sender,
                     );
-                } else |_| {}
+                } else |_| {
+                    if (tx_encoding.decodeLegacyEnvelopeAllowInvalidSignature(raw)) |tx| {
+                        return txResponseFromLegacy(
+                            allocator,
+                            raw,
+                            tx,
+                            receipt.block_hash,
+                            receipt.block_number,
+                            receipt.transaction_index,
+                            receipt.sender,
+                        );
+                    } else |_| {}
+                }
             }
         }
     }
@@ -497,8 +632,11 @@ fn txResponseFromLegacy(
     index: u32,
     fallback_sender: ?primitives.Address.Address,
 ) !TxResponse {
-    const sender = tx_encoding.recoverLegacySender(allocator, tx) catch
-        (fallback_sender orelse primitives.Address.ZERO_ADDRESS);
+    const sender = if (isUnsignedLegacyEnvelope(tx))
+        (fallback_sender orelse primitives.Address.ZERO_ADDRESS)
+    else
+        tx_encoding.recoverLegacySender(allocator, tx) catch
+            (fallback_sender orelse primitives.Address.ZERO_ADDRESS);
 
     return .{
         .hash = computeTxHash(raw),
@@ -525,6 +663,12 @@ fn txResponseFromLegacy(
         .s = tx_encoding.bytes32ToU256(tx.s),
         .y_parity = tx_encoding.legacyRecoveryId(tx.v),
     };
+}
+
+fn isUnsignedLegacyEnvelope(tx: primitives.Transaction.LegacyTransaction) bool {
+    return tx.v == 0 and
+        std.mem.allEqual(u8, &tx.r, 0) and
+        std.mem.allEqual(u8, &tx.s, 0);
 }
 
 fn detectTxTypeField(raw: []const u8) u8 {
