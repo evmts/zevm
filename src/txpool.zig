@@ -88,6 +88,9 @@ pub const TransactionPool = struct {
 
     pub fn add(self: *TransactionPool, _: std.mem.Allocator, tx: PooledTransaction) !void {
         if (self.findTransactionIndex(tx.sender, tx.nonce)) |index| {
+            if (sameHash(tx.hash, self.transactions.items[index].hash)) {
+                return;
+            }
             if (tx.max_fee_per_gas <= self.transactions.items[index].max_fee_per_gas) {
                 return error.ReplacementUnderpriced;
             }

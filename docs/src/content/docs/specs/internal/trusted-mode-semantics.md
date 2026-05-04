@@ -45,7 +45,7 @@ If trusted startup supplies a chain RLP stream, ZEVM imports each encoded block 
 
 Phase-1 chain RLP import does not execute imported transactions, validate post-state roots, materialize account/storage state, or populate receipt/log indexes. State-backed reads, simulation, receipts, and logs remain bound to genesis plus subsequent local execution. Startup logs must identify this path as query-only.
 
-If trusted startup enables `engineRpc`, ZEVM binds a second plain-HTTP Engine API listener. The implemented Engine surface is intentionally narrow: capability exchange, transition configuration exchange, and forkchoice updates that validate referenced hashes against local block history. Full Engine payload execution/building and blob/body retrieval are not release-ready.
+If trusted startup enables `engineRpc`, ZEVM binds a second plain-HTTP Engine API listener. The implemented Engine surface covers the checked-in execution-apis method names, including capability exchange, client version exchange, transition configuration echo, forkchoice updates that validate referenced hashes against local block history, payload status shape validation, payload body lookups, and blob lookup stubs. Full Engine payload execution/building and retained Amsterdam block-access-list/blob data are not release-ready.
 
 ## 3. Fee Model And Tx Types
 

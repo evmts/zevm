@@ -91,7 +91,7 @@ test "eth_getBalance returns 0 for unknown address" {
     try expectQuantityStr(result.value, "0x0");
 }
 
-test "state read handlers reject non-head selectors" {
+test "state read handlers replay historical numeric selectors" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
@@ -101,17 +101,21 @@ test "state read handlers reject non-head selectors" {
     const address = jsonrpc.types.Address{ .bytes = runtime.DEFAULT_DEV_ACCOUNTS[0].bytes };
     const historical = makeBlockSpec("0x0");
 
-    try std.testing.expectError(error.InvalidParams, eth_read.handleEthGetBalance(
+    const balance = try eth_read.handleEthGetBalance(
         arena.allocator(),
         &rt,
         .{ .address = address, .block = historical },
-    ));
-    try std.testing.expectError(error.InvalidParams, eth_read.handleEthGetCode(
+    );
+    try expectQuantityStr(balance.value, "0x21e19e0c9bab2400000");
+
+    const code = try eth_read.handleEthGetCode(
         arena.allocator(),
         &rt,
         .{ .address = address, .block = historical },
-    ));
-    try std.testing.expectError(error.InvalidParams, eth_read.handleEthGetStorageAt(
+    );
+    try expectQuantityStr(code.value, "0x");
+
+    const storage = try eth_read.handleEthGetStorageAt(
         arena.allocator(),
         &rt,
         .{
@@ -119,12 +123,15 @@ test "state read handlers reject non-head selectors" {
             .storage_slot = .{ .value = .{ .string = "0x0" } },
             .block = historical,
         },
-    ));
-    try std.testing.expectError(error.InvalidParams, eth_read.handleEthGetTransactionCount(
+    );
+    try expectQuantityStr(storage.value, "0x0000000000000000000000000000000000000000000000000000000000000000");
+
+    const nonce = try eth_read.handleEthGetTransactionCount(
         arena.allocator(),
         &rt,
         .{ .address = address, .block = historical },
-    ));
+    );
+    try expectQuantityStr(nonce.value, "0x0");
 }
 
 test "state read handlers accept current numeric selector" {

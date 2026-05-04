@@ -5,6 +5,7 @@ const guillotine_mini = @import("guillotine_mini");
 const tx_processor = @import("tx_processor.zig");
 const dev_runtime = @import("rpc/dev_runtime.zig");
 const hardfork_schedule = @import("hardfork_schedule.zig");
+const host_adapter = @import("host_adapter.zig");
 
 const INITIAL_BASE_FEE_PER_GAS: u256 = 1_000_000_000;
 const BASE_FEE_CHANGE_DENOMINATOR: u256 = 8;
@@ -16,10 +17,29 @@ const CANCUN_MAX_BLOB_GAS_PER_BLOCK: u64 = 786_432;
 const PRAGUE_MAX_BLOB_GAS_PER_BLOCK: u64 = 1_179_648;
 const CANCUN_TARGET_BLOB_GAS_PER_BLOCK: u64 = 393_216;
 const PRAGUE_TARGET_BLOB_GAS_PER_BLOCK: u64 = 786_432;
+const SYSTEM_CALL_GAS_LIMIT: u64 = 30_000_000;
+const DEPOSIT_REQUEST_TYPE: u8 = 0x00;
+const WITHDRAWAL_REQUEST_TYPE: u8 = 0x01;
+const CONSOLIDATION_REQUEST_TYPE: u8 = 0x02;
 
 pub const BEACON_ROOTS_ADDRESS = primitives.Address{ .bytes = .{
     0x00, 0x0f, 0x3d, 0xf6, 0xd7, 0x32, 0x80, 0x7e, 0xf1, 0x31,
     0x9f, 0xb7, 0xb8, 0xbb, 0x85, 0x22, 0xd0, 0xbe, 0xac, 0x02,
+} };
+
+pub const HISTORY_STORAGE_ADDRESS = primitives.Address{ .bytes = .{
+    0x00, 0x00, 0xf9, 0x08, 0x27, 0xf1, 0xc5, 0x3a, 0x10, 0xcb,
+    0x7a, 0x02, 0x33, 0x5b, 0x17, 0x53, 0x20, 0x00, 0x29, 0x35,
+} };
+
+pub const WITHDRAWAL_REQUESTS_ADDRESS = primitives.Address{ .bytes = .{
+    0x00, 0x00, 0x09, 0x61, 0xef, 0x48, 0x0e, 0xb5, 0x5e, 0x80,
+    0xd1, 0x9a, 0xd8, 0x35, 0x79, 0xa6, 0x4c, 0x00, 0x70, 0x02,
+} };
+
+pub const CONSOLIDATION_REQUESTS_ADDRESS = primitives.Address{ .bytes = .{
+    0x00, 0x00, 0xbb, 0xdd, 0xc7, 0xce, 0x48, 0x86, 0x42, 0xfb,
+    0x57, 0x9f, 0x8b, 0x00, 0xf3, 0xa5, 0x90, 0x00, 0x72, 0x51,
 } };
 
 pub const SYSTEM_ADDRESS = primitives.Address{ .bytes = .{
@@ -47,11 +67,23 @@ pub const RequestsByType = struct {
     consolidations: []const u8 = &.{},
 };
 
+pub const PragueSystemRequests = struct {
+    withdrawals: ?[]u8 = null,
+    consolidations: ?[]u8 = null,
+
+    pub fn deinit(self: *PragueSystemRequests, allocator: std.mem.Allocator) void {
+        if (self.withdrawals) |bytes| allocator.free(bytes);
+        if (self.consolidations) |bytes| allocator.free(bytes);
+        self.* = .{};
+    }
+};
+
 pub const BuildBlockOptions = struct {
     fork: Hardfork = .paris,
     hardfork_config: ?hardfork_schedule.ChainConfig = null,
     withdrawals: ?[]const primitives.BlockBody.Withdrawal = null,
     parent_beacon_block_root: ?[32]u8 = null,
+    parent_hash: ?[32]u8 = null,
     requests: RequestsByType = .{},
     state_root: ?[32]u8 = null,
     dev_runtime: ?*dev_runtime.DevRuntime = null,
@@ -121,15 +153,27 @@ pub fn buildBlockWithOptions(
     options: BuildBlockOptions,
 ) !BlockResult {
     const effective_block_ctx = blockContextWithEnvironmentOverrides(options.dev_runtime, block_ctx);
+    const effective_fork = effectiveBlockBuilderFork(options, effective_block_ctx);
 
     try sm.checkpoint();
     var block_committed = false;
     errdefer if (!block_committed) sm.revert();
 
     if (options.parent_beacon_block_root) |root| {
-        if (!atLeast(options.fork, .cancun)) return error.BeaconRootBeforeCancun;
+        if (!atLeast(effective_fork, .cancun)) return error.BeaconRootBeforeCancun;
         try applyBeaconRootsSystemCall(sm, effective_block_ctx.block_timestamp, root);
     }
+
+    if (atLeast(effective_fork, .prague)) {
+        const parent_hash = options.parent_hash orelse return error.MissingParentHash;
+        try applyHistoricalBlockHashSystemCall(sm, effective_block_ctx.block_number, parent_hash);
+    }
+
+    var preserved_empty_accounts = if (atLeast(effective_fork, .byzantium))
+        try collectEmptyAccounts(allocator, sm)
+    else
+        null;
+    defer if (preserved_empty_accounts) |*accounts| accounts.deinit();
 
     var receipts = std.array_list.Managed(primitives.Receipt.Receipt).init(allocator);
     errdefer {
@@ -160,6 +204,7 @@ pub fn buildBlockWithOptions(
             .authorization_list = item.authorization_list,
             .blob_gas_used = item.blob_gas_used,
             .blob_gas_price = item.blob_gas_price,
+            .max_fee_per_blob_gas = item.max_fee_per_blob_gas,
             .hardfork_override = if (options.hardfork_config) |config|
                 tx_processor.resolveHardforkWithConfig(config, effective_block_ctx)
             else
@@ -196,8 +241,24 @@ pub fn buildBlockWithOptions(
         receipt_appended = true;
     }
 
+    if (preserved_empty_accounts) |*accounts| {
+        try pruneNewEmptyAccounts(allocator, sm, accounts);
+    }
+
+    var system_requests = if (atLeast(effective_fork, .prague))
+        try collectPragueRequestsSystemCalls(
+            allocator,
+            sm,
+            host_iface,
+            effective_block_ctx,
+            evmHardforkFromBlockBuilderFork(effective_fork),
+        )
+    else
+        PragueSystemRequests{};
+    defer system_requests.deinit(allocator);
+
     var withdrawals_root: ?[32]u8 = null;
-    if (atLeast(options.fork, .shanghai)) {
+    if (atLeast(effective_fork, .shanghai)) {
         const withdrawals = options.withdrawals orelse return error.MissingWithdrawals;
         try applyWithdrawals(sm, withdrawals);
         withdrawals_root = try computeWithdrawalsRoot(allocator, withdrawals);
@@ -205,15 +266,19 @@ pub fn buildBlockWithOptions(
         return error.WithdrawalsBeforeShanghai;
     }
 
-    if (!atLeast(options.fork, .paris)) {
-        try applyMinerReward(sm, block_ctx.block_coinbase, options.fork);
+    if (!atLeast(effective_fork, .paris)) {
+        try applyMinerReward(sm, block_ctx.block_coinbase, effective_fork);
     }
 
     const transactions_root = try computeTransactionsRoot(allocator, transactions);
     const receipts_root = try computeReceiptsRoot(allocator, receipts.items);
     const logs_bloom = aggregateLogsBloom(receipts.items);
-    const requests_hash = if (hasAnyRequests(options.requests)) computeRequestsHash(options.requests) else null;
-    const state_root = try computeStateRootForFork(allocator, sm, options.fork);
+    const effective_requests = requestsWithPragueSystemOutputs(options.requests, system_requests);
+    const requests_hash = if (atLeast(effective_fork, .prague) or hasAnyRequests(effective_requests))
+        computeRequestsHash(effective_requests)
+    else
+        null;
+    const state_root = try computeStateRootForFork(allocator, sm, effective_fork);
     if (options.state_root) |expected_state_root| {
         if (!std.mem.eql(u8, &state_root, &expected_state_root)) return error.InvalidStateRoot;
     }
@@ -482,6 +547,8 @@ pub fn computeStateRootForFork(
     sm: *state_manager.StateManager,
     fork: Hardfork,
 ) ![32]u8 {
+    _ = fork;
+
     var addresses = std.AutoHashMap(primitives.Address, void).init(allocator);
     defer addresses.deinit();
 
@@ -517,14 +584,6 @@ pub fn computeStateRootForFork(
         const account = sm.journaled_state.account_cache.get(address) orelse state_manager.AccountState.init();
         const storage_root = try computeAccountStorageRoot(allocator, sm, address, account.storage_root);
         const code_hash = computeAccountCodeHash(sm, address, account.code_hash);
-        const is_empty = account.nonce == 0 and
-            account.balance == 0 and
-            std.mem.eql(u8, &code_hash, &primitives.State.EMPTY_CODE_HASH) and
-            std.mem.eql(u8, &storage_root, &primitives.State.EMPTY_TRIE_ROOT);
-
-        if (forkPrunesEmptyAccounts(fork) and is_empty) {
-            continue;
-        }
 
         try appendAccountTrieEntry(
             allocator,
@@ -547,6 +606,84 @@ pub fn computeStorageRoot(
     address: primitives.Address,
 ) ![32]u8 {
     return computeAccountStorageRoot(allocator, sm, address, primitives.State.EMPTY_TRIE_ROOT);
+}
+
+pub fn collectEmptyAccounts(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+) !std.AutoHashMap(primitives.Address, void) {
+    var preserved = std.AutoHashMap(primitives.Address, void).init(allocator);
+    errdefer preserved.deinit();
+
+    var account_it = sm.accountIterator();
+    while (account_it.next()) |entry| {
+        if (cachedAccountIsEmpty(sm, entry.key_ptr.*)) {
+            try preserved.put(entry.key_ptr.*, {});
+        }
+    }
+
+    return preserved;
+}
+
+pub fn pruneNewEmptyAccounts(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+    preserved: *const std.AutoHashMap(primitives.Address, void),
+) !void {
+    var addresses = std.AutoHashMap(primitives.Address, void).init(allocator);
+    defer addresses.deinit();
+
+    var account_it = sm.accountIterator();
+    while (account_it.next()) |entry| {
+        try addresses.put(entry.key_ptr.*, {});
+    }
+    var code_it = sm.journaled_state.contract_cache.cache.keyIterator();
+    while (code_it.next()) |address| {
+        try addresses.put(address.*, {});
+    }
+    var storage_it = sm.journaled_state.storage_cache.cache.keyIterator();
+    while (storage_it.next()) |address| {
+        try addresses.put(address.*, {});
+    }
+
+    var address_it = addresses.keyIterator();
+    while (address_it.next()) |address_ptr| {
+        const address = address_ptr.*;
+        if (preserved.contains(address) or !cachedAccountIsEmpty(sm, address)) continue;
+
+        _ = sm.journaled_state.account_cache.delete(address);
+        _ = sm.journaled_state.contract_cache.delete(address);
+        if (sm.journaled_state.storage_cache.cache.fetchRemove(address)) |entry| {
+            var slots = entry.value;
+            slots.deinit();
+        }
+    }
+}
+
+fn cachedAccountIsEmpty(sm: *state_manager.StateManager, address: primitives.Address) bool {
+    const account = sm.journaled_state.account_cache.get(address) orelse state_manager.AccountState.init();
+    if (account.nonce != 0 or account.balance != 0) return false;
+
+    if (sm.journaled_state.contract_cache.get(address)) |code| {
+        if (code.len != 0) return false;
+    } else if (!std.mem.eql(u8, &account.code_hash, &primitives.Hash.ZERO) and
+        !std.mem.eql(u8, &account.code_hash, &primitives.State.EMPTY_CODE_HASH))
+    {
+        return false;
+    }
+
+    if (sm.journaled_state.storage_cache.cache.getPtr(address)) |slots| {
+        var it = slots.valueIterator();
+        while (it.next()) |value| {
+            if (value.* != 0) return false;
+        }
+    } else if (!std.mem.eql(u8, &account.storage_root, &primitives.Hash.ZERO) and
+        !std.mem.eql(u8, &account.storage_root, &primitives.State.EMPTY_TRIE_ROOT))
+    {
+        return false;
+    }
+
+    return true;
 }
 
 pub fn computeWithdrawalsRoot(
@@ -616,26 +753,139 @@ pub fn applyBeaconRootsSystemCall(
     try sm.setStorage(BEACON_ROOTS_ADDRESS, @as(u256, slot + HISTORY_BUFFER_LENGTH), root_value);
 }
 
+pub fn applyHistoricalBlockHashSystemCall(
+    sm: *state_manager.StateManager,
+    block_number: u64,
+    parent_hash: [32]u8,
+) !void {
+    if (block_number == 0) return;
+
+    const slot = (block_number - 1) % HISTORY_BUFFER_LENGTH;
+    const parent_hash_value = std.mem.readInt(u256, &parent_hash, .big);
+    try sm.setStorage(HISTORY_STORAGE_ADDRESS, @as(u256, slot), parent_hash_value);
+}
+
+pub fn collectPragueRequestsSystemCalls(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+    host_iface: guillotine_mini.HostInterface,
+    block_ctx: guillotine_mini.BlockContext,
+    hardfork: guillotine_mini.Hardfork,
+) !PragueSystemRequests {
+    var requests = PragueSystemRequests{};
+    errdefer requests.deinit(allocator);
+
+    requests.withdrawals = try runSystemContractCall(
+        allocator,
+        sm,
+        host_iface,
+        block_ctx,
+        hardfork,
+        WITHDRAWAL_REQUESTS_ADDRESS,
+        &.{},
+    );
+    requests.consolidations = try runSystemContractCall(
+        allocator,
+        sm,
+        host_iface,
+        block_ctx,
+        hardfork,
+        CONSOLIDATION_REQUESTS_ADDRESS,
+        &.{},
+    );
+    return requests;
+}
+
+fn runSystemContractCall(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+    host_iface: guillotine_mini.HostInterface,
+    block_ctx: guillotine_mini.BlockContext,
+    hardfork: guillotine_mini.Hardfork,
+    to: primitives.Address,
+    input: []const u8,
+) ![]u8 {
+    const code = try sm.getCode(to);
+    if (code.len == 0) return error.MissingSystemContractCode;
+
+    const adapter = host_adapter.HostAdapter.fromHostInterface(host_iface);
+    if (adapter) |a| a.clearHostError();
+
+    try sm.checkpoint();
+    var committed = false;
+    errdefer if (!committed) sm.revert();
+
+    const EvmType = guillotine_mini.Evm(.{});
+    var evm: EvmType = undefined;
+    try evm.init(
+        allocator,
+        host_iface,
+        hardfork,
+        block_ctx,
+        SYSTEM_ADDRESS,
+        0,
+        null,
+    );
+    defer evm.deinit();
+    evm.setBytecode(code);
+
+    var result = evm.call(.{ .call = .{
+        .caller = SYSTEM_ADDRESS,
+        .to = to,
+        .value = 0,
+        .input = input,
+        .gas = SYSTEM_CALL_GAS_LIMIT,
+    } }).toOwnedResult(allocator) catch return error.OutOfMemory;
+    defer result.deinit(allocator);
+
+    if (adapter) |a| {
+        if (a.takeHostError() != null) return error.SystemContractHostError;
+    }
+    if (!result.success) return error.SystemContractCallFailed;
+
+    const output = try allocator.dupe(u8, result.output);
+    sm.commit();
+    committed = true;
+    return output;
+}
+
 pub fn computeRequestsHash(requests: RequestsByType) [32]u8 {
     var hashes: [96]u8 = undefined;
     var len: usize = 0;
 
-    if (requests.deposits.len > 0) {
-        std.crypto.hash.sha2.Sha256.hash(requests.deposits, hashes[len..][0..32], .{});
-        len += 32;
-    }
-    if (requests.withdrawals.len > 0) {
-        std.crypto.hash.sha2.Sha256.hash(requests.withdrawals, hashes[len..][0..32], .{});
-        len += 32;
-    }
-    if (requests.consolidations.len > 0) {
-        std.crypto.hash.sha2.Sha256.hash(requests.consolidations, hashes[len..][0..32], .{});
-        len += 32;
-    }
+    appendRequestTypeHash(&hashes, &len, DEPOSIT_REQUEST_TYPE, requests.deposits);
+    appendRequestTypeHash(&hashes, &len, WITHDRAWAL_REQUEST_TYPE, requests.withdrawals);
+    appendRequestTypeHash(&hashes, &len, CONSOLIDATION_REQUEST_TYPE, requests.consolidations);
 
     var out: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(hashes[0..len], &out, .{});
     return out;
+}
+
+pub fn computeHeaderHashWithRequestsHash(
+    allocator: std.mem.Allocator,
+    header: *const primitives.BlockHeader.BlockHeader,
+    requests_hash: ?[32]u8,
+) ![32]u8 {
+    const encoded = if (requests_hash) |hash|
+        try encodeHeaderWithRequestsHash(allocator, header, hash)
+    else
+        try primitives.BlockHeader.rlpEncode(header, allocator);
+    defer allocator.free(encoded);
+
+    var out: [32]u8 = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(encoded, &out, .{});
+    return out;
+}
+
+fn appendRequestTypeHash(hashes: *[96]u8, len: *usize, request_type: u8, request_data: []const u8) void {
+    if (request_data.len == 0) return;
+
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update(&.{request_type});
+    hasher.update(request_data);
+    hasher.final(hashes[len.*..][0..32]);
+    len.* += 32;
 }
 
 pub fn blockRewardWei(fork: Hardfork) ?u256 {
@@ -648,10 +898,34 @@ pub fn blockRewardWei(fork: Hardfork) ?u256 {
 }
 
 pub fn applyMinerReward(sm: *state_manager.StateManager, beneficiary: primitives.Address, fork: Hardfork) !void {
+    try applyBlockRewards(sm, beneficiary, &.{}, 0, fork);
+}
+
+pub fn applyBlockRewards(
+    sm: *state_manager.StateManager,
+    beneficiary: primitives.Address,
+    ommers: []const primitives.BlockBody.UncleHeader,
+    block_number: u64,
+    fork: Hardfork,
+) !void {
     const reward = blockRewardWei(fork) orelse return;
-    const balance = try sm.getBalance(beneficiary);
-    const new_balance = std.math.add(u256, balance, reward) catch return error.BalanceOverflow;
-    try sm.setBalance(beneficiary, new_balance);
+    const inclusion_reward = std.math.mul(u256, reward / 32, @as(u256, @intCast(ommers.len))) catch return error.BalanceOverflow;
+    try addBalance(sm, beneficiary, std.math.add(u256, reward, inclusion_reward) catch return error.BalanceOverflow);
+
+    for (ommers) |ommer| {
+        if (ommer.number >= block_number or block_number > ommer.number + 8) {
+            return error.InvalidOmmerReward;
+        }
+        const numerator: u256 = 8 + ommer.number - block_number;
+        const ommer_reward = (reward * numerator) / 8;
+        try addBalance(sm, ommer.beneficiary, ommer_reward);
+    }
+}
+
+fn addBalance(sm: *state_manager.StateManager, address: primitives.Address, amount: u256) !void {
+    const balance = try sm.getBalance(address);
+    const next = std.math.add(u256, balance, amount) catch return error.BalanceOverflow;
+    try sm.setBalance(address, next);
 }
 
 fn appendAccountTrieEntry(
@@ -750,22 +1024,6 @@ fn normalizedStorageRoot(root: [32]u8) [32]u8 {
 fn normalizedCodeHash(hash: [32]u8) [32]u8 {
     if (std.mem.eql(u8, &hash, &primitives.Hash.ZERO)) return primitives.State.EMPTY_CODE_HASH;
     return hash;
-}
-
-fn forkPrunesEmptyAccounts(fork: Hardfork) bool {
-    return switch (fork) {
-        .frontier, .homestead => false,
-        .byzantium,
-        .constantinople,
-        .istanbul,
-        .berlin,
-        .london,
-        .paris,
-        .shanghai,
-        .cancun,
-        .prague,
-        => true,
-    };
 }
 
 pub fn maxBlobGasPerBlock(fork: Hardfork) ?u64 {
@@ -975,6 +1233,41 @@ fn encodeWithdrawal(
     return encodeRlpListFromEncodedFields(allocator, fields.items);
 }
 
+fn encodeHeaderWithRequestsHash(
+    allocator: std.mem.Allocator,
+    header: *const primitives.BlockHeader.BlockHeader,
+    requests_hash: [32]u8,
+) ![]u8 {
+    var fields = std.ArrayList([]u8){};
+    defer freeEncodedFields(allocator, &fields);
+
+    try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, &header.parent_hash));
+    try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, &header.ommers_hash));
+    try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, &header.beneficiary.bytes));
+    try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, &header.state_root));
+    try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, &header.transactions_root));
+    try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, &header.receipts_root));
+    try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, &header.logs_bloom));
+    try fields.append(allocator, try primitives.Rlp.encode(allocator, header.difficulty));
+    try fields.append(allocator, try primitives.Rlp.encode(allocator, header.number));
+    try fields.append(allocator, try primitives.Rlp.encode(allocator, header.gas_limit));
+    try fields.append(allocator, try primitives.Rlp.encode(allocator, header.gas_used));
+    try fields.append(allocator, try primitives.Rlp.encode(allocator, header.timestamp));
+    try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, header.extra_data));
+    try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, &header.mix_hash));
+    try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, &header.nonce));
+    try fields.append(allocator, try primitives.Rlp.encode(allocator, header.base_fee_per_gas orelse return error.MissingBaseFeePerGas));
+    const withdrawals_root = header.withdrawals_root orelse return error.MissingWithdrawalsRoot;
+    try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, &withdrawals_root));
+    try fields.append(allocator, try primitives.Rlp.encode(allocator, header.blob_gas_used orelse return error.MissingBlobGasUsed));
+    try fields.append(allocator, try primitives.Rlp.encode(allocator, header.excess_blob_gas orelse return error.MissingExcessBlobGas));
+    const parent_beacon_block_root = header.parent_beacon_block_root orelse return error.MissingParentBeaconBlockRoot;
+    try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, &parent_beacon_block_root));
+    try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, &requests_hash));
+
+    return encodeRlpListFromEncodedFields(allocator, fields.items);
+}
+
 fn encodeRlpListFromEncodedFields(
     allocator: std.mem.Allocator,
     fields: []const []const u8,
@@ -1012,6 +1305,51 @@ fn freeEncodedFields(allocator: std.mem.Allocator, fields: *std.ArrayList([]u8))
 
 fn hasAnyRequests(requests: RequestsByType) bool {
     return requests.deposits.len != 0 or requests.withdrawals.len != 0 or requests.consolidations.len != 0;
+}
+
+fn requestsWithPragueSystemOutputs(base: RequestsByType, system: PragueSystemRequests) RequestsByType {
+    return .{
+        .deposits = base.deposits,
+        .withdrawals = if (system.withdrawals) |bytes| bytes else base.withdrawals,
+        .consolidations = if (system.consolidations) |bytes| bytes else base.consolidations,
+    };
+}
+
+fn effectiveBlockBuilderFork(options: BuildBlockOptions, block_ctx: guillotine_mini.BlockContext) Hardfork {
+    if (options.hardfork_config) |config| {
+        return blockBuilderFork(tx_processor.resolveHardforkWithConfig(config, block_ctx));
+    }
+    return options.fork;
+}
+
+fn evmHardforkFromBlockBuilderFork(fork: Hardfork) guillotine_mini.Hardfork {
+    return switch (fork) {
+        .frontier => .FRONTIER,
+        .homestead => .HOMESTEAD,
+        .byzantium => .BYZANTIUM,
+        .constantinople => .CONSTANTINOPLE,
+        .istanbul => .ISTANBUL,
+        .berlin => .BERLIN,
+        .london => .LONDON,
+        .paris => .MERGE,
+        .shanghai => .SHANGHAI,
+        .cancun => .CANCUN,
+        .prague => .PRAGUE,
+    };
+}
+
+fn blockBuilderFork(fork: guillotine_mini.Hardfork) Hardfork {
+    if (fork.isAtLeast(.PRAGUE)) return .prague;
+    if (fork.isAtLeast(.CANCUN)) return .cancun;
+    if (fork.isAtLeast(.SHANGHAI)) return .shanghai;
+    if (fork.isAtLeast(.MERGE)) return .paris;
+    if (fork.isAtLeast(.LONDON)) return .london;
+    if (fork.isAtLeast(.BERLIN)) return .berlin;
+    if (fork.isAtLeast(.ISTANBUL)) return .istanbul;
+    if (fork.isAtLeast(.CONSTANTINOPLE)) return .constantinople;
+    if (fork.isAtLeast(.BYZANTIUM)) return .byzantium;
+    if (fork.isAtLeast(.HOMESTEAD)) return .homestead;
+    return .frontier;
 }
 
 fn atLeast(fork: Hardfork, minimum: Hardfork) bool {

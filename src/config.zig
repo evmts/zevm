@@ -207,6 +207,7 @@ const FileHardforkConfig = struct {
     tangerine_whistle_block: ?u64 = null,
     spurious_dragon_block: ?u64 = null,
     byzantium_block: ?u64 = null,
+    constantinople_block: ?u64 = null,
     petersburg_block: ?u64 = null,
     istanbul_block: ?u64 = null,
     muir_glacier_block: ?u64 = null,
@@ -435,6 +436,7 @@ fn resolveHardforkConfig(chain_id: u64, file_config: ?FileHardforkConfig) hardfo
     if (overrides.tangerine_whistle_block) |value| config.tangerine_whistle_block = value;
     if (overrides.spurious_dragon_block) |value| config.spurious_dragon_block = value;
     if (overrides.byzantium_block) |value| config.byzantium_block = value;
+    if (overrides.constantinople_block) |value| config.constantinople_block = value;
     if (overrides.petersburg_block) |value| config.petersburg_block = value;
     if (overrides.istanbul_block) |value| config.istanbul_block = value;
     if (overrides.muir_glacier_block) |value| config.muir_glacier_block = value;
@@ -776,6 +778,8 @@ fn parseHardforkConfig(value: std.json.Value) LoadError!FileHardforkConfig {
             config.spurious_dragon_block = try parseU64(entry.value_ptr.*);
         } else if (std.mem.eql(u8, key, "byzantiumBlock")) {
             config.byzantium_block = try parseU64(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "constantinopleBlock")) {
+            config.constantinople_block = try parseU64(entry.value_ptr.*);
         } else if (std.mem.eql(u8, key, "petersburgBlock")) {
             config.petersburg_block = try parseU64(entry.value_ptr.*);
         } else if (std.mem.eql(u8, key, "istanbulBlock")) {

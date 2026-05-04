@@ -2,8 +2,10 @@ const std = @import("std");
 const builtin = @import("builtin");
 const jsonrpc = @import("jsonrpc");
 const primitives = @import("primitives");
+const state_manager = @import("state-manager");
 const runtime = @import("../../node/runtime.zig");
 const block_builder = @import("../../block_builder.zig");
+const mpt_proof = @import("../../mpt_proof.zig");
 const rpc_parse = @import("../parse.zig");
 
 pub const PRUNED_HISTORY_ERROR_CODE: i32 = 4444;
@@ -81,8 +83,14 @@ pub fn handleEthGetBalance(
     rt: *runtime.NodeRuntime,
     params: jsonrpc.eth.GetBalance.Params,
 ) !jsonrpc.eth.GetBalance.Result {
-    try ensureCurrentStateSelector(rt, params.block);
-    const balance = try rt.getBalance(.{ .bytes = params.address.bytes });
+    const selected = resolveStateReadBlockNumber(rt, params.block) catch return error.InvalidParams;
+    const balance = if (selected == rt.head_block_number)
+        try rt.getBalance(.{ .bytes = params.address.bytes })
+    else blk: {
+        var state = try rt.replayStateToBlock(selected);
+        defer state.deinit();
+        break :blk try state.getBalance(.{ .bytes = params.address.bytes });
+    };
     return .{ .value = try quantityHexU256(allocator, balance) };
 }
 
@@ -91,8 +99,15 @@ pub fn handleEthGetCode(
     rt: *runtime.NodeRuntime,
     params: jsonrpc.eth.GetCode.Params,
 ) !jsonrpc.eth.GetCode.Result {
-    try ensureCurrentStateSelector(rt, params.block);
-    const code = try rt.getCode(.{ .bytes = params.address.bytes });
+    const selected = resolveStateReadBlockNumber(rt, params.block) catch return error.InvalidParams;
+    if (selected == rt.head_block_number) {
+        const code = try rt.getCode(.{ .bytes = params.address.bytes });
+        return .{ .value = try dataHexBytes(allocator, code) };
+    }
+
+    var state = try rt.replayStateToBlock(selected);
+    defer state.deinit();
+    const code = try state.getCode(.{ .bytes = params.address.bytes });
     return .{ .value = try dataHexBytes(allocator, code) };
 }
 
@@ -101,9 +116,15 @@ pub fn handleEthGetStorageAt(
     rt: *runtime.NodeRuntime,
     params: jsonrpc.eth.GetStorageAt.Params,
 ) !jsonrpc.eth.GetStorageAt.Result {
-    try ensureCurrentStateSelector(rt, params.block);
+    const selected = resolveStateReadBlockNumber(rt, params.block) catch return error.InvalidParams;
     const slot = parseStorageSlotToU256(params.storage_slot) catch return error.InvalidParams;
-    const value = try rt.getStorage(.{ .bytes = params.address.bytes }, slot);
+    const value = if (selected == rt.head_block_number)
+        try rt.getStorage(.{ .bytes = params.address.bytes }, slot)
+    else blk: {
+        var state = try rt.replayStateToBlock(selected);
+        defer state.deinit();
+        break :blk try state.getStorage(.{ .bytes = params.address.bytes }, slot);
+    };
     return .{ .value = try dataHexU256(allocator, value) };
 }
 
@@ -112,8 +133,14 @@ pub fn handleEthGetTransactionCount(
     rt: *runtime.NodeRuntime,
     params: jsonrpc.eth.GetTransactionCount.Params,
 ) !jsonrpc.eth.GetTransactionCount.Result {
-    try ensureCurrentStateSelector(rt, params.block);
-    const nonce = try rt.getNonce(.{ .bytes = params.address.bytes });
+    const selected = resolveStateReadBlockNumber(rt, params.block) catch return error.InvalidParams;
+    const nonce = if (selected == rt.head_block_number)
+        try rt.getNonce(.{ .bytes = params.address.bytes })
+    else blk: {
+        var state = try rt.replayStateToBlock(selected);
+        defer state.deinit();
+        break :blk try state.getNonce(.{ .bytes = params.address.bytes });
+    };
     return .{ .value = try quantityHexU64(allocator, nonce) };
 }
 
@@ -125,8 +152,15 @@ pub fn handleEthGetStorageValuesValue(
     const items = try paramsArrayItems(params);
     if (items.len != 2) return error.InvalidParams;
 
-    const selected = rpc_parse.resolveTrustedBlockSelector(rt.head_block_number, items[1]) catch return error.InvalidParams;
-    if (selected != rt.head_block_number) return error.InvalidParams;
+    const selected = resolveStateReadBlockNumberValue(rt, items[1]) catch return error.InvalidParams;
+    var historical_state: ?state_manager.StateManager = null;
+    defer if (historical_state) |*state| state.deinit();
+    const read_state = if (selected == rt.head_block_number)
+        &rt.state
+    else blk: {
+        historical_state = try rt.replayStateToBlock(selected);
+        break :blk &historical_state.?;
+    };
 
     const requests = switch (items[0]) {
         .object => |object| object,
@@ -157,7 +191,7 @@ pub fn handleEthGetStorageValuesValue(
         for (slots) |slot_value| {
             const slot_hash = try rpc_parse.parseHash32Value(slot_value);
             const slot = std.mem.readInt(u256, &slot_hash, .big);
-            try values.append(try dataValueHexU256(allocator, try rt.getStorage(address, slot)));
+            try values.append(try dataValueHexU256(allocator, try read_state.getStorage(address, slot)));
         }
 
         const owned_key = try allocator.dupe(u8, entry.key_ptr.*);
@@ -181,14 +215,21 @@ pub fn handleEthGetProofValue(
         .array => |array| array.items,
         else => return error.InvalidParams,
     };
-    const selected = resolveGetProofBlockSelector(rt, items[2]) catch return error.InvalidParams;
-    if (selected != rt.head_block_number) return error.InvalidParams;
+    const selected = resolveStateReadBlockNumberValue(rt, items[2]) catch return error.InvalidParams;
+    var historical_state: ?state_manager.StateManager = null;
+    defer if (historical_state) |*state| state.deinit();
+    const read_state = if (selected == rt.head_block_number)
+        &rt.state
+    else blk: {
+        historical_state = try rt.replayStateToBlock(selected);
+        break :blk &historical_state.?;
+    };
 
-    const balance = try rt.getBalance(address);
-    const nonce = try rt.getNonce(address);
-    const code = try rt.getCode(address);
+    const balance = try read_state.getBalance(address);
+    const nonce = try read_state.getNonce(address);
+    const code = try read_state.getCode(address);
     const code_hash = codeHash(code);
-    const storage_hash = try block_builder.computeStorageRoot(allocator, &rt.state, address);
+    const storage_hash = try block_builder.computeStorageRoot(allocator, read_state, address);
 
     var obj = std.json.ObjectMap.init(allocator);
     errdefer {
@@ -197,12 +238,12 @@ pub fn handleEthGetProofValue(
     }
 
     try putOwnedJsonValue(&obj, allocator, "address", try addressValue(allocator, address));
-    try putOwnedJsonValue(&obj, allocator, "accountProof", .{ .array = std.json.Array.init(allocator) });
+    try putOwnedJsonValue(&obj, allocator, "accountProof", try accountProofValue(allocator, read_state, address));
     try putOwnedJsonValue(&obj, allocator, "balance", try quantityValueHexU256(allocator, balance));
     try putOwnedJsonValue(&obj, allocator, "codeHash", try hash32Value(allocator, code_hash));
     try putOwnedJsonValue(&obj, allocator, "nonce", try quantityValueHexU64(allocator, nonce));
     try putOwnedJsonValue(&obj, allocator, "storageHash", try hash32Value(allocator, storage_hash));
-    try putOwnedJsonValue(&obj, allocator, "storageProof", try storageProofValue(allocator, rt, address, storage_keys));
+    try putOwnedJsonValue(&obj, allocator, "storageProof", try storageProofValue(allocator, read_state, address, storage_keys));
     return .{ .object = obj };
 }
 
@@ -494,6 +535,56 @@ fn resolveBlockParam(rt: *const runtime.NodeRuntime, spec: jsonrpc.types.BlockSp
     return rpc_parse.resolveTrustedBlockSelector(rt.head_block_number, spec.value) catch return error.InvalidParams;
 }
 
+fn resolveStateReadBlockNumber(rt: *runtime.NodeRuntime, spec: jsonrpc.types.BlockSpec) !u64 {
+    return resolveStateReadBlockNumberValue(rt, spec.value);
+}
+
+fn resolveStateReadBlockNumberValue(rt: *runtime.NodeRuntime, value: std.json.Value) !u64 {
+    switch (value) {
+        .string => |text| {
+            if (rpc_parse.isHash32(text)) {
+                const hash = try rpc_parse.parseHash32String(text);
+                return resolveBlockHashSelector(rt, hash, true);
+            }
+            const selected = rpc_parse.resolveTrustedBlockSelector(rt.head_block_number, value) catch return error.InvalidParams;
+            if (selected > rt.head_block_number) return error.InvalidParams;
+            return selected;
+        },
+        .object => |object| return resolveStateReadBlockObject(rt, object),
+        else => return error.InvalidParams,
+    }
+}
+
+fn resolveStateReadBlockObject(rt: *runtime.NodeRuntime, object: std.json.ObjectMap) !u64 {
+    const block_number = object.get("blockNumber");
+    const block_hash = object.get("blockHash");
+    if (block_number != null and block_hash != null) return error.InvalidParams;
+
+    if (block_number) |value| {
+        const selected = rpc_parse.parseQuantityValue(u64, value) catch return error.InvalidParams;
+        if (selected > rt.head_block_number) return error.InvalidParams;
+        return selected;
+    }
+
+    if (block_hash) |value| {
+        const hash = try rpc_parse.parseHash32Value(value);
+        const require_canonical = if (object.get("requireCanonical")) |canonical| switch (canonical) {
+            .bool => |flag| flag,
+            else => return error.InvalidParams,
+        } else false;
+        return resolveBlockHashSelector(rt, hash, require_canonical);
+    }
+
+    return error.InvalidParams;
+}
+
+fn resolveBlockHashSelector(rt: *runtime.NodeRuntime, hash: [32]u8, require_canonical: bool) !u64 {
+    const block = (try rt.blockchain.getBlockByHash(hash)) orelse return error.InvalidParams;
+    const canonical = rt.blockchain.getCanonicalHash(block.header.number) orelse return error.InvalidParams;
+    if (require_canonical and !std.mem.eql(u8, &canonical, &hash)) return error.InvalidParams;
+    return block.header.number;
+}
+
 fn ensureCurrentStateSelector(rt: *const runtime.NodeRuntime, spec: jsonrpc.types.BlockSpec) !void {
     const selected = try resolveBlockParam(rt, spec);
     if (selected != rt.head_block_number) return error.InvalidParams;
@@ -614,13 +705,21 @@ fn hash32Value(allocator: std.mem.Allocator, hash: [32]u8) !std.json.Value {
     return .{ .string = out };
 }
 
+fn bytesValueHex(allocator: std.mem.Allocator, bytes: []const u8) !std.json.Value {
+    const out = try allocator.alloc(u8, 2 + bytes.len * 2);
+    out[0] = '0';
+    out[1] = 'x';
+    writeHexLower(out[2..], bytes);
+    return .{ .string = out };
+}
+
 fn storageKeyValue(allocator: std.mem.Allocator, slot: u256) !std.json.Value {
     return .{ .string = try std.fmt.allocPrint(allocator, "0x{x:0>64}", .{slot}) };
 }
 
 fn storageProofValue(
     allocator: std.mem.Allocator,
-    rt: *runtime.NodeRuntime,
+    sm: *state_manager.StateManager,
     address: primitives.Address,
     keys: []const std.json.Value,
 ) !std.json.Value {
@@ -634,7 +733,9 @@ fn storageProofValue(
 
     for (keys) |key_value| {
         const slot = try parseProofStorageKey(key_value);
-        const value = try rt.getStorage(address, slot);
+        const value = try sm.getStorage(address, slot);
+        var proof = try storageTrieProof(allocator, sm, address, slot);
+        defer proof.deinit(allocator);
 
         var entry = std.json.ObjectMap.init(allocator);
         errdefer {
@@ -643,11 +744,198 @@ fn storageProofValue(
         }
         try putOwnedJsonValue(&entry, allocator, "key", try quantityValueHexU256(allocator, slot));
         try putOwnedJsonValue(&entry, allocator, "value", try quantityValueHexU256(allocator, value));
-        try putOwnedJsonValue(&entry, allocator, "proof", .{ .array = std.json.Array.init(allocator) });
+        try putOwnedJsonValue(&entry, allocator, "proof", try proofNodesValue(allocator, proof.nodes));
         try array.append(.{ .object = entry });
     }
 
     return .{ .array = array };
+}
+
+fn accountProofValue(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+    address: primitives.Address,
+) !std.json.Value {
+    var keys = std.ArrayList([]const u8){};
+    defer {
+        for (keys.items) |key| allocator.free(key);
+        keys.deinit(allocator);
+    }
+    var values = std.ArrayList([]const u8){};
+    defer {
+        for (values.items) |value| allocator.free(value);
+        values.deinit(allocator);
+    }
+
+    try collectAccountTrieEntries(allocator, sm, &keys, &values);
+    var proof = try mpt_proof.secureProof(allocator, keys.items, values.items, &address.bytes);
+    defer proof.deinit(allocator);
+
+    return proofNodesValue(allocator, proof.nodes);
+}
+
+fn storageTrieProof(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+    address: primitives.Address,
+    slot: u256,
+) !mpt_proof.Proof {
+    var keys = std.ArrayList([]const u8){};
+    defer {
+        for (keys.items) |key| allocator.free(key);
+        keys.deinit(allocator);
+    }
+    var values = std.ArrayList([]const u8){};
+    defer {
+        for (values.items) |value| allocator.free(value);
+        values.deinit(allocator);
+    }
+
+    try collectStorageTrieEntries(allocator, sm, address, &keys, &values);
+
+    var slot_bytes: [32]u8 = undefined;
+    std.mem.writeInt(u256, &slot_bytes, slot, .big);
+    return mpt_proof.secureProof(allocator, keys.items, values.items, &slot_bytes);
+}
+
+fn proofNodesValue(allocator: std.mem.Allocator, nodes: []const []const u8) !std.json.Value {
+    var array = std.json.Array.init(allocator);
+    errdefer {
+        for (array.items) |*item| deinitJsonValue(allocator, item);
+        array.deinit();
+    }
+
+    for (nodes) |node| {
+        try array.append(try bytesValueHex(allocator, node));
+    }
+
+    return .{ .array = array };
+}
+
+fn collectAccountTrieEntries(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+    keys: *std.ArrayList([]const u8),
+    values: *std.ArrayList([]const u8),
+) !void {
+    var addresses = std.AutoHashMap(primitives.Address, void).init(allocator);
+    defer addresses.deinit();
+
+    var account_it = sm.accountIterator();
+    while (account_it.next()) |entry| {
+        try addresses.put(entry.key_ptr.*, {});
+    }
+
+    var code_it = sm.journaled_state.contract_cache.cache.keyIterator();
+    while (code_it.next()) |address| {
+        try addresses.put(address.*, {});
+    }
+
+    var storage_it = sm.journaled_state.storage_cache.cache.keyIterator();
+    while (storage_it.next()) |address| {
+        try addresses.put(address.*, {});
+    }
+
+    var address_it = addresses.keyIterator();
+    while (address_it.next()) |address_ptr| {
+        const address = address_ptr.*;
+        const account = sm.journaled_state.account_cache.get(address) orelse state_manager.AccountState.init();
+        const storage_root = try computeAccountStorageRootForProof(allocator, sm, address, account.storage_root);
+        const account_code_hash = computeAccountCodeHashForProof(sm, address, account.code_hash);
+
+        const encoded_account = primitives.AccountState.AccountState.from(.{
+            .nonce = account.nonce,
+            .balance = account.balance,
+            .storage_root = storage_root,
+            .code_hash = account_code_hash,
+        });
+        const key = try allocator.dupe(u8, &address.bytes);
+        var key_owned = true;
+        errdefer if (key_owned) allocator.free(key);
+        const value = try encoded_account.rlpEncode(allocator);
+        var value_owned = true;
+        errdefer if (value_owned) allocator.free(value);
+
+        try keys.append(allocator, key);
+        key_owned = false;
+        try values.append(allocator, value);
+        value_owned = false;
+    }
+}
+
+fn collectStorageTrieEntries(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+    address: primitives.Address,
+    keys: *std.ArrayList([]const u8),
+    values: *std.ArrayList([]const u8),
+) !void {
+    const slots = sm.journaled_state.storage_cache.cache.getPtr(address) orelse return;
+
+    var it = slots.iterator();
+    while (it.next()) |entry| {
+        const value = entry.value_ptr.*;
+        if (value == 0) continue;
+
+        var slot_bytes: [32]u8 = undefined;
+        std.mem.writeInt(u256, &slot_bytes, entry.key_ptr.*, .big);
+        const key = try allocator.dupe(u8, &slot_bytes);
+        var key_owned = true;
+        errdefer if (key_owned) allocator.free(key);
+        const encoded_value = try primitives.Rlp.encode(allocator, value);
+        var value_owned = true;
+        errdefer if (value_owned) allocator.free(encoded_value);
+
+        try keys.append(allocator, key);
+        key_owned = false;
+        try values.append(allocator, encoded_value);
+        value_owned = false;
+    }
+}
+
+fn computeAccountStorageRootForProof(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+    address: primitives.Address,
+    fallback_root: [32]u8,
+) ![32]u8 {
+    var keys = std.ArrayList([]const u8){};
+    defer {
+        for (keys.items) |key| allocator.free(key);
+        keys.deinit(allocator);
+    }
+    var values = std.ArrayList([]const u8){};
+    defer {
+        for (values.items) |value| allocator.free(value);
+        values.deinit(allocator);
+    }
+
+    try collectStorageTrieEntries(allocator, sm, address, &keys, &values);
+    if (keys.items.len == 0) return normalizedStorageRoot(fallback_root);
+    return primitives.TrieHash.secure_trie_root(allocator, keys.items, values.items);
+}
+
+fn computeAccountCodeHashForProof(
+    sm: *state_manager.StateManager,
+    address: primitives.Address,
+    fallback_hash: [32]u8,
+) [32]u8 {
+    if (sm.journaled_state.contract_cache.get(address)) |code| {
+        if (code.len == 0) return primitives.State.EMPTY_CODE_HASH;
+        return codeHash(code);
+    }
+
+    return normalizedCodeHash(fallback_hash);
+}
+
+fn normalizedStorageRoot(root: [32]u8) [32]u8 {
+    if (std.mem.eql(u8, &root, &primitives.Hash.ZERO)) return primitives.State.EMPTY_TRIE_ROOT;
+    return root;
+}
+
+fn normalizedCodeHash(hash: [32]u8) [32]u8 {
+    if (std.mem.eql(u8, &hash, &primitives.Hash.ZERO)) return primitives.State.EMPTY_CODE_HASH;
+    return hash;
 }
 
 fn codeHash(code: []const u8) [32]u8 {
@@ -655,19 +943,6 @@ fn codeHash(code: []const u8) [32]u8 {
     var out: [32]u8 = undefined;
     std.crypto.hash.sha3.Keccak256.hash(code, &out, .{});
     return out;
-}
-
-fn resolveGetProofBlockSelector(rt: *runtime.NodeRuntime, value: std.json.Value) !u64 {
-    if (value == .string) {
-        const text = value.string;
-        if (rpc_parse.isHash32(text)) {
-            const requested = try rpc_parse.parseHash32String(text);
-            const head_hash = rt.blockchain.getCanonicalHash(rt.head_block_number) orelse return error.InvalidParams;
-            if (!std.mem.eql(u8, &requested, &head_hash)) return error.InvalidParams;
-            return rt.head_block_number;
-        }
-    }
-    return rpc_parse.resolveTrustedBlockSelector(rt.head_block_number, value);
 }
 
 fn parseProofStorageKey(value: std.json.Value) !u256 {

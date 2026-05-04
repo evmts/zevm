@@ -64,6 +64,7 @@ pub const DEFAULT_DEV_HARDFORK_CONFIG = hardfork_schedule.ChainConfig{
     .tangerine_whistle_block = 0,
     .spurious_dragon_block = 0,
     .byzantium_block = 0,
+    .constantinople_block = 0,
     .petersburg_block = 0,
     .istanbul_block = 0,
     .muir_glacier_block = 0,
@@ -386,6 +387,7 @@ pub const NodeRuntime = struct {
     state: state_manager.StateManager,
     blockchain: blockchain_mod.Blockchain,
     owned_block_bodies: std.ArrayList(OwnedBlockBody),
+    genesis_alloc_path: ?[]u8,
     genesis_extra_data: ?[]u8,
     receipt_index: receipt_index_mod.ReceiptIndex,
     log_index: log_index_mod.LogIndex,
@@ -410,6 +412,12 @@ pub const NodeRuntime = struct {
         if (config.coinbase_index >= DEFAULT_DEV_ACCOUNTS.len) {
             return error.InvalidCoinbaseIndex;
         }
+
+        const owned_genesis_alloc_path = if (config.genesis_alloc_path) |path|
+            try allocator.dupe(u8, path)
+        else
+            null;
+        errdefer if (owned_genesis_alloc_path) |path| allocator.free(path);
 
         var light_state: ?LightModeState = if (config.mode == .light)
             try initLightModeState(allocator, config.light)
@@ -589,6 +597,7 @@ pub const NodeRuntime = struct {
             .state = state,
             .blockchain = blockchain,
             .owned_block_bodies = owned_block_bodies,
+            .genesis_alloc_path = owned_genesis_alloc_path,
             .genesis_extra_data = genesis_extra_data,
             .receipt_index = receipt_index,
             .log_index = log_index,
@@ -1047,6 +1056,7 @@ pub const NodeRuntime = struct {
                 .prevrandao = coordinator.next_prevrandao,
                 .dev_runtime = &self.dev_runtime,
             };
+            const parent_hash = self.blockchain.getCanonicalHash(self.head_block_number) orelse return error.MissingParentBlock;
             var block_ctx = block_builder.blockContextWithEnvironmentOverrides(
                 &self.dev_runtime,
                 coordinator.blockContext(block_options),
@@ -1054,6 +1064,7 @@ pub const NodeRuntime = struct {
             var recent_block_hashes: [256][32]u8 = undefined;
             block_ctx.block_hashes = try self.recentBlockHashesForExecution(block_ctx.block_number, &recent_block_hashes);
             block_options.block_hashes = block_ctx.block_hashes;
+            block_options.parent_hash = parent_hash;
             const block_excess_blob_gas = coordinator.current_excess_blob_gas;
 
             var result = try coordinator.mineBlockWithOptions(
@@ -1451,6 +1462,10 @@ pub const NodeRuntime = struct {
         self.log_index.deinit(self.allocator);
         self.receipt_index.deinit(self.allocator);
         self.blockchain.deinit();
+        if (self.genesis_alloc_path) |path| {
+            self.allocator.free(path);
+            self.genesis_alloc_path = null;
+        }
         if (self.genesis_extra_data) |bytes| {
             self.allocator.free(bytes);
             self.genesis_extra_data = null;
@@ -1462,6 +1477,45 @@ pub const NodeRuntime = struct {
         freeForkConfig(self.allocator, self.fork_config);
         self.fork_backend = null;
         self.fork_config = null;
+    }
+
+    pub fn replayStateToBlock(self: *NodeRuntime, block_number: u64) !state_manager.StateManager {
+        if (block_number > self.head_block_number) return error.InvalidParams;
+
+        var historical = try state_manager.StateManager.init(self.allocator, null);
+        errdefer historical.deinit();
+
+        if (self.genesis_alloc_path) |path| {
+            var loaded = try genesis_alloc.loadGenesisFile(self.allocator, &historical, path);
+            defer loaded.deinit(self.allocator);
+        } else {
+            for (&self.managed_accounts) |account| {
+                try historical.initAccount(account.address, self.initial_balance);
+            }
+        }
+
+        var receipt_index = receipt_index_mod.ReceiptIndex.init(self.allocator);
+        defer receipt_index.deinit(self.allocator);
+        var log_index = log_index_mod.LogIndex.init();
+        defer log_index.deinit(self.allocator);
+
+        var number: u64 = 1;
+        while (number <= block_number) : (number += 1) {
+            const block = (try self.blockchain.getBlockByNumber(number)) orelse return error.ImportedBlockMissing;
+            _ = try materializeImportedBlock(
+                self.allocator,
+                &historical,
+                &self.blockchain,
+                &receipt_index,
+                &log_index,
+                self.chain_id,
+                self.hardfork_config,
+                self.blob_base_fee,
+                block,
+            );
+        }
+
+        return historical;
     }
 
     fn rebuildState(self: *NodeRuntime, target_fork: ?ForkConfig) !void {
@@ -1650,7 +1704,8 @@ pub const NodeRuntime = struct {
             .withdrawals = if (header.withdrawals_root != null) empty_withdrawals else null,
         };
 
-        const block = try primitives.Block.from(&header, &body, self.allocator);
+        var block = try primitives.Block.from(&header, &body, self.allocator);
+        block.hash = try block_builder.computeHeaderHashWithRequestsHash(self.allocator, &header, result.requests_hash);
         try finalizeReceiptsForBlock(result, ready, block.hash, block.header.number);
 
         try self.blockchain.putBlock(block);
@@ -1893,6 +1948,15 @@ fn materializeImportedBlock(
             try block_builder.applyBeaconRootsSystemCall(sm, block.header.timestamp, root);
         }
     }
+    if (hardfork.isAtLeast(.PRAGUE)) {
+        try block_builder.applyHistoricalBlockHashSystemCall(sm, block.header.number, block.header.parent_hash);
+    }
+
+    var preserved_empty_accounts = if (hardfork.isAtLeast(.SPURIOUS_DRAGON))
+        try block_builder.collectEmptyAccounts(allocator, sm)
+    else
+        null;
+    defer if (preserved_empty_accounts) |*accounts| accounts.deinit();
 
     var receipts = std.ArrayList(primitives.Receipt.Receipt){};
     defer {
@@ -1925,6 +1989,7 @@ fn materializeImportedBlock(
                 .authorization_list = tx_encoding.envelopeAuthorizationList(decoded),
                 .blob_gas_used = tx_encoding.envelopeBlobGasUsed(decoded),
                 .blob_gas_price = if (tx_encoding.envelopeBlobGasUsed(decoded) != null) block_ctx.blob_base_fee else null,
+                .max_fee_per_blob_gas = tx_encoding.envelopeMaxFeePerBlobGas(decoded),
                 .hardfork_override = hardfork,
             },
         );
@@ -1957,11 +2022,32 @@ fn materializeImportedBlock(
         receipt_owned = false;
     }
 
+    if (preserved_empty_accounts) |*accounts| {
+        try block_builder.pruneNewEmptyAccounts(allocator, sm, accounts);
+    }
+
+    if (hardfork.isAtLeast(.PRAGUE)) {
+        var system_requests = try block_builder.collectPragueRequestsSystemCalls(
+            allocator,
+            sm,
+            adapter.hostInterface(),
+            block_ctx,
+            hardfork,
+        );
+        defer system_requests.deinit(allocator);
+    }
+
     if (block.body.withdrawals) |withdrawals| {
         try block_builder.applyWithdrawals(sm, withdrawals);
     }
     if (hardfork.isBefore(.MERGE)) {
-        try block_builder.applyMinerReward(sm, block.header.beneficiary, blockBuilderHardfork(hardfork));
+        try block_builder.applyBlockRewards(
+            sm,
+            block.header.beneficiary,
+            block.body.ommers,
+            block.header.number,
+            blockBuilderHardfork(hardfork),
+        );
     }
 
     var stats = ImportedBlockStats{
@@ -1974,7 +2060,7 @@ fn materializeImportedBlock(
     stats.receipt_root_mismatch = !std.mem.eql(u8, &receipts_root, &block.header.receipts_root);
     const logs_bloom = block_builder.aggregateLogsBloom(receipts.items);
     stats.logs_bloom_mismatch = !std.mem.eql(u8, &logs_bloom, &block.header.logs_bloom);
-    const state_root = try block_builder.computeStateRoot(allocator, sm);
+    const state_root = try block_builder.computeStateRootForFork(allocator, sm, blockBuilderHardfork(hardfork));
     stats.state_root_mismatch = !std.mem.eql(u8, &state_root, &block.header.state_root);
 
     sm.commit();
@@ -2069,6 +2155,7 @@ fn isDefaultDevHardforkConfig(config: hardfork_schedule.ChainConfig) bool {
         config.tangerine_whistle_block == DEFAULT_DEV_HARDFORK_CONFIG.tangerine_whistle_block and
         config.spurious_dragon_block == DEFAULT_DEV_HARDFORK_CONFIG.spurious_dragon_block and
         config.byzantium_block == DEFAULT_DEV_HARDFORK_CONFIG.byzantium_block and
+        config.constantinople_block == DEFAULT_DEV_HARDFORK_CONFIG.constantinople_block and
         config.petersburg_block == DEFAULT_DEV_HARDFORK_CONFIG.petersburg_block and
         config.istanbul_block == DEFAULT_DEV_HARDFORK_CONFIG.istanbul_block and
         config.muir_glacier_block == DEFAULT_DEV_HARDFORK_CONFIG.muir_glacier_block and
@@ -2172,6 +2259,106 @@ fn initBlockchainWithGenesis(
     try blockchain.putBlock(genesis_block);
     try blockchain.setCanonicalHead(genesis_block.hash);
     return blockchain;
+}
+
+test "Hive rpc-compat chain materializes canonical state roots" {
+    const allocator = std.testing.allocator;
+    const chain_id = 3_503_995_874_084_926;
+    const hive_hardfork_config = hardfork_schedule.ChainConfig{
+        .homestead_block = 0,
+        .dao_block = 0,
+        .tangerine_whistle_block = 3,
+        .spurious_dragon_block = 6,
+        .byzantium_block = 9,
+        .constantinople_block = 12,
+        .petersburg_block = 15,
+        .istanbul_block = 18,
+        .muir_glacier_block = 21,
+        .berlin_block = 24,
+        .london_block = 27,
+        .arrow_glacier_block = 30,
+        .gray_glacier_block = 33,
+        .merge_block = 36,
+        .shanghai_timestamp = 390,
+        .cancun_timestamp = 420,
+        .prague_timestamp = 450,
+        .osaka_timestamp = std.math.maxInt(u64),
+    };
+
+    var state = try state_manager.StateManager.init(allocator, null);
+    defer state.deinit();
+
+    var loaded = try genesis_alloc.loadGenesisFile(allocator, &state, "lib/execution-apis/tests/genesis.json");
+    defer loaded.deinit(allocator);
+
+    const genesis_state_root = try block_builder.computeStateRoot(allocator, &state);
+    var blockchain = try initBlockchainWithGenesis(
+        allocator,
+        chain_id,
+        genesis_state_root,
+        genesis.DEV_ACCOUNTS[0].address,
+        loaded.header.gas_limit orelse DEFAULT_BLOCK_GAS_LIMIT,
+        loaded.header,
+    );
+    defer blockchain.deinit();
+
+    var owned_block_bodies = std.ArrayList(OwnedBlockBody){};
+    defer {
+        clearOwnedBlockBodyList(allocator, &owned_block_bodies);
+        owned_block_bodies.deinit(allocator);
+    }
+    const import_stats = try chain_import.importChainFile(
+        allocator,
+        &blockchain,
+        &owned_block_bodies,
+        "lib/execution-apis/tests/chain.rlp",
+    );
+
+    var receipt_index = receipt_index_mod.ReceiptIndex.init(allocator);
+    defer receipt_index.deinit(allocator);
+    var log_index = log_index_mod.LogIndex.init();
+    defer log_index.deinit(allocator);
+
+    var block_number: u64 = 1;
+    while (block_number <= import_stats.head_block_number) : (block_number += 1) {
+        const block = (try blockchain.getBlockByNumber(block_number)) orelse return error.ImportedBlockMissing;
+        const block_stats = try materializeImportedBlock(
+            allocator,
+            &state,
+            &blockchain,
+            &receipt_index,
+            &log_index,
+            chain_id,
+            hive_hardfork_config,
+            1,
+            block,
+        );
+
+        if (block_stats.state_root_mismatch) {
+            var recent_hashes: [256][32]u8 = undefined;
+            const block_ctx = try importedBlockContext(&blockchain, chain_id, 1, block, &recent_hashes);
+            const hardfork = inferImportedBlockHardfork(hive_hardfork_config, block_ctx, block);
+            const state_root = try block_builder.computeStateRootForFork(allocator, &state, blockBuilderHardfork(hardfork));
+            const got_hex = std.fmt.bytesToHex(state_root, .lower);
+            const want_hex = std.fmt.bytesToHex(block.header.state_root, .lower);
+            std.debug.print(
+                "state root mismatch block={} hardfork={s} txs={} ommers={} receipt_mismatch={} logs_mismatch={} got=0x{s} want=0x{s}\n",
+                .{
+                    block_number,
+                    @tagName(hardfork),
+                    block.body.transactions.len,
+                    block.body.ommers.len,
+                    block_stats.receipt_root_mismatch,
+                    block_stats.logs_bloom_mismatch,
+                    &got_hex,
+                    &want_hex,
+                },
+            );
+            try std.testing.expect(false);
+        }
+        try std.testing.expect(!block_stats.receipt_root_mismatch);
+        try std.testing.expect(!block_stats.logs_bloom_mismatch);
+    }
 }
 
 pub fn isManagedDevAccount(address: primitives.Address) bool {

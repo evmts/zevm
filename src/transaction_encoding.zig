@@ -190,6 +190,13 @@ pub fn envelopeBlobGasUsed(decoded: DecodedEnvelope) ?u256 {
     };
 }
 
+pub fn envelopeMaxFeePerBlobGas(decoded: DecodedEnvelope) ?u256 {
+    return switch (decoded) {
+        .eip4844 => |tx| tx.max_fee_per_blob_gas,
+        else => null,
+    };
+}
+
 pub fn envelopeAuthorizationList(decoded: DecodedEnvelope) []const primitives.Authorization.Authorization {
     return switch (decoded) {
         .eip7702 => |tx| tx.authorization_list,

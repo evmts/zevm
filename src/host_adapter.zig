@@ -1,3 +1,4 @@
+const std = @import("std");
 const primitives = @import("primitives");
 const state_manager = @import("state-manager");
 const guillotine_mini = @import("guillotine_mini");
@@ -5,6 +6,14 @@ const guillotine_mini = @import("guillotine_mini");
 pub const HostAdapter = struct {
     state: *state_manager.StateManager,
     host_error: ?HostError = null,
+    balance_change_allocator: ?std.mem.Allocator = null,
+    balance_changes: ?*std.ArrayList(BalanceChange) = null,
+
+    pub const BalanceChange = struct {
+        address: primitives.Address,
+        before: u256,
+        after: u256,
+    };
 
     pub const HostError = enum {
         state_read_failed,
@@ -70,7 +79,9 @@ pub const HostAdapter = struct {
     }
 
     pub fn setBalance(self: *HostAdapter, address: primitives.Address, balance: u256) Error!void {
+        const before = if (self.balance_changes != null) self.state.getBalance(address) catch 0 else 0;
         self.state.setBalance(address, balance) catch |err| return hostErrorToError(mapStateWriteError(err));
+        self.recordBalanceChange(address, before, balance);
     }
 
     pub fn getCode(self: *HostAdapter, address: primitives.Address) Error![]const u8 {
@@ -98,12 +109,14 @@ pub const HostAdapter = struct {
     }
 
     pub fn deleteAccount(self: *HostAdapter, address: primitives.Address) Error!void {
+        const before = if (self.balance_changes != null) self.state.getBalance(address) catch 0 else 0;
         _ = self.state.journaled_state.account_cache.delete(address);
         _ = self.state.journaled_state.contract_cache.delete(address);
         if (self.state.journaled_state.storage_cache.cache.fetchRemove(address)) |entry| {
             var slots = entry.value;
             slots.deinit();
         }
+        self.recordBalanceChange(address, before, 0);
     }
 
     pub fn accountExists(self: *HostAdapter, address: primitives.Address) Error!bool {
@@ -135,9 +148,12 @@ pub const HostAdapter = struct {
 
     fn setBalanceVTable(ptr: *anyopaque, address: primitives.Address, balance: u256) void {
         const self: *HostAdapter = @ptrCast(@alignCast(ptr));
+        const before = if (self.balance_changes != null) self.state.getBalance(address) catch 0 else 0;
         self.state.setBalance(address, balance) catch |err| {
             self.recordError(mapStateWriteError(err));
+            return;
         };
+        self.recordBalanceChange(address, before, balance);
     }
 
     fn getCodeVTable(ptr: *anyopaque, address: primitives.Address) []const u8 {
@@ -204,6 +220,20 @@ pub const HostAdapter = struct {
         if (self.host_error == null) {
             self.host_error = host_error;
         }
+    }
+
+    fn recordBalanceChange(self: *HostAdapter, address: primitives.Address, before: u256, after: u256) void {
+        if (before == after) return;
+        const changes = self.balance_changes orelse return;
+        const allocator = self.balance_change_allocator orelse {
+            self.recordError(.invalid_request);
+            return;
+        };
+        changes.append(allocator, .{
+            .address = address,
+            .before = before,
+            .after = after,
+        }) catch self.recordError(.out_of_memory);
     }
 
     fn mapStateReadError(err: anyerror) HostError {

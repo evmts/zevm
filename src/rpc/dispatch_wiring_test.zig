@@ -321,7 +321,15 @@ fn contractProbeParams(allocator: std.mem.Allocator, method: []const u8) !?std.j
     if (std.mem.eql(u8, method, "engine_exchangeTransitionConfigurationV1")) {
         return try arrayParams(allocator, &.{try emptyObjectValue(allocator)});
     }
-    if (methodIs(method, &.{ "engine_forkchoiceUpdatedV1", "engine_forkchoiceUpdatedV2", "engine_forkchoiceUpdatedV3" })) {
+    if (std.mem.eql(u8, method, "engine_getClientVersionV1")) {
+        var client = std.json.ObjectMap.init(allocator);
+        try client.put("code", .{ .string = "CL" });
+        try client.put("name", .{ .string = "probe" });
+        try client.put("version", .{ .string = "v0.0.0" });
+        try client.put("commit", .{ .string = "0x00000000" });
+        return try arrayParams(allocator, &.{.{ .object = client }});
+    }
+    if (methodIs(method, &.{ "engine_forkchoiceUpdatedV1", "engine_forkchoiceUpdatedV2", "engine_forkchoiceUpdatedV3", "engine_forkchoiceUpdatedV4" })) {
         var state = std.json.ObjectMap.init(allocator);
         try state.put("headBlockHash", hash32Value());
         try state.put("safeBlockHash", hash32Value());
@@ -340,12 +348,18 @@ fn contractProbeParams(allocator: std.mem.Allocator, method: []const u8) !?std.j
     if (methodIs(method, &.{ "engine_getPayloadV1", "engine_getPayloadV2", "engine_getPayloadV3", "engine_getPayloadV4", "engine_getPayloadV5", "engine_getPayloadV6" })) {
         return try arrayParams(allocator, &.{.{ .string = "0x0000000000000001" }});
     }
-    if (methodIs(method, &.{ "engine_getPayloadBodiesByHashV1", "engine_getBlobsV1", "engine_getBlobsV2" })) {
+    if (methodIs(method, &.{
+        "engine_getPayloadBodiesByHashV1",
+        "engine_getPayloadBodiesByHashV2",
+        "engine_getBlobsV1",
+        "engine_getBlobsV2",
+        "engine_getBlobsV3",
+    })) {
         var hashes = std.json.Array.init(allocator);
         try hashes.append(hash32Value());
         return try arrayParams(allocator, &.{.{ .array = hashes }});
     }
-    if (std.mem.eql(u8, method, "engine_getPayloadBodiesByRangeV1")) {
+    if (methodIs(method, &.{ "engine_getPayloadBodiesByRangeV1", "engine_getPayloadBodiesByRangeV2" })) {
         return try arrayParams(allocator, &.{ .{ .string = "0x0" }, .{ .string = "0x1" } });
     }
     if (methodIs(method, &.{ "eth_getBalance", "eth_getCode", "eth_getTransactionCount" })) {
@@ -434,6 +448,9 @@ fn contractProbeParams(allocator: std.mem.Allocator, method: []const u8) !?std.j
         return try arrayParams(allocator, &.{ .{ .string = "latest" }, .{ .string = "0x0" } });
     }
     if (std.mem.eql(u8, method, "eth_getBlockReceipts")) {
+        return try arrayParams(allocator, &.{.{ .string = "latest" }});
+    }
+    if (std.mem.eql(u8, method, "eth_getBlockAccessList")) {
         return try arrayParams(allocator, &.{.{ .string = "latest" }});
     }
     if (std.mem.eql(u8, method, "eth_getLogs")) {

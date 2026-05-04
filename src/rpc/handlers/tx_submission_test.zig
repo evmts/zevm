@@ -254,13 +254,31 @@ test "eth_sendRawTransaction enforces replacement pricing" {
 
     const first_hash = (try tx_submission.handleSendRawTransaction(std.testing.allocator, &rt, makeRawTxParams(first_hex))).value.bytes;
 
-    const same_price = try signTestLegacyTx(
+    const duplicate = try signTestLegacyTx(
         std.testing.allocator,
         0,
         runtime.DEFAULT_GAS_PRICE,
         21_000,
         runtime.DEFAULT_DEV_ACCOUNTS[1],
         1000,
+        runtime.DEFAULT_CHAIN_ID,
+        genesis.DEV_ACCOUNTS[0].private_key,
+    );
+    defer std.testing.allocator.free(duplicate);
+
+    const duplicate_hex = try bytesToHexAlloc(std.testing.allocator, duplicate);
+    defer std.testing.allocator.free(duplicate_hex);
+
+    const duplicate_hash = (try tx_submission.handleSendRawTransaction(std.testing.allocator, &rt, makeRawTxParams(duplicate_hex))).value.bytes;
+    try std.testing.expectEqualSlices(u8, &first_hash, &duplicate_hash);
+
+    const same_price = try signTestLegacyTx(
+        std.testing.allocator,
+        0,
+        runtime.DEFAULT_GAS_PRICE,
+        21_000,
+        runtime.DEFAULT_DEV_ACCOUNTS[1],
+        1001,
         runtime.DEFAULT_CHAIN_ID,
         genesis.DEV_ACCOUNTS[0].private_key,
     );

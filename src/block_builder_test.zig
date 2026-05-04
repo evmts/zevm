@@ -138,6 +138,25 @@ test "computeStateRoot matches premine trie root" {
     try std.testing.expectEqualSlices(u8, &expected, &actual);
 }
 
+test "computeStateRoot preserves explicit empty accounts" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+
+    const allocation = [_]genesis.PremineAccount{
+        .{
+            .address = primitives.Address{ .bytes = [_]u8{0x03} ++ [_]u8{0} ** 19 },
+            .balance = 0,
+            .nonce = 0,
+        },
+    };
+
+    try sm.initAccount(allocation[0].address, allocation[0].balance);
+
+    const expected = try genesis.computeStateRootFromPremine(std.testing.allocator, &allocation);
+    const actual = try block_builder.computeStateRoot(std.testing.allocator, &sm);
+    try std.testing.expectEqualSlices(u8, &expected, &actual);
+}
+
 test "buildBlock rejects invalid included tx and reverts block state" {
     var sm = try state_manager.StateManager.init(std.testing.allocator, null);
     defer sm.deinit();
@@ -428,6 +447,21 @@ test "beacon roots system storage writes timestamp and root" {
     const slot = timestamp % 8191;
     try std.testing.expectEqual(@as(u256, timestamp), try sm.getStorage(block_builder.BEACON_ROOTS_ADDRESS, slot));
     try std.testing.expectEqual(std.mem.readInt(u256, &root, .big), try sm.getStorage(block_builder.BEACON_ROOTS_ADDRESS, slot + 8191));
+}
+
+test "historical block hash system storage writes parent hash" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+
+    const block_number: u64 = 8193;
+    const parent_hash = [_]u8{0x34} ** 32;
+    try block_builder.applyHistoricalBlockHashSystemCall(&sm, block_number, parent_hash);
+
+    const slot = (block_number - 1) % 8191;
+    try std.testing.expectEqual(
+        std.mem.readInt(u256, &parent_hash, .big),
+        try sm.getStorage(block_builder.HISTORY_STORAGE_ADDRESS, slot),
+    );
 }
 
 test "validateBlock checks roots blooms withdrawals and blob gas" {

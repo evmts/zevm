@@ -119,11 +119,12 @@ Implemented Engine listener methods:
 | --- | --- | --- |
 | `engine_exchangeCapabilities` | `[capabilities]` where `capabilities` is an array of strings | array of implemented Engine method names |
 | `engine_exchangeTransitionConfigurationV1` | `[config]` where `config` is an object | echo of the supplied transition config |
-| `engine_forkchoiceUpdatedV1` / `engine_forkchoiceUpdatedV2` / `engine_forkchoiceUpdatedV3` | `[forkchoiceState]` or `[forkchoiceState, null]` | `{ payloadStatus, payloadId: null }` |
+| `engine_getClientVersionV1` | `[clientVersion]` | single-element ZEVM client version array |
+| `engine_forkchoiceUpdatedV1` / `engine_forkchoiceUpdatedV2` / `engine_forkchoiceUpdatedV3` / `engine_forkchoiceUpdatedV4` | `[forkchoiceState]` or `[forkchoiceState, null]` | `{ payloadStatus, payloadId: null }` |
 | `engine_newPayloadV1` / `engine_newPayloadV2` / `engine_newPayloadV3` / `engine_newPayloadV4` / `engine_newPayloadV5` | version-specific payload validation params | `PayloadStatusV1`; current implementation returns `SYNCING` without importing the payload |
 | `engine_getPayloadV1` / `engine_getPayloadV2` / `engine_getPayloadV3` / `engine_getPayloadV4` / `engine_getPayloadV5` / `engine_getPayloadV6` | `[payloadId]` | payload envelope when known; `-38001` for unknown payload id |
-| `engine_getPayloadBodiesByHashV1` / `engine_getPayloadBodiesByRangeV1` | hash/range body lookup params | payload body array with `null` for unknown local blocks |
-| `engine_getBlobsV1` / `engine_getBlobsV2` | `[versionedHashes]` | blob array with `null` for unknown hashes |
+| `engine_getPayloadBodiesByHashV1` / `engine_getPayloadBodiesByHashV2` / `engine_getPayloadBodiesByRangeV1` / `engine_getPayloadBodiesByRangeV2` | hash/range body lookup params | payload body array with `null` for unknown local blocks; V2 includes `blockAccessList: null` |
+| `engine_getBlobsV1` / `engine_getBlobsV2` / `engine_getBlobsV3` | `[versionedHashes]` | blob array with `null` for unknown hashes |
 
 `forkchoiceState` must include `headBlockHash`, `safeBlockHash`, and `finalizedBlockHash` as `Hash32` strings. `safeBlockHash` and `finalizedBlockHash` may be zero hashes.
 

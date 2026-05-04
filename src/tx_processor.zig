@@ -5,9 +5,14 @@ const guillotine_mini = @import("guillotine_mini");
 const host_adapter = @import("host_adapter.zig");
 const tx_encoding = @import("transaction_encoding.zig");
 const hardfork_schedule = @import("hardfork_schedule.zig");
+const precompile_compat = @import("precompile_compat.zig");
+const evm_overrides = @import("evm_overrides.zig");
 const INTRINSIC_GAS: u64 = 21_000;
 const CALLDATA_ZERO_BYTE_GAS: u64 = 4;
 const CALLDATA_NONZERO_BYTE_GAS: u64 = 16;
+const CALLDATA_ZERO_TOKEN_COUNT: u64 = 1;
+const CALLDATA_NONZERO_TOKEN_COUNT: u64 = 4;
+const PRAGUE_CALLDATA_FLOOR_GAS_PER_TOKEN: u64 = 10;
 const CREATE_GAS: u64 = 32_000;
 const INITCODE_WORD_GAS: u64 = 2;
 const AUTH_PER_EMPTY_ACCOUNT_GAS: u64 = 25_000;
@@ -25,6 +30,7 @@ pub const ExecutionTx = struct {
     authorization_list: ?[]const primitives.Authorization.Authorization = null,
     blob_gas_used: ?u256 = null,
     blob_gas_price: ?u256 = null,
+    max_fee_per_blob_gas: ?u256 = null,
 };
 
 pub const ProcessTransactionOptions = struct {
@@ -35,7 +41,16 @@ pub const ProcessTransactionOptions = struct {
     authorization_list: ?[]const primitives.Authorization.Authorization = null,
     blob_gas_used: ?u256 = null,
     blob_gas_price: ?u256 = null,
+    max_fee_per_blob_gas: ?u256 = null,
+    blob_versioned_hashes: ?[]const [32]u8 = null,
+    precompile_overrides: []const guillotine_mini.PrecompileOverride = &.{},
     hardfork_override: ?guillotine_mini.Hardfork = null,
+    skip_sender_eoa_check: bool = false,
+    skip_nonce_validation: bool = false,
+    skip_fee_validation: bool = false,
+    skip_fee_balance_check: bool = false,
+    skip_nonce_state_increment: bool = false,
+    capture_output: ?*[]u8 = null,
 
     pub fn withHardfork(self: ProcessTransactionOptions, hardfork: guillotine_mini.Hardfork) ProcessTransactionOptions {
         var options = self;
@@ -58,6 +73,53 @@ pub const TxError = error{
     OutOfMemory,
 };
 
+const StandardPrecompileContext = struct {
+    address: primitives.Address,
+    fork: guillotine_mini.Hardfork,
+};
+
+fn findPrecompileOverride(overrides: []const guillotine_mini.PrecompileOverride, address: primitives.Address) ?guillotine_mini.PrecompileOverride {
+    for (overrides) |override| {
+        if (override.address.equals(address)) return override;
+    }
+    return null;
+}
+
+fn executeStandardPrecompile(
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    input: []const u8,
+    gas_limit: u64,
+) anyerror!guillotine_mini.PrecompileOutput {
+    const standard: *const StandardPrecompileContext = @ptrCast(@alignCast(ctx.?));
+    return precompile_compat.execute(allocator, standard.address, input, gas_limit, standard.fork);
+}
+
+fn executePrecompileOverrideOwned(
+    comptime ResultType: type,
+    allocator: std.mem.Allocator,
+    override: guillotine_mini.PrecompileOverride,
+    input: []const u8,
+    gas_limit: u64,
+) TxError!ResultType {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const precompile_result = override.execute(override.context, arena.allocator(), input, gas_limit) catch {
+        return (ResultType{
+            .success = false,
+            .gas_left = 0,
+            .output = &.{},
+        }).toOwnedResult(allocator) catch return TxError.OutOfMemory;
+    };
+    const gas_left = if (precompile_result.gas_used > gas_limit) 0 else gas_limit - precompile_result.gas_used;
+    return (ResultType{
+        .success = precompile_result.success,
+        .gas_left = gas_left,
+        .output = precompile_result.output,
+    }).toOwnedResult(allocator) catch return TxError.OutOfMemory;
+}
+
 /// Calculates the intrinsic gas cost for a transaction.
 pub fn intrinsicGas(data: []const u8, is_create: bool) u64 {
     return intrinsicGasForFork(data, is_create, .CANCUN);
@@ -76,6 +138,28 @@ pub fn intrinsicGasForFork(data: []const u8, is_create: bool, hardfork: guilloti
         gas += if (byte == 0) CALLDATA_ZERO_BYTE_GAS else nonzero_byte_gas;
     }
     return gas;
+}
+
+fn calldataTokenCount(data: []const u8) TxError!u64 {
+    var tokens: u64 = 0;
+    for (data) |byte| {
+        tokens = std.math.add(
+            u64,
+            tokens,
+            if (byte == 0) CALLDATA_ZERO_TOKEN_COUNT else CALLDATA_NONZERO_TOKEN_COUNT,
+        ) catch return TxError.IntrinsicGasExceedsLimit;
+    }
+    return tokens;
+}
+
+fn transactionGasFloorForFork(data: []const u8, hardfork: guillotine_mini.Hardfork) TxError!u64 {
+    if (hardfork.isBefore(.PRAGUE)) return 0;
+    const data_floor = std.math.mul(
+        u64,
+        try calldataTokenCount(data),
+        PRAGUE_CALLDATA_FLOOR_GAS_PER_TOKEN,
+    ) catch return TxError.IntrinsicGasExceedsLimit;
+    return std.math.add(u64, INTRINSIC_GAS, data_floor) catch return TxError.IntrinsicGasExceedsLimit;
 }
 
 /// Resolve the EVM hardfork from an explicit chain schedule.
@@ -229,16 +313,34 @@ pub fn processTransactionWithOptions(
     if (adapter) |a| a.clearHostError();
 
     const hardfork = options.hardfork_override orelse resolveHardfork(block_ctx);
+    var ecrecover_context = StandardPrecompileContext{
+        .address = primitives.Address.fromU256(1),
+        .fork = hardfork,
+    };
+    const effective_precompile_overrides = blk: {
+        const overrides = allocator.alloc(guillotine_mini.PrecompileOverride, options.precompile_overrides.len + 1) catch return TxError.OutOfMemory;
+        @memcpy(overrides[0..options.precompile_overrides.len], options.precompile_overrides);
+        overrides[options.precompile_overrides.len] = .{
+            .address = ecrecover_context.address,
+            .execute = executeStandardPrecompile,
+            .context = &ecrecover_context,
+        };
+        break :blk overrides;
+    };
+    defer allocator.free(effective_precompile_overrides);
+
     if (!transactionTypeSupported(options.receipt_type, hardfork)) return TxError.UnsupportedTransactionType;
     if (tx.gas_limit > block_ctx.block_gas_limit) return TxError.BlockGasLimitExceeded;
 
-    const sender_code = sm.getCode(caller) catch return TxError.StateError;
-    if (sender_code.len != 0 and !(hardfork.isAtLeast(.PRAGUE) and isValidDelegationCode(sender_code))) {
-        return TxError.SenderNotEOA;
+    if (!options.skip_sender_eoa_check) {
+        const sender_code = sm.getCode(caller) catch return TxError.StateError;
+        if (sender_code.len != 0 and !(hardfork.isAtLeast(.PRAGUE) and isValidDelegationCode(sender_code))) {
+            return TxError.SenderNotEOA;
+        }
     }
 
     const current_nonce = sm.getNonce(caller) catch return TxError.StateError;
-    if (current_nonce != tx.nonce) return TxError.NonceMismatch;
+    if (!options.skip_nonce_validation and current_nonce != tx.nonce) return TxError.NonceMismatch;
 
     var intrinsic = intrinsicGasForFork(tx.data, tx.to == null, hardfork);
     if (options.access_list) |access_list| {
@@ -250,6 +352,8 @@ pub fn processTransactionWithOptions(
         intrinsic = std.math.add(u64, intrinsic, auth_intrinsic) catch return TxError.IntrinsicGasExceedsLimit;
     }
     if (intrinsic > tx.gas_limit) return TxError.IntrinsicGasExceedsLimit;
+    const gas_floor = try transactionGasFloorForFork(tx.data, hardfork);
+    if (gas_floor > tx.gas_limit) return TxError.IntrinsicGasExceedsLimit;
 
     const is_dynamic_fee = switch (options.receipt_type) {
         .eip1559, .eip4844, .eip7702 => true,
@@ -259,15 +363,22 @@ pub fn processTransactionWithOptions(
     if (is_dynamic_fee) {
         const max_fee_per_gas = options.max_fee_per_gas orelse tx.gas_price;
         const max_priority_fee_per_gas = options.max_priority_fee_per_gas orelse 0;
-        if (max_priority_fee_per_gas > max_fee_per_gas) return TxError.TipExceedsFeeCap;
-        if (max_fee_per_gas < block_ctx.block_base_fee) return TxError.GasPriceBelowBaseFee;
+        if (!options.skip_fee_validation) {
+            if (max_priority_fee_per_gas > max_fee_per_gas) return TxError.TipExceedsFeeCap;
+            if (max_fee_per_gas < block_ctx.block_base_fee) return TxError.GasPriceBelowBaseFee;
+        }
     }
+
+    const blob_gas_used: u256 = if (options.receipt_type == .eip4844) options.blob_gas_used orelse 0 else 0;
+    const blob_gas_price: u256 = if (options.receipt_type == .eip4844) options.blob_gas_price orelse block_ctx.blob_base_fee else 0;
+    const max_fee_per_blob_gas: u256 = if (options.receipt_type == .eip4844) options.max_fee_per_blob_gas orelse 0 else 0;
+    if (!options.skip_fee_validation and options.receipt_type == .eip4844 and max_fee_per_blob_gas < blob_gas_price) return TxError.GasPriceBelowBaseFee;
 
     // EIP-1559 base-fee floor: non-dynamic-fee txs must pay at least the block base fee.
     const base_fee: u256 = if (hardfork.isAtLeast(.LONDON)) block_ctx.block_base_fee else 0;
-    if (!is_dynamic_fee and tx.gas_price < base_fee) return TxError.GasPriceBelowBaseFee;
+    if (!options.skip_fee_validation and !is_dynamic_fee and tx.gas_price < base_fee) return TxError.GasPriceBelowBaseFee;
 
-    const effective_gas_price: u256 = if (is_dynamic_fee) blk: {
+    const computed_effective_gas_price: u256 = if (is_dynamic_fee) blk: {
         const max_fee_per_gas = options.max_fee_per_gas orelse tx.gas_price;
         const max_priority_fee_per_gas = options.max_priority_fee_per_gas orelse 0;
         break :blk @min(max_fee_per_gas, base_fee + max_priority_fee_per_gas);
@@ -275,18 +386,35 @@ pub fn processTransactionWithOptions(
     const balance_check_gas_price: u256 = if (is_dynamic_fee)
         options.max_fee_per_gas orelse tx.gas_price
     else
-        effective_gas_price;
-    const max_gas_cost = balance_check_gas_price * @as(u256, tx.gas_limit);
-    const total_cost = tx.value + balance_check_gas_price * @as(u256, tx.gas_limit);
+        computed_effective_gas_price;
+    const potential_max_gas_cost = std.math.mul(u256, balance_check_gas_price, @as(u256, tx.gas_limit)) catch return TxError.InsufficientBalance;
+    const potential_max_blob_gas_cost = std.math.mul(u256, max_fee_per_blob_gas, blob_gas_used) catch return TxError.InsufficientBalance;
+    const potential_max_fee_cost = std.math.add(u256, potential_max_gas_cost, potential_max_blob_gas_cost) catch return TxError.InsufficientBalance;
+    const total_cost = std.math.add(u256, tx.value, potential_max_fee_cost) catch return TxError.InsufficientBalance;
     const balance = sm.getBalance(caller) catch return TxError.StateError;
-    if (balance < total_cost) return TxError.InsufficientBalance;
+    var charge_fees = true;
+    if (balance < total_cost) {
+        if (!options.skip_fee_balance_check or balance < tx.value) return TxError.InsufficientBalance;
+        charge_fees = false;
+    }
+    const effective_gas_price: u256 = if (charge_fees) computed_effective_gas_price else 0;
+    const effective_blob_gas_price: u256 = if (charge_fees) blob_gas_price else 0;
+    const max_gas_cost: u256 = if (charge_fees) potential_max_gas_cost else 0;
+    const max_blob_gas_cost: u256 = if (charge_fees) potential_max_blob_gas_cost else 0;
+    const max_fee_cost: u256 = if (charge_fees) potential_max_fee_cost else 0;
 
     sm.checkpoint() catch return TxError.StateError;
     var transaction_checkpoint_open = true;
     errdefer if (transaction_checkpoint_open) sm.revert();
 
-    sm.setBalance(caller, balance - max_gas_cost) catch return TxError.StateError;
-    sm.setNonce(caller, current_nonce + 1) catch return TxError.StateError;
+    sm.setBalance(caller, balance - max_fee_cost) catch return TxError.StateError;
+    if (!options.skip_nonce_state_increment) {
+        const next_nonce = if (options.skip_nonce_validation)
+            current_nonce +% 1
+        else
+            std.math.add(u64, tx.nonce, 1) catch return TxError.NonceMismatch;
+        sm.setNonce(caller, next_nonce) catch return TxError.StateError;
+    }
 
     const authorization_refund = applySetCodeAuthorizations(
         sm,
@@ -302,7 +430,7 @@ pub fn processTransactionWithOptions(
     const execution_gas = tx.gas_limit - intrinsic;
 
     var result = blk: {
-        const EvmType = guillotine_mini.Evm(.{});
+        const EvmType = evm_overrides.EvmType;
         var evm: EvmType = undefined;
         evm.init(
             allocator,
@@ -319,6 +447,10 @@ pub fn processTransactionWithOptions(
         evm.initTransactionState(null) catch {
             return TxError.EvmInitError;
         };
+        evm.precompile_overrides = effective_precompile_overrides;
+        if (options.blob_versioned_hashes) |hashes| {
+            evm.setBlobVersionedHashes(hashes);
+        }
 
         // The EVM's call() reads code from `pending_bytecode` for CALLs and
         // ignores it for CREATEs (init_code is in CallParams). For CALLs to a
@@ -348,21 +480,57 @@ pub fn processTransactionWithOptions(
                 .gas = execution_gas,
             } };
 
+        if (tx.to) |to| {
+            const code = sm.getCode(to) catch return TxError.StateError;
+            if (code.len == 0) {
+                if (findPrecompileOverride(effective_precompile_overrides, to)) |override| {
+                    if (tx.value > 0) {
+                        const caller_balance = sm.getBalance(caller) catch return TxError.StateError;
+                        if (caller_balance < tx.value) return TxError.InsufficientBalance;
+                        const target_balance = sm.getBalance(to) catch return TxError.StateError;
+                        sm.setBalance(caller, caller_balance - tx.value) catch return TxError.StateError;
+                        sm.setBalance(to, std.math.add(u256, target_balance, tx.value) catch return TxError.StateError) catch return TxError.StateError;
+                    }
+                    break :blk try executePrecompileOverrideOwned(
+                        @TypeOf(evm.call(call_params)),
+                        allocator,
+                        override,
+                        tx.data,
+                        execution_gas,
+                    );
+                }
+            }
+        }
+
         break :blk evm.call(call_params).toOwnedResult(allocator) catch return TxError.OutOfMemory;
     };
     defer result.deinit(allocator);
 
     try consumeHostError(adapter);
+    if (options.capture_output) |output| {
+        const captured = if (tx.to == null and result.success) blk: {
+            if (result.created_address) |created| {
+                break :blk sm.getCode(created) catch return TxError.StateError;
+            }
+            break :blk result.output;
+        } else result.output;
+        output.* = allocator.dupe(u8, captured) catch return TxError.OutOfMemory;
+    }
 
     if (result.success) {
         sm.commit();
+        if (hardfork.isBefore(.SPURIOUS_DRAGON)) {
+            if (result.created_address) |created| {
+                sm.setNonce(created, 0) catch return TxError.StateError;
+            }
+        }
     } else {
         sm.revert();
     }
     evm_checkpoint_open = false;
 
     const gas_consumed = if (result.gas_left > execution_gas) 0 else execution_gas - result.gas_left;
-    const total_gas_used = intrinsic + gas_consumed;
+    const total_gas_used = @max(intrinsic + gas_consumed, gas_floor);
     const max_refund = if (hardfork.isAtLeast(.LONDON))
         total_gas_used / 5
     else
@@ -372,20 +540,23 @@ pub fn processTransactionWithOptions(
     const effective_gas_used = total_gas_used - refund;
     const effective_gas_used_u256: u256 = @as(u256, effective_gas_used);
 
-    const charged_gas_wei = effective_gas_price * effective_gas_used_u256;
+    const charged_gas_wei = std.math.mul(u256, effective_gas_price, effective_gas_used_u256) catch return TxError.StateError;
     const gas_refund_wei = max_gas_cost - charged_gas_wei;
+    const charged_blob_gas_wei = std.math.mul(u256, effective_blob_gas_price, blob_gas_used) catch return TxError.StateError;
+    const blob_gas_refund_wei = max_blob_gas_cost - charged_blob_gas_wei;
+    const total_refund_wei = std.math.add(u256, gas_refund_wei, blob_gas_refund_wei) catch return TxError.StateError;
     const caller_balance = sm.getBalance(caller) catch return TxError.StateError;
-    sm.setBalance(caller, caller_balance + gas_refund_wei) catch return TxError.StateError;
+    sm.setBalance(caller, std.math.add(u256, caller_balance, total_refund_wei) catch return TxError.StateError) catch return TxError.StateError;
 
     // EIP-1559 settlement: coinbase only earns the priority tip
     // (effective_gas_price - base_fee). Base fee is burned (not credited to
     // anyone). When base_fee == 0 (pre-London or test contexts) this collapses
     // to the legacy "all of gas_price goes to the miner" behavior.
-    const priority_per_gas: u256 = effective_gas_price - base_fee;
+    const priority_per_gas: u256 = if (effective_gas_price > base_fee) effective_gas_price - base_fee else 0;
     if (priority_per_gas > 0) {
-        const coinbase_payment = priority_per_gas * effective_gas_used_u256;
+        const coinbase_payment = std.math.mul(u256, priority_per_gas, effective_gas_used_u256) catch return TxError.StateError;
         const coinbase_balance = sm.getBalance(block_ctx.block_coinbase) catch return TxError.StateError;
-        sm.setBalance(block_ctx.block_coinbase, coinbase_balance + coinbase_payment) catch return TxError.StateError;
+        sm.setBalance(block_ctx.block_coinbase, std.math.add(u256, coinbase_balance, coinbase_payment) catch return TxError.StateError) catch return TxError.StateError;
     }
 
     const logs = try allocateEventLogs(allocator, result.logs);
@@ -415,8 +586,8 @@ pub fn processTransactionWithOptions(
         .root = null,
         .effective_gas_price = effective_gas_price,
         .type = options.receipt_type,
-        .blob_gas_used = options.blob_gas_used,
-        .blob_gas_price = options.blob_gas_price,
+        .blob_gas_used = if (options.receipt_type == .eip4844) blob_gas_used else null,
+        .blob_gas_price = if (options.receipt_type == .eip4844) blob_gas_price else null,
     };
 
     sm.commit();

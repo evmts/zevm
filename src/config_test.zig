@@ -147,6 +147,7 @@ test "load parses trusted hardfork overrides from config" {
         \\    "trusted": {
         \\      "chainId": 1,
         \\      "hardfork": {
+        \\        "constantinopleBlock": 8,
         \\        "londonBlock": 10,
         \\        "mergeBlock": 20,
         \\        "shanghaiTimestamp": 30,
@@ -166,6 +167,7 @@ test "load parses trusted hardfork overrides from config" {
 
     const trusted = try expectTrusted(app_config);
     try std.testing.expectEqual(hardfork_schedule.MAINNET_CHAIN_CONFIG.berlin_block, trusted.hardfork_config.berlin_block);
+    try std.testing.expectEqual(@as(u64, 8), trusted.hardfork_config.constantinople_block);
     try std.testing.expectEqual(@as(u64, 10), trusted.hardfork_config.london_block);
     try std.testing.expectEqual(@as(u64, 20), trusted.hardfork_config.merge_block);
     try std.testing.expectEqual(@as(u64, 30), trusted.hardfork_config.shanghai_timestamp);

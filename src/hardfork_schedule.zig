@@ -8,6 +8,7 @@ pub const ChainConfig = struct {
     tangerine_whistle_block: u64 = 2_463_000,
     spurious_dragon_block: u64 = 2_675_000,
     byzantium_block: u64 = 4_370_000,
+    constantinople_block: u64 = 7_280_000,
     petersburg_block: u64 = 7_280_000,
     istanbul_block: u64 = 9_069_000,
     muir_glacier_block: u64 = 9_200_000,
@@ -40,6 +41,7 @@ pub fn resolveHardforkWithConfig(config: ChainConfig, block_number: u64, timesta
     if (block_number >= config.muir_glacier_block) return .MUIR_GLACIER;
     if (block_number >= config.istanbul_block) return .ISTANBUL;
     if (block_number >= config.petersburg_block) return .PETERSBURG;
+    if (block_number >= config.constantinople_block) return .CONSTANTINOPLE;
     if (block_number >= config.byzantium_block) return .BYZANTIUM;
     if (block_number >= config.spurious_dragon_block) return .SPURIOUS_DRAGON;
     if (block_number >= config.tangerine_whistle_block) return .TANGERINE_WHISTLE;

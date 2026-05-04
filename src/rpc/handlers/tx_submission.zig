@@ -99,30 +99,33 @@ pub fn handleSendRawTransaction(
 
     const tx_hash = computeTxHash(canonical.bytes);
 
-    rt.pool.setNonce(sender, current_nonce) catch return TxSubmissionError.PoolInsertFailed;
-    rt.pool.add(allocator, .{
-        .sender = sender,
-        .nonce = tx.nonce,
-        .gas_limit = tx.gas_limit,
-        .max_fee_per_gas = max_fee_per_gas,
-        .max_priority_fee_per_gas = max_priority_fee_per_gas,
-        .hash = tx_hash,
-        .to = tx.to,
-        .value = tx.value,
-        .input = tx.data,
-        .raw = canonical.bytes,
-        .v = tx.v,
-        .r = tx.r,
-        .s = tx.s,
-    }) catch |err| switch (err) {
-        error.ReplacementUnderpriced => return TxSubmissionError.PoolInsertFailed,
-        error.OutOfMemory => return TxSubmissionError.OutOfMemory,
-    };
+    if (tx_encoding.envelopeReceiptType(decoded) != .eip4844) {
+        rt.pool.setNonce(sender, current_nonce) catch return TxSubmissionError.PoolInsertFailed;
+        rt.pool.add(allocator, .{
+            .sender = sender,
+            .nonce = tx.nonce,
+            .gas_limit = tx.gas_limit,
+            .max_fee_per_gas = max_fee_per_gas,
+            .max_priority_fee_per_gas = max_priority_fee_per_gas,
+            .hash = tx_hash,
+            .to = tx.to,
+            .value = tx.value,
+            .input = tx.data,
+            .raw = canonical.bytes,
+            .v = tx.v,
+            .r = tx.r,
+            .s = tx.s,
+        }) catch |err| switch (err) {
+            error.ReplacementUnderpriced => return TxSubmissionError.PoolInsertFailed,
+            error.OutOfMemory => return TxSubmissionError.OutOfMemory,
+        };
+    }
 
     logTxAccepted(rt, "sendRawTransaction", sender, tx.nonce, tx.gas_limit, tx_hash);
 
     switch (rt.mining_config) {
-        .auto => if (tx.nonce == current_nonce) automine(rt) catch return TxSubmissionError.MiningFailed,
+        .auto => if (tx_encoding.envelopeReceiptType(decoded) != .eip4844 and tx.nonce == current_nonce)
+            automine(rt) catch return TxSubmissionError.MiningFailed,
         .manual, .interval => {},
     }
 

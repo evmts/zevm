@@ -43,6 +43,7 @@ pub const MiningBlockOptions = struct {
     prevrandao: u256 = 0,
     blob_gas_used: u64 = 0,
     block_hashes: []const [32]u8 = &.{},
+    parent_hash: ?[32]u8 = null,
     dev_runtime: ?*dev_runtime.DevRuntime = null,
 };
 
@@ -307,6 +308,7 @@ pub const MiningCoordinator = struct {
         const block_ctx = block_builder.blockContextWithEnvironmentOverrides(options.dev_runtime, self.blockContext(options));
         const active_hardfork = resolveHardforkWithConfig(self.chain_config, block_ctx.block_number, block_ctx.block_timestamp);
         const block_base_fee = block_ctx.block_base_fee;
+        const empty_withdrawals: []const primitives.BlockBody.Withdrawal = &.{};
 
         const result = try block_builder.buildBlockWithOptions(
             allocator,
@@ -315,8 +317,12 @@ pub const MiningCoordinator = struct {
             self.pending_txs.items,
             block_ctx,
             .{
+                .fork = blockBuilderFork(active_hardfork),
                 .dev_runtime = options.dev_runtime,
                 .hardfork_config = self.chain_config,
+                .parent_hash = options.parent_hash,
+                .withdrawals = if (active_hardfork.isAtLeast(.SHANGHAI)) empty_withdrawals else null,
+                .parent_beacon_block_root = if (active_hardfork.isAtLeast(.CANCUN)) primitives.Hash.ZERO else null,
             },
         );
 
@@ -407,6 +413,20 @@ pub const MiningCoordinator = struct {
 fn currentBlockBaseFee(current_base_fee_per_gas: ?u256, hardfork: primitives.Hardfork) u256 {
     if (hardfork.isBefore(.LONDON)) return 0;
     return current_base_fee_per_gas orelse INITIAL_BASE_FEE;
+}
+
+fn blockBuilderFork(fork: primitives.Hardfork) block_builder.Hardfork {
+    if (fork.isAtLeast(.PRAGUE)) return .prague;
+    if (fork.isAtLeast(.CANCUN)) return .cancun;
+    if (fork.isAtLeast(.SHANGHAI)) return .shanghai;
+    if (fork.isAtLeast(.MERGE)) return .paris;
+    if (fork.isAtLeast(.LONDON)) return .london;
+    if (fork.isAtLeast(.BERLIN)) return .berlin;
+    if (fork.isAtLeast(.ISTANBUL)) return .istanbul;
+    if (fork.isAtLeast(.CONSTANTINOPLE)) return .constantinople;
+    if (fork.isAtLeast(.BYZANTIUM)) return .byzantium;
+    if (fork.isAtLeast(.HOMESTEAD)) return .homestead;
+    return .frontier;
 }
 
 // ---------------------------------------------------------------------------

@@ -631,6 +631,7 @@ Submission outcome semantics:
 | `eth_getTransactionByBlockNumberAndIndex` | `[block, index]` | tx object or `null` | `-32602` malformed selector/index |
 | `eth_getTransactionReceipt` | `[transactionHash]` | receipt object or `null` | `-32602` malformed hash |
 | `eth_getBlockReceipts` | `[block]` (`ReceiptSelector`) | receipt array or `null` | `-32602` malformed selector |
+| `eth_getBlockAccessList` | `[block]` (`BlockNumberOrTagOrHash`) | block access list or `null`; current trusted implementation returns `null` when Amsterdam access-list data is not retained | `-32602` malformed selector |
 | `eth_getLogs` | `[filter]` | log array | `-32602` malformed filter |
 | `eth_newBlockFilter` | `[]` or omitted | `QuantityHex` filter id | `-32602` for non-empty params |
 | `eth_newPendingTransactionFilter` | `[]` or omitted | `QuantityHex` filter id | `-32602` for non-empty params |
@@ -648,6 +649,7 @@ Query selector behavior:
 - `eth_getTransactionByBlockHashAndIndex` and `eth_getTransactionByBlockNumberAndIndex` return `null` when `index` is out of range for a found block
 - `eth_getTransactionByHash` is canonical-mined only and returns `null` for txpool-only pending entries
 - `eth_getTransactionReceipt` is mined-only and returns `null` until inclusion
+- `eth_getBlockAccessList` accepts block number/tag/hash selectors and returns `null` for unknown blocks or retained-history blocks without Amsterdam block access list data
 
 ### 8.5 Compatibility utility and txpool methods
 
@@ -688,14 +690,15 @@ The Engine API listener is trusted-mode only and disabled unless startup config 
 | --- | --- | --- | --- |
 | `engine_exchangeCapabilities` | `[capabilities]` where `capabilities` is an array of strings | array of implemented Engine method names | `-32602` for malformed params |
 | `engine_exchangeTransitionConfigurationV1` | `[config]` where `config` is an object | object echo of the supplied transition config | `-32602` for malformed params |
-| `engine_forkchoiceUpdatedV1` / `engine_forkchoiceUpdatedV2` / `engine_forkchoiceUpdatedV3` | `[forkchoiceState]` or `[forkchoiceState, null]` | `{ payloadStatus, payloadId: null }` | `-32602` for malformed params or non-null payload attributes |
+| `engine_getClientVersionV1` | `[clientVersion]` where `clientVersion` is a ClientVersionV1 object | single-element array identifying ZEVM | `-32602` for malformed params |
+| `engine_forkchoiceUpdatedV1` / `engine_forkchoiceUpdatedV2` / `engine_forkchoiceUpdatedV3` / `engine_forkchoiceUpdatedV4` | `[forkchoiceState]` or `[forkchoiceState, null]` | `{ payloadStatus, payloadId: null }` | `-32602` for malformed params or non-null payload attributes |
 | `engine_newPayloadV1` / `engine_newPayloadV2` | `[executionPayload]` | `PayloadStatusV1`; current trusted implementation returns `SYNCING` without importing the payload | `-32602` for malformed params |
 | `engine_newPayloadV3` | `[executionPayload, expectedBlobVersionedHashes, parentBeaconBlockRoot]` | `PayloadStatusV1`; current trusted implementation returns `SYNCING` without importing the payload | `-32602` for malformed params |
 | `engine_newPayloadV4` / `engine_newPayloadV5` | `[executionPayload, expectedBlobVersionedHashes, parentBeaconBlockRoot, executionRequests]` | `PayloadStatusV1`; current trusted implementation returns `SYNCING` without importing the payload | `-32602` for malformed params |
 | `engine_getPayloadV1` / `engine_getPayloadV2` / `engine_getPayloadV3` / `engine_getPayloadV4` / `engine_getPayloadV5` / `engine_getPayloadV6` | `[payloadId]` where `payloadId` is 8 bytes of `HexData` | payload envelope when known | `-38001` for unknown payload id; `-32602` for malformed params |
-| `engine_getPayloadBodiesByHashV1` | `[blockHashes]` where `blockHashes` is an array of `Hash32` values | array of payload body objects or `null` for unknown hashes | `-32602` for malformed params or more than 1024 hashes |
-| `engine_getPayloadBodiesByRangeV1` | `[startBlockNumber, count]` | array of payload body objects or `null` for unknown numbers | `-32602` for malformed params, zero count, more than 1024 bodies, or range overflow |
-| `engine_getBlobsV1` / `engine_getBlobsV2` | `[versionedHashes]` where `versionedHashes` is an array of `Hash32` values | array of blob records or `null` for unknown hashes; phase-1 trusted mode returns `null` per requested hash | `-32602` for malformed params or more than 1024 hashes |
+| `engine_getPayloadBodiesByHashV1` / `engine_getPayloadBodiesByHashV2` | `[blockHashes]` where `blockHashes` is an array of `Hash32` values | array of payload body objects or `null` for unknown hashes; V2 includes `blockAccessList: null` | `-32602` for malformed params or more than 1024 hashes |
+| `engine_getPayloadBodiesByRangeV1` / `engine_getPayloadBodiesByRangeV2` | `[startBlockNumber, count]` | array of payload body objects or `null` for unknown numbers; V2 includes `blockAccessList: null` | `-32602` for malformed params, zero count, more than 1024 bodies, or range overflow |
+| `engine_getBlobsV1` / `engine_getBlobsV2` / `engine_getBlobsV3` | `[versionedHashes]` where `versionedHashes` is an array of `Hash32` values | array of blob records or `null` for unknown hashes; phase-1 trusted mode returns `null` per requested hash | `-32602` for malformed params or more than 1024 hashes |
 
 `forkchoiceState` must include `headBlockHash`, `safeBlockHash`, and `finalizedBlockHash` as `Hash32` strings. `safeBlockHash` and `finalizedBlockHash` may be zero hashes. A known local `headBlockHash` returns `VALID` and updates the canonical head; unknown referenced hashes return `SYNCING`. Payload-building storage remains minimal in phase 1: get-payload methods report unknown payload ids with `-38001`, and new-payload methods validate request shape but do not import execution payloads into canonical history.
 

@@ -30,7 +30,7 @@ RUN zig build --fetch
 RUN zig build -Doptimize=ReleaseSafe
 
 FROM alpine:3.20
-RUN apk add --no-cache bash ca-certificates jq
+RUN apk add --no-cache bash ca-certificates curl jq socat
 COPY --from=builder /src/zevm/zig-out/bin/zevm /usr/local/bin/zevm
 COPY tools/hive/zevm-client/zevm-hive.sh /zevm-hive.sh
 COPY tools/hive/zevm-client/enode.sh /hive-bin/enode.sh

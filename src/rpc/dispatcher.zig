@@ -56,6 +56,12 @@ pub fn dispatch(allocator: std.mem.Allocator, request: jsonrpc.envelope.RequestE
             }
             return response;
         },
+        error.SimulationRpcError => {
+            if (simulation.takeLastSimulationRpcError()) |rpc_error| {
+                return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, rpc_error.code, rpc_error.message);
+            }
+            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.INTERNAL_ERROR, "Internal error");
+        },
         error.ModeUnsupported => {
             return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.MODE_UNSUPPORTED, "Method unsupported in active mode");
         },
@@ -114,9 +120,9 @@ fn validateParamsForMethod(allocator: std.mem.Allocator, method_name: []const u8
         return;
     } else |_| {}
 
-    if (jsonrpc.engine.EngineMethod.fromMethodName(method_name)) |_| {
+    if (isEngineNamespaceMethod(method_name)) {
         return;
-    } else |_| {}
+    }
 
     if (isZevmResetMethod(method_name)) {
         try validateResetParams(params);
@@ -146,6 +152,10 @@ fn isZevmSetRpcUrlMethod(method_name: []const u8) bool {
         std.mem.eql(u8, method_name, "anvil_setRpcUrl");
 }
 
+fn isEngineNamespaceMethod(method_name: []const u8) bool {
+    return std.mem.startsWith(u8, method_name, "engine_");
+}
+
 fn isLocallyHandledMethod(method_name: []const u8) bool {
     return std.mem.eql(u8, method_name, "web3_clientVersion") or
         std.mem.eql(u8, method_name, "web3_sha3") or
@@ -157,6 +167,7 @@ fn isLocallyHandledMethod(method_name: []const u8) bool {
         std.mem.eql(u8, method_name, "txpool_status") or
         std.mem.eql(u8, method_name, "txpool_inspect") or
         std.mem.eql(u8, method_name, "testing_buildBlockV1") or
+        std.mem.eql(u8, method_name, "eth_getBlockAccessList") or
         std.mem.eql(u8, method_name, "eth_getStorageValues") or
         std.mem.eql(u8, method_name, "eth_mining") or
         std.mem.eql(u8, method_name, "eth_protocolVersion") or
