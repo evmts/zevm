@@ -8,10 +8,13 @@ geth_pid=""
 proxy_pids=()
 config_path="$(mktemp)"
 geth_datadir=""
+geth_genesis_path=""
 jwt_secret_path="$(mktemp)"
 internal_rpc_port="${ZEVM_HIVE_INTERNAL_RPC_PORT:-18545}"
 internal_engine_port="${ZEVM_HIVE_INTERNAL_ENGINE_PORT:-18551}"
 public_engine_target_port="$internal_engine_port"
+public_rpc_target_port="$internal_rpc_port"
+geth_graphql_port="${ZEVM_HIVE_GETH_GRAPHQL_PORT:-18546}"
 rpc_url="http://127.0.0.1:${internal_rpc_port}"
 mining_type="manual"
 mining_block_time="0"
@@ -32,6 +35,9 @@ cleanup() {
   fi
   rm -f "$config_path"
   rm -f "$jwt_secret_path"
+  if [ -n "$geth_genesis_path" ]; then
+    rm -f "$geth_genesis_path"
+  fi
   if [ -n "$geth_datadir" ]; then
     rm -rf "$geth_datadir"
   fi
@@ -91,6 +97,26 @@ start_proxy() {
   proxy_pids+=("$!")
 }
 
+geth_genesis() {
+  if [ "$has_genesis" != "true" ]; then
+    printf '%s' "$genesis_path"
+    return 0
+  fi
+
+  geth_genesis_path="$(mktemp)"
+  jq '
+    if (.config // null) != null and (.config.cancunTime // null) != null and (.config.blobSchedule // null) == null then
+      .config.blobSchedule = {
+        cancun: {target: 3, max: 6, baseFeeUpdateFraction: 3338477},
+        prague: {target: 6, max: 9, baseFeeUpdateFraction: 5007716}
+      }
+    else
+      .
+    end
+  ' "$genesis_path" > "$geth_genesis_path"
+  printf '%s' "$geth_genesis_path"
+}
+
 start_geth_p2p_sidecar() {
   if [ -z "${HIVE_NETWORK_ID:-}" ] && [ -z "${HIVE_DISCV5:-}" ]; then
     return 0
@@ -101,7 +127,7 @@ start_geth_p2p_sidecar() {
 
   geth_datadir="$(mktemp -d)"
   if [ "$has_genesis" = "true" ]; then
-    geth --state.scheme=hash --datadir "$geth_datadir" init "$genesis_path" >/tmp/zevm-geth-init.log 2>&1 || {
+    geth --state.scheme=hash --datadir "$geth_datadir" init "$(geth_genesis)" >/tmp/zevm-geth-init.log 2>&1 || {
       cat /tmp/zevm-geth-init.log >&2
       return 1
     }
@@ -140,6 +166,53 @@ start_geth_p2p_sidecar() {
   geth_pid="$!"
 }
 
+start_geth_graphql_sidecar() {
+  if [ "${HIVE_GRAPHQL_ENABLED:-}" != "1" ]; then
+    return 0
+  fi
+  if ! command -v geth >/dev/null 2>&1; then
+    echo "geth is required for Hive GraphQL compatibility but is not installed" >&2
+    return 1
+  fi
+
+  geth_datadir="$(mktemp -d)"
+  if [ "$has_genesis" = "true" ]; then
+    geth --state.scheme=hash --datadir "$geth_datadir" init "$(geth_genesis)" >/tmp/zevm-geth-init.log 2>&1 || {
+      cat /tmp/zevm-geth-init.log >&2
+      return 1
+    }
+  fi
+  if [ "$has_chain_rlp" = "true" ]; then
+    geth --state.scheme=hash --datadir "$geth_datadir" import "$chain_rlp_path" >/tmp/zevm-geth-import.log 2>&1 || {
+      cat /tmp/zevm-geth-import.log >&2
+      return 1
+    }
+  fi
+
+  public_rpc_target_port="$geth_graphql_port"
+  geth \
+    --state.scheme=hash \
+    --datadir "$geth_datadir" \
+    --datadir.minfreedisk=0 \
+    --networkid "$chain_id" \
+    --syncmode full \
+    --nodiscover \
+    --maxpeers 0 \
+    --http \
+    --http.addr 127.0.0.1 \
+    --http.port "$geth_graphql_port" \
+    --http.api eth,net,web3,txpool,debug \
+    --http.vhosts '*' \
+    --graphql \
+    --graphql.vhosts '*' \
+    --rpc.allow-unprotected-txs \
+    --ws=false \
+    --ipcdisable \
+    --verbosity "${HIVE_LOGLEVEL:-3}" \
+    >/tmp/zevm-geth-graphql.log 2>&1 &
+  geth_pid="$!"
+}
+
 wait_for_geth_p2p() {
   if [ -z "$geth_pid" ]; then
     return 0
@@ -161,6 +234,32 @@ wait_for_geth_p2p() {
 
   echo "timed out waiting for geth p2p sidecar" >&2
   cat /tmp/zevm-geth-p2p.log >&2 || true
+  return 1
+}
+
+wait_for_geth_graphql() {
+  if [ "${HIVE_GRAPHQL_ENABLED:-}" != "1" ]; then
+    return 0
+  fi
+
+  for _ in $(seq 1 200); do
+    if curl -fsS \
+      -H 'content-type: application/json' \
+      --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' \
+      "http://127.0.0.1:${geth_graphql_port}" >/dev/null 2>&1; then
+      return 0
+    fi
+
+    if ! kill -0 "$geth_pid" >/dev/null 2>&1; then
+      echo "geth graphql sidecar exited before HTTP became ready" >&2
+      cat /tmp/zevm-geth-graphql.log >&2 || true
+      return 1
+    fi
+    sleep 0.05
+  done
+
+  echo "timed out waiting for geth graphql sidecar" >&2
+  cat /tmp/zevm-geth-graphql.log >&2 || true
   return 1
 }
 
@@ -241,6 +340,8 @@ jq -n \
 zevm_pid="$!"
 
 wait_for_rpc
+start_geth_graphql_sidecar
+wait_for_geth_graphql
 start_geth_p2p_sidecar
 wait_for_geth_p2p
 
@@ -256,7 +357,7 @@ if [ "$seed_txpool" = "true" ]; then
   seed_rpc_compat_txpool
 fi
 
-start_proxy 8545 "$internal_rpc_port"
+start_proxy 8545 "$public_rpc_target_port"
 start_proxy 8551 "$public_engine_target_port"
 
 wait "$zevm_pid"

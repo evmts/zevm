@@ -126,11 +126,93 @@ const contract_method_prefixes = [_][]const u8{
     "eth_",
     "web3_",
     "net_",
+    "rpc_",
     "txpool_",
+    "testing_",
     "zevm_",
     "anvil_",
     "hardhat_",
     "evm_",
+};
+
+const upstream_execution_api_methods = [_][]const u8{
+    "debug_getBadBlocks",
+    "debug_getRawBlock",
+    "debug_getRawHeader",
+    "debug_getRawReceipts",
+    "debug_getRawTransaction",
+    "engine_exchangeCapabilities",
+    "engine_exchangeTransitionConfigurationV1",
+    "engine_forkchoiceUpdatedV1",
+    "engine_forkchoiceUpdatedV2",
+    "engine_forkchoiceUpdatedV3",
+    "engine_forkchoiceUpdatedV4",
+    "engine_getBlobsV1",
+    "engine_getBlobsV2",
+    "engine_getBlobsV3",
+    "engine_getClientVersionV1",
+    "engine_getPayloadBodiesByHashV1",
+    "engine_getPayloadBodiesByHashV2",
+    "engine_getPayloadBodiesByRangeV1",
+    "engine_getPayloadBodiesByRangeV2",
+    "engine_getPayloadV1",
+    "engine_getPayloadV2",
+    "engine_getPayloadV3",
+    "engine_getPayloadV4",
+    "engine_getPayloadV5",
+    "engine_getPayloadV6",
+    "engine_newPayloadV1",
+    "engine_newPayloadV2",
+    "engine_newPayloadV3",
+    "engine_newPayloadV4",
+    "engine_newPayloadV5",
+    "eth_accounts",
+    "eth_blobBaseFee",
+    "eth_blockNumber",
+    "eth_call",
+    "eth_chainId",
+    "eth_coinbase",
+    "eth_createAccessList",
+    "eth_estimateGas",
+    "eth_feeHistory",
+    "eth_gasPrice",
+    "eth_getBalance",
+    "eth_getBlockAccessList",
+    "eth_getBlockByHash",
+    "eth_getBlockByNumber",
+    "eth_getBlockReceipts",
+    "eth_getBlockTransactionCountByHash",
+    "eth_getBlockTransactionCountByNumber",
+    "eth_getCode",
+    "eth_getFilterChanges",
+    "eth_getFilterLogs",
+    "eth_getLogs",
+    "eth_getProof",
+    "eth_getStorageAt",
+    "eth_getStorageValues",
+    "eth_getTransactionByBlockHashAndIndex",
+    "eth_getTransactionByBlockNumberAndIndex",
+    "eth_getTransactionByHash",
+    "eth_getTransactionCount",
+    "eth_getTransactionReceipt",
+    "eth_getUncleCountByBlockHash",
+    "eth_getUncleCountByBlockNumber",
+    "eth_maxPriorityFeePerGas",
+    "eth_newBlockFilter",
+    "eth_newFilter",
+    "eth_newPendingTransactionFilter",
+    "eth_sendRawTransaction",
+    "eth_sendTransaction",
+    "eth_sign",
+    "eth_signTransaction",
+    "eth_simulateV1",
+    "eth_syncing",
+    "eth_uninstallFilter",
+    "net_version",
+    "testing_buildBlockV1",
+    "txpool_content",
+    "txpool_contentFrom",
+    "txpool_status",
 };
 
 fn collectContractMethodInventory(allocator: std.mem.Allocator, methods: *ContractMethodInventory) !void {
@@ -234,6 +316,21 @@ fn expectInventoriesEqual(contract_methods: *ContractMethodInventory, source_met
     if (missing_from_source != 0 or missing_from_contract != 0) return error.JsonRpcContractInventoryMismatch;
 }
 
+fn expectMethodsPresent(
+    methods: *ContractMethodInventory,
+    comptime inventory_name: []const u8,
+    required_methods: []const []const u8,
+) !void {
+    var missing: usize = 0;
+    for (required_methods) |method| {
+        if (!methods.contains(method)) {
+            std.debug.print("{s} is missing upstream execution API method: {s}\n", .{ inventory_name, method });
+            missing += 1;
+        }
+    }
+    if (missing != 0) return error.UpstreamExecutionApiInventoryMismatch;
+}
+
 fn expectContractMethodRouted(mode: enum { trusted, light }, method: []const u8) !void {
     var params_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer params_arena.deinit();
@@ -266,8 +363,11 @@ fn contractProbeParams(allocator: std.mem.Allocator, method: []const u8) !?std.j
         "eth_coinbase",
         "eth_accounts",
         "eth_mining",
+        "eth_hashrate",
+        "eth_getWork",
         "eth_syncing",
         "eth_protocolVersion",
+        "rpc_modules",
         "eth_newBlockFilter",
         "eth_newPendingTransactionFilter",
         "debug_getBadBlocks",
@@ -383,6 +483,16 @@ fn contractProbeParams(allocator: std.mem.Allocator, method: []const u8) !?std.j
     if (std.mem.eql(u8, method, "eth_feeHistory")) {
         return try arrayParams(allocator, &.{ .{ .string = "0x1" }, .{ .string = "latest" } });
     }
+    if (std.mem.eql(u8, method, "eth_submitWork")) {
+        return try arrayParams(allocator, &.{
+            .{ .string = "0x0000000000000000" },
+            hash32Value(),
+            hash32Value(),
+        });
+    }
+    if (std.mem.eql(u8, method, "eth_submitHashrate")) {
+        return try arrayParams(allocator, &.{ .{ .string = "0x0" }, hash32Value() });
+    }
     if (std.mem.eql(u8, method, "web3_sha3")) {
         return try arrayParams(allocator, &.{.{ .string = "0x" }});
     }
@@ -440,6 +550,12 @@ fn contractProbeParams(allocator: std.mem.Allocator, method: []const u8) !?std.j
     }
     if (methodIs(method, &.{ "eth_getBlockTransactionCountByNumber", "eth_getUncleCountByBlockNumber" })) {
         return try arrayParams(allocator, &.{.{ .string = "latest" }});
+    }
+    if (std.mem.eql(u8, method, "eth_getUncleByBlockHashAndIndex")) {
+        return try arrayParams(allocator, &.{ hash32Value(), .{ .string = "0x0" } });
+    }
+    if (std.mem.eql(u8, method, "eth_getUncleByBlockNumberAndIndex")) {
+        return try arrayParams(allocator, &.{ .{ .string = "latest" }, .{ .string = "0x0" } });
     }
     if (std.mem.eql(u8, method, "eth_getTransactionByBlockHashAndIndex")) {
         return try arrayParams(allocator, &.{ hash32Value(), .{ .string = "0x0" } });
@@ -641,6 +757,19 @@ test "canonical JSON-RPC method inventory matches dispatcher wiring" {
     try expectInventoriesEqual(&contract_methods, &source_methods);
 }
 
+test "upstream execution API methods are documented and routed" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var contract_methods = ContractMethodInventory.init(arena.allocator());
+    var source_methods = ContractMethodInventory.init(arena.allocator());
+    try collectContractMethodInventory(arena.allocator(), &contract_methods);
+    try collectSourceMethodInventory(arena.allocator(), &source_methods);
+
+    try expectMethodsPresent(&contract_methods, "phase-1 JSON-RPC contract", &upstream_execution_api_methods);
+    try expectMethodsPresent(&source_methods, "dispatcher wiring", &upstream_execution_api_methods);
+}
+
 test "canonical JSON-RPC methods never fall through routing" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -699,6 +828,14 @@ test "installed dispatch wiring exposes trusted compatibility utility methods" {
     }
 
     {
+        var response = try dispatchForTest(&rt, "rpc_modules", null);
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expectEqualStrings("1.0", (try getObjectField(response.result.?, "eth")).string);
+        try std.testing.expectEqualStrings("1.0", (try getObjectField(response.result.?, "rpc")).string);
+    }
+
+    {
         var response = try dispatchForTest(&rt, "net_version", null);
         defer response.deinit(std.testing.allocator);
         try std.testing.expect(response.error_value == null);
@@ -721,6 +858,47 @@ test "installed dispatch wiring exposes trusted compatibility utility methods" {
 
     {
         var response = try dispatchForTest(&rt, "eth_mining", null);
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expect(response.result.?.bool);
+    }
+
+    {
+        var response = try dispatchForTest(&rt, "eth_hashrate", null);
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expectEqualStrings("0x0", response.result.?.string);
+    }
+
+    {
+        var response = try dispatchForTest(&rt, "eth_getWork", null);
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        const work = response.result.?.array.items;
+        try std.testing.expectEqual(@as(usize, 3), work.len);
+        try std.testing.expectEqualStrings("0x0000000000000000000000000000000000000000000000000000000000000000", work[0].string);
+    }
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .string = "0x0000000000000000" });
+        try params.append(hash32Value());
+        try params.append(hash32Value());
+
+        var response = try dispatchForTest(&rt, "eth_submitWork", .{ .array = params });
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expect(!response.result.?.bool);
+    }
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .string = "0x0" });
+        try params.append(hash32Value());
+
+        var response = try dispatchForTest(&rt, "eth_submitHashrate", .{ .array = params });
         defer response.deinit(std.testing.allocator);
         try std.testing.expect(response.error_value == null);
         try std.testing.expect(response.result.?.bool);
@@ -820,6 +998,7 @@ test "installed dispatch wiring rejects params for no-param trusted methods" {
         "eth_blobBaseFee",
         "eth_coinbase",
         "eth_accounts",
+        "rpc_modules",
         "zevm_snapshot",
         "anvil_snapshot",
         "evm_snapshot",
@@ -855,6 +1034,21 @@ test "installed dispatch wiring routes uncle count methods" {
     }
 
     {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .string = "latest" });
+        try params.append(.{ .string = "0x0" });
+
+        var request = try makeRequest("eth_getUncleByBlockNumberAndIndex", .{ .array = params });
+        defer request.deinit(std.testing.allocator);
+        var response = try dispatcher.dispatch(std.testing.allocator, request, &handlers);
+        defer response.deinit(std.testing.allocator);
+
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expect(response.result.? == .null);
+    }
+
+    {
         const genesis = (try rt.blockchain.getBlockByNumber(0)).?;
         const hash_hex = std.fmt.bytesToHex(genesis.hash, .lower);
         const hash_param = try std.fmt.allocPrint(std.testing.allocator, "0x{s}", .{hash_hex[0..]});
@@ -871,6 +1065,26 @@ test "installed dispatch wiring routes uncle count methods" {
 
         try std.testing.expect(response.error_value == null);
         try std.testing.expectEqualStrings("0x0", response.result.?.string);
+    }
+
+    {
+        const genesis = (try rt.blockchain.getBlockByNumber(0)).?;
+        const hash_hex = std.fmt.bytesToHex(genesis.hash, .lower);
+        const hash_param = try std.fmt.allocPrint(std.testing.allocator, "0x{s}", .{hash_hex[0..]});
+        defer std.testing.allocator.free(hash_param);
+
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .string = hash_param });
+        try params.append(.{ .string = "0x0" });
+
+        var request = try makeRequest("eth_getUncleByBlockHashAndIndex", .{ .array = params });
+        defer request.deinit(std.testing.allocator);
+        var response = try dispatcher.dispatch(std.testing.allocator, request, &handlers);
+        defer response.deinit(std.testing.allocator);
+
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expect(response.result.? == .null);
     }
 }
 
@@ -1622,6 +1836,26 @@ test "light mode unsupported methods return mode unsupported after validation" {
     try params.append(.{ .string = "latest" });
 
     try expectErrorCode(&rt, "eth_call", .{ .array = params }, dispatcher.RuntimeErrorCode.MODE_UNSUPPORTED);
+}
+
+test "light mode compatibility methods validate params before unsupported error" {
+    var rt = try initLightRuntime(null);
+    defer rt.deinit();
+
+    var extra_param = std.json.Array.init(std.testing.allocator);
+    defer extra_param.deinit();
+    try extra_param.append(.null);
+
+    try expectErrorCode(&rt, "rpc_modules", .{ .array = extra_param }, jsonrpc.envelope.ErrorCode.INVALID_PARAMS);
+    try expectErrorCode(&rt, "eth_hashrate", .{ .array = extra_param }, jsonrpc.envelope.ErrorCode.INVALID_PARAMS);
+    try expectErrorCode(&rt, "eth_getWork", .{ .array = extra_param }, jsonrpc.envelope.ErrorCode.INVALID_PARAMS);
+
+    var empty_params = std.json.Array.init(std.testing.allocator);
+    defer empty_params.deinit();
+    try expectErrorCode(&rt, "eth_submitWork", .{ .array = empty_params }, jsonrpc.envelope.ErrorCode.INVALID_PARAMS);
+    try expectErrorCode(&rt, "eth_submitHashrate", .{ .array = empty_params }, jsonrpc.envelope.ErrorCode.INVALID_PARAMS);
+    try expectErrorCode(&rt, "eth_getUncleByBlockHashAndIndex", .{ .array = empty_params }, jsonrpc.envelope.ErrorCode.INVALID_PARAMS);
+    try expectErrorCode(&rt, "eth_getUncleByBlockNumberAndIndex", .{ .array = empty_params }, jsonrpc.envelope.ErrorCode.INVALID_PARAMS);
 }
 
 test "light mode unknown prefixed methods return method not found" {

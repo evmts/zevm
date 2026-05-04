@@ -159,6 +159,7 @@ fn isEngineNamespaceMethod(method_name: []const u8) bool {
 fn isLocallyHandledMethod(method_name: []const u8) bool {
     return std.mem.eql(u8, method_name, "web3_clientVersion") or
         std.mem.eql(u8, method_name, "web3_sha3") or
+        std.mem.eql(u8, method_name, "rpc_modules") or
         std.mem.eql(u8, method_name, "net_version") or
         std.mem.eql(u8, method_name, "net_listening") or
         std.mem.eql(u8, method_name, "net_peerCount") or
@@ -170,7 +171,13 @@ fn isLocallyHandledMethod(method_name: []const u8) bool {
         std.mem.eql(u8, method_name, "eth_getBlockAccessList") or
         std.mem.eql(u8, method_name, "eth_getStorageValues") or
         std.mem.eql(u8, method_name, "eth_mining") or
+        std.mem.eql(u8, method_name, "eth_hashrate") or
+        std.mem.eql(u8, method_name, "eth_getWork") or
+        std.mem.eql(u8, method_name, "eth_submitWork") or
+        std.mem.eql(u8, method_name, "eth_submitHashrate") or
         std.mem.eql(u8, method_name, "eth_protocolVersion") or
+        std.mem.eql(u8, method_name, "eth_getUncleByBlockHashAndIndex") or
+        std.mem.eql(u8, method_name, "eth_getUncleByBlockNumberAndIndex") or
         std.mem.eql(u8, method_name, "zevm_setBalance") or
         std.mem.eql(u8, method_name, "anvil_setBalance") or
         std.mem.eql(u8, method_name, "hardhat_setBalance") or

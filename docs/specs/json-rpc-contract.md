@@ -540,6 +540,7 @@ Readiness and head-coherence invariants:
 
 | Method | Exact params | Exact result | Errors |
 | --- | --- | --- | --- |
+| `rpc_modules` | `[]` or omitted | object mapping enabled namespaces (`eth`, `net`, `web3`, `rpc`, `txpool`, `debug`, `engine`, `zevm`) to version string `"1.0"` | `-32602` for non-empty params |
 | `eth_chainId` | `[]` or omitted | `QuantityHex` | `-32602` for non-empty params |
 | `eth_blockNumber` | `[]` or omitted | `QuantityHex` | `-32602` for non-empty params |
 | `eth_getBalance` | `[address, block]` | `QuantityHex` | `-32602` for malformed address or selector |
@@ -551,6 +552,8 @@ Readiness and head-coherence invariants:
 | `eth_accounts` | `[]` or omitted | array of the 10 managed trusted-mode addresses in ascending index order | `-32602` for non-empty params |
 | `eth_coinbase` | `[]` or omitted | `Address` | `-32602` for non-empty params |
 | `eth_gasPrice` | `[]` or omitted | `QuantityHex` | `-32602` for non-empty params |
+| `eth_hashrate` | `[]` or omitted | `0x0` | `-32602` for non-empty params |
+| `eth_getWork` | `[]` or omitted | three zero `Hash32` values (`powHash`, `seedHash`, `target`) because ZEVM does not expose PoW mining work | `-32602` for non-empty params |
 | `eth_maxPriorityFeePerGas` | `[]` or omitted | `QuantityHex` | `-32602` for non-empty params |
 | `eth_blobBaseFee` | `[]` or omitted | `QuantityHex` | `-32602` for non-empty params |
 | `eth_feeHistory` | `[blockCount, newestBlock]` or `[blockCount, newestBlock, rewardPercentiles]` | `FeeHistoryResult` | `-32602` on malformed count, selector, or percentiles |
@@ -606,6 +609,8 @@ Simulation semantics:
 | `eth_sendRawTransaction` | `[rawTx]` | `Hash32` | `-32602` malformed hex/decode/unsupported tx type; `-32603` runtime rejection |
 | `eth_sign` | `[address, HexData]` | 65-byte EIP-191 signature hex | `-32602` malformed params or unmanaged signer |
 | `eth_signTransaction` | `[tx]` (`TransactionRequest`) | signed legacy transaction RLP hex | `-32602` malformed request, unsupported fields, or unmanaged signer; `-32603` runtime signing failure |
+| `eth_submitWork` | `[nonce, powHash, digest]` | `false` because ZEVM does not accept PoW work submissions | `-32602` malformed nonce/hash/digest |
+| `eth_submitHashrate` | `[hashrate, id]` | `true` after validating the report shape | `-32602` malformed quantity or id hash |
 
 Submission outcome semantics:
 
@@ -626,6 +631,8 @@ Submission outcome semantics:
 | `eth_getBlockTransactionCountByNumber` | `[block]` | `QuantityHex` or `null` | `-32602` malformed selector |
 | `eth_getUncleCountByBlockHash` | `[blockHash]` | `QuantityHex` | `-32602` malformed hash |
 | `eth_getUncleCountByBlockNumber` | `[block]` | `QuantityHex` | `-32602` malformed selector |
+| `eth_getUncleByBlockHashAndIndex` | `[blockHash, index]` | `null` | `-32602` malformed hash/index |
+| `eth_getUncleByBlockNumberAndIndex` | `[block, index]` | `null` | `-32602` malformed selector/index |
 | `eth_getTransactionByHash` | `[transactionHash]` | tx object or `null` | `-32602` malformed hash |
 | `eth_getTransactionByBlockHashAndIndex` | `[blockHash, index]` | tx object or `null` | `-32602` malformed hash/index |
 | `eth_getTransactionByBlockNumberAndIndex` | `[block, index]` | tx object or `null` | `-32602` malformed selector/index |

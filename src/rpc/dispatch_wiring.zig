@@ -78,6 +78,10 @@ fn dispatchMethod(
         return dispatchEngineMethod(allocator, rt, method_name, params);
     }
 
+    if (std.mem.eql(u8, method_name, "rpc_modules")) {
+        try validateNoParams(params);
+        return rpcModulesValue(allocator);
+    }
     if (std.mem.eql(u8, method_name, "web3_clientVersion")) {
         try validateNoParams(params);
         return .{ .string = try allocator.dupe(u8, "zevm/0.1.0") };
@@ -144,6 +148,22 @@ fn dispatchMethod(
     if (std.mem.eql(u8, method_name, "eth_mining")) {
         try validateNoParams(params);
         return .{ .bool = std.meta.activeTag(rt.mining_config) != .manual };
+    }
+    if (std.mem.eql(u8, method_name, "eth_hashrate")) {
+        try validateNoParams(params);
+        return hexQuantity(allocator, 0);
+    }
+    if (std.mem.eql(u8, method_name, "eth_getWork")) {
+        try validateNoParams(params);
+        return powWorkValue(allocator);
+    }
+    if (std.mem.eql(u8, method_name, "eth_submitWork")) {
+        try validateSubmitWorkParams(params);
+        return .{ .bool = false };
+    }
+    if (std.mem.eql(u8, method_name, "eth_submitHashrate")) {
+        try validateSubmitHashrateParams(params);
+        return .{ .bool = true };
     }
     if (std.mem.eql(u8, method_name, "eth_syncing")) {
         try validateNoParams(params);
@@ -325,6 +345,14 @@ fn dispatchMethod(
             try parseGetUncleCountByBlockNumberParams(params),
         );
         return typedResultToJsonValue(allocator, result);
+    }
+    if (std.mem.eql(u8, method_name, "eth_getUncleByBlockHashAndIndex")) {
+        _ = try parseGetUncleByBlockHashAndIndexParams(allocator, params);
+        return .null;
+    }
+    if (std.mem.eql(u8, method_name, "eth_getUncleByBlockNumberAndIndex")) {
+        _ = try parseGetUncleByBlockNumberAndIndexParams(params);
+        return .null;
     }
     if (std.mem.eql(u8, method_name, "eth_getTransactionByHash")) {
         var ctx = blockQueryContext(rt);
@@ -663,6 +691,24 @@ fn lightSyncStatusValue(allocator: std.mem.Allocator, rt: *const runtime_mod.Nod
     try putOwnedJson(&obj, allocator, "safeSlot", try hexQuantity(allocator, rt.lightSafeSlot()));
     try putOwnedJson(&obj, allocator, "finalizedSlot", try hexQuantity(allocator, rt.lightFinalizedSlot()));
 
+    return .{ .object = obj };
+}
+
+fn rpcModulesValue(allocator: std.mem.Allocator) !std.json.Value {
+    var obj = std.json.ObjectMap.init(allocator);
+    errdefer {
+        var value = std.json.Value{ .object = obj };
+        deinitJsonValue(allocator, &value);
+    }
+
+    try putOwnedJson(&obj, allocator, "eth", .{ .string = try allocator.dupe(u8, "1.0") });
+    try putOwnedJson(&obj, allocator, "net", .{ .string = try allocator.dupe(u8, "1.0") });
+    try putOwnedJson(&obj, allocator, "web3", .{ .string = try allocator.dupe(u8, "1.0") });
+    try putOwnedJson(&obj, allocator, "rpc", .{ .string = try allocator.dupe(u8, "1.0") });
+    try putOwnedJson(&obj, allocator, "txpool", .{ .string = try allocator.dupe(u8, "1.0") });
+    try putOwnedJson(&obj, allocator, "debug", .{ .string = try allocator.dupe(u8, "1.0") });
+    try putOwnedJson(&obj, allocator, "engine", .{ .string = try allocator.dupe(u8, "1.0") });
+    try putOwnedJson(&obj, allocator, "zevm", .{ .string = try allocator.dupe(u8, "1.0") });
     return .{ .object = obj };
 }
 
@@ -1392,11 +1438,46 @@ fn validateNoParams(params: ?std.json.Value) !void {
     if (items.len != 0) return error.InvalidParams;
 }
 
+fn powWorkValue(allocator: std.mem.Allocator) !std.json.Value {
+    var array = std.json.Array.init(allocator);
+    errdefer {
+        for (array.items) |*item| {
+            deinitJsonValue(allocator, item);
+        }
+        array.deinit();
+    }
+
+    try array.append(try zeroHashValue(allocator));
+    try array.append(try zeroHashValue(allocator));
+    try array.append(try zeroHashValue(allocator));
+    return .{ .array = array };
+}
+
+fn zeroHashValue(allocator: std.mem.Allocator) !std.json.Value {
+    return .{ .string = try allocator.dupe(u8, "0x0000000000000000000000000000000000000000000000000000000000000000") };
+}
+
+fn validateSubmitWorkParams(params: ?std.json.Value) !void {
+    const items = try paramsArrayItems(params);
+    if (items.len != 3) return error.InvalidParams;
+    try validateHexStringLen(items[0], 18);
+    try validateHash32Json(items[1]);
+    try validateHash32Json(items[2]);
+}
+
+fn validateSubmitHashrateParams(params: ?std.json.Value) !void {
+    const items = try paramsArrayItems(params);
+    if (items.len != 2) return error.InvalidParams;
+    try validateQuantityValue(items[0]);
+    try validateHash32Json(items[1]);
+}
+
 fn isLightModeUnsupportedMethod(method_name: []const u8) bool {
     if (std.mem.eql(u8, method_name, "zevm_lightSyncStatus")) return false;
     return methodIs(method_name, &.{
         "web3_clientVersion",
         "web3_sha3",
+        "rpc_modules",
         "net_version",
         "net_listening",
         "net_peerCount",
@@ -1407,6 +1488,10 @@ fn isLightModeUnsupportedMethod(method_name: []const u8) bool {
         "eth_coinbase",
         "eth_accounts",
         "eth_mining",
+        "eth_hashrate",
+        "eth_getWork",
+        "eth_submitWork",
+        "eth_submitHashrate",
         "eth_syncing",
         "eth_protocolVersion",
         "eth_call",
@@ -1431,6 +1516,8 @@ fn isLightModeUnsupportedMethod(method_name: []const u8) bool {
         "eth_getBlockTransactionCountByNumber",
         "eth_getUncleCountByBlockHash",
         "eth_getUncleCountByBlockNumber",
+        "eth_getUncleByBlockHashAndIndex",
+        "eth_getUncleByBlockNumberAndIndex",
         "eth_getTransactionByHash",
         "eth_getTransactionByBlockHashAndIndex",
         "eth_getTransactionByBlockNumberAndIndex",
@@ -1553,6 +1640,7 @@ fn validateLightUnsupportedParams(
 ) !void {
     if (methodIs(method_name, &.{
         "web3_clientVersion",
+        "rpc_modules",
         "net_version",
         "net_listening",
         "net_peerCount",
@@ -1562,6 +1650,8 @@ fn validateLightUnsupportedParams(
         "eth_coinbase",
         "eth_accounts",
         "eth_mining",
+        "eth_hashrate",
+        "eth_getWork",
         "eth_syncing",
         "eth_protocolVersion",
         "eth_newBlockFilter",
@@ -1585,6 +1675,14 @@ fn validateLightUnsupportedParams(
         "anvil_removeBlockTimestampInterval",
     })) {
         return validateNoParams(params);
+    }
+    if (std.mem.eql(u8, method_name, "eth_submitWork")) {
+        try validateSubmitWorkParams(params);
+        return;
+    }
+    if (std.mem.eql(u8, method_name, "eth_submitHashrate")) {
+        try validateSubmitHashrateParams(params);
+        return;
     }
     if (std.mem.eql(u8, method_name, "txpool_contentFrom")) {
         _ = try parseSingleAddressArg(params);
@@ -1756,6 +1854,13 @@ fn validateLightUnsupportedParams(
         _ = try parseU64Json(items[1]);
         return;
     }
+    if (std.mem.eql(u8, method_name, "eth_getUncleByBlockNumberAndIndex")) {
+        const items = try paramsArrayItems(params);
+        if (items.len != 2) return error.InvalidParams;
+        _ = try parseLightBlockSelectorJson(items[0]);
+        _ = try parseU64Json(items[1]);
+        return;
+    }
     if (std.mem.eql(u8, method_name, "eth_getBlockReceipts")) {
         const items = try paramsArrayItems(params);
         if (items.len != 1) return error.InvalidParams;
@@ -1792,6 +1897,13 @@ fn validateLightUnsupportedParams(
         return;
     }
     if (std.mem.eql(u8, method_name, "eth_getTransactionByBlockHashAndIndex")) {
+        const items = try paramsArrayItems(params);
+        if (items.len != 2) return error.InvalidParams;
+        try validateHash32Json(items[0]);
+        _ = try parseU64Json(items[1]);
+        return;
+    }
+    if (std.mem.eql(u8, method_name, "eth_getUncleByBlockHashAndIndex")) {
         const items = try paramsArrayItems(params);
         if (items.len != 2) return error.InvalidParams;
         try validateHash32Json(items[0]);
@@ -1869,6 +1981,15 @@ fn validateStringLen(value: std.json.Value, expected_len: usize) !void {
         .string => |s| s,
         else => return error.InvalidParams,
     };
+    if (text.len != expected_len) return error.InvalidParams;
+}
+
+fn validateHexStringLen(value: std.json.Value, expected_len: usize) !void {
+    const text = switch (value) {
+        .string => |s| s,
+        else => return error.InvalidParams,
+    };
+    try validateHexData(text);
     if (text.len != expected_len) return error.InvalidParams;
 }
 
@@ -2583,6 +2704,23 @@ fn parseGetUncleCountByBlockNumberParams(params: ?std.json.Value) !jsonrpc.eth.G
     if (items.len != 1) return error.InvalidParams;
     try validateTrustedBlockSelectorValue(items[0]);
     return .{ .block = .{ .value = items[0] } };
+}
+
+fn parseGetUncleByBlockHashAndIndexParams(
+    allocator: std.mem.Allocator,
+    params: ?std.json.Value,
+) !void {
+    const items = try paramsArrayItems(params);
+    if (items.len != 2) return error.InvalidParams;
+    _ = try parseHashJson(allocator, items[0]);
+    try validateQuantityValue(items[1]);
+}
+
+fn parseGetUncleByBlockNumberAndIndexParams(params: ?std.json.Value) !void {
+    const items = try paramsArrayItems(params);
+    if (items.len != 2) return error.InvalidParams;
+    try validateTrustedBlockSelectorValue(items[0]);
+    try validateQuantityValue(items[1]);
 }
 
 fn parseGetTransactionByHashParams(
