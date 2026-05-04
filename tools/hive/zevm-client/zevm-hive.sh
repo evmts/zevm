@@ -121,6 +121,13 @@ start_geth_p2p_sidecar() {
   if [ -z "${HIVE_NETWORK_ID:-}" ] && [ -z "${HIVE_DISCV5:-}" ]; then
     return 0
   fi
+  if [ -z "${HIVE_BOOTNODE:-}" ] &&
+    [ -z "${HIVE_DISCV5:-}" ] &&
+    [ -z "${ZEVM_HIVE_FORCE_P2P_SIDECAR:-}" ] &&
+    [ -n "${HIVE_MERGE_BLOCK_ID:-}" ] &&
+    [ "${HIVE_MERGE_BLOCK_ID:-0}" != "0" ]; then
+    return 0
+  fi
   if ! command -v geth >/dev/null 2>&1; then
     return 0
   fi
