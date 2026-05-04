@@ -1,0 +1,59 @@
+---
+title: Architecture And Upstream Ownership
+description: Concise ownership boundary between ZEVM and upstream execution components.
+---
+
+# Architecture And Upstream Ownership
+
+ZEVM is an integration shell. It does not re-own upstream execution internals.
+
+## Layered Composition
+
+ZEVM composes upstream layers and keeps ownership boundaries explicit:
+
+| Layer | Primary owner | Role in ZEVM |
+| --- | --- | --- |
+| Execution foundations | `voltaire` | Ethereum primitives, state/journal/snapshot foundations, fork backend, and shared core data structures |
+| EVM execution engine | `guillotine-mini` | Interpreter, execution host integration, and tracing substrate |
+| Host adapter bridge | ZEVM composition over upstream APIs | Bridges ZEVM JSON-RPC/runtime context into upstream host/execution interfaces and maps results back into ZEVM method contracts |
+| Product/runtime shell | ZEVM | CLI/config, mode selection, lifecycle, HTTP JSON-RPC transport/dispatch, mode gating, checkpoint wiring, and ZEVM canonical control naming (`zevm_*`) |
+
+## Ownership Boundary
+
+Voltaire owns execution primitives and shared Ethereum foundations, including:
+
+- JSON-RPC types
+- state manager, journal, and snapshot foundations
+- fork backend and blockchain data structures
+- cryptographic and execution-layer primitives
+
+`guillotine-mini` owns:
+
+- EVM interpreter
+- execution host integration
+- tracing substrate
+
+ZEVM owns product-surface composition and runtime operations, including:
+
+- CLI/config parsing and mode selection
+- runtime composition and lifecycle
+- HTTP JSON-RPC transport and dispatch
+- mode-aware routing and gating
+- checkpoint wiring and light readiness reporting
+- canonical naming for ZEVM nonstandard controls (`zevm_*`)
+
+Execution internals remain upstream-owned: ZEVM composes these components but does not re-specify or override EVM/state-transition semantics, proof-generation internals, or interpreter behavior.
+Behavior changes or defects in those internals are owned by upstream projects; ZEVM owns integration behavior at the product/runtime shell boundary.
+
+## Contract Boundary
+
+- ZEVM concept docs define mode boundaries and selector behavior
+- JSON-RPC reference pages define exact method-level contracts
+- trusted compatibility aliases (`anvil_*`, selected `hardhat_*`, selected `evm_*`) are compatibility inputs, not canonical naming
+
+## Where To Go Next
+
+- Concept: [Runtime Modes](./runtime-modes)
+- Concept: [Method Support By Mode](./method-support-by-mode)
+- Quickstart: [Run Trusted Mode](../quickstart/run-trusted-mode)
+- Reference: [JSON-RPC Overview](../reference/json-rpc/overview)

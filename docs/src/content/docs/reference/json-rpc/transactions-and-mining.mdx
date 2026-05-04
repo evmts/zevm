@@ -1,0 +1,247 @@
+---
+title: Transactions And Mining
+description: Trusted-mode transaction submission plus mining, txpool, block-environment, time, and fork-source controls.
+---
+
+# Transactions And Mining
+
+This page covers trusted-mode transaction submission plus mining, txpool, block-environment, time, and fork-source controls.
+
+> Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).
+>
+> This page is an operational summary. For API-contract disputes, follow those normative sources.
+
+- trusted mode: supported
+- light mode: unsupported (`-32010`) for every method and alias on this page
+
+Malformed params return `-32602` unless a method-specific rule below says otherwise.
+
+## `TransactionRequest` For `eth_sendTransaction`
+
+Allowed fields only:
+
+| Field | Type | Rule |
+| --- | --- | --- |
+| `from` | `Address` | required |
+| `to` | `Address` or `null` | omitted or `null` for create |
+| `gas` | `QuantityHex` | optional |
+| `gasPrice` | `QuantityHex` | optional |
+| `value` | `QuantityHex` | optional |
+| `nonce` | `QuantityHex` | optional |
+| `data` | `HexData` | optional |
+| `input` | `HexData` | optional alias of `data` |
+
+Rules:
+
+- `data` and `input` may both be omitted
+- if both are present, they must be byte-identical
+- any unsupported field returns `-32602`
+- unsupported and return `-32602`: `maxFeePerGas`, `maxPriorityFeePerGas`, `maxFeePerBlobGas`, `blobVersionedHashes`, `accessList`, `authorizationList`, `type`, `chainId`
+- if `gasPrice` is omitted, ZEVM uses trusted-mode node gas price (`eth_gasPrice`) at submission time
+
+## Transaction Envelope Support
+
+- only legacy type `0x0` is supported in the current ZEVM contract
+- `eth_sendTransaction` produces legacy type `0x0`
+- `eth_sendRawTransaction` accepts only legacy raw transactions
+- typed EIP-2718 envelopes (`0x1`, `0x2`, `0x3`, or unknown type byte) return `-32602`
+- intrinsic gas and EIP-3860 initcode limits are evaluated against the trusted runtime's configured hardfork policy
+
+## Submission Methods
+
+| Canonical method | Exact params | Exact result | Accepted aliases | Errors |
+| --- | --- | --- | --- | --- |
+| `eth_sendTransaction` | `[tx]` (`TransactionRequest`) | `Hash32` | none | `-32602` malformed request/unsupported fields; `-32603` runtime rejection |
+| `eth_sendRawTransaction` | `[rawTx]` | `Hash32` | none | `-32602` malformed hex/decode/unsupported tx type; `-32603` runtime rejection |
+
+Submission signing and routing rules:
+
+- `eth_sendTransaction` signer scope is the union of managed trusted accounts, the manual impersonation set (`zevm_impersonateAccount` adds, `zevm_stopImpersonatingAccount` removes), and all addresses while auto impersonation is enabled
+- with auto impersonation disabled, `eth_sendTransaction` for an unmanaged `from` not in the manual impersonation set fails at runtime with `-32603`
+- unmanaged impersonated `eth_sendTransaction` uses an unsigned legacy envelope plus explicit sender metadata; txpool output, mined transaction queries, full block transaction hydration, and receipts report that metadata sender
+- `eth_sendRawTransaction` is for externally signed legacy raw transactions (`0x0`) and does not use managed-account signing
+
+## Mining And Txpool Methods
+
+| Canonical method | Exact params | Exact result | Accepted aliases |
+| --- | --- | --- | --- |
+| `zevm_getAutomine` | `[]` or omitted | boolean | `anvil_getAutomine`, `hardhat_getAutomine` |
+| `zevm_setAutomine` | `[enabled]` | `true` | `anvil_setAutomine`, `evm_setAutomine` |
+| `zevm_getIntervalMining` | `[]` or omitted | `QuantityHex` seconds (`0x0` when disabled) | `anvil_getIntervalMining` |
+| `zevm_setIntervalMining` | `[seconds]` | `true` | `anvil_setIntervalMining`, `evm_setIntervalMining` |
+| `zevm_mine` | `[]`, `[count]`, or `[count, intervalSeconds]` | `true` | `anvil_mine`, `hardhat_mine`, `evm_mine` |
+| `zevm_mineDetailed` | `[]`, `[count]`, or `[count, intervalSeconds]` | array of `MinedBlockSummary` | `anvil_mineDetailed` |
+| `zevm_dropTransaction` | `[transactionHash]` | boolean | `anvil_dropTransaction`, `hardhat_dropTransaction` |
+| `zevm_dropAllTransactions` | `[]` or omitted | `QuantityHex` removed count | `anvil_dropAllTransactions` |
+| `zevm_removePoolTransactions` | `[transactionHashes]` | `QuantityHex` removed count | `anvil_removePoolTransactions` |
+
+Rules:
+
+- `zevm_dropTransaction` returns `false` when tx is absent
+- `zevm_setIntervalMining(["0x0"])` disables interval mining
+
+Trusted txpool introspection compatibility methods:
+
+| Method | Exact params | Exact result |
+| --- | --- | --- |
+| `txpool_content` | `[]` or omitted | geth-style pending/queued txpool content object |
+| `txpool_status` | `[]` or omitted | object with `pending` and `queued` `QuantityHex` counts |
+| `txpool_inspect` | `[]` or omitted | geth-style pending/queued summary object |
+
+`MinedBlockSummary`:
+
+```json
+{
+  "number": "0x1",
+  "hash": "0x...",
+  "timestamp": "0x1"
+}
+```
+
+## Time And Block-Environment Methods
+
+| Canonical method | Exact params | Exact result | Accepted aliases |
+| --- | --- | --- | --- |
+| `zevm_setCoinbase` | `[address]` | `true` | `anvil_setCoinbase`, `hardhat_setCoinbase` |
+| `zevm_setBlockGasLimit` | `[gasLimit]` | `true` | `anvil_setBlockGasLimit`, `evm_setBlockGasLimit` |
+| `zevm_setNextBlockBaseFeePerGas` | `[baseFee]` | `true` | `anvil_setNextBlockBaseFeePerGas`, `hardhat_setNextBlockBaseFeePerGas` |
+| `zevm_setMinGasPrice` | `[gasPrice]` | `true` | `anvil_setMinGasPrice`, `hardhat_setMinGasPrice` |
+| `zevm_increaseTime` | `[seconds]` | `QuantityHex` accumulated offset | `anvil_increaseTime`, `evm_increaseTime` |
+| `zevm_setNextBlockTimestamp` | `[timestamp]` | `true` | `anvil_setNextBlockTimestamp`, `evm_setNextBlockTimestamp` |
+| `zevm_setTime` | `[timestamp]` | `QuantityHex` effective current timestamp | `anvil_setTime` |
+| `zevm_setBlockTimestampInterval` | `[seconds]` | `true` | `anvil_setBlockTimestampInterval` |
+| `zevm_removeBlockTimestampInterval` | `[]` or omitted | `true` | `anvil_removeBlockTimestampInterval` |
+
+## Fork-Source Methods
+
+| Canonical method | Exact params | Exact result | Accepted aliases |
+| --- | --- | --- | --- |
+| `zevm_reset` | `[]` or omitted, or `[forkConfig]` | `true` | `anvil_reset`, `hardhat_reset` |
+| `zevm_setRpcUrl` | `[url]` | `true` | `anvil_setRpcUrl` |
+
+`forkConfig` accepts only:
+
+- `null`
+- `{ "url": "https://..." }`
+- `{ "url": "https://...", "blockNumber": "0x..." }`
+
+`zevm_reset` uses JSON-RPC `QuantityHex` for `forkConfig.blockNumber`; startup CLI/config uses decimal `u64` for fork block number (example: startup/config `22000000` corresponds to JSON-RPC `"blockNumber": "0x14fb180"`).
+
+### Fork-Source Control Semantics
+
+- `zevm_reset` is a trusted runtime reset control with optional fork-source replacement
+- `zevm_reset([])` or omitted params resets trusted runtime state using the currently configured fork-source setting
+- `zevm_reset([null])` resets trusted runtime state and clears fork source (local trusted state only)
+- `zevm_reset([{ "url": "https://..." }])` resets trusted runtime state and sets a fork source at upstream latest
+- `zevm_reset([{ "url": "https://...", "blockNumber": "0x..." }])` resets trusted runtime state and pins fork source to that block
+- successful `zevm_reset` always resets local canonical chain to trusted genesis (`0x0`), clears pending tx pool, invalidates snapshot IDs, clears impersonation state and one-shot time/timestamp overrides, and keeps configured `chainId` unchanged
+- if fork initialization fails during `zevm_reset` (for example unreachable upstream or invalid fork block), the call fails with `-32603`
+- `zevm_setRpcUrl([url])` requires non-empty `http://` or `https://` URL
+- precondition for `zevm_setRpcUrl`: fork backing is already enabled; otherwise the call fails with `-32603`
+- `zevm_setRpcUrl` updates fork upstream URL in place and does not reset local chain state, clear pending pool, or invalidate snapshots
+- `zevm_setRpcUrl` does not redefine snapshot/revert boundaries
+- snapshot/revert boundary (`zevm_snapshot` / `zevm_revert`): captures and restores trusted local runtime state only (local chain/state/journal, receipt/log indexes, pending tx pool, mining/block-environment overrides, impersonation, and time controls)
+- snapshot/revert does not capture light-mode sync/checkpoint state and does not mutate remote fork-source state
+- pinned fork-block preservation: when current fork config is pinned (`blockNumber` non-null), the same pinned block remains active after URL update
+- fork URL changes do not infer `chainId` or hardfork policy; `chainId` remains under trusted-mode chain-id controls (for example `zevm_setChainId`), and hardfork policy remains the startup/configured trusted policy
+
+## Mining Semantics
+
+### Pending Pool And Inclusion
+
+- pending ordering is nonce-aware per sender
+- when a block is mined, ZEVM includes executable pending transactions in canonical order up to block gas limit
+- non-executable queued transactions remain pending
+
+### Mining modes
+
+- `auto`: accepted executable tx triggers immediate sealing of one block; no timer-based empty blocks
+- `manual`: transactions queue; blocks seal only through explicit mine RPC
+- `interval`: one block every configured `blockTime` seconds, including empty blocks
+
+Interval mining starts when trusted mode starts with interval config or when `zevm_setIntervalMining` enables it. Setting automine/manual mode or `zevm_setIntervalMining(["0x0"])` stops the interval timer before the control call returns.
+
+Explicit mine calls are valid in all mining modes and mine immediately.
+
+### Explicit mine call behavior
+
+- `[]`: mine exactly 1 block
+- `[count]`: mine exactly `count` blocks
+- `[count, intervalSeconds]`: mine exactly `count` blocks and increment timestamp by `intervalSeconds` between consecutive mined blocks
+- if pending txs run out before `count`, remaining blocks are empty
+
+### Timestamp rules
+
+Every new block must satisfy `timestamp > parent.timestamp`.
+
+Timestamp precedence for the next mined block:
+
+1. one-shot `zevm_setNextBlockTimestamp` override
+2. explicit `intervalSeconds` argument for current `zevm_mine`/`zevm_mineDetailed` call
+3. `zevm_setBlockTimestampInterval` override, when enabled
+4. interval-mining `blockTime` when block is produced by interval tick
+5. otherwise `max(parent.timestamp + 1, effective_current_time)`
+
+`effective_current_time` includes active time offsets from `zevm_increaseTime` and `zevm_setTime`.
+
+## Example: `eth_sendTransaction`
+
+Request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "eth_sendTransaction",
+  "params": [
+    {
+      "from": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "to": "0x0000000000000000000000000000000000000001",
+      "value": "0xde0b6b3a7640000"
+    }
+  ]
+}
+```
+
+Response:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": "0x..."
+}
+```
+
+## Example: `anvil_mineDetailed` Alias
+
+Request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "anvil_mineDetailed",
+  "params": ["0x2", "0xc"]
+}
+```
+
+Response shape:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": [
+    { "number": "0x1", "hash": "0x...", "timestamp": "0x..." },
+    { "number": "0x2", "hash": "0x...", "timestamp": "0x..." }
+  ]
+}
+```
+
+## Related Pages
+
+- [Simulation](./simulation)
+- [ZEVM Controls](./dev-controls)
+- [Blocks, Receipts, And Logs](./blocks-receipts-and-logs)
+- [Core Reads](./core-reads)

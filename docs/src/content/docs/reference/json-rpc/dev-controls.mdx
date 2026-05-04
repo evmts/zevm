@@ -1,0 +1,276 @@
+---
+title: ZEVM Controls
+description: Trusted-mode zevm_* state controls, snapshots, impersonation, funding helpers, and metadata methods.
+---
+
+# ZEVM Controls
+
+This page covers trusted-mode `zevm_*` state and control methods.
+
+> Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).
+>
+> This page is an operational summary. For API-contract disputes, follow those normative sources.
+
+- trusted mode: supported
+- light mode: unsupported (`-32010`) for every method and alias on this page
+
+Malformed params return `-32602` unless noted otherwise.
+
+## Shared Types
+
+| Type | Contract |
+| --- | --- |
+| `QuantityHex` | `0x`-prefixed unsigned integer, minimal hex encoding except `0x0` |
+| `Address` | `0x`-prefixed 20-byte hex |
+| `Hash32` | `0x`-prefixed 32-byte hex |
+| `Bytes32` | `0x`-prefixed 32-byte hex |
+| `HexData` | `0x`-prefixed byte-string hex; `0x` means empty |
+| `BlockTag` | `latest`, `earliest`, `pending`, `safe`, `finalized`, or numeric quantity |
+| `TrustedBlockSelector` | any `BlockTag` (`latest`, `earliest`, `pending`, `safe`, `finalized`, or numeric quantity) |
+
+Trusted selector meanings:
+
+- `latest`: current local head
+- `pending`, `safe`, `finalized`: aliases of `latest`
+- `earliest`: block `0`
+- numeric: exact local block number
+
+## Shared Objects
+
+### `AccountState`
+
+```json
+{
+  "balance": "0x0",
+  "nonce": "0x0",
+  "code": "0x",
+  "storage": {
+    "0x0000000000000000000000000000000000000000000000000000000000000000": "0x0000000000000000000000000000000000000000000000000000000000000000"
+  }
+}
+```
+
+Field contract:
+
+| Field | Required | Type | Nullability / rule |
+| --- | --- | --- | --- |
+| `balance` | yes | `QuantityHex` | non-null |
+| `nonce` | yes | `QuantityHex` | non-null |
+| `code` | yes | `HexData` | non-null |
+| `storage` | yes | object mapping `Bytes32` -> `Bytes32` | non-null (empty object allowed) |
+
+### `StateBlob`
+
+`zevm_dumpState` returns `HexData` whose bytes are UTF-8 JSON:
+
+```json
+{
+  "version": 1,
+  "accounts": {
+    "0x0000000000000000000000000000000000000000": {
+      "balance": "0x0",
+      "nonce": "0x0",
+      "code": "0x",
+      "storage": {}
+    }
+  }
+}
+```
+
+Rules:
+
+- `version` must be integer `1`
+- `accounts` maps `Address` to `AccountState`
+- dump output is sorted by address for stable blobs
+- load replaces the local account/code/storage state-manager caches; it does not change fork config, chain metadata, mining config, pending txs, snapshots, receipts, logs, or canonical blocks
+
+### `NodeMetadata`
+
+```json
+{
+  "mode": "trusted",
+  "chainId": "0x7a69",
+  "forking": false,
+  "forkUrl": null,
+  "forkBlockNumber": null
+}
+```
+
+Field contract:
+
+| Field | Required | Type | Nullability / rule |
+| --- | --- | --- | --- |
+| `mode` | yes | string literal | always `"trusted"` |
+| `chainId` | yes | `QuantityHex` | non-null |
+| `forking` | yes | boolean | non-null |
+| `forkUrl` | yes | string or `null` | must be `null` when `forking=false` |
+| `forkBlockNumber` | yes | `QuantityHex` or `null` | must be `null` when `forking=false` |
+
+### `NodeInfo`
+
+```json
+{
+  "chainId": "0x7a69",
+  "coinbase": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+  "blockNumber": "0x0",
+  "managedAccounts": [
+    "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+  ],
+  "mining": {
+    "type": "auto",
+    "blockTime": null
+  },
+  "fork": {
+    "enabled": false,
+    "url": null,
+    "blockNumber": null
+  }
+}
+```
+
+`managedAccounts` in the example above is truncated for brevity. Actual `zevm_nodeInfo` returns all 10 managed dev addresses in ascending index order, matching `eth_accounts`.
+
+Field contract:
+
+| Field | Required | Type | Nullability / rule |
+| --- | --- | --- | --- |
+| `chainId` | yes | `QuantityHex` | non-null |
+| `coinbase` | yes | `Address` | non-null |
+| `blockNumber` | yes | `QuantityHex` | non-null |
+| `managedAccounts` | yes | array of `Address` | non-null; exact 10 managed addresses in ascending index order |
+| `mining` | yes | object | non-null; see nested contract below |
+| `fork` | yes | object | non-null; see nested contract below |
+
+`NodeInfo.mining` nested contract:
+
+| Field | Required | Type | Nullability / rule |
+| --- | --- | --- | --- |
+| `type` | yes | string enum | `auto`, `manual`, or `interval` |
+| `blockTime` | yes | `QuantityHex` or `null` | non-null only when `type = "interval"` |
+
+`NodeInfo.fork` nested contract:
+
+| Field | Required | Type | Nullability / rule |
+| --- | --- | --- | --- |
+| `enabled` | yes | boolean | non-null |
+| `url` | yes | string or `null` | non-null only when `enabled = true` |
+| `blockNumber` | yes | `QuantityHex` or `null` | `null` means fork head; may be non-null only when `enabled = true` |
+
+## Methods
+
+| Canonical method | Exact params | Exact result | Accepted aliases |
+| --- | --- | --- | --- |
+| `zevm_getAccount` | `[address]` or `[address, block]` | `AccountState` | none |
+| `zevm_setAccount` | `[address, accountState]` | `true` | none |
+| `zevm_dumpState` | `[]` or omitted | `HexData` state blob | `anvil_dumpState` |
+| `zevm_loadState` | `[stateBlob]` | `true` | `anvil_loadState` |
+| `zevm_setBalance` | `[address, balance]` | `true` | `anvil_setBalance`, `hardhat_setBalance` |
+| `zevm_addBalance` | `[address, delta]` | `true` | `anvil_addBalance` |
+| `zevm_setCode` | `[address, code]` | `true` | `anvil_setCode`, `hardhat_setCode` |
+| `zevm_setNonce` | `[address, nonce]` | `true` | `anvil_setNonce`, `hardhat_setNonce` |
+| `zevm_setStorageAt` | `[address, slot, value]` | `true` | `anvil_setStorageAt`, `hardhat_setStorageAt` |
+| `zevm_setChainId` | `[chainId]` | `true` | `anvil_setChainId` |
+| `zevm_snapshot` | `[]` or omitted | `QuantityHex` snapshot id | `anvil_snapshot`, `evm_snapshot` |
+| `zevm_revert` | `[snapshotId]` | boolean | `anvil_revert`, `evm_revert` |
+| `zevm_impersonateAccount` | `[address]` | `true` | `anvil_impersonateAccount`, `hardhat_impersonateAccount` |
+| `zevm_stopImpersonatingAccount` | `[address]` | `true` | `anvil_stopImpersonatingAccount`, `hardhat_stopImpersonatingAccount` |
+| `zevm_autoImpersonateAccount` | `[enabled]` | `true` | `anvil_autoImpersonateAccount` |
+| `zevm_deal` | `[address, value]` | `true` | `anvil_deal` |
+| `zevm_dealErc20` | `[token, address, value]` | `true` | `anvil_dealErc20` |
+| `zevm_setErc20Allowance` | `[token, owner, spender, value]` | `true` | `anvil_setErc20Allowance` |
+| `zevm_metadata` | `[]` or omitted | `NodeMetadata` | `anvil_metadata`, `hardhat_metadata` |
+| `zevm_nodeInfo` | `[]` or omitted | `NodeInfo` | `anvil_nodeInfo` |
+
+## Method Rules
+
+- malformed addresses, quantities, bytes, selectors, tuple lengths, or object fields return `-32602`
+- `zevm_revert` returns `false` for unknown snapshot id
+- all methods and aliases above return `-32010` in light mode
+- `zevm_snapshot`/`zevm_revert` capture and restore trusted local runtime state: local chain, state/journal, receipt/log indexes, pending tx pool, mining and block-environment overrides, impersonation, and time controls
+- `zevm_snapshot`/`zevm_revert` do not capture light-mode consensus/checkpoint-sync state and do not mutate remote fork-source state
+
+## Impersonation Semantics
+
+- `eth_sendTransaction` signer scope is the union of managed trusted accounts, the manual impersonation set (`zevm_impersonateAccount` adds, `zevm_stopImpersonatingAccount` removes), and all addresses while auto impersonation is enabled
+- `zevm_autoImpersonateAccount([true])` enables automatic impersonation for any `from` address
+- `zevm_autoImpersonateAccount([false])` disables automatic impersonation; signer scope then falls back to managed trusted accounts plus the current manual impersonation set
+- toggling `zevm_autoImpersonateAccount` does not clear or mutate manual impersonation entries
+- `zevm_stopImpersonatingAccount` affects only the manual impersonation set; while auto impersonation is enabled, sends from that address remain allowed
+- unmanaged impersonated `eth_sendTransaction` is accepted as an unsigned legacy envelope whose explicit sender metadata is preserved in txpool, mined transaction, block hydration, and receipt results
+
+## Example: `zevm_setBalance`
+
+Request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "zevm_setBalance",
+  "params": [
+    "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "0x21e19e0c9bab2400000"
+  ]
+}
+```
+
+Response:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": true
+}
+```
+
+## Example: `anvil_snapshot` Alias + `zevm_revert`
+
+Snapshot request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "anvil_snapshot",
+  "params": []
+}
+```
+
+Snapshot response:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": "0x1"
+}
+```
+
+Revert request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "zevm_revert",
+  "params": ["0x1"]
+}
+```
+
+Revert response:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": true
+}
+```
+
+## Related Pages
+
+- [Transactions And Mining](./transactions-and-mining)
+- [Core Reads](./core-reads)
+- [Managed Dev Wallet (Trusted Mode)](./managed-dev-wallet)
+- [Unsupported And Deferred](./unsupported-and-deferred)

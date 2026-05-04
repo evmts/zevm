@@ -1,0 +1,173 @@
+---
+title: Simulation
+description: Trusted-mode eth_call and eth_estimateGas contract, including TransactionRequest and StateOverrideSet.
+---
+
+# Simulation
+
+`eth_call` and `eth_estimateGas` are trusted-mode simulation methods.
+
+- trusted mode: supported
+- light mode: unsupported (`-32010`)
+
+Both methods execute on a checkpoint-and-revert path and do not mutate canonical state.
+
+## Methods
+
+| Method | Exact params | Exact result | Errors |
+| --- | --- | --- | --- |
+| `eth_call` | `[tx, block]` or `[tx, block, stateOverrides]` | `HexData` | `-32602` malformed tx, selector, or overrides; `-32603` runtime execution failure; `-32010` in light mode |
+| `eth_estimateGas` | `[tx]`, `[tx, block]`, or `[tx, block, stateOverrides]` | `QuantityHex` | `-32602` malformed tx, selector, or overrides; `-32603` runtime execution failure; `-32010` in light mode |
+
+Any tuple length not listed above returns `-32602`.
+
+Execution outcome semantics:
+
+- success path:
+  - `eth_call` returns `HexData`
+  - `eth_estimateGas` returns `QuantityHex`
+- runtime execution failure path (for example revert, out-of-gas, invalid execution in simulation context): JSON-RPC `-32603` with message `Internal error`, no `result`, and no revert-data result payload
+- omitted transaction field defaults:
+  - `from`: trusted runtime coinbase
+  - `gas`: selected simulation block gas limit
+  - `gasPrice`: trusted runtime gas price
+  - `value`: `0x0`
+  - `nonce`: no nonce check
+  - `data`/`input`: empty bytes
+- create semantics:
+  - omitted `to` or `to: null` executes the request as contract creation
+  - create simulations use the sender's current nonce for CREATE address and collision semantics
+  - created code and the temporary sender nonce increment are reverted before the response
+- gas estimation:
+  - computes intrinsic gas for the runtime-owned active hardfork and whether the request is create or call
+  - uses the explicit `gas` value as the upper bound when present; otherwise uses the selected simulation block gas limit
+  - rejects upper bounds below intrinsic gas or above the selected block gas limit with `-32603`
+  - requires the upper bound to execute successfully, then binary-searches for the lowest successful gas limit in `[intrinsic, upperBound]`
+- block environment:
+  - current-head simulations use the trusted runtime chain ID, coinbase, head block number, head timestamp, gas limit, base fee, blob base fee, and active one-shot block-environment overrides
+  - state-backed simulation is current-head only; selectors that resolve to a non-head block return `-32602`
+  - omitted `gas` defaults to the selected simulation block gas limit
+
+## `TransactionRequest`
+
+Allowed fields only:
+
+| Field | Type | Rule |
+| --- | --- | --- |
+| `from` | `Address` | optional for `eth_call` and `eth_estimateGas` |
+| `to` | `Address` or `null` | omitted or `null` for create |
+| `gas` | `QuantityHex` | optional |
+| `gasPrice` | `QuantityHex` | optional |
+| `value` | `QuantityHex` | optional |
+| `nonce` | `QuantityHex` | optional |
+| `data` | `HexData` | optional |
+| `input` | `HexData` | optional alias of `data` |
+
+Rules:
+
+- `data` and `input` may both be omitted
+- if both are present, they must be byte-identical
+- any field not listed above returns `-32602`
+- unsupported request fields return `-32602`: `maxFeePerGas`, `maxPriorityFeePerGas`, `maxFeePerBlobGas`, `blobVersionedHashes`, `accessList`, `authorizationList`, `type`, `chainId`
+
+## `StateOverrideSet`
+
+`stateOverrides` is an object keyed by address. Each value may include:
+
+| Field | Type |
+| --- | --- |
+| `balance` | `QuantityHex` |
+| `nonce` | `QuantityHex` |
+| `code` | `HexData` |
+| `storage` | object mapping `Bytes32` slot -> `Bytes32` value |
+
+Example:
+
+```json
+{
+  "0x0000000000000000000000000000000000000001": {
+    "balance": "0xde0b6b3a7640000",
+    "nonce": "0x1",
+    "code": "0x60006000",
+    "storage": {
+      "0x0000000000000000000000000000000000000000000000000000000000000000": "0x0000000000000000000000000000000000000000000000000000000000000001"
+    }
+  }
+}
+```
+
+## Trusted Selector Rules
+
+Simulation selectors use trusted-mode selector semantics:
+
+- `latest`: current local head
+- `pending`, `safe`, `finalized`: aliases of `latest`
+- `earliest`: block `0`, accepted only while the current head is genesis
+- numeric quantity: accepted only when equal to the current local head
+
+Malformed selectors and selectors that resolve to a non-head block return `-32602`.
+
+## Example: `eth_call`
+
+Request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "eth_call",
+  "params": [
+    {
+      "to": "0x0000000000000000000000000000000000000001",
+      "data": "0x70a08231000000000000000000000000f39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+    },
+    "latest"
+  ]
+}
+```
+
+Response:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": "0x0000000000000000000000000000000000000000000000000000000000000000"
+}
+```
+
+## Example: `eth_estimateGas`
+
+Request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "eth_estimateGas",
+  "params": [
+    {
+      "from": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "to": "0x0000000000000000000000000000000000000001",
+      "data": "0x"
+    }
+  ]
+}
+```
+
+Response:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": "0x5208"
+}
+```
+
+## Related Pages
+
+- [Core Reads](./core-reads)
+- [Transactions And Mining](./transactions-and-mining)
+- [ZEVM Controls](./dev-controls)
+- [Unsupported And Deferred](./unsupported-and-deferred)

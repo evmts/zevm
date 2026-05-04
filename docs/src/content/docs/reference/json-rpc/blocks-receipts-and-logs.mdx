@@ -1,0 +1,341 @@
+---
+title: Blocks, Receipts, And Logs
+description: Trusted-mode block, transaction, receipt, and log query contract.
+---
+
+# Blocks, Receipts, And Logs
+
+This page covers trusted-mode query methods for blocks, transactions, receipts, and logs.
+
+> Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).
+>
+> This page is an operational summary. For API-contract disputes, follow those normative sources.
+
+- trusted mode: supported
+- light mode: unsupported (`-32010`) for every method on this page
+
+Malformed hashes, selectors, indexes, quantities, tuple lengths, booleans, and filters return `-32602`.
+
+`BlockTag` on this page means: `latest`, `earliest`, `pending`, `safe`, `finalized`, or numeric quantity.
+
+## Trusted Block Selectors
+
+| Selector | Meaning |
+| --- | --- |
+| `latest` | current canonical local head |
+| `pending` | alias of `latest` |
+| `safe` | alias of `latest` |
+| `finalized` | alias of `latest` |
+| `earliest` | block `0` |
+| numeric quantity | exact local block number |
+
+`ReceiptSelector` for `eth_getBlockReceipts` is one `BlockTag` or one block `Hash32`.
+
+Selector alias scope on this page:
+
+- `pending` is an alias of `latest` for selector-based block queries (`eth_getBlockByNumber`, `eth_getBlockTransactionCountByNumber`, `eth_getTransactionByBlockNumberAndIndex`, `eth_getBlockReceipts`) and `eth_getLogs` bounds (`fromBlock` / `toBlock`)
+
+## Methods
+
+| Method | Exact params | Exact result | Null and error behavior |
+| --- | --- | --- | --- |
+| `eth_getBlockByNumber` | `[block, fullTransactions]` | block object or `null` | unknown block -> `null`; malformed selector/boolean -> `-32602` |
+| `eth_getBlockByHash` | `[blockHash, fullTransactions]` | block object or `null` | unknown block -> `null`; malformed hash/boolean -> `-32602` |
+| `eth_getBlockTransactionCountByNumber` | `[block]` | `QuantityHex` or `null` | unknown block -> `null`; malformed selector -> `-32602` |
+| `eth_getBlockTransactionCountByHash` | `[blockHash]` | `QuantityHex` or `null` | unknown block -> `null`; malformed hash -> `-32602` |
+| `eth_getUncleCountByBlockNumber` | `[block]` | `QuantityHex` | unknown block -> `0x0`; malformed selector -> `-32602` |
+| `eth_getUncleCountByBlockHash` | `[blockHash]` | `QuantityHex` | unknown block -> `0x0`; malformed hash -> `-32602` |
+| `eth_getTransactionByHash` | `[transactionHash]` | transaction object or `null` | unknown tx -> `null`; malformed hash -> `-32602` |
+| `eth_getTransactionByBlockNumberAndIndex` | `[block, index]` | transaction object or `null` | unknown block or out-of-range index -> `null`; malformed selector/index -> `-32602` |
+| `eth_getTransactionByBlockHashAndIndex` | `[blockHash, index]` | transaction object or `null` | unknown block or out-of-range index -> `null`; malformed hash/index -> `-32602` |
+| `eth_getTransactionReceipt` | `[transactionHash]` | receipt object or `null` | unknown tx -> `null`; malformed hash -> `-32602` |
+| `eth_getBlockReceipts` | `[block]` (`ReceiptSelector`) | receipt array or `null` | unknown block -> `null`; malformed selector -> `-32602` |
+| `eth_getLogs` | `[filter]` | log array | no matches -> `[]`; malformed filter or invalid selector combinations -> `-32602` |
+
+Lookup behavior:
+
+- `eth_getBlockTransactionCountByNumber` and `eth_getBlockTransactionCountByHash` return `null` when the target block is unknown
+- `eth_getUncleCountByBlockNumber` and `eth_getUncleCountByBlockHash` return `0x0` for unknown blocks and for ZEVM-produced post-Merge blocks
+- `eth_getTransactionByBlockNumberAndIndex` and `eth_getTransactionByBlockHashAndIndex` return `null` when the target block is unknown or the zero-based `index` is out of range for that block
+- index params for `eth_getTransactionByBlockNumberAndIndex` and `eth_getTransactionByBlockHashAndIndex` must be `QuantityHex` and are interpreted as zero-based transaction positions within the resolved canonical block
+- `eth_getTransactionByHash` does not surface txpool-only pending entries; it returns `null` until a transaction is canonical in a mined block
+- `eth_getTransactionReceipt` is mined-only; it returns `null` before inclusion
+
+## Object Shapes
+
+Extension-field contract on this page:
+
+- ZEVM currently omits `blockTimestamp` extension fields from block, transaction, receipt, and log objects
+- block objects use `timestamp`; transaction/receipt/log objects include `blockHash` and `blockNumber` but no separate `blockTimestamp` field
+
+### Transaction object
+
+```json
+{
+  "type": "0x0",
+  "hash": "0x...",
+  "nonce": "0x0",
+  "blockHash": "0x...",
+  "blockNumber": "0x0",
+  "transactionIndex": "0x0",
+  "from": "0x...",
+  "to": "0x...",
+  "value": "0x0",
+  "gas": "0x5208",
+  "input": "0x"
+}
+```
+
+Rules:
+
+- `type` is always `0x0` in the current ZEVM contract
+- `to` may be `null` for create
+- for current phase-1 query methods on this page, `blockHash`, `blockNumber`, and `transactionIndex` are non-null because txpool-only pending entries are not surfaced
+
+### Block object
+
+```json
+{
+  "hash": "0x...",
+  "parentHash": "0x...",
+  "sha3Uncles": "0x...",
+  "miner": "0x...",
+  "stateRoot": "0x...",
+  "transactionsRoot": "0x...",
+  "receiptsRoot": "0x...",
+  "logsBloom": "0x...",
+  "number": "0x0",
+  "gasLimit": "0x0",
+  "gasUsed": "0x0",
+  "timestamp": "0x0",
+  "extraData": "0x",
+  "mixHash": "0x...",
+  "nonce": "0x0000000000000000",
+  "size": "0x0",
+  "transactions": [],
+  "uncles": [],
+  "difficulty": "0x0",
+  "totalDifficulty": "0x0",
+  "baseFeePerGas": "0x0",
+  "withdrawalsRoot": "0x...",
+  "blobGasUsed": "0x0",
+  "excessBlobGas": "0x0",
+  "parentBeaconBlockRoot": "0x..."
+}
+```
+
+Rules:
+
+- `transactions` is array of hashes when `fullTransactions=false`
+- `transactions` is array of transaction objects when `fullTransactions=true`
+- `hash` and `number` are non-null on returned canonical block objects
+- `nonce` is `HexData` encoding exactly 8 bytes (`0x` + 16 hex chars)
+- fork-era fields may be omitted when not applicable
+
+Field contract:
+
+| Field | Required | Type | Nullability / rule |
+| --- | --- | --- | --- |
+| `hash` | yes | `Hash32` | non-null for returned block objects |
+| `parentHash` | yes | `Hash32` | non-null |
+| `sha3Uncles` | yes | `Hash32` | non-null |
+| `miner` | yes | `Address` | non-null |
+| `stateRoot` | yes | `Hash32` | non-null |
+| `transactionsRoot` | yes | `Hash32` | non-null |
+| `receiptsRoot` | yes | `Hash32` | non-null |
+| `logsBloom` | yes | `HexData` | non-null bloom bytes |
+| `number` | yes | `QuantityHex` | non-null for returned block objects |
+| `gasLimit` | yes | `QuantityHex` | non-null |
+| `gasUsed` | yes | `QuantityHex` | non-null |
+| `timestamp` | yes | `QuantityHex` | non-null |
+| `extraData` | yes | `HexData` | non-null |
+| `mixHash` | yes | `Hash32` | non-null |
+| `nonce` | yes | `HexData` | exactly 8-byte value |
+| `size` | yes | `QuantityHex` | non-null |
+| `transactions` | yes | array | hashes when `fullTransactions=false`; transaction objects when `fullTransactions=true` |
+| `uncles` | yes | array of `Hash32` | non-null (empty array allowed) |
+| `difficulty` | yes | `QuantityHex` | non-null |
+| `totalDifficulty` | yes | `QuantityHex` | non-null |
+| `baseFeePerGas` | conditional | `QuantityHex` | omitted when not applicable |
+| `withdrawalsRoot` | conditional | `Hash32` | omitted when not applicable |
+| `blobGasUsed` | conditional | `QuantityHex` | omitted when not applicable |
+| `excessBlobGas` | conditional | `QuantityHex` | omitted when not applicable |
+| `parentBeaconBlockRoot` | conditional | `Hash32` | omitted when not applicable |
+
+### Receipt object
+
+```json
+{
+  "transactionHash": "0x...",
+  "transactionIndex": "0x0",
+  "blockHash": "0x...",
+  "blockNumber": "0x0",
+  "from": "0x...",
+  "to": "0x...",
+  "cumulativeGasUsed": "0x0",
+  "gasUsed": "0x0",
+  "contractAddress": null,
+  "logs": [],
+  "logsBloom": "0x...",
+  "status": "0x1",
+  "root": null,
+  "effectiveGasPrice": "0x0",
+  "type": "0x0",
+  "blobGasUsed": null,
+  "blobGasPrice": null
+}
+```
+
+Rules:
+
+- `to` is `null` only for create transactions
+- `contractAddress` is non-null only for create transactions
+- `status` is always `0x0` or `0x1`
+- `root` is always `null` in the current ZEVM contract
+- `type` is always `0x0` in the current ZEVM contract
+- `blobGasUsed` and `blobGasPrice` are always `null` in the current ZEVM contract
+
+Field contract:
+
+| Field | Required | Type | Nullability / rule |
+| --- | --- | --- | --- |
+| `transactionHash` | yes | `Hash32` | non-null |
+| `transactionIndex` | yes | `QuantityHex` | non-null |
+| `blockHash` | yes | `Hash32` | non-null |
+| `blockNumber` | yes | `QuantityHex` | non-null |
+| `from` | yes | `Address` | non-null |
+| `to` | yes | `Address` or `null` | `null` only for create transactions |
+| `cumulativeGasUsed` | yes | `QuantityHex` | non-null |
+| `gasUsed` | yes | `QuantityHex` | non-null |
+| `contractAddress` | yes | `Address` or `null` | non-null only for create transactions |
+| `logs` | yes | array of log objects | non-null (empty array allowed) |
+| `logsBloom` | yes | `HexData` | non-null bloom bytes |
+| `status` | yes | `QuantityHex` | must be `0x0` or `0x1` |
+| `root` | yes | `Hash32` or `null` | always `null` in the current ZEVM contract |
+| `effectiveGasPrice` | yes | `QuantityHex` | non-null |
+| `type` | yes | `QuantityHex` | always `0x0` in the current ZEVM contract |
+| `blobGasUsed` | yes | `QuantityHex` or `null` | always `null` in the current ZEVM contract |
+| `blobGasPrice` | yes | `QuantityHex` or `null` | always `null` in the current ZEVM contract |
+
+### Log object
+
+```json
+{
+  "removed": false,
+  "logIndex": "0x0",
+  "transactionIndex": "0x0",
+  "transactionHash": "0x...",
+  "blockHash": "0x...",
+  "blockNumber": "0x0",
+  "address": "0x...",
+  "data": "0x",
+  "topics": []
+}
+```
+
+Rules:
+
+- `removed` is always `false` for canonical ZEVM responses
+
+Field contract:
+
+| Field | Required | Type | Nullability / rule |
+| --- | --- | --- | --- |
+| `removed` | yes | boolean | always `false` for canonical ZEVM responses |
+| `logIndex` | yes | `QuantityHex` | non-null |
+| `transactionIndex` | yes | `QuantityHex` | non-null |
+| `transactionHash` | yes | `Hash32` | non-null |
+| `blockHash` | yes | `Hash32` | non-null |
+| `blockNumber` | yes | `QuantityHex` | non-null |
+| `address` | yes | `Address` | non-null |
+| `data` | yes | `HexData` | non-null |
+| `topics` | yes | array of `Hash32` | non-null (empty array allowed) |
+
+## `eth_getLogs` Filter
+
+Allowed fields:
+
+| Field | Type |
+| --- | --- |
+| `fromBlock` | `TrustedBlockSelector` |
+| `toBlock` | `TrustedBlockSelector` |
+| `blockHash` | `Hash32` |
+| `address` | `Address` or array of `Address` |
+| `topics` | array of `null`, `Hash32`, or array of `Hash32` |
+
+Rules:
+
+- `blockHash` is mutually exclusive with `fromBlock` and `toBlock`
+- when both bounds are present, resolved `fromBlock <= toBlock` is required
+
+Matching, defaults, and ordering:
+
+- default bounds when omitted: `fromBlock = latest`, `toBlock = latest` (with `pending` resolving as `latest`)
+- `blockHash` targets exactly that canonical block and ignores range defaults
+- address matching: single address is exact match; address array is OR
+- topic matching is positional AND across indices; each topic position accepts `null` wildcard, one `Hash32`, or OR-array of `Hash32`
+- results include canonical mined logs only (no txpool/pending logs)
+- result order is canonical ascending order: block number, then transaction index, then log index
+
+## Example: `eth_getBlockByNumber`
+
+Request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "eth_getBlockByNumber",
+  "params": ["latest", false]
+}
+```
+
+Response shape:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "number": "0x1",
+    "hash": "0x...",
+    "transactions": ["0x..."]
+  }
+}
+```
+
+## Example: `eth_getLogs`
+
+Request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "eth_getLogs",
+  "params": [
+    {
+      "fromBlock": "0x1",
+      "toBlock": "latest",
+      "address": "0x0000000000000000000000000000000000000001"
+    }
+  ]
+}
+```
+
+Response:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": []
+}
+```
+
+## Related Pages
+
+- [Transactions And Mining](./transactions-and-mining)
+- [Core Reads](./core-reads)
+- [Simulation](./simulation)
+- [Verified Light-Mode Reads](./verified-light-mode-reads)

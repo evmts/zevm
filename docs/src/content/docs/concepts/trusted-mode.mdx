@@ -1,0 +1,87 @@
+---
+title: Trusted Mode
+description: ZEVM's writable local dev-node mode and canonical control surface.
+---
+
+# Trusted Mode
+
+Trusted mode is ZEVM's writable local development node.
+
+> Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).
+>
+> This page is an operational summary. For product-contract disputes, follow those normative sources.
+
+## What Trusted Mode Owns
+
+Trusted mode is the mode for local execution and local writes:
+
+- core reads against local state
+- simulation (`eth_call`, `eth_estimateGas`)
+- transaction submission and mining
+- canonical block, receipt, and log queries (including `eth_getLogs`)
+- snapshots, revert, impersonation, state mutation, and time controls
+- optional fork-backed reads with a local writable overlay
+
+Filter lifecycle APIs beyond `eth_getLogs` are deferred.
+
+Trusted mode also ships one exact deterministic managed dev-wallet contract. For mnemonic, derivation root, full address/key set, and signing behavior, see [Managed Dev Wallet (Trusted Mode)](../reference/json-rpc/managed-dev-wallet).
+
+## Naming And Alias Policy
+
+- Canonical ZEVM controls use `zevm_*`
+- Trusted mode accepts a fixed compatibility-alias set under `anvil_*`, selected `hardhat_*`, and selected `evm_*`
+- Compatibility aliases are trusted-mode only
+
+Compatibility alias acceptance is closed-world: only aliases explicitly enumerated on JSON-RPC reference pages are accepted.
+
+Public docs should name `zevm_*` first, with aliases treated as compatibility inputs.
+
+## Trusted Config Shape
+
+```json
+{
+  "mode": {
+    "trusted": {
+      "chainId": 31337,
+      "mining": { "type": "auto" },
+      "fork": null
+    }
+  }
+}
+```
+
+Resolved unions:
+
+- `mode.trusted.mining`: `{ "type": "auto" }`, `{ "type": "manual" }`, or `{ "type": "interval", "blockTime": <seconds> }`
+- `mode.trusted.fork`: `null`, `{ "url": "https://..." }`, or `{ "url": "https://...", "blockNumber": <u64> }`
+
+## Trusted Block Tags
+
+| Tag | Meaning |
+| --- | --- |
+| `latest` | current local head |
+| `pending` | alias of `latest` |
+| `safe` | alias of `latest` |
+| `finalized` | alias of `latest` |
+| `earliest` | block `0` |
+| numeric quantity | exact local block number |
+
+`pending`, `safe`, and `finalized` in trusted mode do not imply consensus finality.
+
+## Where To Go Next
+
+- Quickstart: [Run Trusted Mode](../quickstart/run-trusted-mode)
+- Quickstart: [Forked Dev Node](../quickstart/forked-dev-node)
+- Reference: [Trusted-Mode Configuration](../reference/configuration/trusted-mode)
+- Reference: [Core Reads](../reference/json-rpc/core-reads)
+- Reference: [Managed Dev Wallet (Trusted Mode)](../reference/json-rpc/managed-dev-wallet)
+- Reference: [Simulation](../reference/json-rpc/simulation)
+- Reference: [Transactions And Mining](../reference/json-rpc/transactions-and-mining)
+- Reference: [Blocks, Receipts, And Logs](../reference/json-rpc/blocks-receipts-and-logs)
+- Reference: [ZEVM Controls](../reference/json-rpc/dev-controls)
+
+## Related Pages
+
+- [Runtime Modes](./runtime-modes)
+- [State Fork And Snapshots](./state-fork-and-snapshots)
+- [Method Support By Mode](./method-support-by-mode)
