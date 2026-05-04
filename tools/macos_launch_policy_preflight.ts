@@ -78,9 +78,7 @@ if (timedOut) {
     `error: newly built local executables did not reach main within ${timeoutMillis / 1000}s on this macOS host\n`,
   );
   process.stderr.write("error: ZEVM executable/test gates would hang before producing useful test output\n");
-  process.stderr.write(
-    "error: this matches ticket .smithers/tickets/063-fix-built-executable-launch-hang-in-test-gates.md\n",
-  );
+  process.stderr.write("error: this matches the local executable launch-policy release blocker\n");
   if (Bun.which("spctl")) printResult(["spctl", "--assess", "-vv", probeBinary]);
   if (Bun.which("xattr")) printResult(["xattr", "-l", probeBinary]);
   cleanup();

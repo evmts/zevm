@@ -45,11 +45,13 @@ pub const ReleaseMetadataError = error{
     InvalidArgs,
     MalformedCheckpointHash,
     MalformedGitRevision,
+    MalformedDependencyUrl,
     MalformedJson,
     MalformedReleaseIdentifier,
     MalformedUtf8,
     MalformedZigVersion,
     MissingAsset,
+    MissingDependency,
     MissingField,
     ReleaseIdentifierMismatch,
     SchemaVersionMismatch,
@@ -108,9 +110,13 @@ pub fn generateReleaseMetadataFiles(
 ) !void {
     const zevm_revision = try captureGitRevision(allocator, ".");
     defer allocator.free(zevm_revision);
-    const voltaire_revision = try captureGitRevision(allocator, "../voltaire");
+
+    const manifest = try std.fs.cwd().readFileAlloc(allocator, "build.zig.zon", 1024 * 1024);
+    defer allocator.free(manifest);
+
+    const voltaire_revision = try captureDependencyRevisionFromManifest(allocator, manifest, "voltaire");
     defer allocator.free(voltaire_revision);
-    const guillotine_mini_revision = try captureGitRevision(allocator, "../guillotine-mini");
+    const guillotine_mini_revision = try captureDependencyRevisionFromManifest(allocator, manifest, "guillotine-mini");
     defer allocator.free(guillotine_mini_revision);
 
     var generated_release_identifier: ?[]u8 = null;
@@ -171,6 +177,26 @@ fn captureGitRevision(allocator: std.mem.Allocator, cwd: []const u8) ![]u8 {
     }
 
     const revision = std.mem.trim(u8, result.stdout, " \t\r\n");
+    if (!isGitRevision(revision)) return error.MalformedGitRevision;
+    return try allocator.dupe(u8, revision);
+}
+
+fn captureDependencyRevisionFromManifest(
+    allocator: std.mem.Allocator,
+    manifest: []const u8,
+    repo: []const u8,
+) ![]u8 {
+    const prefix = try std.fmt.allocPrint(
+        allocator,
+        "https://github.com/evmts/{s}/archive/",
+        .{repo},
+    );
+    defer allocator.free(prefix);
+
+    const start = std.mem.indexOf(u8, manifest, prefix) orelse return error.MissingDependency;
+    const rest = manifest[start + prefix.len ..];
+    const end = std.mem.indexOf(u8, rest, ".tar.gz") orelse return error.MalformedDependencyUrl;
+    const revision = rest[0..end];
     if (!isGitRevision(revision)) return error.MalformedGitRevision;
     return try allocator.dupe(u8, revision);
 }

@@ -33,10 +33,12 @@
     // internet connectivity.
     .dependencies = .{
         .voltaire = .{
-            .path = "../voltaire",
+            .url = "https://github.com/evmts/voltaire/archive/d792eef8061d51d84342060f11abcb9714639acf.tar.gz",
+            .hash = "primitives-0.1.0-9n3NfRx69wDX6DShMDlRZKhmDEJM_dPL6a7ilsBJDXg2",
         },
         .@"guillotine-mini" = .{
-            .path = "../guillotine-mini",
+            .url = "https://github.com/evmts/guillotine-mini/archive/b368da471def69c9ad1baf310cb9db8c169da1fc.tar.gz",
+            .hash = "guillotine_mini-0.0.0-ARystcfVCQYJPIiuL4HKMa3cb2tJcnhUs5NORRtpynbB",
         },
     },
     // Specifies the set of files and directories that are included in this package.
@@ -50,8 +52,18 @@
     .paths = .{
         "build.zig",
         "build.zig.zon",
+        "CONTRIBUTING.md",
         "docs/specs/qualification",
+        "include",
         "LICENSE",
+        "npm/platforms",
+        "npm/zevm/native",
+        "npm/zevm/scripts",
+        "npm/zevm/src",
+        "npm/zevm/package-lock.json",
+        "npm/zevm/package.json",
+        "npm/zevm/README.md",
+        "npm/zevm/tsconfig.json",
         "README.md",
         "src",
         "tools",

@@ -3,17 +3,16 @@ const builtin = @import("builtin");
 
 const Dependency = struct {
     name: []const u8,
-    path: []const u8,
+    repo: []const u8,
+    legacy_path: []const u8,
     expected_revision: ?[]const u8 = null,
 };
 
 const Options = struct {
-    voltaire_path: []const u8 = "../voltaire",
-    guillotine_mini_path: []const u8 = "../guillotine-mini",
+    manifest_path: []const u8 = "build.zig.zon",
     voltaire_revision: ?[]const u8 = null,
     guillotine_mini_revision: ?[]const u8 = null,
     zig_version: ?[]const u8 = null,
-    allow_dirty: bool = false,
 };
 
 pub fn main() !void {
@@ -39,24 +38,32 @@ fn run(allocator: std.mem.Allocator, options: Options) !void {
         }
     }
 
+    const manifest = try std.fs.cwd().readFileAlloc(allocator, options.manifest_path, 1024 * 1024);
+    defer allocator.free(manifest);
+
     const dependencies = [_]Dependency{
         .{
             .name = "voltaire",
-            .path = options.voltaire_path,
+            .repo = "voltaire",
+            .legacy_path = "../voltaire",
             .expected_revision = options.voltaire_revision,
         },
         .{
             .name = "guillotine-mini",
-            .path = options.guillotine_mini_path,
+            .repo = "guillotine-mini",
+            .legacy_path = "../guillotine-mini",
             .expected_revision = options.guillotine_mini_revision,
         },
     };
 
     for (dependencies) |dependency| {
-        try checkDependency(allocator, dependency, options.allow_dirty);
+        try checkDependency(allocator, manifest, dependency);
     }
 
-    std.debug.print("dependency-preflight: ok zig={s}\n", .{builtin.zig_version_string});
+    std.debug.print("dependency-preflight: ok zig={s} manifest={s}\n", .{
+        builtin.zig_version_string,
+        options.manifest_path,
+    });
 }
 
 fn parseArgs(args: []const []const u8) !Options {
@@ -64,14 +71,10 @@ fn parseArgs(args: []const []const u8) !Options {
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
-        if (std.mem.eql(u8, arg, "--voltaire-path")) {
+        if (std.mem.eql(u8, arg, "--manifest")) {
             index += 1;
             if (index >= args.len) return error.MissingArgumentValue;
-            options.voltaire_path = args[index];
-        } else if (std.mem.eql(u8, arg, "--guillotine-mini-path")) {
-            index += 1;
-            if (index >= args.len) return error.MissingArgumentValue;
-            options.guillotine_mini_path = args[index];
+            options.manifest_path = args[index];
         } else if (std.mem.eql(u8, arg, "--voltaire-revision")) {
             index += 1;
             if (index >= args.len) return error.MissingArgumentValue;
@@ -84,8 +87,14 @@ fn parseArgs(args: []const []const u8) !Options {
             index += 1;
             if (index >= args.len) return error.MissingArgumentValue;
             options.zig_version = args[index];
+        } else if (std.mem.eql(u8, arg, "--voltaire-path") or
+            std.mem.eql(u8, arg, "--guillotine-mini-path"))
+        {
+            index += 1;
+            if (index >= args.len) return error.MissingArgumentValue;
         } else if (std.mem.eql(u8, arg, "--allow-dirty")) {
-            options.allow_dirty = true;
+            // Accepted for compatibility with older release scripts. Dirty
+            // sibling worktrees are no longer part of the package-manager flow.
         } else {
             return error.UnknownArgument;
         }
@@ -93,27 +102,21 @@ fn parseArgs(args: []const []const u8) !Options {
     return options;
 }
 
-fn checkDependency(allocator: std.mem.Allocator, dependency: Dependency, allow_dirty: bool) !void {
-    const inside = try gitOutput(allocator, dependency.path, &.{ "rev-parse", "--is-inside-work-tree" });
-    defer allocator.free(inside);
-    if (!std.mem.eql(u8, inside, "true")) {
+fn checkDependency(
+    allocator: std.mem.Allocator,
+    manifest: []const u8,
+    dependency: Dependency,
+) !void {
+    if (containsLegacyPathDependency(manifest, dependency.legacy_path)) {
         std.debug.print(
-            "dependency-preflight: {s} path is not a git worktree path={s}\n",
-            .{ dependency.name, dependency.path },
+            "dependency-preflight: {s} still uses legacy path dependency path={s}\n",
+            .{ dependency.name, dependency.legacy_path },
         );
-        return error.NotGitWorktree;
+        return error.LegacyPathDependency;
     }
 
-    const revision = try gitOutput(allocator, dependency.path, &.{ "rev-parse", "HEAD" });
+    const revision = try archiveRevision(allocator, manifest, dependency.repo);
     defer allocator.free(revision);
-    if (!isGitRevision(revision)) {
-        std.debug.print(
-            "dependency-preflight: {s} returned malformed revision revision={s}\n",
-            .{ dependency.name, revision },
-        );
-        return error.MalformedGitRevision;
-    }
-
     if (dependency.expected_revision) |expected| {
         if (!std.mem.eql(u8, expected, revision)) {
             std.debug.print(
@@ -124,57 +127,63 @@ fn checkDependency(allocator: std.mem.Allocator, dependency: Dependency, allow_d
         }
     }
 
-    if (!allow_dirty) {
-        const status = try gitOutput(allocator, dependency.path, &.{ "status", "--porcelain", "--untracked-files=all" });
-        defer allocator.free(status);
-        if (status.len != 0) {
-            std.debug.print(
-                "dependency-preflight: {s} worktree is dirty path={s}\n{s}\n",
-                .{ dependency.name, dependency.path, status },
-            );
-            return error.DependencyDirty;
-        }
-    }
+    const hash = try dependencyHash(allocator, manifest, dependency.repo);
+    defer allocator.free(hash);
 
     std.debug.print(
-        "dependency-preflight: {s} path={s} revision={s}\n",
-        .{ dependency.name, dependency.path, revision },
+        "dependency-preflight: {s} repo=evmts/{s} revision={s} hash={s}\n",
+        .{ dependency.name, dependency.repo, revision, hash },
     );
 }
 
-fn gitOutput(
+fn containsLegacyPathDependency(manifest: []const u8, legacy_path: []const u8) bool {
+    return std.mem.indexOf(u8, manifest, legacy_path) != null;
+}
+
+fn archiveRevision(
     allocator: std.mem.Allocator,
-    cwd: []const u8,
-    args: []const []const u8,
+    manifest: []const u8,
+    repo: []const u8,
 ) ![]u8 {
-    var argv = try std.ArrayList([]const u8).initCapacity(allocator, args.len + 1);
-    defer argv.deinit(allocator);
-    try argv.append(allocator, "git");
-    try argv.appendSlice(allocator, args);
+    const prefix = try std.fmt.allocPrint(
+        allocator,
+        "https://github.com/evmts/{s}/archive/",
+        .{repo},
+    );
+    defer allocator.free(prefix);
 
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = argv.items,
-        .cwd = cwd,
-        .max_output_bytes = 1024 * 1024,
-    });
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
+    const start = std.mem.indexOf(u8, manifest, prefix) orelse return error.MissingDependency;
+    const rest = manifest[start + prefix.len ..];
+    const end = std.mem.indexOf(u8, rest, ".tar.gz") orelse return error.MalformedDependencyUrl;
+    const revision = rest[0..end];
+    if (!isGitRevision(revision)) return error.MalformedGitRevision;
+    return try allocator.dupe(u8, revision);
+}
 
-    switch (result.term) {
-        .Exited => |code| {
-            if (code != 0) {
-                std.debug.print("dependency-preflight: git command failed cwd={s} code={}\n", .{ cwd, code });
-                return error.GitCommandFailed;
-            }
-        },
-        else => {
-            return error.GitCommandFailed;
-        },
+fn dependencyHash(
+    allocator: std.mem.Allocator,
+    manifest: []const u8,
+    repo: []const u8,
+) ![]u8 {
+    const prefix = try std.fmt.allocPrint(
+        allocator,
+        "https://github.com/evmts/{s}/archive/",
+        .{repo},
+    );
+    defer allocator.free(prefix);
+
+    const url_start = std.mem.indexOf(u8, manifest, prefix) orelse return error.MissingDependency;
+    const after_url = manifest[url_start..];
+    const hash_key = ".hash = \"";
+    const hash_start_rel = std.mem.indexOf(u8, after_url, hash_key) orelse return error.MissingDependencyHash;
+    const hash_start = url_start + hash_start_rel + hash_key.len;
+    const after_hash = manifest[hash_start..];
+    const hash_end_rel = std.mem.indexOfScalar(u8, after_hash, '"') orelse return error.MalformedDependencyHash;
+    const hash = after_hash[0..hash_end_rel];
+    if (hash.len == 0 or std.mem.indexOfAny(u8, hash, " \t\r\n") != null) {
+        return error.MalformedDependencyHash;
     }
-
-    const trimmed = std.mem.trim(u8, result.stdout, " \t\r\n");
-    return try allocator.dupe(u8, trimmed);
+    return try allocator.dupe(u8, hash);
 }
 
 fn isGitRevision(text: []const u8) bool {
@@ -182,8 +191,7 @@ fn isGitRevision(text: []const u8) bool {
     for (text) |byte| {
         const hex =
             (byte >= '0' and byte <= '9') or
-            (byte >= 'a' and byte <= 'f') or
-            (byte >= 'A' and byte <= 'F');
+            (byte >= 'a' and byte <= 'f');
         if (!hex) return false;
     }
     return true;
@@ -191,10 +199,8 @@ fn isGitRevision(text: []const u8) bool {
 
 test "parseArgs captures expected revisions and zig version" {
     const options = try parseArgs(&.{
-        "--voltaire-path",
-        "deps/voltaire",
-        "--guillotine-mini-path",
-        "deps/guillotine-mini",
+        "--manifest",
+        "example.zon",
         "--voltaire-revision",
         "1111111111111111111111111111111111111111",
         "--guillotine-mini-revision",
@@ -204,16 +210,38 @@ test "parseArgs captures expected revisions and zig version" {
         "--allow-dirty",
     });
 
-    try std.testing.expectEqualStrings("deps/voltaire", options.voltaire_path);
-    try std.testing.expectEqualStrings("deps/guillotine-mini", options.guillotine_mini_path);
+    try std.testing.expectEqualStrings("example.zon", options.manifest_path);
     try std.testing.expectEqualStrings("1111111111111111111111111111111111111111", options.voltaire_revision.?);
     try std.testing.expectEqualStrings("2222222222222222222222222222222222222222", options.guillotine_mini_revision.?);
     try std.testing.expectEqualStrings("0.15.2", options.zig_version.?);
-    try std.testing.expect(options.allow_dirty);
 }
 
-test "isGitRevision validates full hex object ids" {
+test "manifest scanners reject paths and extract url pins" {
+    const manifest =
+        \\.{
+        \\  .dependencies = .{
+        \\    .voltaire = .{
+        \\      .url = "https://github.com/evmts/voltaire/archive/1111111111111111111111111111111111111111.tar.gz",
+        \\      .hash = "primitives-0.1.0-example",
+        \\    },
+        \\  },
+        \\}
+    ;
+
+    try std.testing.expect(!containsLegacyPathDependency(manifest, "../voltaire"));
+
+    const revision = try archiveRevision(std.testing.allocator, manifest, "voltaire");
+    defer std.testing.allocator.free(revision);
+    try std.testing.expectEqualStrings("1111111111111111111111111111111111111111", revision);
+
+    const hash = try dependencyHash(std.testing.allocator, manifest, "voltaire");
+    defer std.testing.allocator.free(hash);
+    try std.testing.expectEqualStrings("primitives-0.1.0-example", hash);
+}
+
+test "isGitRevision validates lowercase full object ids" {
     try std.testing.expect(isGitRevision("1111111111111111111111111111111111111111"));
     try std.testing.expect(!isGitRevision("111111111111111111111111111111111111111"));
+    try std.testing.expect(!isGitRevision("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
     try std.testing.expect(!isGitRevision("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"));
 }
