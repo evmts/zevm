@@ -30,6 +30,9 @@ extern "C" {
 
 typedef struct ZevmHandle ZevmHandle;
 
+/* ABI version for this header/library contract. Increment on breaking changes. */
+#define ZEVM_ABI_VERSION 1
+
 /* Network selectors. */
 #define ZEVM_NETWORK_MAINNET 0
 #define ZEVM_NETWORK_SEPOLIA 1
@@ -49,6 +52,18 @@ typedef struct ZevmHandle ZevmHandle;
 #define ZEVM_STATUS_NOT_SYNCED 0
 #define ZEVM_STATUS_SYNCING    1
 #define ZEVM_STATUS_SYNCED     2
+
+/* Return the numeric C ABI version implemented by the loaded library. */
+uint32_t zevm_abi_version(void);
+
+/* Return the ZEVM package version string implemented by the loaded library. */
+const char* zevm_version(void);
+
+/* Return a stable static string for a ZEVM_* return code. */
+const char* zevm_error_message(int code);
+
+/* Return "mainnet", "sepolia", or "holesky"; NULL for unknown networks. */
+const char* zevm_light_network_name(int network);
 
 /*
  * Initialize a light client handle.
@@ -107,6 +122,17 @@ int zevm_light_get_balance(
     uint64_t block_number,
     char* out_hex,
     size_t* out_len);
+
+/*
+ * Read a verified account transaction count / nonce.
+ *
+ *   out_count receives the account nonce as an unsigned 64-bit integer.
+ */
+int zevm_light_get_transaction_count(
+    ZevmHandle* handle,
+    const char* address_hex,
+    uint64_t block_number,
+    uint64_t* out_count);
 
 /*
  * Read verified contract code.

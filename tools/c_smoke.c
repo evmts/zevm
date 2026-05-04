@@ -16,6 +16,25 @@
 #include "zevm.h"
 
 int main(void) {
+    if (zevm_abi_version() != ZEVM_ABI_VERSION) {
+        fprintf(stderr, "ABI version mismatch: header=%u library=%u\n",
+            (unsigned)ZEVM_ABI_VERSION,
+            (unsigned)zevm_abi_version());
+        return 1;
+    }
+    if (zevm_version() == NULL || strlen(zevm_version()) == 0) {
+        fprintf(stderr, "zevm_version returned an empty version\n");
+        return 1;
+    }
+    if (strcmp(zevm_error_message(ZEVM_OK), "ok") != 0) {
+        fprintf(stderr, "unexpected ZEVM_OK message\n");
+        return 1;
+    }
+    if (strcmp(zevm_light_network_name(ZEVM_NETWORK_MAINNET), "mainnet") != 0) {
+        fprintf(stderr, "unexpected network name\n");
+        return 1;
+    }
+
     ZevmHandle* h = zevm_light_init(
         ZEVM_NETWORK_MAINNET,
         "http://127.0.0.1:0/bogus-beacon",

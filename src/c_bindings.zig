@@ -21,6 +21,9 @@ const primitives = @import("primitives");
 const consensus_sync = @import("consensus_sync.zig");
 const light_proof = @import("light_proof.zig");
 
+const ZEVM_VERSION: [:0]const u8 = "0.0.0";
+const ZEVM_ABI_VERSION: u32 = 1;
+
 const ZEVM_OK: c_int = 0;
 const ZEVM_ERR_INVALID_ARG: c_int = 1;
 const ZEVM_ERR_NOT_SYNCED: c_int = 2;
@@ -89,6 +92,39 @@ fn cstrSliceOrNull(ptr: ?[*:0]const u8) ?[:0]const u8 {
     return std.mem.span(p);
 }
 
+export fn zevm_abi_version() callconv(.c) u32 {
+    return ZEVM_ABI_VERSION;
+}
+
+export fn zevm_version() callconv(.c) [*:0]const u8 {
+    return ZEVM_VERSION.ptr;
+}
+
+export fn zevm_error_message(code: c_int) callconv(.c) [*:0]const u8 {
+    const message: [:0]const u8 = switch (code) {
+        ZEVM_OK => "ok",
+        ZEVM_ERR_INVALID_ARG => "invalid argument",
+        ZEVM_ERR_NOT_SYNCED => "light client is not synced",
+        ZEVM_ERR_BUFFER_TOO_SMALL => "output buffer is too small",
+        ZEVM_ERR_NETWORK => "network request failed",
+        ZEVM_ERR_PROOF => "proof verification failed",
+        ZEVM_ERR_BLOCK_UNAVAILABLE => "requested block is unavailable",
+        ZEVM_ERR_INTERNAL => "internal error",
+        else => "unknown zevm error",
+    };
+    return message.ptr;
+}
+
+export fn zevm_light_network_name(network: c_int) callconv(.c) ?[*:0]const u8 {
+    const name: [:0]const u8 = switch (network) {
+        ZEVM_NETWORK_MAINNET => "mainnet",
+        ZEVM_NETWORK_SEPOLIA => "sepolia",
+        ZEVM_NETWORK_HOLESKY => "holesky",
+        else => return null,
+    };
+    return name.ptr;
+}
+
 export fn zevm_light_init(
     network: c_int,
     beacon_rpc_url: ?[*:0]const u8,
@@ -100,13 +136,17 @@ export fn zevm_light_init(
     const allocator = std.heap.c_allocator;
 
     const handle = allocator.create(Handle) catch return null;
-    errdefer allocator.destroy(handle);
 
-    const beacon_copy = allocator.dupe(u8, beacon_span) catch return null;
-    errdefer allocator.free(beacon_copy);
+    const beacon_copy = allocator.dupe(u8, beacon_span) catch {
+        allocator.destroy(handle);
+        return null;
+    };
 
-    const execution_copy = allocator.dupe(u8, execution_span) catch return null;
-    errdefer allocator.free(execution_copy);
+    const execution_copy = allocator.dupe(u8, execution_span) catch {
+        allocator.free(beacon_copy);
+        allocator.destroy(handle);
+        return null;
+    };
 
     const config = networkConfig(network, beacon_copy) orelse {
         allocator.free(beacon_copy);
@@ -297,6 +337,40 @@ export fn zevm_light_get_balance(
         return ZEVM_ERR_INTERNAL;
     };
     return copyToCStringBuffer(out_hex, out_len, text, handle);
+}
+
+export fn zevm_light_get_transaction_count(
+    opaque_ptr: ?*anyopaque,
+    address_hex: ?[*:0]const u8,
+    block_number: u64,
+    out_count: ?*u64,
+) callconv(.c) c_int {
+    const handle = handleFromOpaque(opaque_ptr) orelse return ZEVM_ERR_INVALID_ARG;
+    clearError(handle);
+
+    const count_ptr = out_count orelse {
+        setError(handle, "out_count is null", .{});
+        return ZEVM_ERR_INVALID_ARG;
+    };
+    const address = parseAddress(handle, address_hex) catch return ZEVM_ERR_INVALID_ARG;
+
+    const header = resolveHeader(handle, block_number) catch |err| {
+        setError(handle, "resolveHeader: {s}", .{@errorName(err)});
+        return classifyReadError(err);
+    };
+
+    count_ptr.* = light_proof.readTransactionCount(
+        handle.allocator,
+        proofSource(handle),
+        header.state_root,
+        address,
+        header.block_tag_hex[0..header.block_tag_len],
+    ) catch |err| {
+        setError(handle, "readTransactionCount: {s}", .{@errorName(err)});
+        return classifyReadError(err);
+    };
+
+    return ZEVM_OK;
 }
 
 export fn zevm_light_get_code(
