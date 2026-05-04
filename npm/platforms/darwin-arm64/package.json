@@ -1,0 +1,10 @@
+{
+  "name": "@evmts/zevm-darwin-arm64",
+  "version": "0.0.0",
+  "description": "ZEVM native Node-API addon for macOS arm64.",
+  "license": "MIT",
+  "os": ["darwin"],
+  "cpu": ["arm64"],
+  "main": "./zevm.node",
+  "files": ["zevm.node", "README.md"]
+}

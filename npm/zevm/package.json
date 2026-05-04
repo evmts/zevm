@@ -1,0 +1,36 @@
+{
+  "name": "@evmts/zevm",
+  "version": "0.0.0",
+  "description": "TypeScript bindings for the ZEVM light-client C ABI.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "native/zevm.node",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "smoke:native": "node scripts/smoke.cjs ../../zig-out/npm/native/zevm.node"
+  },
+  "optionalDependencies": {
+    "@evmts/zevm-darwin-arm64": "0.0.0",
+    "@evmts/zevm-darwin-x64": "0.0.0",
+    "@evmts/zevm-linux-arm64-gnu": "0.0.0",
+    "@evmts/zevm-linux-x64-gnu": "0.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "^5.9.0"
+  }
+}
