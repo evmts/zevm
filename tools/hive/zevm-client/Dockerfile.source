@@ -29,9 +29,12 @@ COPY docs/specs/qualification ./docs/specs/qualification
 RUN zig build --fetch
 RUN zig build -Doptimize=ReleaseSafe
 
+FROM ethereum/client-go:latest AS geth-sidecar
+
 FROM alpine:3.20
 RUN apk add --no-cache bash ca-certificates curl jq socat
 COPY --from=builder /src/zevm/zig-out/bin/zevm /usr/local/bin/zevm
+COPY --from=geth-sidecar /usr/local/bin/geth /usr/local/bin/geth
 COPY tools/hive/zevm-client/zevm-hive.sh /zevm-hive.sh
 COPY tools/hive/zevm-client/enode.sh /hive-bin/enode.sh
 RUN chmod +x /zevm-hive.sh /hive-bin/enode.sh && \

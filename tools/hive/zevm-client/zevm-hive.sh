@@ -4,11 +4,21 @@ set -euo pipefail
 chain_id="${HIVE_CHAIN_ID:-31337}"
 blob_base_fee="${ZEVM_HIVE_BLOB_BASE_FEE:-1}"
 zevm_pid=""
+geth_pid=""
 proxy_pids=()
 config_path="$(mktemp)"
+geth_datadir=""
+jwt_secret_path="$(mktemp)"
 internal_rpc_port="${ZEVM_HIVE_INTERNAL_RPC_PORT:-18545}"
 internal_engine_port="${ZEVM_HIVE_INTERNAL_ENGINE_PORT:-18551}"
+public_engine_target_port="$internal_engine_port"
 rpc_url="http://127.0.0.1:${internal_rpc_port}"
+mining_type="manual"
+mining_block_time="0"
+if [ -n "${HIVE_CLIQUE_PERIOD:-}" ]; then
+  mining_type="interval"
+  mining_block_time="${HIVE_CLIQUE_PERIOD}"
+fi
 
 cleanup() {
   for proxy_pid in "${proxy_pids[@]}"; do
@@ -17,7 +27,14 @@ cleanup() {
   if [ -n "$zevm_pid" ]; then
     kill "$zevm_pid" >/dev/null 2>&1 || true
   fi
+  if [ -n "$geth_pid" ]; then
+    kill "$geth_pid" >/dev/null 2>&1 || true
+  fi
   rm -f "$config_path"
+  rm -f "$jwt_secret_path"
+  if [ -n "$geth_datadir" ]; then
+    rm -rf "$geth_datadir"
+  fi
 }
 trap cleanup EXIT INT TERM
 
@@ -74,6 +91,79 @@ start_proxy() {
   proxy_pids+=("$!")
 }
 
+start_geth_p2p_sidecar() {
+  if [ -z "${HIVE_NETWORK_ID:-}" ] && [ -z "${HIVE_DISCV5:-}" ]; then
+    return 0
+  fi
+  if ! command -v geth >/dev/null 2>&1; then
+    return 0
+  fi
+
+  geth_datadir="$(mktemp -d)"
+  if [ "$has_genesis" = "true" ]; then
+    geth --state.scheme=hash --datadir "$geth_datadir" init "$genesis_path" >/tmp/zevm-geth-init.log 2>&1 || {
+      cat /tmp/zevm-geth-init.log >&2
+      return 1
+    }
+  fi
+  if [ "$has_chain_rlp" = "true" ]; then
+    geth --state.scheme=hash --datadir "$geth_datadir" import "$chain_rlp_path" >/tmp/zevm-geth-import.log 2>&1 || {
+      echo "warning: geth p2p sidecar could not import chain.rlp; continuing with initialized chain" >&2
+      cat /tmp/zevm-geth-import.log >&2
+    }
+  fi
+
+  printf '%s' '7365637265747365637265747365637265747365637265747365637265747365' > "$jwt_secret_path"
+  public_engine_target_port="18553"
+  local container_ip
+  container_ip="$(hostname -i | awk '{print $1}')"
+  geth \
+    --state.scheme=hash \
+    --datadir "$geth_datadir" \
+    --datadir.minfreedisk=0 \
+    --nodekeyhex 9c647b8b7c4e7c3490668fb6c11473619db80c93704c70893d3813af4090c39c \
+    --networkid "${HIVE_NETWORK_ID:-$chain_id}" \
+    --bootnodes="${HIVE_BOOTNODE:-}" \
+    --syncmode full \
+    --nat "extip:${container_ip}" \
+    --port 30303 \
+    --discovery.port 30303 \
+    --authrpc.addr 127.0.0.1 \
+    --authrpc.port 18553 \
+    --authrpc.jwtsecret "$jwt_secret_path" \
+    --authrpc.vhosts '*' \
+    --http=false \
+    --ws=false \
+    --ipcdisable \
+    --verbosity "${HIVE_LOGLEVEL:-3}" \
+    >/tmp/zevm-geth-p2p.log 2>&1 &
+  geth_pid="$!"
+}
+
+wait_for_geth_p2p() {
+  if [ -z "$geth_pid" ]; then
+    return 0
+  fi
+
+  for _ in $(seq 1 200); do
+    if ( : < /dev/tcp/127.0.0.1/30303 ) >/dev/null 2>&1; then
+      sleep 0.25
+      return 0
+    fi
+
+    if ! kill -0 "$geth_pid" >/dev/null 2>&1; then
+      echo "geth p2p sidecar exited before P2P became ready" >&2
+      cat /tmp/zevm-geth-p2p.log >&2 || true
+      return 1
+    fi
+    sleep 0.05
+  done
+
+  echo "timed out waiting for geth p2p sidecar" >&2
+  cat /tmp/zevm-geth-p2p.log >&2 || true
+  return 1
+}
+
 has_genesis=false
 genesis_path=""
 if [ -f /genesis.json ]; then
@@ -113,6 +203,8 @@ jq -n \
   --argjson pragueTs "${HIVE_PRAGUE_TIMESTAMP:-9223372036854775807}" \
   --arg internalRpcPort "$internal_rpc_port" \
   --arg internalEnginePort "$internal_engine_port" \
+  --arg miningType "$mining_type" \
+  --argjson miningBlockTime "$mining_block_time" \
   '{
     rpc: { host: "127.0.0.1", port: ($internalRpcPort | tonumber) },
     engineRpc: { host: "127.0.0.1", port: ($internalEnginePort | tonumber) },
@@ -120,7 +212,7 @@ jq -n \
       trusted: {
         chainId: $chainId,
         blobBaseFee: $blobBaseFee,
-        mining: { type: "manual" },
+        mining: (if $miningType == "interval" then { type: "interval", blockTime: $miningBlockTime } else { type: "manual" } end),
         genesis: (if $hasGenesis then $genesisPath else null end),
         chainRlp: (if $hasChainRlp then $chainRlpPath else null end),
         hardfork: {
@@ -149,16 +241,22 @@ jq -n \
 zevm_pid="$!"
 
 wait_for_rpc
+start_geth_p2p_sidecar
+wait_for_geth_p2p
 
 seed_txpool="${ZEVM_HIVE_SEED_TXPOOL:-}"
 if [ -z "$seed_txpool" ]; then
-  seed_txpool="$has_chain_rlp"
+  if [ "$has_chain_rlp" = "true" ] && [ "$chain_id" = "3503995874084926" ]; then
+    seed_txpool="true"
+  else
+    seed_txpool="false"
+  fi
 fi
 if [ "$seed_txpool" = "true" ]; then
   seed_rpc_compat_txpool
 fi
 
 start_proxy 8545 "$internal_rpc_port"
-start_proxy 8551 "$internal_engine_port"
+start_proxy 8551 "$public_engine_target_port"
 
 wait "$zevm_pid"

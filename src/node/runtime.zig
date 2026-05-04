@@ -471,13 +471,18 @@ pub const NodeRuntime = struct {
             });
         }
         const genesis_gas_limit = genesis_header.gas_limit orelse config.block_gas_limit;
+        const genesis_fallback_coinbase = if (config.genesis_alloc_path != null)
+            primitives.Address.ZERO_ADDRESS
+        else
+            default_coinbase;
         var blockchain = try initBlockchainWithGenesis(
             allocator,
             runtime_chain_id,
             genesis_state_root,
-            default_coinbase,
+            genesis_fallback_coinbase,
             genesis_gas_limit,
             genesis_header,
+            runtime_hardfork_config,
         );
         errdefer blockchain.deinit();
 
@@ -1639,6 +1644,7 @@ pub const NodeRuntime = struct {
             self.default_coinbase,
             self.dev_runtime.default_block_gas_limit,
             .{},
+            self.hardfork_config,
         );
         errdefer new_blockchain.deinit();
 
@@ -2224,11 +2230,15 @@ fn initBlockchainWithGenesis(
     coinbase: primitives.Address,
     gas_limit: u64,
     genesis_header: genesis_alloc.HeaderConfig,
+    hardfork_config: hardfork_schedule.ChainConfig,
 ) !blockchain_mod.Blockchain {
     _ = chain_id;
     var blockchain = try blockchain_mod.Blockchain.init(allocator, null);
     errdefer blockchain.deinit();
 
+    const genesis_fork = hardfork_schedule.resolveHardforkWithConfig(hardfork_config, 0, genesis_header.timestamp);
+    const genesis_base_fee = genesis_header.base_fee_per_gas;
+    const derive_post_london_fields = genesis_base_fee != null;
     const header = primitives.BlockHeader.BlockHeader{
         .parent_hash = genesis_header.parent_hash,
         .ommers_hash = primitives.BlockHeader.EMPTY_OMMERS_HASH,
@@ -2245,11 +2255,17 @@ fn initBlockchainWithGenesis(
         .extra_data = genesis_header.extraData(),
         .mix_hash = genesis_header.mix_hash,
         .nonce = genesis_header.nonce,
-        .base_fee_per_gas = genesis_header.base_fee_per_gas,
-        .withdrawals_root = genesis_header.withdrawals_root,
-        .blob_gas_used = genesis_header.blob_gas_used,
-        .excess_blob_gas = genesis_header.excess_blob_gas,
-        .parent_beacon_block_root = genesis_header.parent_beacon_block_root,
+        .base_fee_per_gas = genesis_base_fee,
+        .withdrawals_root = genesis_header.withdrawals_root orelse if (derive_post_london_fields and genesis_fork.isAtLeast(.SHANGHAI))
+            primitives.BlockHeader.EMPTY_WITHDRAWALS_ROOT
+        else
+            null,
+        .blob_gas_used = genesis_header.blob_gas_used orelse if (derive_post_london_fields and genesis_fork.isAtLeast(.CANCUN)) 0 else null,
+        .excess_blob_gas = genesis_header.excess_blob_gas orelse if (derive_post_london_fields and genesis_fork.isAtLeast(.CANCUN)) 0 else null,
+        .parent_beacon_block_root = genesis_header.parent_beacon_block_root orelse if (derive_post_london_fields and genesis_fork.isAtLeast(.CANCUN))
+            primitives.Hash.ZERO
+        else
+            null,
     };
     const body = primitives.BlockBody.init();
     var genesis_block = try primitives.Block.from(&header, &body, allocator);
@@ -2299,6 +2315,7 @@ test "Hive rpc-compat chain materializes canonical state roots" {
         genesis.DEV_ACCOUNTS[0].address,
         loaded.header.gas_limit orelse DEFAULT_BLOCK_GAS_LIMIT,
         loaded.header,
+        hive_hardfork_config,
     );
     defer blockchain.deinit();
 

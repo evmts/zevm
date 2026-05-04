@@ -84,11 +84,11 @@ For the CI-friendly Hive lifecycle smoke, run:
 bun tools/hive_rpc_compat_smoke.ts
 ```
 
-The script builds a local `zevm/hive-client:local` image from this checkout, lets Zig fetch package-manager dependencies inside that build, builds the Hive runner, and runs ZEVM through `ethereum/rpc-compat` for the active transcript subset. The client wrapper provides the Hive-required HTTP JSON-RPC port `8545`, translates Hive fork-schedule environment variables into ZEVM trusted-mode config, forwards mounted Hive `genesis.json` and `chain.rlp` into ZEVM startup when present, and enables ZEVM's native Engine API listener on `8551` for the simulator's initial forkchoice update.
+The script builds a local `zevm/hive-client:local` image from this checkout, lets Zig fetch package-manager dependencies inside that build, builds the Hive runner, and runs ZEVM through `ethereum/rpc-compat`. By default it runs the CI smoke subset. To run the full RPC compatibility suite, set `ZEVM_HIVE_RPC_COMPAT_PATTERN='rpc-compat/.*'`. The client wrapper provides the Hive-required HTTP JSON-RPC port `8545`, translates Hive fork-schedule environment variables into ZEVM trusted-mode config, forwards mounted Hive `genesis.json` and `chain.rlp` into ZEVM startup when present, and exposes ZEVM's native Engine API listener on `8551`.
 
 CI runs this same command in the `Hive RPC Compat Smoke` job for tag pushes, manual dispatches, and the weekly scheduled workflow.
 
-This smoke now exercises ZEVM's startup import path for Hive `genesis.json` and `chain.rlp`, plus ZEVM-owned Engine forkchoice validation against imported block history, but it is still not full rpc-compat coverage. Phase-1 `chain.rlp` handling is query-only: imported chains are decoded into canonical block history, while full execution, receipt/log indexing, imported-state reads, and expansion beyond the active transcript subset remain outside the current contract. Engine payload/body/blob lookup methods are routed, but payload building/import storage remains minimal.
+The full RPC compatibility run exercises every `ethereum/rpc-compat` transcript selected by the pinned execution-apis revision. This is narrower than full Hive release readiness: GraphQL, Engine API conformance, sync, devp2p discovery edge cases, and the larger execution-spec consensus fixtures are separate simulators and must be reported independently. Phase-1 `chain.rlp` handling remains query-oriented for imported history, and Engine payload building/import storage remains minimal.
 
 ## Published Release Asset Gate
 
