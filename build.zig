@@ -9,12 +9,74 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    const primitives_mod = voltaire.module("primitives");
+    const voltaire_primitives_mod = voltaire.module("primitives");
     const state_manager_mod = voltaire.module("state-manager");
     const blockchain_mod = voltaire.module("blockchain");
     const crypto_mod = voltaire.module("crypto");
     const precompiles_mod = voltaire.module("precompiles");
     const jsonrpc_mod = voltaire.module("jsonrpc");
+
+    const primitives_mod = b.addModule("zevm_primitives_compat", .{
+        .root_source_file = b.path("src/primitives_compat.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "voltaire_primitives", .module = voltaire_primitives_mod },
+        },
+    });
+    primitives_mod.addImport("primitives", primitives_mod);
+
+    const consensus_spec_mod = b.createModule(.{
+        .root_source_file = voltaire.path("packages/voltaire-zig/src/primitives/ConsensusSpec/ConsensusSpec.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    consensus_spec_mod.addImport("primitives", primitives_mod);
+    const fork_config_mod = b.createModule(.{
+        .root_source_file = voltaire.path("packages/voltaire-zig/src/primitives/ForkConfig/ForkConfig.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    fork_config_mod.addImport("primitives", primitives_mod);
+    const light_client_header_mod = b.createModule(.{
+        .root_source_file = voltaire.path("packages/voltaire-zig/src/primitives/LightClientHeader/LightClientHeader.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    light_client_header_mod.addImport("primitives", primitives_mod);
+    const light_client_update_mod = b.createModule(.{
+        .root_source_file = voltaire.path("packages/voltaire-zig/src/primitives/LightClientUpdate/LightClientUpdate.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    light_client_update_mod.addImport("primitives", primitives_mod);
+    const sync_aggregate_mod = b.createModule(.{
+        .root_source_file = voltaire.path("packages/voltaire-zig/src/primitives/SyncAggregate/SyncAggregate.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    sync_aggregate_mod.addImport("primitives", primitives_mod);
+    const sync_committee_mod = b.createModule(.{
+        .root_source_file = voltaire.path("packages/voltaire-zig/src/primitives/SyncCommittee/SyncCommittee.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    sync_committee_mod.addImport("primitives", primitives_mod);
+    const consensus_mod = b.createModule(.{
+        .root_source_file = voltaire.path("packages/voltaire-zig/src/primitives/consensus/consensus.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    consensus_mod.addImport("primitives", primitives_mod);
+    consensus_mod.addImport("crypto", crypto_mod);
+
+    primitives_mod.addImport("consensus_spec", consensus_spec_mod);
+    primitives_mod.addImport("fork_config", fork_config_mod);
+    primitives_mod.addImport("light_client_header", light_client_header_mod);
+    primitives_mod.addImport("light_client_update", light_client_update_mod);
+    primitives_mod.addImport("sync_aggregate", sync_aggregate_mod);
+    primitives_mod.addImport("sync_committee", sync_committee_mod);
+    primitives_mod.addImport("consensus", consensus_mod);
 
     // Get guillotine-mini dependency for source paths
     const guillotine_mini_dep = b.dependency("guillotine-mini", .{
