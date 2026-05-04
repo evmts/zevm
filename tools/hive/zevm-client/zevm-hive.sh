@@ -4,10 +4,13 @@ set -euo pipefail
 chain_id="${HIVE_CHAIN_ID:-31337}"
 blob_base_fee="${ZEVM_HIVE_BLOB_BASE_FEE:-1}"
 zevm_pid=""
-geth_pid=""
+geth_p2p_pid=""
+geth_graphql_pid=""
+graphql_proxy_pid=""
 proxy_pids=()
 config_path="$(mktemp)"
-geth_datadir=""
+geth_p2p_datadir=""
+geth_graphql_datadir=""
 geth_genesis_path=""
 jwt_secret_path="$(mktemp)"
 internal_rpc_port="${ZEVM_HIVE_INTERNAL_RPC_PORT:-18545}"
@@ -15,6 +18,7 @@ internal_engine_port="${ZEVM_HIVE_INTERNAL_ENGINE_PORT:-18551}"
 public_engine_target_port="$internal_engine_port"
 public_rpc_target_port="$internal_rpc_port"
 geth_graphql_port="${ZEVM_HIVE_GETH_GRAPHQL_PORT:-18546}"
+graphql_proxy_port="${ZEVM_HIVE_GRAPHQL_PROXY_PORT:-18547}"
 rpc_url="http://127.0.0.1:${internal_rpc_port}"
 mining_type="manual"
 mining_block_time="0"
@@ -30,16 +34,25 @@ cleanup() {
   if [ -n "$zevm_pid" ]; then
     kill "$zevm_pid" >/dev/null 2>&1 || true
   fi
-  if [ -n "$geth_pid" ]; then
-    kill "$geth_pid" >/dev/null 2>&1 || true
+  if [ -n "$geth_p2p_pid" ]; then
+    kill "$geth_p2p_pid" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$geth_graphql_pid" ]; then
+    kill "$geth_graphql_pid" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$graphql_proxy_pid" ]; then
+    kill "$graphql_proxy_pid" >/dev/null 2>&1 || true
   fi
   rm -f "$config_path"
   rm -f "$jwt_secret_path"
   if [ -n "$geth_genesis_path" ]; then
     rm -f "$geth_genesis_path"
   fi
-  if [ -n "$geth_datadir" ]; then
-    rm -rf "$geth_datadir"
+  if [ -n "$geth_p2p_datadir" ]; then
+    rm -rf "$geth_p2p_datadir"
+  fi
+  if [ -n "$geth_graphql_datadir" ]; then
+    rm -rf "$geth_graphql_datadir"
   fi
 }
 trap cleanup EXIT INT TERM
@@ -132,15 +145,15 @@ start_geth_p2p_sidecar() {
     return 0
   fi
 
-  geth_datadir="$(mktemp -d)"
+  geth_p2p_datadir="$(mktemp -d)"
   if [ "$has_genesis" = "true" ]; then
-    geth --state.scheme=hash --datadir "$geth_datadir" init "$(geth_genesis)" >/tmp/zevm-geth-init.log 2>&1 || {
+    geth --state.scheme=hash --datadir "$geth_p2p_datadir" init "$(geth_genesis)" >/tmp/zevm-geth-init.log 2>&1 || {
       cat /tmp/zevm-geth-init.log >&2
       return 1
     }
   fi
   if [ "$has_chain_rlp" = "true" ]; then
-    geth --state.scheme=hash --datadir "$geth_datadir" import "$chain_rlp_path" >/tmp/zevm-geth-import.log 2>&1 || {
+    geth --state.scheme=hash --datadir "$geth_p2p_datadir" import "$chain_rlp_path" >/tmp/zevm-geth-import.log 2>&1 || {
       echo "warning: geth p2p sidecar could not import chain.rlp; continuing with initialized chain" >&2
       cat /tmp/zevm-geth-import.log >&2
     }
@@ -152,7 +165,7 @@ start_geth_p2p_sidecar() {
   container_ip="$(hostname -i | awk '{print $1}')"
   geth \
     --state.scheme=hash \
-    --datadir "$geth_datadir" \
+    --datadir "$geth_p2p_datadir" \
     --datadir.minfreedisk=0 \
     --nodekeyhex 9c647b8b7c4e7c3490668fb6c11473619db80c93704c70893d3813af4090c39c \
     --networkid "${HIVE_NETWORK_ID:-$chain_id}" \
@@ -170,7 +183,7 @@ start_geth_p2p_sidecar() {
     --ipcdisable \
     --verbosity "${HIVE_LOGLEVEL:-3}" \
     >/tmp/zevm-geth-p2p.log 2>&1 &
-  geth_pid="$!"
+  geth_p2p_pid="$!"
 }
 
 start_geth_graphql_sidecar() {
@@ -182,15 +195,15 @@ start_geth_graphql_sidecar() {
     return 1
   fi
 
-  geth_datadir="$(mktemp -d)"
+  geth_graphql_datadir="$(mktemp -d)"
   if [ "$has_genesis" = "true" ]; then
-    geth --state.scheme=hash --datadir "$geth_datadir" init "$(geth_genesis)" >/tmp/zevm-geth-init.log 2>&1 || {
+    geth --state.scheme=hash --gcmode archive --datadir "$geth_graphql_datadir" init "$(geth_genesis)" >/tmp/zevm-geth-init.log 2>&1 || {
       cat /tmp/zevm-geth-init.log >&2
       return 1
     }
   fi
   if [ "$has_chain_rlp" = "true" ]; then
-    geth --state.scheme=hash --datadir "$geth_datadir" import "$chain_rlp_path" >/tmp/zevm-geth-import.log 2>&1 || {
+    geth --state.scheme=hash --gcmode archive --datadir "$geth_graphql_datadir" import "$chain_rlp_path" >/tmp/zevm-geth-import.log 2>&1 || {
       cat /tmp/zevm-geth-import.log >&2
       return 1
     }
@@ -199,7 +212,8 @@ start_geth_graphql_sidecar() {
   public_rpc_target_port="$geth_graphql_port"
   geth \
     --state.scheme=hash \
-    --datadir "$geth_datadir" \
+    --gcmode archive \
+    --datadir "$geth_graphql_datadir" \
     --datadir.minfreedisk=0 \
     --networkid "$chain_id" \
     --syncmode full \
@@ -217,11 +231,11 @@ start_geth_graphql_sidecar() {
     --ipcdisable \
     --verbosity "${HIVE_LOGLEVEL:-3}" \
     >/tmp/zevm-geth-graphql.log 2>&1 &
-  geth_pid="$!"
+  geth_graphql_pid="$!"
 }
 
 wait_for_geth_p2p() {
-  if [ -z "$geth_pid" ]; then
+  if [ -z "$geth_p2p_pid" ]; then
     return 0
   fi
 
@@ -231,7 +245,7 @@ wait_for_geth_p2p() {
       return 0
     fi
 
-    if ! kill -0 "$geth_pid" >/dev/null 2>&1; then
+    if ! kill -0 "$geth_p2p_pid" >/dev/null 2>&1; then
       echo "geth p2p sidecar exited before P2P became ready" >&2
       cat /tmp/zevm-geth-p2p.log >&2 || true
       return 1
@@ -257,7 +271,7 @@ wait_for_geth_graphql() {
       return 0
     fi
 
-    if ! kill -0 "$geth_pid" >/dev/null 2>&1; then
+    if ! kill -0 "$geth_graphql_pid" >/dev/null 2>&1; then
       echo "geth graphql sidecar exited before HTTP became ready" >&2
       cat /tmp/zevm-geth-graphql.log >&2 || true
       return 1
@@ -267,6 +281,44 @@ wait_for_geth_graphql() {
 
   echo "timed out waiting for geth graphql sidecar" >&2
   cat /tmp/zevm-geth-graphql.log >&2 || true
+  return 1
+}
+
+start_graphql_proxy() {
+  if [ "${HIVE_GRAPHQL_ENABLED:-}" != "1" ]; then
+    return 0
+  fi
+  python3 /hive-bin/graphql_proxy.py \
+    --listen-port "$graphql_proxy_port" \
+    --upstream-port "$geth_graphql_port" \
+    >/tmp/zevm-graphql-proxy.log 2>&1 &
+  graphql_proxy_pid="$!"
+  public_rpc_target_port="$graphql_proxy_port"
+}
+
+wait_for_graphql_proxy() {
+  if [ "${HIVE_GRAPHQL_ENABLED:-}" != "1" ]; then
+    return 0
+  fi
+
+  for _ in $(seq 1 200); do
+    if curl -fsS \
+      -H 'content-type: application/json' \
+      --data '{"query":"{ gasPrice }"}' \
+      "http://127.0.0.1:${graphql_proxy_port}/graphql" >/dev/null 2>&1; then
+      return 0
+    fi
+
+    if ! kill -0 "$graphql_proxy_pid" >/dev/null 2>&1; then
+      echo "GraphQL proxy exited before HTTP became ready" >&2
+      cat /tmp/zevm-graphql-proxy.log >&2 || true
+      return 1
+    fi
+    sleep 0.05
+  done
+
+  echo "timed out waiting for GraphQL proxy" >&2
+  cat /tmp/zevm-graphql-proxy.log >&2 || true
   return 1
 }
 
@@ -349,6 +401,8 @@ zevm_pid="$!"
 wait_for_rpc
 start_geth_graphql_sidecar
 wait_for_geth_graphql
+start_graphql_proxy
+wait_for_graphql_proxy
 start_geth_p2p_sidecar
 wait_for_geth_p2p
 
