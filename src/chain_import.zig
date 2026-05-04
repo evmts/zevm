@@ -546,7 +546,7 @@ fn parseRlpU256(bytes: []const u8) !u256 {
 }
 
 test "decodeNextBlock accepts full Hive rpc-compat chain stream" {
-    const bytes = try std.fs.cwd().readFileAlloc(std.testing.allocator, "execution-apis/tests/chain.rlp", 1024 * 1024);
+    const bytes = try std.fs.cwd().readFileAlloc(std.testing.allocator, "lib/execution-apis/tests/chain.rlp", 1024 * 1024);
     defer std.testing.allocator.free(bytes);
 
     var offset: usize = 0;

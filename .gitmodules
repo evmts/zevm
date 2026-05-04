@@ -1,33 +1,33 @@
 [submodule "execution-specs"]
-	path = execution-specs
+	path = lib/execution-specs
 	url = https://github.com/ethereum/execution-specs
 [submodule "execution-apis"]
-	path = execution-apis
+	path = lib/execution-apis
 	url = https://github.com/ethereum/execution-apis.git
 [submodule "ethereum-tests"]
-	path = ethereum-tests
+	path = lib/ethereum-tests
 	url = https://github.com/ethereum/tests.git
 [submodule "hive"]
-	path = hive
+	path = lib/hive
 	url = https://github.com/ethereum/hive.git
 [submodule "consensus-specs"]
-	path = consensus-specs
+	path = lib/consensus-specs
 	url = https://github.com/ethereum/consensus-specs.git
 [submodule "EIPs"]
-	path = EIPs
+	path = lib/EIPs
 	url = https://github.com/ethereum/EIPs.git
 [submodule "yellowpaper"]
-	path = yellowpaper
+	path = lib/yellowpaper
 	url = https://github.com/ethereum/yellowpaper.git
 [submodule "execution-spec-tests"]
-	path = execution-spec-tests
+	path = lib/execution-spec-tests
 	url = https://github.com/ethereum/execution-spec-tests.git
 [submodule "foundry"]
-	path = foundry
+	path = lib/foundry
 	url = https://github.com/foundry-rs/foundry.git
 [submodule "hardhat"]
-	path = hardhat
+	path = lib/hardhat
 	url = https://github.com/NomicFoundation/hardhat.git
 [submodule "edr"]
-	path = edr
+	path = lib/edr
 	url = https://github.com/NomicFoundation/edr.git

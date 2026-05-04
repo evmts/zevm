@@ -45,7 +45,7 @@ test "decodeNextBlock decodes block header and empty body" {
 }
 
 test "decodeNextBlock accepts fixture chain stream first block" {
-    const bytes = try std.fs.cwd().readFileAlloc(std.testing.allocator, "execution-apis/tests/chain.rlp", 1024 * 1024);
+    const bytes = try std.fs.cwd().readFileAlloc(std.testing.allocator, "lib/execution-apis/tests/chain.rlp", 1024 * 1024);
     defer std.testing.allocator.free(bytes);
 
     var decoded = try chain_import.decodeNextBlock(std.testing.allocator, bytes);
