@@ -7,17 +7,15 @@ description: Transport, envelope rules, error codes, selector semantics, and met
 
 This page defines the ZEVM HTTP JSON-RPC 2.0 contract shared across trusted mode and light mode.
 
-## Phase 1 Scope (Public Contract)
+## Current Public Contract
 
-In JSON-RPC docs, **phase 1** means the current public ZEVM RPC contract:
+In JSON-RPC docs, the current public ZEVM RPC contract is:
 
 - HTTP JSON-RPC transport only on `/`
 - mode-gated method surface (`trusted` vs `light`) with explicit unsupported behavior
 - light-mode readiness gating for proof-backed reads
-- phase 1 installation/distribution guarantee is source-build installation only
-- installer UX, signing/notarization, and byte-identical binary reproducibility guarantees are out of scope for phase 1
-
-GA posture for this page is scoped to that source-build RPC contract only.
+- source-build installation as the current installation/distribution guarantee
+- installer UX, signing/notarization, and byte-identical binary reproducibility guarantees remain out of scope
 
 ## Transport
 
@@ -158,15 +156,16 @@ Startup policy context:
 
 ### Trusted mode
 
-- Core reads: `eth_chainId`, `eth_blockNumber`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getTransactionCount`, `eth_accounts`, `eth_coinbase`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_blobBaseFee`, `eth_feeHistory`
+- Core reads: `eth_chainId`, `eth_blockNumber`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getStorageValues`, `eth_getTransactionCount`, `eth_accounts`, `eth_coinbase`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_blobBaseFee`, `eth_feeHistory`
 - Simulation: `eth_call`, `eth_estimateGas`
 - Submission: `eth_sendTransaction`, `eth_sendRawTransaction`
 - Compatibility utilities: `web3_clientVersion`, `web3_sha3`, `net_version`, `net_listening`, `net_peerCount`, `eth_mining`, `eth_syncing`, `eth_protocolVersion`
 - Mining/txpool controls: trusted `zevm_*` mining and txpool controls (plus accepted aliases)
-- Txpool introspection: `txpool_content`, `txpool_status`, `txpool_inspect`
+- Txpool introspection: `txpool_content`, `txpool_contentFrom`, `txpool_status`, `txpool_inspect`
 - Block-environment/time/reset/fork-source controls: trusted `zevm_*` block-environment/time/reset/fork-source controls (plus accepted aliases)
-- Queries: `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getBlockTransactionCountByNumber`, `eth_getBlockTransactionCountByHash`, `eth_getUncleCountByBlockNumber`, `eth_getUncleCountByBlockHash`, `eth_getTransactionByHash`, `eth_getTransactionByBlockNumberAndIndex`, `eth_getTransactionByBlockHashAndIndex`, `eth_getTransactionReceipt`, `eth_getBlockReceipts`, `eth_getLogs`
+- Queries: `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getBlockTransactionCountByNumber`, `eth_getBlockTransactionCountByHash`, `eth_getUncleCountByBlockNumber`, `eth_getUncleCountByBlockHash`, `eth_getTransactionByHash`, `eth_getTransactionByBlockNumberAndIndex`, `eth_getTransactionByBlockHashAndIndex`, `eth_getTransactionReceipt`, `eth_getBlockReceipts`, `eth_getLogs`, and filter lifecycle methods
 - Account/state/chain-id/snapshot/impersonation/funding/metadata controls: trusted `zevm_*` account/state/chain-id/snapshot/impersonation/funding/metadata controls (plus accepted aliases)
+- Optional Engine API listener: `engine_*` methods from the generated execution API surface when trusted startup enables `engineRpc` or `--engine-host` / `--engine-port`; payload building/import storage remains minimal in phase 1
 
 Snapshot/revert boundary in trusted mode: `zevm_snapshot`/`zevm_revert` affect trusted local runtime state only, do not capture light-mode sync/checkpoint state, and do not mutate remote fork-source state.
 

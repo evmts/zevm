@@ -545,6 +545,8 @@ Readiness and head-coherence invariants:
 | `eth_getBalance` | `[address, block]` | `QuantityHex` | `-32602` for malformed address or selector |
 | `eth_getCode` | `[address, block]` | `HexData` | `-32602` for malformed address or selector |
 | `eth_getStorageAt` | `[address, slot, block]` | `Bytes32` | `-32602` for malformed address, slot, or selector |
+| `eth_getStorageValues` | `[storageRequest, block]` | object keyed by `Address`, each value an array of `Bytes32` in requested slot order | `-32602` for malformed request, empty request, malformed address, slot, or selector |
+| `eth_getProof` | `[address, storageKeys, block]` | account proof object with live account fields and requested storage values | `-32602` for malformed address, storage key, or selector |
 | `eth_getTransactionCount` | `[address, block]` | `QuantityHex` | `-32602` for malformed address or selector |
 | `eth_accounts` | `[]` or omitted | array of the 10 managed trusted-mode addresses in ascending index order | `-32602` for non-empty params |
 | `eth_coinbase` | `[]` or omitted | `Address` | `-32602` for non-empty params |
@@ -553,7 +555,7 @@ Readiness and head-coherence invariants:
 | `eth_blobBaseFee` | `[]` or omitted | `QuantityHex` | `-32602` for non-empty params |
 | `eth_feeHistory` | `[blockCount, newestBlock]` or `[blockCount, newestBlock, rewardPercentiles]` | `FeeHistoryResult` | `-32602` on malformed count, selector, or percentiles |
 
-Trusted-mode state-backed reads (`eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, and `eth_getTransactionCount`) are current-head only. `latest`, `pending`, `safe`, and `finalized` are accepted because they alias the head; `earliest` is accepted only while the current head is genesis; numeric selectors are accepted only when equal to the current head. Other resolved non-head selectors return `-32602`.
+Trusted-mode state-backed reads (`eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getStorageValues`, `eth_getProof`, and `eth_getTransactionCount`) are current-head only. `latest`, `pending`, `safe`, and `finalized` are accepted because they alias the head; `earliest` is accepted only while the current head is genesis; numeric selectors are accepted only when equal to the current head. Other resolved non-head selectors return `-32602`.
 
 ### 8.2 Simulation
 
@@ -561,6 +563,9 @@ Trusted-mode state-backed reads (`eth_getBalance`, `eth_getCode`, `eth_getStorag
 | --- | --- | --- | --- |
 | `eth_call` | `[tx, block]` or `[tx, block, stateOverrides]` | `HexData` | `-32602` for malformed tx/selectors/overrides; `-32603` for runtime execution failure |
 | `eth_estimateGas` | `[tx]`, `[tx, block]`, or `[tx, block, stateOverrides]` | `QuantityHex` | `-32602` for malformed tx/selectors/overrides; `-32603` for runtime execution failure |
+| `eth_createAccessList` | `[tx]` or `[tx, block]` | object with `accessList` and `gasUsed` | `-32602` for malformed tx/selector; `-32603` for unrecoverable runtime execution failure |
+| `eth_simulateV1` | `[payload]` or `[payload, block]` | array of simulated block result objects | `-32602` for malformed payload/selector; per-call execution failures are returned inside the call result |
+| `testing_buildBlockV1` | `[parentHash, payloadAttributes, transactions|null, extraData]` | engine API builder payload envelope | `-32602` for malformed params; `-32000` when supplied transactions cannot be applied |
 
 Simulation semantics:
 
@@ -569,6 +574,8 @@ Simulation semantics:
 - success path:
   - `eth_call` returns `HexData`
   - `eth_estimateGas` returns `QuantityHex`
+  - `eth_createAccessList` returns a generated access-list envelope; the current trusted implementation returns an empty list when no local tracer-derived entries are available
+  - `eth_simulateV1` returns block-scoped call result objects using checkpointed execution and reverts all canonical state changes at the end of the request
 - runtime execution failure path (for example revert/out-of-gas/invalid execution in simulation context): JSON-RPC error `-32603` with message `Internal error`, no `result`, and no revert-data result payload
 - omitted transaction field defaults:
   - `from`: trusted runtime coinbase
@@ -597,6 +604,8 @@ Simulation semantics:
 | --- | --- | --- | --- |
 | `eth_sendTransaction` | `[tx]` (`TransactionRequest`) | `Hash32` | `-32602` malformed request/unsupported fields; `-32603` runtime rejection |
 | `eth_sendRawTransaction` | `[rawTx]` | `Hash32` | `-32602` malformed hex/decode/unsupported tx type; `-32603` runtime rejection |
+| `eth_sign` | `[address, HexData]` | 65-byte EIP-191 signature hex | `-32602` malformed params or unmanaged signer |
+| `eth_signTransaction` | `[tx]` (`TransactionRequest`) | signed legacy transaction RLP hex | `-32602` malformed request, unsupported fields, or unmanaged signer; `-32603` runtime signing failure |
 
 Submission outcome semantics:
 
@@ -623,6 +632,12 @@ Submission outcome semantics:
 | `eth_getTransactionReceipt` | `[transactionHash]` | receipt object or `null` | `-32602` malformed hash |
 | `eth_getBlockReceipts` | `[block]` (`ReceiptSelector`) | receipt array or `null` | `-32602` malformed selector |
 | `eth_getLogs` | `[filter]` | log array | `-32602` malformed filter |
+| `eth_newBlockFilter` | `[]` or omitted | `QuantityHex` filter id | `-32602` for non-empty params |
+| `eth_newPendingTransactionFilter` | `[]` or omitted | `QuantityHex` filter id | `-32602` for non-empty params |
+| `eth_newFilter` | `[filter]` | `QuantityHex` filter id | `-32602` malformed filter |
+| `eth_getFilterChanges` | `[filterId]` | array of filter delta items; current trusted implementation returns empty deltas | `-32602` malformed filter id |
+| `eth_getFilterLogs` | `[filterId]` | log array; current trusted implementation returns an empty array | `-32602` malformed filter id |
+| `eth_uninstallFilter` | `[filterId]` | boolean; current trusted implementation returns `true` for well-formed ids | `-32602` malformed filter id |
 
 Query selector behavior:
 
@@ -649,10 +664,23 @@ These methods are intentionally exposed in trusted mode as compatibility helpers
 | `eth_syncing` | `[]` or omitted | `false` in trusted mode | `-32602` for non-empty params |
 | `eth_protocolVersion` | `[]` or omitted | protocol version string; phase-1 trusted mode returns `0x41` | `-32602` for non-empty params |
 | `txpool_content` | `[]` or omitted | geth-style pending/queued txpool content object | `-32602` for non-empty params |
+| `txpool_contentFrom` | `[address]` | geth-style pending/queued txpool content object filtered to one sender | `-32602` for malformed address or tuple length |
 | `txpool_status` | `[]` or omitted | object with `pending` and `queued` `QuantityHex` counts | `-32602` for non-empty params |
 | `txpool_inspect` | `[]` or omitted | geth-style pending/queued summary object | `-32602` for non-empty params |
 
-### 8.6 Engine API listener methods
+### 8.6 Debug/raw inspection methods
+
+These methods are trusted-mode only. In light mode, well-formed requests return `-32010`.
+
+| Method | Exact params | Exact result | Errors |
+| --- | --- | --- | --- |
+| `debug_getBadBlocks` | `[]` or omitted | bad-block array; phase-1 trusted mode returns `[]` | `-32602` for non-empty params |
+| `debug_getRawBlock` | `[blockNumber]` | raw RLP block `HexData` or `null` | `-32602` for malformed block number |
+| `debug_getRawHeader` | `[blockNumber]` | raw RLP header `HexData` or `null` | `-32602` for malformed block number |
+| `debug_getRawReceipts` | `[blockNumber]` | array of raw receipt `HexData` values or `null` when block is unknown | `-32602` for malformed block number |
+| `debug_getRawTransaction` | `[transactionHash]` | raw transaction `HexData` or `null` | `-32602` for malformed transaction hash |
+
+### 8.7 Engine API listener methods
 
 The Engine API listener is trusted-mode only and disabled unless startup config enables `engineRpc` or CLI `--engine-host` / `--engine-port`.
 
@@ -661,8 +689,15 @@ The Engine API listener is trusted-mode only and disabled unless startup config 
 | `engine_exchangeCapabilities` | `[capabilities]` where `capabilities` is an array of strings | array of implemented Engine method names | `-32602` for malformed params |
 | `engine_exchangeTransitionConfigurationV1` | `[config]` where `config` is an object | object echo of the supplied transition config | `-32602` for malformed params |
 | `engine_forkchoiceUpdatedV1` / `engine_forkchoiceUpdatedV2` / `engine_forkchoiceUpdatedV3` | `[forkchoiceState]` or `[forkchoiceState, null]` | `{ payloadStatus, payloadId: null }` | `-32602` for malformed params or non-null payload attributes |
+| `engine_newPayloadV1` / `engine_newPayloadV2` | `[executionPayload]` | `PayloadStatusV1`; current trusted implementation returns `SYNCING` without importing the payload | `-32602` for malformed params |
+| `engine_newPayloadV3` | `[executionPayload, expectedBlobVersionedHashes, parentBeaconBlockRoot]` | `PayloadStatusV1`; current trusted implementation returns `SYNCING` without importing the payload | `-32602` for malformed params |
+| `engine_newPayloadV4` / `engine_newPayloadV5` | `[executionPayload, expectedBlobVersionedHashes, parentBeaconBlockRoot, executionRequests]` | `PayloadStatusV1`; current trusted implementation returns `SYNCING` without importing the payload | `-32602` for malformed params |
+| `engine_getPayloadV1` / `engine_getPayloadV2` / `engine_getPayloadV3` / `engine_getPayloadV4` / `engine_getPayloadV5` / `engine_getPayloadV6` | `[payloadId]` where `payloadId` is 8 bytes of `HexData` | payload envelope when known | `-38001` for unknown payload id; `-32602` for malformed params |
+| `engine_getPayloadBodiesByHashV1` | `[blockHashes]` where `blockHashes` is an array of `Hash32` values | array of payload body objects or `null` for unknown hashes | `-32602` for malformed params or more than 1024 hashes |
+| `engine_getPayloadBodiesByRangeV1` | `[startBlockNumber, count]` | array of payload body objects or `null` for unknown numbers | `-32602` for malformed params, zero count, more than 1024 bodies, or range overflow |
+| `engine_getBlobsV1` / `engine_getBlobsV2` | `[versionedHashes]` where `versionedHashes` is an array of `Hash32` values | array of blob records or `null` for unknown hashes; phase-1 trusted mode returns `null` per requested hash | `-32602` for malformed params or more than 1024 hashes |
 
-`forkchoiceState` must include `headBlockHash`, `safeBlockHash`, and `finalizedBlockHash` as `Hash32` strings. `safeBlockHash` and `finalizedBlockHash` may be zero hashes. A known local `headBlockHash` returns `VALID` and updates the canonical head; unknown referenced hashes return `SYNCING`. Payload building, `engine_newPayload*`, `engine_getPayload*`, payload-body methods, and blob/body retrieval are out of phase-1 contract and return `-32601` (`Method not found`) when called.
+`forkchoiceState` must include `headBlockHash`, `safeBlockHash`, and `finalizedBlockHash` as `Hash32` strings. `safeBlockHash` and `finalizedBlockHash` may be zero hashes. A known local `headBlockHash` returns `VALID` and updates the canonical head; unknown referenced hashes return `SYNCING`. Payload-building storage remains minimal in phase 1: get-payload methods report unknown payload ids with `-38001`, and new-payload methods validate request shape but do not import execution payloads into canonical history.
 
 ## 9. Trusted-Mode `zevm_*` Methods
 
@@ -1061,6 +1096,10 @@ Rules:
 - unsupported in light mode (-> `-32010`) includes:
   - `eth_call` (trusted-only in phase 1; deferred light-mode proof-backed target)
   - `eth_estimateGas`
+  - `eth_createAccessList`
+  - `eth_simulateV1`
+  - `testing_buildBlockV1`
+  - `eth_getProof`
   - `eth_feeHistory`
   - `eth_sendTransaction`, `eth_sendRawTransaction`
   - `eth_getBlockByNumber`, `eth_getBlockByHash`
@@ -1081,7 +1120,7 @@ Rules:
 - in phase 1, `${resolvedCheckpointDir}/checkpoint` is startup input only; `lastCheckpoint` runtime progression is not persisted to this file
 - phase-1 operator-facing light-mode startup inputs are `network`, `consensusRpcUrl`, `executionRpcUrl`, `checkpoint`, `checkpointDir`, `maxCheckpointAgeSeconds`, and `strictCheckpointAge`
 - `executionRpcUrl` is the execution JSON-RPC source used for proof-backed execution reads
-- deferred/out-of-contract method families (for example filter lifecycle beyond `eth_getLogs`, subscriptions, and debug tracing) are listed in section 14
+- deferred/out-of-contract method families (for example subscriptions and debug tracing) are listed in section 14
 - deferred/out-of-contract method names return JSON-RPC `-32601` (method not found), not `-32010`
 - WebSocket transport is unsupported at transport layer (section 3) and is not a JSON-RPC method mapping
 
@@ -1090,7 +1129,6 @@ Rules:
 Not part of the current contract:
 
 - debug tracing methods
-- filter lifecycle beyond `eth_getLogs`
 - subscriptions
 - WebSocket transport
 

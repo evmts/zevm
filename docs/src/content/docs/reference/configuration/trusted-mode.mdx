@@ -111,7 +111,21 @@ Trusted mode can expose a second plain-HTTP Engine API listener with top-level `
 { "engineRpc": { "host": "127.0.0.1", "port": 8551 } }
 ```
 
-The implemented Engine surface covers capability exchange, transition configuration exchange, and forkchoice updates that validate referenced hashes against ZEVM's local block history. It does not make ZEVM a full consensus-client-facing execution engine yet; payload execution, payload building, payload-body methods, and blob/body retrieval remain outside the phase-1 surface and return method-not-found when called.
+The implemented Engine surface covers capability exchange, transition configuration exchange, forkchoice updates that validate referenced hashes against ZEVM's local block history, payload status shape validation, payload body lookup against local blocks, and blob lookup stubs. It does not make ZEVM a full consensus-client-facing execution engine yet; payload building/import storage remains minimal.
+
+Implemented Engine listener methods:
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `engine_exchangeCapabilities` | `[capabilities]` where `capabilities` is an array of strings | array of implemented Engine method names |
+| `engine_exchangeTransitionConfigurationV1` | `[config]` where `config` is an object | echo of the supplied transition config |
+| `engine_forkchoiceUpdatedV1` / `engine_forkchoiceUpdatedV2` / `engine_forkchoiceUpdatedV3` | `[forkchoiceState]` or `[forkchoiceState, null]` | `{ payloadStatus, payloadId: null }` |
+| `engine_newPayloadV1` / `engine_newPayloadV2` / `engine_newPayloadV3` / `engine_newPayloadV4` / `engine_newPayloadV5` | version-specific payload validation params | `PayloadStatusV1`; current implementation returns `SYNCING` without importing the payload |
+| `engine_getPayloadV1` / `engine_getPayloadV2` / `engine_getPayloadV3` / `engine_getPayloadV4` / `engine_getPayloadV5` / `engine_getPayloadV6` | `[payloadId]` | payload envelope when known; `-38001` for unknown payload id |
+| `engine_getPayloadBodiesByHashV1` / `engine_getPayloadBodiesByRangeV1` | hash/range body lookup params | payload body array with `null` for unknown local blocks |
+| `engine_getBlobsV1` / `engine_getBlobsV2` | `[versionedHashes]` | blob array with `null` for unknown hashes |
+
+`forkchoiceState` must include `headBlockHash`, `safeBlockHash`, and `finalizedBlockHash` as `Hash32` strings. `safeBlockHash` and `finalizedBlockHash` may be zero hashes.
 
 ## Validation Rules
 

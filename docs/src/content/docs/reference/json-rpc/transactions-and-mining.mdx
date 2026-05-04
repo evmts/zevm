@@ -85,6 +85,7 @@ Trusted txpool introspection compatibility methods:
 | Method | Exact params | Exact result |
 | --- | --- | --- |
 | `txpool_content` | `[]` or omitted | geth-style pending/queued txpool content object |
+| `txpool_contentFrom` | `[address]` | geth-style pending/queued txpool content object filtered to one sender |
 | `txpool_status` | `[]` or omitted | object with `pending` and `queued` `QuantityHex` counts |
 | `txpool_inspect` | `[]` or omitted | geth-style pending/queued summary object |
 

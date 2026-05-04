@@ -12,7 +12,6 @@ This page lists surfaces intentionally outside the current public ZEVM contract.
 Not part of the current contract:
 
 - debug tracing methods
-- filter lifecycle methods beyond `eth_getLogs`
 - subscriptions
 - WebSocket transport (`ws://` / `wss://`) is outside the current public contract scope (ZEVM JSON-RPC is HTTP-only)
 
@@ -21,15 +20,6 @@ Not part of the current contract:
 - out-of-contract/deferred method names: well-formed JSON-RPC requests to names not in the current ZEVM method contract return `-32601` (`Method not found`)
 - mode-unsupported for supported families: when a method family is part of the ZEVM contract but unavailable in the active mode, well-formed requests return `-32010`
 - transport-level unsupported WebSocket behavior: ZEVM exposes HTTP JSON-RPC only, so WebSocket absence is handled at the transport layer (no JSON-RPC `-32010` envelope)
-
-### Deferred filter lifecycle inventory
-
-- `eth_newFilter`
-- `eth_getFilterChanges`
-- `eth_getFilterLogs`
-- `eth_uninstallFilter`
-- `eth_newBlockFilter`
-- `eth_newPendingTransactionFilter`
 
 ### Deferred tracing/subscription inventory
 
@@ -53,13 +43,18 @@ Not part of the current contract:
 
 ### Mode-gated trusted-only read extensions
 
-- `eth_accounts`, `eth_coinbase`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_blobBaseFee`, and `eth_feeHistory` are trusted-only
+- `eth_accounts`, `eth_coinbase`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_blobBaseFee`, `eth_feeHistory`, and `eth_getStorageValues` are trusted-only
 - in light mode, well-formed requests to those methods return JSON-RPC `-32010` (unsupported in active mode)
 
 ### Mode-gated trusted-only compatibility utilities
 
-- `web3_clientVersion`, `web3_sha3`, `net_version`, `net_listening`, `net_peerCount`, `eth_mining`, `eth_syncing`, `eth_protocolVersion`, `txpool_content`, `txpool_status`, and `txpool_inspect` are trusted-only compatibility methods
+- `web3_clientVersion`, `web3_sha3`, `net_version`, `net_listening`, `net_peerCount`, `eth_mining`, `eth_syncing`, `eth_protocolVersion`, `txpool_content`, `txpool_contentFrom`, `txpool_status`, and `txpool_inspect` are trusted-only compatibility methods
 - in light mode, well-formed requests to those methods return JSON-RPC `-32010` (unsupported in active mode)
+
+### Optional Engine API listener
+
+- Engine API methods are trusted-only and are available only on the optional trusted-mode Engine API listener
+- get-payload methods report unknown payload ids with `-38001`; new-payload methods validate request shape but do not import execution payloads into canonical history
 
 ### Error-mapping summary
 

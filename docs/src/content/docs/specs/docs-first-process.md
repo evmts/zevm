@@ -39,7 +39,7 @@ When updating ZEVM docs:
 
 1. update normative contract docs first (`prd.md`, `json-rpc-contract.md`) if behavior changes
 2. update internal support summaries to match
-3. update public Mintlify docs to match
+3. update public docs pages to match
 4. remove or archive stale process artifacts that could conflict with current contract docs
 5. when mapped normative or public pages change, refresh any referenced internal support docs in the same PR and keep their `Last updated` metadata aligned with that docs cycle
 

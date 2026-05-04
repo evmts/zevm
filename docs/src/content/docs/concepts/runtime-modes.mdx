@@ -26,11 +26,9 @@ Light-mode operator-facing startup inputs are `network`, `consensusRpcUrl`, and 
 If operators want persisted checkpoint-source behavior, they must manage `checkpointDir/checkpoint` themselves; ZEVM does not auto-populate it.
 Proof-source internals are not user-configurable in the public contract.
 
-## Phase 1 Sequencing Note
+## Current Sequencing Note
 
-Phase 1 names the current public runtime/RPC scope in this docs set.
-GA posture here is source-build contract only (not packaged distribution channels).
-Within that scope, delivery remains trusted-first:
+The current public runtime/RPC scope remains trusted-first:
 
 - trusted mode carries the primary local dev-node surface (writes, simulation, mining, snapshots, and fork overlay controls)
 - light mode currently exposes readiness-gated proof-backed reads plus `zevm_lightSyncStatus`

@@ -17,6 +17,7 @@ This page defines trusted-mode core reads and marks the subset that is also avai
 | --- | --- |
 | `BlockTag` | `latest`, `earliest`, `pending`, `safe`, `finalized`, or numeric quantity |
 | `TrustedBlockSelector` | any `BlockTag` |
+| `StorageRequest` | object keyed by `Address`; each value is an array of `Bytes32` storage slots |
 | `FeeHistoryResult` | object with `oldestBlock`, `baseFeePerGas`, `gasUsedRatio`, and optional `reward` |
 
 ## Trusted-Mode Block Selectors
@@ -63,6 +64,19 @@ These methods are trusted-mode only and return `-32010` in light mode.
 | `eth_maxPriorityFeePerGas` | `[]` or omitted | `QuantityHex` | `-32602` for non-empty params |
 | `eth_blobBaseFee` | `[]` or omitted | `QuantityHex` | `-32602` for non-empty params |
 | `eth_feeHistory` | `[blockCount, newestBlock]` or `[blockCount, newestBlock, rewardPercentiles]` | `FeeHistoryResult` | `-32602` malformed block count, selector, or percentiles |
+| `eth_getStorageValues` | `[storageRequest, block]` | object keyed by `Address`, each value an array of `Bytes32` in requested slot order | `-32602` malformed or empty request, malformed address, slot, or selector |
+
+`eth_getStorageValues` is a trusted-mode batch storage extension. `storageRequest` must be a non-empty object whose keys are addresses and whose values are arrays of storage slots:
+
+```json
+{
+  "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266": [
+    "0x0000000000000000000000000000000000000000000000000000000000000000"
+  ]
+}
+```
+
+The `block` selector follows the same current-head-only rule as other trusted-mode state-backed reads.
 
 ## Managed Accounts (Summary)
 
@@ -127,7 +141,7 @@ Result rules:
 
 ## Mode Gating
 
-- `eth_accounts`, `eth_coinbase`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_blobBaseFee`, and `eth_feeHistory` are trusted-mode only and return `-32010` in light mode.
+- `eth_accounts`, `eth_coinbase`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_blobBaseFee`, `eth_feeHistory`, and `eth_getStorageValues` are trusted-mode only and return `-32010` in light mode.
 - `eth_chainId`, `eth_blockNumber`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, and `eth_getTransactionCount` are also available in light mode with a separate contract and distinct error surface: [Verified Light-Mode Reads](./verified-light-mode-reads).
 
 ## Example: `eth_getBalance`

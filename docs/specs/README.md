@@ -11,8 +11,8 @@ If wording differs, `json-rpc-contract.md` is authoritative for API-level tuples
 
 ## Active non-normative traceability maps
 
-- `docs/specs/page-ownership.md`: Mintlify page traceability ledger mapping each public page to its authoritative source docs and required normative anchors
-- `docs/specs/mintlify-docs-plan.md`: structure-level maintenance plan aligned to `docs/mint.json` and synchronized with `page-ownership.md`
+- `docs/specs/page-ownership.md`: public docs traceability ledger mapping each public page to its authoritative source docs and required normative anchors
+- `docs/specs/mintlify-docs-plan.md`: structure-level maintenance plan aligned to docs navigation and synchronized with `page-ownership.md`
 
 ## Supporting docs
 

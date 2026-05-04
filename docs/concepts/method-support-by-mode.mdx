@@ -12,16 +12,17 @@ Use JSON-RPC reference pages for exact method signatures, params, payloads, and 
 
 | Capability family | Trusted mode | Light mode | Method details |
 | --- | --- | --- | --- |
-| Core reads (`eth_chainId`, `eth_blockNumber`, account/code/storage/nonce reads) | yes | yes (`eth_chainId` always; proof-backed account/code/storage/nonce reads and `eth_blockNumber` require `ready = true`; proof-backed numeric selectors are limited to block `0` plus the retained verified-history window) | [Core Reads](../reference/json-rpc/core-reads), [Verified Light-Mode Reads](../reference/json-rpc/verified-light-mode-reads) |
+| Core reads (`eth_chainId`, `eth_blockNumber`, account/code/storage/nonce reads, trusted batch storage reads) | yes | yes for the light subset (`eth_chainId` always; proof-backed account/code/storage/nonce reads and `eth_blockNumber` require `ready = true`; proof-backed numeric selectors are limited to block `0` plus the retained verified-history window); trusted batch storage reads are not in the light subset | [Core Reads](../reference/json-rpc/core-reads), [Verified Light-Mode Reads](../reference/json-rpc/verified-light-mode-reads) |
 | Simulation (`eth_call`, `eth_estimateGas`) | yes | no (`-32010`; both are trusted-only in phase 1, and `eth_call` remains a deferred light-mode proof-backed target) | [Simulation](../reference/json-rpc/simulation), [Unsupported And Deferred](../reference/json-rpc/unsupported-and-deferred) |
 | Transaction submission and mining | yes | no | [Transactions And Mining](../reference/json-rpc/transactions-and-mining) |
 | Compatibility utilities (`web3_*`, `net_*`, `eth_mining`, `eth_syncing`, `eth_protocolVersion`) | yes | no (`-32010`) | [JSON-RPC Overview](../reference/json-rpc/overview) |
-| Txpool introspection (`txpool_content`, `txpool_status`, `txpool_inspect`) | yes | no (`-32010`) | [Transactions And Mining](../reference/json-rpc/transactions-and-mining) |
+| Txpool introspection (`txpool_content`, `txpool_contentFrom`, `txpool_status`, `txpool_inspect`) | yes | no (`-32010`) | [Transactions And Mining](../reference/json-rpc/transactions-and-mining) |
 | Canonical block/transaction/receipt/log queries, including block tx counts, tx-by-block-index lookups, and `eth_getLogs` | yes | no | [Blocks, Receipts, And Logs](../reference/json-rpc/blocks-receipts-and-logs) |
 | ZEVM trusted namespace (`zevm_*` except `zevm_lightSyncStatus`) | yes | no | [ZEVM Controls](../reference/json-rpc/dev-controls) |
 | ZEVM light namespace (`zevm_lightSyncStatus`) | no | yes | [Verified Light-Mode Reads](../reference/json-rpc/verified-light-mode-reads) |
 | Trusted compatibility aliases (`anvil_*`, selected `hardhat_*`, selected `evm_*`) | yes | no | [ZEVM Controls](../reference/json-rpc/dev-controls), [Transactions And Mining](../reference/json-rpc/transactions-and-mining) |
-| Filter lifecycle beyond `eth_getLogs` | not part of current contract (deferred) | not part of current contract (deferred) | [Unsupported And Deferred](../reference/json-rpc/unsupported-and-deferred) |
+| Optional Engine API listener (`engine_*`) | yes, only when enabled at trusted startup | no (`-32010`) | [Trusted-Mode Configuration](../reference/configuration/trusted-mode#engine-api-listener) |
+| Filter lifecycle (`eth_newFilter`, `eth_newBlockFilter`, `eth_newPendingTransactionFilter`, `eth_getFilterChanges`, `eth_getFilterLogs`, `eth_uninstallFilter`) | yes, with empty trusted deltas/logs in phase 1 | no (`-32010`) | [Blocks, Receipts, And Logs](../reference/json-rpc/blocks-receipts-and-logs) |
 | Subscriptions (`eth_subscribe`, `eth_unsubscribe`) | not part of current contract (deferred method surface) | not part of current contract (deferred method surface) | [Unsupported And Deferred](../reference/json-rpc/unsupported-and-deferred) |
 | WebSocket transport | transport-level unsupported (HTTP JSON-RPC only; outside JSON-RPC method dispatch, not a method-level deferred mapping) | transport-level unsupported (HTTP JSON-RPC only; outside JSON-RPC method dispatch, not a method-level deferred mapping) | [Unsupported And Deferred](../reference/json-rpc/unsupported-and-deferred) |
 

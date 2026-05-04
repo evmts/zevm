@@ -1,8 +1,8 @@
-# Mintlify Page Ownership and Anchors
+# Public Docs Page Ownership and Anchors
 
 ## Status
 
-This file is the non-normative traceability map for public Mintlify docs.
+This file is the non-normative traceability map for public docs pages.
 
 It maps each current navigation page to:
 
@@ -22,21 +22,21 @@ If this map conflicts with normative docs, normative docs win.
 
 ## Scope
 
-- In scope: pages listed in `docs/mint.json` navigation.
+- In scope: pages listed in the Starlight sidebar in `docs/astro.config.mjs`; keep legacy `docs/mint.json` aligned while it remains in the repo.
 - Out of scope: merge authority, personnel assignment, and product behavior definition.
 - This map is for maintenance routing and source traceability only.
 
-## Nav Reconciliation Procedure (`docs/mint.json`)
+## Nav Reconciliation Procedure
 
-1. Read `docs/mint.json` and flatten `navigation` into ordered `(Navigation group, Page)` tuples by list order.
+1. Read `docs/astro.config.mjs` and flatten Starlight sidebar entries into ordered `(Navigation group, Page)` tuples by list order. If `docs/mint.json` is still retained, flatten its `navigation` entries too and keep them aligned with the sidebar.
 2. Flatten the Page Map below into ordered `(Navigation group, Page)` tuples.
 3. Validate both tuple lists:
 - each page ID appears once (no duplicates)
 - tuple counts are equal
-- every tuple in `docs/mint.json` appears in this table with the same group label
-- this table has no extra tuples not present in `docs/mint.json`
+- every tuple in docs navigation appears in this table with the same group label
+- this table has no extra tuples not present in docs navigation
 4. For each tuple, confirm required traceability fields are populated: owner role, authoritative source docs, and normative anchors.
-5. If any mismatch exists, update this file in the same PR as the `docs/mint.json` change.
+5. If any mismatch exists, update this file in the same PR as the navigation change.
 
 ## Role Labels
 
@@ -47,15 +47,15 @@ If this map conflicts with normative docs, normative docs win.
 
 ## Update Policy
 
-1. Update this file in the same PR when `docs/mint.json` navigation groups/pages change.
+1. Update this file in the same PR when docs navigation groups/pages change.
 2. Update per-page normative anchors in the same PR when normative docs change for affected topics.
-3. When PRD or JSON-RPC contract semantics change (`docs/specs/prd.md` or `docs/specs/json-rpc-contract.md`), reconcile affected Mintlify pages plus this map and `docs/specs/mintlify-docs-plan.md` in the same PR.
+3. When PRD or JSON-RPC contract semantics change (`docs/specs/prd.md` or `docs/specs/json-rpc-contract.md`), reconcile affected public docs pages plus this map and `docs/specs/mintlify-docs-plan.md` in the same PR.
 4. Keep optional internal support-doc pointers only when they are still aligned; remove stale pointers until refreshed.
 5. Maintain explicit owner-role and update-expectation entries for every `docs/specs/internal/*` support doc used by active pages.
 
 ## Internal Dependency Maintenance Ownership
 
-These internal docs are non-normative support dependencies for active Mintlify pages. Owners keep them aligned with normative sources and page usage.
+These internal docs are non-normative support dependencies for active public docs pages. Owners keep them aligned with normative sources and page usage.
 
 | Internal support doc (`docs/specs/internal/*`) | Owner role label | Update expectation |
 | --- | --- | --- |

@@ -88,7 +88,7 @@ The script builds a local `zevm/hive-client:local` image from this checkout, let
 
 CI runs this same command in the `Hive RPC Compat Smoke` job for tag pushes, manual dispatches, and the weekly scheduled workflow.
 
-This smoke now exercises ZEVM's startup import path for Hive `genesis.json` and `chain.rlp`, plus ZEVM-owned Engine forkchoice validation against imported block history, but it is still not full rpc-compat coverage. Phase-1 `chain.rlp` handling is query-only: imported chains are decoded into canonical block history, while full execution, receipt/log indexing, imported-state reads, Engine payload methods, and expansion beyond the active transcript subset remain outside the current contract. Unsupported Engine payload/body methods are expected to return method-not-found rather than partially implemented lifecycle responses.
+This smoke now exercises ZEVM's startup import path for Hive `genesis.json` and `chain.rlp`, plus ZEVM-owned Engine forkchoice validation against imported block history, but it is still not full rpc-compat coverage. Phase-1 `chain.rlp` handling is query-only: imported chains are decoded into canonical block history, while full execution, receipt/log indexing, imported-state reads, and expansion beyond the active transcript subset remain outside the current contract. Engine payload/body/blob lookup methods are routed, but payload building/import storage remains minimal.
 
 ## Published Release Asset Gate
 
