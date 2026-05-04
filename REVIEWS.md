@@ -28,13 +28,13 @@ _chunks=14 avgConform=40 avgCov=14 issues=64 crit=12_
 - [major] Repeated missing external runner path blocks fixture-backed proof (`tests/external/state_tests_runner.zig`).
 
 ## Foreign Feature Gaps
-- EDR has next-base-fee computation and strict EIP-1559 fee validation/miner-tip logic; zevm does not (`edr/crates/block/header/src/lib.rs`, `edr/crates/block/miner/src/lib.rs`, `edr/crates/edr_provider/src/requests/validation.rs`).
-- EDR validates pooled EIP-4844 sidecars (vector counts, versioned-hash mapping, batch KZG verification); equivalent zevm path not found (`edr/crates/edr_transaction/src/pooled/eip4844.rs`).
-- EDR wires dynamic `eth_blobBaseFee` from blob-fee progression while zevm returns runtime field directly (`edr/crates/edr_provider/src/provider.rs`, `edr/crates/edr_provider/src/requests/eth/config.rs`, `src/rpc/handlers/eth_read.zig:117`).
-- Foundry maps blob fields into tx/block env for simulation; zevm does not preserve blob fields through tx processing/mining (`foundry/crates/evm/core/src/utils.rs`, `foundry/crates/evm/core/src/backend/mod.rs`).
-- EDR includes EIP-4844 integration tests for blob gas evolution and `BLOBHASH`; comparable zevm integration coverage is absent (`edr/crates/edr_provider/tests/integration/eip4844.rs`).
-- Foundry/EDR include EIP-7702 authorization-aware execution entrypoints, request wiring, validation, and RPC serialization; zevm does not (`foundry/crates/evm/evm/src/executors/mod.rs`, `foundry/crates/evm/core/src/utils.rs`, `edr/crates/edr_provider/src/requests/validation.rs`, `edr/crates/edr_chain_l1/src/rpc/transaction.rs`, `edr/crates/edr_provider/tests/integration/eip7702.rs`).
-- Hardhat v-next includes blob transaction request schema support not mirrored by zevm hydrated tx behavior (`hardhat/v-next/hardhat-zod-utils/src/rpc/types/tx-request.ts`).
+- EDR has next-base-fee computation and strict EIP-1559 fee validation/miner-tip logic; zevm does not (`lib/edr/crates/block/header/src/lib.rs`, `lib/edr/crates/block/miner/src/lib.rs`, `lib/edr/crates/edr_provider/src/requests/validation.rs`).
+- EDR validates pooled EIP-4844 sidecars (vector counts, versioned-hash mapping, batch KZG verification); equivalent zevm path not found (`lib/edr/crates/edr_transaction/src/pooled/eip4844.rs`).
+- EDR wires dynamic `eth_blobBaseFee` from blob-fee progression while zevm returns runtime field directly (`lib/edr/crates/edr_provider/src/provider.rs`, `lib/edr/crates/edr_provider/src/requests/eth/config.rs`, `src/rpc/handlers/eth_read.zig:117`).
+- Foundry maps blob fields into tx/block env for simulation; zevm does not preserve blob fields through tx processing/mining (`lib/foundry/crates/evm/core/src/utils.rs`, `lib/foundry/crates/evm/core/src/backend/mod.rs`).
+- EDR includes EIP-4844 integration tests for blob gas evolution and `BLOBHASH`; comparable zevm integration coverage is absent (`lib/edr/crates/edr_provider/tests/integration/eip4844.rs`).
+- Foundry/EDR include EIP-7702 authorization-aware execution entrypoints, request wiring, validation, and RPC serialization; zevm does not (`lib/foundry/crates/evm/evm/src/executors/mod.rs`, `lib/foundry/crates/evm/core/src/utils.rs`, `lib/edr/crates/edr_provider/src/requests/validation.rs`, `lib/edr/crates/edr_chain_l1/src/rpc/transaction.rs`, `lib/edr/crates/edr_provider/tests/integration/eip7702.rs`).
+- Hardhat v-next includes blob transaction request schema support not mirrored by zevm hydrated tx behavior (`lib/hardhat/v-next/hardhat-zod-utils/src/rpc/types/tx-request.ts`).
 
 ## Per-Chunk Findings
 
@@ -207,7 +207,7 @@ _chunks=14 avgConform=40 avgCov=14 issues=64 crit=12_
 - Duplicate access-list entry tests proving duplicates are accepted and charged multiple times.
 - Execution tests proving access-list entries are pre-warmed in accessed-address/storage sets before opcode execution.
 - Receipt/type tests proving EIP-2930 transactions produce type `0x1` receipts/tx metadata.
-- State-vector integration tests for `ethereum-tests/TransactionTests/ttEIP2930/*` and `execution-spec-tests/tests/static/state_tests/stEIP2930/*`.
+- State-vector integration tests for `lib/ethereum-tests/TransactionTests/ttEIP2930/*` and `lib/execution-spec-tests/tests/static/state_tests/stEIP2930/*`.
 
 ### BASEFEE opcode (eip-3198)
 - Execute bytecode `0x48 0x00` through zevm tx execution with non-zero `block_base_fee` and assert stack output equals that value.
@@ -324,16 +324,16 @@ _chunks=10 avgConform=30 avgCov=24 issues=72 crit=12_
 - [critical] Appendix I genesis tuple is absent in audited pipeline; current constructor diverges from Appendix I constants and stateRoot derivation ([src/block_builder.zig:28](src/block_builder.zig:28), [src/genesis.zig:80](src/genesis.zig:80), [src/genesis.zig:96](src/genesis.zig:96)).
 
 ## Foreign Feature Gaps
-- Hardfork-aware header derivation/validation and post-Merge defaults ([edr/crates/block/header/src/lib.rs](edr/crates/block/header/src/lib.rs)).
-- Explicit withdrawals-aware block builder and required-fork checks ([edr/crates/block/builder/api/src/lib.rs](edr/crates/block/builder/api/src/lib.rs)).
-- PREVRANDAO and next-block base-fee controls with hardfork gating ([edr/crates/edr_provider/src/requests/methods.rs](edr/crates/edr_provider/src/requests/methods.rs), [edr/crates/edr_provider/src/data.rs](edr/crates/edr_provider/src/data.rs), [edr/crates/edr_provider/src/requests/hardhat/config.rs](edr/crates/edr_provider/src/requests/hardhat/config.rs)).
-- Typed fee/effective-gas-price logic and validation for EIP-1559 ([edr/crates/edr_transaction/src/signed/eip1559.rs](edr/crates/edr_transaction/src/signed/eip1559.rs), [edr/crates/edr_provider/src/requests/validation.rs](edr/crates/edr_provider/src/requests/validation.rs)).
-- Access-list-aware execution and intrinsic gas paths ([foundry/crates/evm/evm/src/inspectors/mod.rs](foundry/crates/evm/evm/src/inspectors/mod.rs), [foundry/crates/evm/evm/src/executors/mod.rs](foundry/crates/evm/evm/src/executors/mod.rs)).
-- Runtime-selectable hardfork/spec controls ([foundry/crates/evm/evm/src/executors/builder.rs](foundry/crates/evm/evm/src/executors/builder.rs), [edr/crates/foundry/evm/evm/src/executors/builder.rs](edr/crates/foundry/evm/evm/src/executors/builder.rs)).
-- Strong primitive/newtype typing and explicit tx-kind modeling ([edr/crates/primitives/src/lib.rs](edr/crates/primitives/src/lib.rs), [edr/crates/edr_chain_spec/src/transaction.rs](edr/crates/edr_chain_spec/src/transaction.rs)).
-- Inspector/dry-run/tracing APIs and call lifecycle observability ([edr/crates/evm/src/lib.rs](edr/crates/evm/src/lib.rs), [edr/crates/tracing/src/lib.rs](edr/crates/tracing/src/lib.rs), [foundry/crates/evm/evm/src/inspectors/stack.rs](foundry/crates/evm/evm/src/inspectors/stack.rs)).
-- Debug trace RPCs, impersonation/prank/origin override, precompile override controls ([edr/crates/edr_provider/src/requests/methods.rs](edr/crates/edr_provider/src/requests/methods.rs), [edr/crates/foundry/cheatcodes/src/evm/prank.rs](edr/crates/foundry/cheatcodes/src/evm/prank.rs), [edr/crates/edr_provider/src/data.rs](edr/crates/edr_provider/src/data.rs)).
-- CREATE2 helper surfaces and configurable initcode/code-size policy knobs ([foundry/crates/evm/evm/src/executors/mod.rs](foundry/crates/evm/evm/src/executors/mod.rs), [edr/crates/edr_provider/src/requests/eth/transactions.rs](edr/crates/edr_provider/src/requests/eth/transactions.rs), [foundry/crates/evm/core/src/opts.rs](foundry/crates/evm/core/src/opts.rs)).
+- Hardfork-aware header derivation/validation and post-Merge defaults ([lib/edr/crates/block/header/src/lib.rs](lib/edr/crates/block/header/src/lib.rs)).
+- Explicit withdrawals-aware block builder and required-fork checks ([lib/edr/crates/block/builder/api/src/lib.rs](lib/edr/crates/block/builder/api/src/lib.rs)).
+- PREVRANDAO and next-block base-fee controls with hardfork gating ([lib/edr/crates/edr_provider/src/requests/methods.rs](lib/edr/crates/edr_provider/src/requests/methods.rs), [lib/edr/crates/edr_provider/src/data.rs](lib/edr/crates/edr_provider/src/data.rs), [lib/edr/crates/edr_provider/src/requests/hardhat/config.rs](lib/edr/crates/edr_provider/src/requests/hardhat/config.rs)).
+- Typed fee/effective-gas-price logic and validation for EIP-1559 ([lib/edr/crates/edr_transaction/src/signed/eip1559.rs](lib/edr/crates/edr_transaction/src/signed/eip1559.rs), [lib/edr/crates/edr_provider/src/requests/validation.rs](lib/edr/crates/edr_provider/src/requests/validation.rs)).
+- Access-list-aware execution and intrinsic gas paths ([lib/foundry/crates/evm/evm/src/inspectors/mod.rs](lib/foundry/crates/evm/evm/src/inspectors/mod.rs), [lib/foundry/crates/evm/evm/src/executors/mod.rs](lib/foundry/crates/evm/evm/src/executors/mod.rs)).
+- Runtime-selectable hardfork/spec controls ([lib/foundry/crates/evm/evm/src/executors/builder.rs](lib/foundry/crates/evm/evm/src/executors/builder.rs), [lib/edr/crates/foundry/evm/evm/src/executors/builder.rs](lib/edr/crates/foundry/evm/evm/src/executors/builder.rs)).
+- Strong primitive/newtype typing and explicit tx-kind modeling ([lib/edr/crates/primitives/src/lib.rs](lib/edr/crates/primitives/src/lib.rs), [lib/edr/crates/edr_chain_spec/src/transaction.rs](lib/edr/crates/edr_chain_spec/src/transaction.rs)).
+- Inspector/dry-run/tracing APIs and call lifecycle observability ([lib/edr/crates/evm/src/lib.rs](lib/edr/crates/evm/src/lib.rs), [lib/edr/crates/tracing/src/lib.rs](lib/edr/crates/tracing/src/lib.rs), [lib/foundry/crates/evm/evm/src/inspectors/stack.rs](lib/foundry/crates/evm/evm/src/inspectors/stack.rs)).
+- Debug trace RPCs, impersonation/prank/origin override, precompile override controls ([lib/edr/crates/edr_provider/src/requests/methods.rs](lib/edr/crates/edr_provider/src/requests/methods.rs), [lib/edr/crates/foundry/cheatcodes/src/evm/prank.rs](lib/edr/crates/foundry/cheatcodes/src/evm/prank.rs), [lib/edr/crates/edr_provider/src/data.rs](lib/edr/crates/edr_provider/src/data.rs)).
+- CREATE2 helper surfaces and configurable initcode/code-size policy knobs ([lib/foundry/crates/evm/evm/src/executors/mod.rs](lib/foundry/crates/evm/evm/src/executors/mod.rs), [lib/edr/crates/edr_provider/src/requests/eth/transactions.rs](lib/edr/crates/edr_provider/src/requests/eth/transactions.rs), [lib/foundry/crates/evm/core/src/opts.rs](lib/foundry/crates/evm/core/src/opts.rs)).
 
 ## Per-Chunk Findings
 
@@ -593,13 +593,13 @@ _chunks=13 avgConform=25 avgCov=12 issues=99 crit=20_
 - [major] External state-test conformance harness is missing in the active tree (`tests/external/state_tests_runner.zig`), so cross-client fixture proof is largely absent.
 
 ## Foreign Feature Gaps
-- Explicit hardfork/spec mapping and per-run spec selection are standard in reference implementations but missing from zevm audited execution paths (`foundry/crates/evm/core/src/hardfork.rs`, `foundry/crates/evm/evm/src/executors/builder.rs`, `edr/crates/chain/spec/evm/src/config.rs`).
-- Chain-configured hardfork activation schedules and runtime fork resolution are present in EDR/Foundry, but no equivalent active selection surface was found in zevm tx execution (`edr/crates/edr_chain_l1/src/chains.rs`, `edr/crates/edr_provider/src/data.rs`, `foundry/crates/config/src/utils.rs`).
-- Hardfork-gated transaction/request validation and user-facing errors are implemented in EDR, while zevm audited path lacks comparable gating (`edr/crates/edr_provider/src/requests/validation.rs`, `edr/crates/edr_provider/src/error.rs`, `edr/crates/edr_provider/src/requests/resolve.rs`).
-- Typed transaction support (EIP-2930/1559/4844/7702) is first-class in references and absent or partial in zevm audited tx processor (`foundry/crates/evm/core/src/utils.rs`, `edr/crates/edr_transaction/src/request/eip2930.rs`, `edr/crates/edr_transaction/src/signed/eip7702.rs`).
-- Hardfork-aware reward/difficulty/base-fee handling is available in references but not in zevm block paths reviewed (`edr/crates/edr_eth/src/block/reward.rs`, `edr/crates/block/header/src/difficulty.rs`, `edr/crates/block/header/src/lib.rs`, `edr/crates/eips/1559/src/lib.rs`).
-- Spec-aware precompile/env switching is exposed in references and not wired through zevm execution selection (`foundry/crates/evm/core/src/evm.rs`, `edr/crates/precompile/src/lib.rs`, `foundry/crates/evm/core/src/backend/mod.rs`).
-- Dedicated old-fork fixture projects/integration suites exist in EDR/Foundry ecosystems, while equivalent active zevm fixture harnessing was not found (`edr/hardhat-tests/test/fixture-projects/hardhat-network-fork-tangerine-whistle/hardhat.config.js`, `edr/crates/edr_provider/tests/integration/eip7623/*`, `edr/crates/edr_provider/tests/integration/eip7702/*`).
+- Explicit hardfork/spec mapping and per-run spec selection are standard in reference implementations but missing from zevm audited execution paths (`lib/foundry/crates/evm/core/src/hardfork.rs`, `lib/foundry/crates/evm/evm/src/executors/builder.rs`, `lib/edr/crates/chain/spec/evm/src/config.rs`).
+- Chain-configured hardfork activation schedules and runtime fork resolution are present in EDR/Foundry, but no equivalent active selection surface was found in zevm tx execution (`lib/edr/crates/edr_chain_l1/src/chains.rs`, `lib/edr/crates/edr_provider/src/data.rs`, `lib/foundry/crates/config/src/utils.rs`).
+- Hardfork-gated transaction/request validation and user-facing errors are implemented in EDR, while zevm audited path lacks comparable gating (`lib/edr/crates/edr_provider/src/requests/validation.rs`, `lib/edr/crates/edr_provider/src/error.rs`, `lib/edr/crates/edr_provider/src/requests/resolve.rs`).
+- Typed transaction support (EIP-2930/1559/4844/7702) is first-class in references and absent or partial in zevm audited tx processor (`lib/foundry/crates/evm/core/src/utils.rs`, `lib/edr/crates/edr_transaction/src/request/eip2930.rs`, `lib/edr/crates/edr_transaction/src/signed/eip7702.rs`).
+- Hardfork-aware reward/difficulty/base-fee handling is available in references but not in zevm block paths reviewed (`lib/edr/crates/edr_eth/src/block/reward.rs`, `lib/edr/crates/block/header/src/difficulty.rs`, `lib/edr/crates/block/header/src/lib.rs`, `lib/edr/crates/eips/1559/src/lib.rs`).
+- Spec-aware precompile/env switching is exposed in references and not wired through zevm execution selection (`lib/foundry/crates/evm/core/src/evm.rs`, `lib/edr/crates/precompile/src/lib.rs`, `lib/foundry/crates/evm/core/src/backend/mod.rs`).
+- Dedicated old-fork fixture projects/integration suites exist in EDR/Foundry ecosystems, while equivalent active zevm fixture harnessing was not found (`lib/edr/hardhat-tests/test/fixture-projects/hardhat-network-fork-tangerine-whistle/hardhat.config.js`, `lib/edr/crates/edr_provider/tests/integration/eip7623/*`, `lib/edr/crates/edr_provider/tests/integration/eip7702/*`).
 
 ## Per-Chunk Findings
 
@@ -893,7 +893,7 @@ _chunks=13 avgConform=25 avgCov=12 issues=99 crit=20_
 - Fork-selection tests ensuring Shanghai semantics (not Cancun/Prague semantics) for the same block context/timestamp.
 
 ### Fork - cancun (`fork-cancun`)
-- Run Cancun execution-spec suites for `execution-specs/tests/cancun/{eip1153_tstore,eip5656_mcopy,eip7516_blobgasfee,eip6780_selfdestruct}`.
+- Run Cancun execution-spec suites for `lib/execution-specs/tests/cancun/{eip1153_tstore,eip5656_mcopy,eip7516_blobgasfee,eip6780_selfdestruct}`.
 - Add EIP-4844 type-3 transaction tests: no-blob rejection, invalid versioned hash, `max_fee_per_blob_gas` check, and per-block blob gas limit.
 - Add EIP-4788 pre-body system transaction test (beacon roots contract call before user tx execution).
 - Add BLOBHASH tests with non-empty blob hash lists plus out-of-bounds behavior.
@@ -930,7 +930,7 @@ _chunks=11 avgConform=5 avgCov=13 issues=69 crit=10_
 
 ## Top Risks
 1. [critical] Production dispatch is disconnected across eth/debug/engine due null `on_method`; known methods return `Method not found` (`src/main.zig:20`, `src/rpc/dispatcher.zig:18-20`).
-2. [critical] Required Engine API method `engine_exchangeCapabilities` is missing in runtime behavior (`execution-apis/src/engine/common.md:145`, `src/main.zig:20`, `src/rpc/dispatcher.zig:18`).
+2. [critical] Required Engine API method `engine_exchangeCapabilities` is missing in runtime behavior (`lib/execution-apis/src/engine/common.md:145`, `src/main.zig:20`, `src/rpc/dispatcher.zig:18`).
 3. [major] Engine parser misses declared methods (`engine_forkchoiceUpdatedV4`, `engine_getBlobsV3`, `engine_getClientVersionV1`, `engine_getPayloadBodiesByHashV2`, `engine_getPayloadBodiesByRangeV2`) (`/Users/williamcory/voltaire/packages/voltaire-zig/src/jsonrpc/engine/methods.zig:137`).
 4. [major] Transaction fidelity risk: `eth_getTransactionByHash` is stubbed null and receipt log `topics`/`data` are dropped (`src/rpc/handlers/block_query_handlers.zig:119`, `src/rpc/handlers/block_query_handlers.zig:242`).
 5. [major] State correctness risk: `eth_getCode` always returns `0x`; `eth_getStorageAt` parse/encoding is non-spec (`src/rpc/handlers/eth_read.zig:49`, `src/rpc/handlers/eth_read.zig:60`).
@@ -986,7 +986,7 @@ Issues:
 - [major/conformance] method-specific param/error contracts are not implemented (`src/rpc/dispatcher.zig:32`).
 - [major/test-coverage] no tests cover execute methods (`src/rpc/dispatcher_test.zig:35`).
 - [major/test-coverage] potential execute handlers/tests are not in default test graph (`src/rpc/root.zig:6`).
-- [major/missing-feature] reference hardhat/anvil dev-execution methods are largely missing (`src/rpc/dispatcher.zig:68`).
+- [major/missing-feature] reference hardhat and anvil dev-execution methods are largely missing (`src/rpc/dispatcher.zig:68`).
 
 ### eth — transaction.yaml (eth-transaction)
 - Conformance: 5
@@ -1067,14 +1067,14 @@ Issues:
 - [major/conformance] fallback handler layer always returns `MethodNotFound` (`src/rpc/handlers.zig:49`).
 - [major/test-coverage] no tests assert debug spec behavior (`src/rpc/dispatcher_test.zig:35`).
 - [minor/test-coverage] some RPC tests are not part of default aggregation (`src/rpc/root.zig:6`).
-- [major/missing-feature] reference hardhat/anvil developer RPC surface is largely missing (`src/rpc/dispatcher.zig:68`).
+- [major/missing-feature] reference hardhat and anvil developer RPC surface is largely missing (`src/rpc/dispatcher.zig:68`).
 
 ### engine (engine-)
 - Conformance: 8
 - Test coverage: 14
 - Summary: recognized engine methods still return `-32601`; required method support is missing and parser coverage is incomplete.
 Issues:
-- [critical/conformance] `engine_exchangeCapabilities` is required by spec but returns `MethodNotFound` (`execution-apis/src/engine/common.md:145`, `src/main.zig:20`, `src/rpc/dispatcher.zig:18`).
+- [critical/conformance] `engine_exchangeCapabilities` is required by spec but returns `MethodNotFound` (`lib/execution-apis/src/engine/common.md:145`, `src/main.zig:20`, `src/rpc/dispatcher.zig:18`).
 - [major/conformance] all recognized engine methods are stubbed to `MethodNotFound` in active runtime (`src/rpc/dispatcher.zig:51`, `src/main.zig:20`).
 - [major/conformance] five spec-declared engine methods are not recognized by parser (`/Users/williamcory/voltaire/packages/voltaire-zig/src/jsonrpc/engine/methods.zig:137`).
 - [major/test-coverage] no tests validate engine spec semantics (`src/rpc/dispatcher_test.zig:66`, `src/rpc/server_test.zig:118`).
@@ -1203,7 +1203,7 @@ _chunks=6 avgConform=37 avgCov=19 issues=37 crit=4_
 6. [major] Critical verifier/sync/parser protocol paths are largely untested (`src/consensus_verifier_test.zig`, `src/consensus_sync_test.zig`, `src/beacon_api_test.zig`).
 
 ## Foreign Feature Gaps
-- Per-chunk inputs did not provide concrete foundry/hardhat/edr (or other foreign implementation) deltas.
+- Per-chunk inputs did not provide concrete foundry, hardhat, and edr (or other foreign implementation) deltas.
 - Consolidated foreign feature gaps reported in this review: none.
 
 ## Per-Chunk Findings

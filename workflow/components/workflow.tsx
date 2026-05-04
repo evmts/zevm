@@ -21,16 +21,16 @@ const agentmd = readFileSync(join(__dirname, "..", "..", "CLAUDE.md"));
 const SYSTEM_PROMPT = `${agentmd}
 We have many resources available such as:
 
-- EIPs/
+- lib/EIPs/
 - consensus/specs/
-- ethereum-tests/
-- execution-apis/
+- lib/ethereum-tests/
+- lib/execution-apis/
 - execution-specs-tests/
 - execcution-specs/
-- hive/
-- yellowpaper/
-- edr/ hardhat ipmlementation in rust
-- foundry/ contains an anvil implementation
+- lib/hive/
+- lib/yellowpaper/
+- lib/edr/ hardhat ipmlementation in rust
+- lib/foundry/ contains an anvil implementation
 
 - ../tevm-monorepo (a typescript anvil like thing)
 
@@ -49,8 +49,8 @@ Before implementing ANYTHING, you MUST check these upstream dependencies (we own
 
 REFERENCE IMPLEMENTATIONS (read for behavior/edge cases, do not copy wholesale):
 4. tevm-monorepo (../tevm-monorepo/packages/actions/src/) — TypeScript trusted client with eth/anvil/debug handlers
-5. hardhat EDR (edr/crates/edr_provider/src/requests/) — Rust dev node with 73 RPC methods
-6. foundry anvil (foundry/) — Rust dev node reference
+5. hardhat EDR (lib/edr/crates/edr_provider/src/requests/) — Rust dev node with 73 RPC methods
+6. foundry anvil (lib/foundry/) — Rust dev node reference
 7. If the reference implementation includes e2e or integration tests that are a black box and can be easily replicated we should flag them and make sure we port them
 
 ALREADY DONE in zevm

@@ -27,17 +27,17 @@ export const focuses = [
 
   // --- Test suite focuses ---
   // Each test suite is its own focus so agents can work on getting tests passing independently.
-  { id: "test-rlp", name: "RLP Tests — pass ethereum-tests/RLPTests/ JSON vectors (encoding/decoding)" },
-  { id: "test-trie", name: "Trie Tests — pass ethereum-tests/TrieTests/ JSON vectors (Merkle Patricia Trie correctness)" },
-  { id: "test-transaction", name: "Transaction Tests — pass ethereum-tests/TransactionTests/ JSON vectors (tx validity, encoding, signature recovery)" },
-  { id: "test-blockchain", name: "Blockchain Tests — pass ethereum-tests/BlockchainTests/ JSON vectors (full block execution traces)" },
-  { id: "test-difficulty", name: "Difficulty Tests — pass ethereum-tests/DifficultyTests/ JSON vectors (mining difficulty algorithms)" },
-  { id: "test-abi", name: "ABI Tests — pass ethereum-tests/ABITests/ JSON vectors (contract ABI encoding/decoding)" },
-  { id: "test-eof", name: "EOF Tests — pass ethereum-tests/EOFTests/ JSON vectors (EVM Object Format validation)" },
+  { id: "test-rlp", name: "RLP Tests — pass lib/ethereum-tests/RLPTests/ JSON vectors (encoding/decoding)" },
+  { id: "test-trie", name: "Trie Tests — pass lib/ethereum-tests/TrieTests/ JSON vectors (Merkle Patricia Trie correctness)" },
+  { id: "test-transaction", name: "Transaction Tests — pass lib/ethereum-tests/TransactionTests/ JSON vectors (tx validity, encoding, signature recovery)" },
+  { id: "test-blockchain", name: "Blockchain Tests — pass lib/ethereum-tests/BlockchainTests/ JSON vectors (full block execution traces)" },
+  { id: "test-difficulty", name: "Difficulty Tests — pass lib/ethereum-tests/DifficultyTests/ JSON vectors (mining difficulty algorithms)" },
+  { id: "test-abi", name: "ABI Tests — pass lib/ethereum-tests/ABITests/ JSON vectors (contract ABI encoding/decoding)" },
+  { id: "test-eof", name: "EOF Tests — pass lib/ethereum-tests/EOFTests/ JSON vectors (EVM Object Format validation)" },
   { id: "test-state-frontier", name: "State Tests (Frontier→Istanbul) — pass execution-spec-tests for early hardforks" },
   { id: "test-state-berlin", name: "State Tests (Berlin→Shanghai) — pass execution-spec-tests for mid hardforks" },
   { id: "test-state-cancun", name: "State Tests (Cancun→Prague) — pass execution-spec-tests for latest hardforks" },
-  { id: "test-hive-rpc", name: "Hive RPC Tests — pass hive/simulators/ethereum/ JSON-RPC conformance tests against our node" },
+  { id: "test-hive-rpc", name: "Hive RPC Tests — pass lib/hive/simulators/ethereum/ JSON-RPC conformance tests against our node" },
 ] as const;
 
 export type FocusId = (typeof focuses)[number]["id"];
