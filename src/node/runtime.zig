@@ -479,6 +479,12 @@ pub const NodeRuntime = struct {
             owned_block_bodies.deinit(allocator);
         }
 
+        var receipt_index = receipt_index_mod.ReceiptIndex.init(allocator);
+        errdefer receipt_index.deinit(allocator);
+
+        var log_index = log_index_mod.LogIndex.init();
+        errdefer log_index.deinit(allocator);
+
         var startup_head_block_number: u64 = 0;
         var startup_head_block_timestamp: u64 = genesis_header.timestamp;
         var startup_base_fee = config.base_fee;
@@ -489,20 +495,50 @@ pub const NodeRuntime = struct {
             startup_head_block_timestamp = imported_head.header.timestamp;
             startup_base_fee = imported_head.header.base_fee_per_gas orelse startup_base_fee;
             const head_hash_hex = std.fmt.bytesToHex(stats.head_hash, .lower);
-            log.warn(.startup, "chain_rlp_query_only_imported path={s} block_count={} tx_count={} head_block_number={} head_hash=0x{s} state_materialized=false receipts_indexed=false logs_indexed=false", .{
-                path,
-                stats.block_count,
-                stats.transaction_count,
+            const materialized = try materializeImportedChain(
+                allocator,
+                &state,
+                &blockchain,
+                &receipt_index,
+                &log_index,
+                runtime_chain_id,
+                runtime_hardfork_config,
+                config.blob_base_fee,
                 stats.head_block_number,
-                &head_hash_hex,
-            });
+            );
+            if (materialized.stopped_block_number) |stopped_block_number| {
+                log.warn(.startup, "chain_rlp_imported path={s} block_count={} tx_count={} head_block_number={} head_hash=0x{s} state_materialized=partial materialized_blocks={} materialized_txs={} receipts_indexed={} logs_indexed={} stopped_block_number={} receipt_root_mismatches={} logs_bloom_mismatches={} state_root_mismatches={}", .{
+                    path,
+                    stats.block_count,
+                    stats.transaction_count,
+                    stats.head_block_number,
+                    &head_hash_hex,
+                    materialized.block_count,
+                    materialized.transaction_count,
+                    materialized.receipt_count,
+                    materialized.log_count,
+                    stopped_block_number,
+                    materialized.receipt_root_mismatch_count,
+                    materialized.logs_bloom_mismatch_count,
+                    materialized.state_root_mismatch_count,
+                });
+            } else {
+                log.warn(.startup, "chain_rlp_imported path={s} block_count={} tx_count={} head_block_number={} head_hash=0x{s} state_materialized=true materialized_blocks={} materialized_txs={} receipts_indexed={} logs_indexed={} receipt_root_mismatches={} logs_bloom_mismatches={} state_root_mismatches={}", .{
+                    path,
+                    stats.block_count,
+                    stats.transaction_count,
+                    stats.head_block_number,
+                    &head_hash_hex,
+                    materialized.block_count,
+                    materialized.transaction_count,
+                    materialized.receipt_count,
+                    materialized.log_count,
+                    materialized.receipt_root_mismatch_count,
+                    materialized.logs_bloom_mismatch_count,
+                    materialized.state_root_mismatch_count,
+                });
+            }
         }
-
-        var receipt_index = receipt_index_mod.ReceiptIndex.init(allocator);
-        errdefer receipt_index.deinit(allocator);
-
-        var log_index = log_index_mod.LogIndex.init();
-        errdefer log_index.deinit(allocator);
 
         var snapshots = std.AutoHashMap(u64, SnapshotEntry).init(allocator);
         errdefer snapshots.deinit();
@@ -1619,7 +1655,11 @@ pub const NodeRuntime = struct {
 
         try self.blockchain.putBlock(block);
         try self.blockchain.setCanonicalHead(block.hash);
-        try self.owned_block_bodies.append(self.allocator, .{ .transactions = transactions });
+        try self.owned_block_bodies.append(self.allocator, .{
+            .block_hash = block.hash,
+            .transactions = transactions,
+            .requests_hash = result.requests_hash,
+        });
         transactions_owned_by_runtime = true;
 
         try self.receipt_index.putBlockReceipts(self.allocator, block.hash, result.receipts);
@@ -1762,6 +1802,301 @@ fn clearOwnedBlockBodyList(
     owned_block_bodies.clearRetainingCapacity();
 }
 
+const ImportedMaterializationStats = struct {
+    block_count: usize = 0,
+    transaction_count: usize = 0,
+    receipt_count: usize = 0,
+    log_count: usize = 0,
+    receipt_root_mismatch_count: usize = 0,
+    logs_bloom_mismatch_count: usize = 0,
+    state_root_mismatch_count: usize = 0,
+    stopped_block_number: ?u64 = null,
+};
+
+const ImportedBlockStats = struct {
+    transaction_count: usize = 0,
+    receipt_count: usize = 0,
+    log_count: usize = 0,
+    receipt_root_mismatch: bool = false,
+    logs_bloom_mismatch: bool = false,
+    state_root_mismatch: bool = false,
+};
+
+fn materializeImportedChain(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+    blockchain: *blockchain_mod.Blockchain,
+    receipt_index: *receipt_index_mod.ReceiptIndex,
+    log_index: *log_index_mod.LogIndex,
+    chain_id: u64,
+    hardfork_config: hardfork_schedule.ChainConfig,
+    blob_base_fee: u256,
+    head_block_number: u64,
+) !ImportedMaterializationStats {
+    var stats = ImportedMaterializationStats{};
+    var block_number: u64 = 1;
+    while (block_number <= head_block_number) : (block_number += 1) {
+        const block = (try blockchain.getBlockByNumber(block_number)) orelse return error.ImportedBlockMissing;
+        const block_stats = materializeImportedBlock(
+            allocator,
+            sm,
+            blockchain,
+            receipt_index,
+            log_index,
+            chain_id,
+            hardfork_config,
+            blob_base_fee,
+            block,
+        ) catch |err| {
+            if (err == error.OutOfMemory) return err;
+            stats.stopped_block_number = block_number;
+            log.warn(.startup, "chain_rlp_materialization_stopped block_number={} error={s}", .{
+                block_number,
+                @errorName(err),
+            });
+            break;
+        };
+
+        stats.block_count += 1;
+        stats.transaction_count += block_stats.transaction_count;
+        stats.receipt_count += block_stats.receipt_count;
+        stats.log_count += block_stats.log_count;
+        if (block_stats.receipt_root_mismatch) stats.receipt_root_mismatch_count += 1;
+        if (block_stats.logs_bloom_mismatch) stats.logs_bloom_mismatch_count += 1;
+        if (block_stats.state_root_mismatch) stats.state_root_mismatch_count += 1;
+    }
+    return stats;
+}
+
+fn materializeImportedBlock(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+    blockchain: *blockchain_mod.Blockchain,
+    receipt_index: *receipt_index_mod.ReceiptIndex,
+    log_index: *log_index_mod.LogIndex,
+    chain_id: u64,
+    hardfork_config: hardfork_schedule.ChainConfig,
+    blob_base_fee: u256,
+    block: primitives.Block.Block,
+) !ImportedBlockStats {
+    try sm.checkpoint();
+    var committed = false;
+    errdefer if (!committed) sm.revert();
+
+    var adapter = host_adapter.HostAdapter{ .state = sm };
+    var recent_hashes: [256][32]u8 = undefined;
+    const block_ctx = try importedBlockContext(blockchain, chain_id, blob_base_fee, block, &recent_hashes);
+    const hardfork = inferImportedBlockHardfork(hardfork_config, block_ctx, block);
+
+    if (hardfork.isAtLeast(.CANCUN)) {
+        if (block.header.parent_beacon_block_root) |root| {
+            try block_builder.applyBeaconRootsSystemCall(sm, block.header.timestamp, root);
+        }
+    }
+
+    var receipts = std.ArrayList(primitives.Receipt.Receipt){};
+    defer {
+        for (receipts.items) |receipt| receipt.deinit(allocator);
+        receipts.deinit(allocator);
+    }
+
+    var cumulative_gas_used: u64 = 0;
+    var next_log_index: u32 = 0;
+    for (block.body.transactions, 0..) |transaction_data, tx_index| {
+        var decoded = try tx_encoding.decodeEnvelope(allocator, transaction_data.raw);
+        defer decoded.deinit(allocator);
+        const tx = tx_encoding.envelopeToLegacyLikeTx(decoded);
+        const sender = try tx_encoding.recoverEnvelopeSender(allocator, decoded);
+        const access_list = try processorAccessListFromEnvelope(allocator, tx_encoding.envelopeAccessList(decoded));
+        defer allocator.free(access_list);
+
+        var receipt = try tx_processor.processTransactionWithOptions(
+            allocator,
+            sm,
+            adapter.hostInterface(),
+            sender,
+            tx,
+            block_ctx,
+            .{
+                .access_list = access_list,
+                .receipt_type = tx_encoding.envelopeReceiptType(decoded),
+                .max_fee_per_gas = tx_encoding.envelopeMaxFeePerGas(decoded),
+                .max_priority_fee_per_gas = tx_encoding.envelopeMaxPriorityFeePerGas(decoded),
+                .authorization_list = tx_encoding.envelopeAuthorizationList(decoded),
+                .blob_gas_used = tx_encoding.envelopeBlobGasUsed(decoded),
+                .blob_gas_price = if (tx_encoding.envelopeBlobGasUsed(decoded) != null) block_ctx.blob_base_fee else null,
+                .hardfork_override = hardfork,
+            },
+        );
+        var receipt_owned = true;
+        errdefer if (receipt_owned) receipt.deinit(allocator);
+
+        if (hardfork.isBefore(.BYZANTIUM)) {
+            receipt.root = try block_builder.computeStateRootForFork(allocator, sm, blockBuilderHardfork(hardfork));
+            receipt.status = null;
+        }
+
+        const gas_used = std.math.cast(u64, receipt.gas_used) orelse return error.GasOverflow;
+        cumulative_gas_used = std.math.add(u64, cumulative_gas_used, gas_used) catch return error.GasOverflow;
+        receipt.transaction_hash = tx_encoding.transactionHash(transaction_data.raw);
+        receipt.transaction_index = @intCast(tx_index);
+        receipt.block_hash = block.hash;
+        receipt.block_number = block.header.number;
+        receipt.cumulative_gas_used = @as(u256, cumulative_gas_used);
+
+        const mutable_logs = @constCast(receipt.logs);
+        for (mutable_logs) |*event_log| {
+            event_log.block_number = block.header.number;
+            event_log.transaction_hash = receipt.transaction_hash;
+            event_log.transaction_index = receipt.transaction_index;
+            event_log.log_index = next_log_index;
+            next_log_index += 1;
+        }
+
+        try receipts.append(allocator, receipt);
+        receipt_owned = false;
+    }
+
+    if (block.body.withdrawals) |withdrawals| {
+        try block_builder.applyWithdrawals(sm, withdrawals);
+    }
+    if (hardfork.isBefore(.MERGE)) {
+        try block_builder.applyMinerReward(sm, block.header.beneficiary, blockBuilderHardfork(hardfork));
+    }
+
+    var stats = ImportedBlockStats{
+        .transaction_count = block.body.transactions.len,
+        .receipt_count = receipts.items.len,
+        .log_count = next_log_index,
+    };
+
+    const receipts_root = try block_builder.computeReceiptsRoot(allocator, receipts.items);
+    stats.receipt_root_mismatch = !std.mem.eql(u8, &receipts_root, &block.header.receipts_root);
+    const logs_bloom = block_builder.aggregateLogsBloom(receipts.items);
+    stats.logs_bloom_mismatch = !std.mem.eql(u8, &logs_bloom, &block.header.logs_bloom);
+    const state_root = try block_builder.computeStateRoot(allocator, sm);
+    stats.state_root_mismatch = !std.mem.eql(u8, &state_root, &block.header.state_root);
+
+    sm.commit();
+    committed = true;
+
+    try receipt_index.putBlockReceipts(allocator, block.hash, receipts.items);
+    try log_index.appendBlockLogs(allocator, block.header.number, block.hash, receipts.items);
+
+    return stats;
+}
+
+fn importedBlockContext(
+    blockchain: *blockchain_mod.Blockchain,
+    chain_id: u64,
+    blob_base_fee: u256,
+    block: primitives.Block.Block,
+    recent_hashes: *[256][32]u8,
+) !guillotine_mini.BlockContext {
+    return .{
+        .chain_id = chain_id,
+        .block_number = block.header.number,
+        .block_timestamp = block.header.timestamp,
+        .block_difficulty = block.header.difficulty,
+        .block_prevrandao = std.mem.readInt(u256, &block.header.mix_hash, .big),
+        .block_coinbase = block.header.beneficiary,
+        .block_gas_limit = block.header.gas_limit,
+        .block_base_fee = block.header.base_fee_per_gas orelse 0,
+        .blob_base_fee = if (block.header.excess_blob_gas) |excess|
+            primitives.Blob.calculateBlobGasPrice(excess)
+        else
+            blob_base_fee,
+        .block_hashes = try recentBlockHashesForImportedExecution(blockchain, block.header.number, recent_hashes),
+    };
+}
+
+fn recentBlockHashesForImportedExecution(
+    blockchain: *blockchain_mod.Blockchain,
+    execution_block_number: u64,
+    out: *[256][32]u8,
+) ![]const [32]u8 {
+    if (execution_block_number == 0) return out[0..0];
+    const tip_number = execution_block_number - 1;
+    const tip_hash = blockchain.getCanonicalHash(tip_number) orelse return error.MissingParentBlock;
+    return try blockchain.last256BlockHashesLocal(tip_hash, out);
+}
+
+fn processorAccessListFromEnvelope(
+    allocator: std.mem.Allocator,
+    access_list: []const primitives.Transaction.AccessListItem,
+) ![]primitives.AccessList.AccessListEntry {
+    const entries = try allocator.alloc(primitives.AccessList.AccessListEntry, access_list.len);
+    for (access_list, 0..) |entry, i| {
+        entries[i] = .{
+            .address = entry.address,
+            .storage_keys = entry.storage_keys,
+        };
+    }
+    return entries;
+}
+
+fn inferImportedBlockHardfork(
+    hardfork_config: hardfork_schedule.ChainConfig,
+    block_ctx: guillotine_mini.BlockContext,
+    block: primitives.Block.Block,
+) guillotine_mini.Hardfork {
+    const scheduled = tx_processor.resolveHardforkWithConfig(hardfork_config, block_ctx);
+    if (!isDefaultDevHardforkConfig(hardfork_config)) return scheduled;
+
+    if (block.header.parent_beacon_block_root != null) return .CANCUN;
+    if (block.header.blob_gas_used != null or block.header.excess_blob_gas != null) return .CANCUN;
+    if (block.header.withdrawals_root != null) return .SHANGHAI;
+    if (block.header.base_fee_per_gas != null) return .LONDON;
+
+    var has_eip2930 = false;
+    for (block.body.transactions) |transaction_data| {
+        if (transaction_data.raw.len == 0) continue;
+        switch (transaction_data.raw[0]) {
+            0x04 => return .PRAGUE,
+            0x03 => return .CANCUN,
+            0x02 => return .LONDON,
+            0x01 => has_eip2930 = true,
+            else => {},
+        }
+    }
+    if (has_eip2930) return .BERLIN;
+    return .FRONTIER;
+}
+
+fn isDefaultDevHardforkConfig(config: hardfork_schedule.ChainConfig) bool {
+    return config.homestead_block == DEFAULT_DEV_HARDFORK_CONFIG.homestead_block and
+        config.dao_block == DEFAULT_DEV_HARDFORK_CONFIG.dao_block and
+        config.tangerine_whistle_block == DEFAULT_DEV_HARDFORK_CONFIG.tangerine_whistle_block and
+        config.spurious_dragon_block == DEFAULT_DEV_HARDFORK_CONFIG.spurious_dragon_block and
+        config.byzantium_block == DEFAULT_DEV_HARDFORK_CONFIG.byzantium_block and
+        config.petersburg_block == DEFAULT_DEV_HARDFORK_CONFIG.petersburg_block and
+        config.istanbul_block == DEFAULT_DEV_HARDFORK_CONFIG.istanbul_block and
+        config.muir_glacier_block == DEFAULT_DEV_HARDFORK_CONFIG.muir_glacier_block and
+        config.berlin_block == DEFAULT_DEV_HARDFORK_CONFIG.berlin_block and
+        config.london_block == DEFAULT_DEV_HARDFORK_CONFIG.london_block and
+        config.arrow_glacier_block == DEFAULT_DEV_HARDFORK_CONFIG.arrow_glacier_block and
+        config.gray_glacier_block == DEFAULT_DEV_HARDFORK_CONFIG.gray_glacier_block and
+        config.merge_block == DEFAULT_DEV_HARDFORK_CONFIG.merge_block and
+        config.shanghai_timestamp == DEFAULT_DEV_HARDFORK_CONFIG.shanghai_timestamp and
+        config.cancun_timestamp == DEFAULT_DEV_HARDFORK_CONFIG.cancun_timestamp and
+        config.prague_timestamp == DEFAULT_DEV_HARDFORK_CONFIG.prague_timestamp and
+        config.osaka_timestamp == DEFAULT_DEV_HARDFORK_CONFIG.osaka_timestamp;
+}
+
+fn blockBuilderHardfork(hardfork: guillotine_mini.Hardfork) block_builder.Hardfork {
+    if (hardfork.isBefore(.HOMESTEAD)) return .frontier;
+    if (hardfork.isBefore(.BYZANTIUM)) return .homestead;
+    if (hardfork.isBefore(.CONSTANTINOPLE)) return .byzantium;
+    if (hardfork.isBefore(.ISTANBUL)) return .constantinople;
+    if (hardfork.isBefore(.BERLIN)) return .istanbul;
+    if (hardfork.isBefore(.LONDON)) return .berlin;
+    if (hardfork.isBefore(.MERGE)) return .london;
+    if (hardfork.isBefore(.SHANGHAI)) return .paris;
+    if (hardfork.isBefore(.CANCUN)) return .shanghai;
+    if (hardfork.isBefore(.PRAGUE)) return .cancun;
+    return .prague;
+}
+
 fn finalizeReceiptsForBlock(
     result: *block_builder.BlockResult,
     ready: []const txpool.PooledTransaction,
@@ -1830,7 +2165,10 @@ fn initBlockchainWithGenesis(
         .parent_beacon_block_root = genesis_header.parent_beacon_block_root,
     };
     const body = primitives.BlockBody.init();
-    const genesis_block = try primitives.Block.from(&header, &body, allocator);
+    var genesis_block = try primitives.Block.from(&header, &body, allocator);
+    const encoded = try primitives.Block.rlpEncode(&genesis_block, allocator);
+    defer allocator.free(encoded);
+    genesis_block.size = @intCast(encoded.len);
     try blockchain.putBlock(genesis_block);
     try blockchain.setCanonicalHead(genesis_block.hash);
     return blockchain;

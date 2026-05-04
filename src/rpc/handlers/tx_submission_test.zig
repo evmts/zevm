@@ -124,9 +124,10 @@ test "eth_sendRawTransaction rejects insufficient balance" {
     try std.testing.expectError(tx_submission.TxSubmissionError.InsufficientBalance, result);
 }
 
-test "eth_sendRawTransaction rejects gas price below runtime minimum" {
+test "eth_sendRawTransaction accepts gas price below advertised gasPrice" {
     var rt = try makeRuntime();
     defer rt.deinit();
+    try rt.setMiningConfig(.manual);
     rt.gas_price = runtime.DEFAULT_GAS_PRICE + 1;
 
     const encoded = try signTestLegacyTx(
@@ -144,8 +145,8 @@ test "eth_sendRawTransaction rejects gas price below runtime minimum" {
     const hex = try bytesToHexAlloc(std.testing.allocator, encoded);
     defer std.testing.allocator.free(hex);
 
-    const result = tx_submission.handleSendRawTransaction(std.testing.allocator, &rt, makeRawTxParams(hex));
-    try std.testing.expectError(tx_submission.TxSubmissionError.GasPriceBelowMinimum, result);
+    _ = try tx_submission.handleSendRawTransaction(std.testing.allocator, &rt, makeRawTxParams(hex));
+    try std.testing.expectEqual(@as(usize, 1), rt.pool.items().len);
 }
 
 test "eth_sendRawTransaction rejects intrinsic gas > gasLimit" {
@@ -754,7 +755,7 @@ test "eth_sendTransaction auto-impersonated txpool and mined queries preserve se
     const inspect_pending = try expectObject(try field(inspect_root, "pending"));
     const inspect_account = try expectObject(try field(inspect_pending, "0x0000000000000000000000000000000000000043"));
     try std.testing.expectEqualStrings(
-        "0x70997970c51812dc3a010c7d01b50e0d17dc79c8: 42 wei + 21000 gas x 2000000000 wei",
+        "0x70997970C51812dc3A010C7d01b50e0d17dc79C8: 42 wei + 21000 gas x 2000000000 wei",
         (try field(inspect_account, "0")).string,
     );
 
@@ -782,16 +783,9 @@ test "eth_sendTransaction auto-impersonated txpool and mined queries preserve se
     try std.testing.expectEqual(recipient, receipt.to.?);
 }
 
-// --- Phase 1 boundary: typed envelope rejection -------------------------
-//
-// Phase 1 accepts only legacy RLP envelopes on the public RPC surface.
-// Every EIP-2718 typed envelope (type bytes 0x01..=0x7f) must reject cleanly
-// with `UnsupportedTxType`, which the dispatcher maps to JSON-RPC -32602.
+// --- Malformed typed envelope rejection --------------------------------
 
 fn submitRawWithLeadingByte(rt: *runtime.NodeRuntime, leading: u8) tx_submission.TxSubmissionError!jsonrpc.eth.SendRawTransaction.Result {
-    // Body shape is irrelevant: rejection happens on the type-byte check
-    // before any RLP decoding, so a single leading byte plus a minimal
-    // suffix is enough to exercise the boundary.
     const payload = [_]u8{ leading, 0xc0 };
     const hex = try primitives.Hex.bytesToHex(std.testing.allocator, &payload);
     defer std.testing.allocator.free(hex);
@@ -802,28 +796,28 @@ test "eth_sendRawTransaction rejects EIP-2930 typed envelope (0x01)" {
     var rt = try makeRuntime();
     defer rt.deinit();
     const result = submitRawWithLeadingByte(&rt, 0x01);
-    try std.testing.expectError(tx_submission.TxSubmissionError.UnsupportedTxType, result);
+    try std.testing.expectError(tx_submission.TxSubmissionError.DecodeFailed, result);
 }
 
 test "eth_sendRawTransaction rejects EIP-1559 typed envelope (0x02)" {
     var rt = try makeRuntime();
     defer rt.deinit();
     const result = submitRawWithLeadingByte(&rt, 0x02);
-    try std.testing.expectError(tx_submission.TxSubmissionError.UnsupportedTxType, result);
+    try std.testing.expectError(tx_submission.TxSubmissionError.DecodeFailed, result);
 }
 
 test "eth_sendRawTransaction rejects EIP-4844 typed envelope (0x03)" {
     var rt = try makeRuntime();
     defer rt.deinit();
     const result = submitRawWithLeadingByte(&rt, 0x03);
-    try std.testing.expectError(tx_submission.TxSubmissionError.UnsupportedTxType, result);
+    try std.testing.expectError(tx_submission.TxSubmissionError.DecodeFailed, result);
 }
 
 test "eth_sendRawTransaction rejects EIP-7702 typed envelope (0x04)" {
     var rt = try makeRuntime();
     defer rt.deinit();
     const result = submitRawWithLeadingByte(&rt, 0x04);
-    try std.testing.expectError(tx_submission.TxSubmissionError.UnsupportedTxType, result);
+    try std.testing.expectError(tx_submission.TxSubmissionError.DecodeFailed, result);
 }
 
 test "eth_sendRawTransaction rejects unknown type byte (0x7f)" {

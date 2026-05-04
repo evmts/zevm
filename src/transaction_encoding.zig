@@ -12,13 +12,190 @@ pub const TransactionEncodingError = error{
     UnexpectedInput,
     InvalidRemainder,
     InvalidSignatureV,
+    InvalidTransactionType,
     RlpPayloadTooLarge,
+    OutOfMemory,
 };
 
 const RlpItem = union(enum) {
     string: []const u8,
     list: []const u8,
 };
+
+pub const DecodedEnvelope = union(enum) {
+    legacy: primitives.Transaction.LegacyTransaction,
+    eip2930: primitives.Transaction.Eip2930Transaction,
+    eip1559: primitives.Transaction.Eip1559Transaction,
+    eip4844: primitives.Transaction.Eip4844Transaction,
+    eip7702: primitives.Transaction.Eip7702Transaction,
+
+    pub fn deinit(self: DecodedEnvelope, allocator: std.mem.Allocator) void {
+        switch (self) {
+            .legacy => {},
+            .eip2930 => |tx| freeTransactionAccessList(allocator, tx.access_list),
+            .eip1559 => |tx| freeTransactionAccessList(allocator, tx.access_list),
+            .eip4844 => |tx| {
+                freeTransactionAccessList(allocator, tx.access_list);
+                allocator.free(tx.blob_versioned_hashes);
+            },
+            .eip7702 => |tx| {
+                freeTransactionAccessList(allocator, tx.access_list);
+                allocator.free(tx.authorization_list);
+            },
+        }
+    }
+};
+
+pub const CanonicalEnvelope = struct {
+    bytes: []const u8,
+    owned: ?[]u8 = null,
+
+    pub fn deinit(self: CanonicalEnvelope, allocator: std.mem.Allocator) void {
+        if (self.owned) |buffer| allocator.free(buffer);
+    }
+};
+
+pub fn decodeEnvelope(
+    allocator: std.mem.Allocator,
+    raw: []const u8,
+) TransactionEncodingError!DecodedEnvelope {
+    if (raw.len == 0) return error.InputTooShort;
+    if (raw[0] >= 0xc0) return .{ .legacy = try decodeLegacyEnvelope(raw) };
+    if (raw[0] > 0x7f) return error.InvalidTransactionType;
+
+    return switch (raw[0]) {
+        0x01 => .{ .eip2930 = try decodeEip2930Envelope(allocator, raw) },
+        0x02 => .{ .eip1559 = try decodeEip1559Envelope(allocator, raw) },
+        0x03 => .{ .eip4844 = try decodeEip4844Envelope(allocator, raw) },
+        0x04 => .{ .eip7702 = try decodeEip7702Envelope(allocator, raw) },
+        else => error.InvalidTransactionType,
+    };
+}
+
+pub fn canonicalTransactionEnvelope(
+    allocator: std.mem.Allocator,
+    raw: []const u8,
+) TransactionEncodingError!CanonicalEnvelope {
+    if (raw.len == 0 or raw[0] != 0x03) return .{ .bytes = raw };
+    const tx_payload = try eip4844WrapperTransactionPayload(raw) orelse return .{ .bytes = raw };
+
+    const canonical = try allocator.alloc(u8, tx_payload.len + 1);
+    canonical[0] = 0x03;
+    @memcpy(canonical[1..], tx_payload);
+    return .{ .bytes = canonical, .owned = canonical };
+}
+
+pub fn envelopeToLegacyLikeTx(decoded: DecodedEnvelope) primitives.Transaction.LegacyTransaction {
+    return switch (decoded) {
+        .legacy => |tx| tx,
+        .eip2930 => |tx| .{
+            .nonce = tx.nonce,
+            .gas_price = tx.gas_price,
+            .gas_limit = tx.gas_limit,
+            .to = tx.to,
+            .value = tx.value,
+            .data = tx.data,
+            .v = @as(u64, tx.y_parity) + 27,
+            .r = tx.r,
+            .s = tx.s,
+        },
+        .eip1559 => |tx| .{
+            .nonce = tx.nonce,
+            .gas_price = tx.max_fee_per_gas,
+            .gas_limit = tx.gas_limit,
+            .to = tx.to,
+            .value = tx.value,
+            .data = tx.data,
+            .v = @as(u64, tx.y_parity) + 27,
+            .r = tx.r,
+            .s = tx.s,
+        },
+        .eip4844 => |tx| .{
+            .nonce = tx.nonce,
+            .gas_price = tx.max_fee_per_gas,
+            .gas_limit = tx.gas_limit,
+            .to = tx.to,
+            .value = tx.value,
+            .data = tx.data,
+            .v = @as(u64, tx.y_parity) + 27,
+            .r = tx.r,
+            .s = tx.s,
+        },
+        .eip7702 => |tx| .{
+            .nonce = tx.nonce,
+            .gas_price = tx.max_fee_per_gas,
+            .gas_limit = tx.gas_limit,
+            .to = tx.to,
+            .value = tx.value,
+            .data = tx.data,
+            .v = @as(u64, tx.y_parity) + 27,
+            .r = tx.r,
+            .s = tx.s,
+        },
+    };
+}
+
+pub fn envelopeReceiptType(decoded: DecodedEnvelope) primitives.Receipt.TransactionType {
+    return switch (decoded) {
+        .legacy => .legacy,
+        .eip2930 => .eip2930,
+        .eip1559 => .eip1559,
+        .eip4844 => .eip4844,
+        .eip7702 => .eip7702,
+    };
+}
+
+pub fn envelopeChainId(decoded: DecodedEnvelope) ?u64 {
+    return switch (decoded) {
+        .legacy => |tx| legacyChainId(tx),
+        .eip2930 => |tx| tx.chain_id,
+        .eip1559 => |tx| tx.chain_id,
+        .eip4844 => |tx| tx.chain_id,
+        .eip7702 => |tx| tx.chain_id,
+    };
+}
+
+pub fn envelopeAccessList(decoded: DecodedEnvelope) []const primitives.Transaction.AccessListItem {
+    return switch (decoded) {
+        .legacy => &.{},
+        .eip2930 => |tx| tx.access_list,
+        .eip1559 => |tx| tx.access_list,
+        .eip4844 => |tx| tx.access_list,
+        .eip7702 => |tx| tx.access_list,
+    };
+}
+
+pub fn envelopeMaxFeePerGas(decoded: DecodedEnvelope) ?u256 {
+    return switch (decoded) {
+        .legacy, .eip2930 => null,
+        .eip1559 => |tx| tx.max_fee_per_gas,
+        .eip4844 => |tx| tx.max_fee_per_gas,
+        .eip7702 => |tx| tx.max_fee_per_gas,
+    };
+}
+
+pub fn envelopeMaxPriorityFeePerGas(decoded: DecodedEnvelope) ?u256 {
+    return switch (decoded) {
+        .legacy, .eip2930 => null,
+        .eip1559 => |tx| tx.max_priority_fee_per_gas,
+        .eip4844 => |tx| tx.max_priority_fee_per_gas,
+        .eip7702 => |tx| tx.max_priority_fee_per_gas,
+    };
+}
+
+pub fn envelopeBlobGasUsed(decoded: DecodedEnvelope) ?u256 {
+    return switch (decoded) {
+        .eip4844 => |tx| @as(u256, tx.blob_versioned_hashes.len) * @as(u256, 131_072),
+        else => null,
+    };
+}
+
+pub fn envelopeAuthorizationList(decoded: DecodedEnvelope) []const primitives.Authorization.Authorization {
+    return switch (decoded) {
+        .eip7702 => |tx| tx.authorization_list,
+        else => &.{},
+    };
+}
 
 pub fn encodeLegacyTransactionEnvelope(
     allocator: std.mem.Allocator,
@@ -133,6 +310,117 @@ pub fn decodeLegacyEnvelopeAllowInvalidSignature(raw: []const u8) TransactionEnc
     };
 }
 
+pub fn decodeEip2930Envelope(
+    allocator: std.mem.Allocator,
+    raw: []const u8,
+) TransactionEncodingError!primitives.Transaction.Eip2930Transaction {
+    const fields = try decodeTypedPayloadFields(11, raw, 0x01);
+    const access_list = try rlpItemToTransactionAccessList(allocator, fields[7]);
+    errdefer freeTransactionAccessList(allocator, access_list);
+    const y_parity = try rlpStringToU8(try rlpItemString(fields[8]));
+    if (y_parity > 1) return error.InvalidSignatureV;
+
+    return .{
+        .chain_id = try rlpStringToU64(try rlpItemString(fields[0])),
+        .nonce = try rlpStringToU64(try rlpItemString(fields[1])),
+        .gas_price = try rlpStringToU256(try rlpItemString(fields[2])),
+        .gas_limit = try rlpStringToU64(try rlpItemString(fields[3])),
+        .to = try rlpStringToOptionalAddress(try rlpItemString(fields[4])),
+        .value = try rlpStringToU256(try rlpItemString(fields[5])),
+        .data = try rlpItemString(fields[6]),
+        .access_list = access_list,
+        .y_parity = y_parity,
+        .r = try rlpStringToFixed32(try rlpItemString(fields[9])),
+        .s = try rlpStringToFixed32(try rlpItemString(fields[10])),
+    };
+}
+
+pub fn decodeEip1559Envelope(
+    allocator: std.mem.Allocator,
+    raw: []const u8,
+) TransactionEncodingError!primitives.Transaction.Eip1559Transaction {
+    const fields = try decodeTypedPayloadFields(12, raw, 0x02);
+    const access_list = try rlpItemToTransactionAccessList(allocator, fields[8]);
+    errdefer freeTransactionAccessList(allocator, access_list);
+    const y_parity = try rlpStringToU8(try rlpItemString(fields[9]));
+    if (y_parity > 1) return error.InvalidSignatureV;
+
+    return .{
+        .chain_id = try rlpStringToU64(try rlpItemString(fields[0])),
+        .nonce = try rlpStringToU64(try rlpItemString(fields[1])),
+        .max_priority_fee_per_gas = try rlpStringToU256(try rlpItemString(fields[2])),
+        .max_fee_per_gas = try rlpStringToU256(try rlpItemString(fields[3])),
+        .gas_limit = try rlpStringToU64(try rlpItemString(fields[4])),
+        .to = try rlpStringToOptionalAddress(try rlpItemString(fields[5])),
+        .value = try rlpStringToU256(try rlpItemString(fields[6])),
+        .data = try rlpItemString(fields[7]),
+        .access_list = access_list,
+        .y_parity = y_parity,
+        .r = try rlpStringToFixed32(try rlpItemString(fields[10])),
+        .s = try rlpStringToFixed32(try rlpItemString(fields[11])),
+    };
+}
+
+pub fn decodeEip4844Envelope(
+    allocator: std.mem.Allocator,
+    raw: []const u8,
+) TransactionEncodingError!primitives.Transaction.Eip4844Transaction {
+    const fields = try decodeEip4844PayloadFields(raw);
+    const access_list = try rlpItemToTransactionAccessList(allocator, fields[8]);
+    errdefer freeTransactionAccessList(allocator, access_list);
+    const blob_hashes = try rlpItemToBlobVersionedHashes(allocator, fields[10]);
+    errdefer allocator.free(blob_hashes);
+    const y_parity = try rlpStringToU8(try rlpItemString(fields[11]));
+    if (y_parity > 1) return error.InvalidSignatureV;
+    const to = try rlpStringToAddress(try rlpItemString(fields[5]));
+
+    return .{
+        .chain_id = try rlpStringToU64(try rlpItemString(fields[0])),
+        .nonce = try rlpStringToU64(try rlpItemString(fields[1])),
+        .max_priority_fee_per_gas = try rlpStringToU256(try rlpItemString(fields[2])),
+        .max_fee_per_gas = try rlpStringToU256(try rlpItemString(fields[3])),
+        .gas_limit = try rlpStringToU64(try rlpItemString(fields[4])),
+        .to = to,
+        .value = try rlpStringToU256(try rlpItemString(fields[6])),
+        .data = try rlpItemString(fields[7]),
+        .access_list = access_list,
+        .max_fee_per_blob_gas = try rlpStringToU256(try rlpItemString(fields[9])),
+        .blob_versioned_hashes = blob_hashes,
+        .y_parity = y_parity,
+        .r = try rlpStringToFixed32(try rlpItemString(fields[12])),
+        .s = try rlpStringToFixed32(try rlpItemString(fields[13])),
+    };
+}
+
+pub fn decodeEip7702Envelope(
+    allocator: std.mem.Allocator,
+    raw: []const u8,
+) TransactionEncodingError!primitives.Transaction.Eip7702Transaction {
+    const fields = try decodeTypedPayloadFields(13, raw, 0x04);
+    const access_list = try rlpItemToTransactionAccessList(allocator, fields[8]);
+    errdefer freeTransactionAccessList(allocator, access_list);
+    const authorization_list = try rlpItemToAuthorizationList(allocator, fields[9]);
+    errdefer allocator.free(authorization_list);
+    const y_parity = try rlpStringToU8(try rlpItemString(fields[10]));
+    if (y_parity > 1) return error.InvalidSignatureV;
+
+    return .{
+        .chain_id = try rlpStringToU64(try rlpItemString(fields[0])),
+        .nonce = try rlpStringToU64(try rlpItemString(fields[1])),
+        .max_priority_fee_per_gas = try rlpStringToU256(try rlpItemString(fields[2])),
+        .max_fee_per_gas = try rlpStringToU256(try rlpItemString(fields[3])),
+        .gas_limit = try rlpStringToU64(try rlpItemString(fields[4])),
+        .to = try rlpStringToOptionalAddress(try rlpItemString(fields[5])),
+        .value = try rlpStringToU256(try rlpItemString(fields[6])),
+        .data = try rlpItemString(fields[7]),
+        .access_list = access_list,
+        .authorization_list = authorization_list,
+        .y_parity = y_parity,
+        .r = try rlpStringToFixed32(try rlpItemString(fields[11])),
+        .s = try rlpStringToFixed32(try rlpItemString(fields[12])),
+    };
+}
+
 pub fn legacyChainId(tx: primitives.Transaction.LegacyTransaction) ?u64 {
     if (tx.v >= 35) return (tx.v - 35) / 2;
     return null;
@@ -158,6 +446,57 @@ pub fn recoverLegacySender(
         .v = legacyRecoveryId(tx.v) + 27,
     };
     return crypto.Crypto.unaudited_recoverAddress(signing_hash, sig);
+}
+
+pub fn recoverEnvelopeSender(
+    allocator: std.mem.Allocator,
+    decoded: DecodedEnvelope,
+) !primitives.Address {
+    return switch (decoded) {
+        .legacy => |tx| recoverLegacySender(allocator, tx),
+        .eip2930 => |tx| recoverTypedSender(allocator, 0x01, tx.y_parity, tx.r, tx.s, tx),
+        .eip1559 => |tx| recoverTypedSender(allocator, 0x02, tx.y_parity, tx.r, tx.s, tx),
+        .eip4844 => |tx| recoverTypedSender(allocator, 0x03, tx.y_parity, tx.r, tx.s, tx),
+        .eip7702 => |tx| recoverTypedSender(allocator, 0x04, tx.y_parity, tx.r, tx.s, tx),
+    };
+}
+
+fn recoverTypedSender(
+    allocator: std.mem.Allocator,
+    comptime tx_type: u8,
+    y_parity: u8,
+    r: [32]u8,
+    s: [32]u8,
+    tx: anytype,
+) !primitives.Address {
+    const signing_hash = try typedSigningHash(allocator, tx_type, tx);
+    const sig = crypto.Crypto.Signature{
+        .r = bytes32ToU256(r),
+        .s = bytes32ToU256(s),
+        .v = y_parity + 27,
+    };
+    return crypto.Crypto.unaudited_recoverAddress(signing_hash, sig);
+}
+
+fn typedSigningHash(
+    allocator: std.mem.Allocator,
+    comptime tx_type: u8,
+    tx: anytype,
+) ![32]u8 {
+    var unsigned = tx;
+    unsigned.y_parity = 0;
+    unsigned.r = [_]u8{0} ** 32;
+    unsigned.s = [_]u8{0} ** 32;
+
+    const encoded = switch (tx_type) {
+        0x01 => try primitives.Transaction.encodeEip2930ForSigning(allocator, unsigned),
+        0x02 => try primitives.Transaction.encodeEip1559ForSigning(allocator, unsigned),
+        0x03 => try primitives.Transaction.encodeEip4844ForSigning(allocator, unsigned),
+        0x04 => try primitives.Transaction.encodeEip7702ForSigning(allocator, unsigned),
+        else => unreachable,
+    };
+    defer allocator.free(encoded);
+    return transactionHash(encoded);
 }
 
 pub fn transactionHash(raw: []const u8) [32]u8 {
@@ -226,6 +565,193 @@ fn parseRlpItem(input: []const u8, index: *usize) TransactionEncodingError!RlpIt
     return .{ .list = input[start..end] };
 }
 
+fn decodeTypedPayloadFields(
+    comptime field_count: usize,
+    raw: []const u8,
+    expected_type: u8,
+) TransactionEncodingError![field_count]RlpItem {
+    const payload = try decodeTypedPayload(raw, expected_type);
+
+    return decodeRlpPayloadFields(field_count, payload);
+}
+
+fn decodeTypedPayload(
+    raw: []const u8,
+    expected_type: u8,
+) TransactionEncodingError![]const u8 {
+    if (raw.len < 2) return error.InputTooShort;
+    if (raw[0] != expected_type) return error.InvalidTransactionType;
+
+    var index: usize = 1;
+    const top = try parseRlpItem(raw, &index);
+    if (index != raw.len) return error.InvalidRemainder;
+    const payload = switch (top) {
+        .list => |items| items,
+        .string => return error.UnexpectedInput,
+    };
+    return payload;
+}
+
+fn decodeEip4844PayloadFields(raw: []const u8) TransactionEncodingError![14]RlpItem {
+    const payload = try decodeTypedPayload(raw, 0x03);
+    var payload_index: usize = 0;
+    const first = try parseRlpItem(payload, &payload_index);
+    switch (first) {
+        .string => return decodeRlpPayloadFields(14, payload),
+        .list => |tx_payload| {
+            const blobs = try parseRlpItem(payload, &payload_index);
+            const commitments = try parseRlpItem(payload, &payload_index);
+            const proofs = try parseRlpItem(payload, &payload_index);
+            if (payload_index != payload.len) return error.InvalidLength;
+            _ = try rlpItemList(blobs);
+            _ = try rlpItemList(commitments);
+            _ = try rlpItemList(proofs);
+            return decodeRlpPayloadFields(14, tx_payload);
+        },
+    }
+}
+
+fn eip4844WrapperTransactionPayload(raw: []const u8) TransactionEncodingError!?[]const u8 {
+    const payload = try decodeTypedPayload(raw, 0x03);
+    var payload_index: usize = 0;
+    const first = try parseRlpItem(payload, &payload_index);
+    switch (first) {
+        .string => return null,
+        .list => {
+            const tx_payload = payload[0..payload_index];
+            const blobs = try parseRlpItem(payload, &payload_index);
+            const commitments = try parseRlpItem(payload, &payload_index);
+            const proofs = try parseRlpItem(payload, &payload_index);
+            if (payload_index != payload.len) return error.InvalidLength;
+            _ = try rlpItemList(blobs);
+            _ = try rlpItemList(commitments);
+            _ = try rlpItemList(proofs);
+            return tx_payload;
+        },
+    }
+}
+
+fn rlpItemString(item: RlpItem) TransactionEncodingError![]const u8 {
+    return switch (item) {
+        .string => |bytes| bytes,
+        .list => error.UnexpectedInput,
+    };
+}
+
+fn rlpItemList(item: RlpItem) TransactionEncodingError![]const u8 {
+    return switch (item) {
+        .list => |payload| payload,
+        .string => error.UnexpectedInput,
+    };
+}
+
+fn rlpItemToTransactionAccessList(
+    allocator: std.mem.Allocator,
+    item: RlpItem,
+) TransactionEncodingError![]primitives.Transaction.AccessListItem {
+    const payload = try rlpItemList(item);
+    var entries = std.ArrayList(primitives.Transaction.AccessListItem){};
+    errdefer {
+        for (entries.items) |entry| {
+            allocator.free(entry.storage_keys);
+        }
+        entries.deinit(allocator);
+    }
+
+    var index: usize = 0;
+    while (index < payload.len) {
+        const entry_payload = try rlpItemList(try parseRlpItem(payload, &index));
+        var entry_index: usize = 0;
+        const address = try rlpStringToAddress(try rlpItemString(try parseRlpItem(entry_payload, &entry_index)));
+        const keys_payload = try rlpItemList(try parseRlpItem(entry_payload, &entry_index));
+        if (entry_index != entry_payload.len) return error.InvalidLength;
+
+        var keys = std.ArrayList([32]u8){};
+        errdefer {
+            keys.deinit(allocator);
+        }
+        var keys_index: usize = 0;
+        while (keys_index < keys_payload.len) {
+            try keys.append(allocator, try rlpStringToRawFixed32(try rlpItemString(try parseRlpItem(keys_payload, &keys_index))));
+        }
+
+        const owned_keys = try keys.toOwnedSlice(allocator);
+        errdefer allocator.free(owned_keys);
+        try entries.append(allocator, .{
+            .address = address,
+            .storage_keys = owned_keys,
+        });
+    }
+
+    return entries.toOwnedSlice(allocator);
+}
+
+fn freeTransactionAccessList(
+    allocator: std.mem.Allocator,
+    access_list: []const primitives.Transaction.AccessListItem,
+) void {
+    for (access_list) |entry| {
+        allocator.free(entry.storage_keys);
+    }
+    allocator.free(access_list);
+}
+
+fn rlpItemToBlobVersionedHashes(
+    allocator: std.mem.Allocator,
+    item: RlpItem,
+) TransactionEncodingError![]primitives.Blob.VersionedHash {
+    const payload = try rlpItemList(item);
+    var hashes = std.ArrayList(primitives.Blob.VersionedHash){};
+    errdefer hashes.deinit(allocator);
+
+    var index: usize = 0;
+    while (index < payload.len) {
+        try hashes.append(allocator, .{
+            .bytes = try rlpStringToRawFixed32(try rlpItemString(try parseRlpItem(payload, &index))),
+        });
+    }
+    return hashes.toOwnedSlice(allocator);
+}
+
+fn rlpItemToAuthorizationList(
+    allocator: std.mem.Allocator,
+    item: RlpItem,
+) TransactionEncodingError![]primitives.Authorization.Authorization {
+    const payload = try rlpItemList(item);
+    var authorizations = std.ArrayList(primitives.Authorization.Authorization){};
+    errdefer authorizations.deinit(allocator);
+
+    var index: usize = 0;
+    while (index < payload.len) {
+        const auth_payload = try rlpItemList(try parseRlpItem(payload, &index));
+        const fields = try decodeRlpPayloadFields(6, auth_payload);
+        const y_parity = try rlpStringToU64(try rlpItemString(fields[3]));
+        if (y_parity > 1) return error.InvalidSignatureV;
+        try authorizations.append(allocator, .{
+            .chain_id = try rlpStringToU64(try rlpItemString(fields[0])),
+            .address = try rlpStringToAddress(try rlpItemString(fields[1])),
+            .nonce = try rlpStringToU64(try rlpItemString(fields[2])),
+            .v = y_parity,
+            .r = try rlpStringToFixed32(try rlpItemString(fields[4])),
+            .s = try rlpStringToFixed32(try rlpItemString(fields[5])),
+        });
+    }
+    return authorizations.toOwnedSlice(allocator);
+}
+
+fn decodeRlpPayloadFields(
+    comptime field_count: usize,
+    payload: []const u8,
+) TransactionEncodingError![field_count]RlpItem {
+    var payload_index: usize = 0;
+    var fields: [field_count]RlpItem = undefined;
+    for (&fields) |*field| {
+        field.* = try parseRlpItem(payload, &payload_index);
+    }
+    if (payload_index != payload.len) return error.InvalidLength;
+    return fields;
+}
+
 fn checkedEnd(input: []const u8, start: usize, len: usize) TransactionEncodingError!usize {
     const end = std.math.add(usize, start, len) catch return error.InputTooLong;
     if (end > input.len) return error.InputTooShort;
@@ -257,6 +783,11 @@ fn rlpStringToU64(bytes: []const u8) TransactionEncodingError!u64 {
     return std.math.cast(u64, value) orelse error.InvalidLength;
 }
 
+fn rlpStringToU8(bytes: []const u8) TransactionEncodingError!u8 {
+    const value = try rlpStringToU64(bytes);
+    return std.math.cast(u8, value) orelse error.InvalidLength;
+}
+
 fn rlpStringToU256(bytes: []const u8) TransactionEncodingError!u256 {
     if (bytes.len > 32) return error.InvalidLength;
     if (bytes.len == 1 and bytes[0] == 0) return error.NonCanonicalInteger;
@@ -277,8 +808,17 @@ fn rlpStringToFixed32(bytes: []const u8) TransactionEncodingError![32]u8 {
     return out;
 }
 
+fn rlpStringToRawFixed32(bytes: []const u8) TransactionEncodingError![32]u8 {
+    if (bytes.len != 32) return error.InvalidLength;
+    return bytes[0..32].*;
+}
+
 fn rlpStringToOptionalAddress(bytes: []const u8) TransactionEncodingError!?primitives.Address {
     if (bytes.len == 0) return null;
+    return try rlpStringToAddress(bytes);
+}
+
+fn rlpStringToAddress(bytes: []const u8) TransactionEncodingError!primitives.Address {
     if (bytes.len != 20) return error.InvalidLength;
     return .{ .bytes = bytes[0..20].* };
 }

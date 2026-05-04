@@ -153,6 +153,7 @@ fn matchesFilter(entry: IndexedLog, filter: LogFilter) bool {
     if (filter.topics) |topics| {
         for (topics, 0..) |maybe_topic_set, i| {
             if (maybe_topic_set) |topic_set| {
+                if (topic_set.len == 0) continue;
                 if (i >= entry.log.topics.len) return false;
                 var topic_match = false;
                 for (topic_set) |required_topic| {

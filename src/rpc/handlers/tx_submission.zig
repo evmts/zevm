@@ -31,19 +31,6 @@ pub const TxSubmissionError = error{
 // EIP-3860: 49152 = 2 * MAX_CODE_SIZE
 const MAX_INITCODE_SIZE: usize = 49152;
 
-// Phase 1 transaction boundary: only legacy RLP envelopes are accepted on the
-// public RPC surface. EIP-2718 typed envelopes (type bytes 0x01..=0x7f, including
-// 0x01 EIP-2930, 0x02 EIP-1559, 0x03 EIP-4844, 0x04 EIP-7702) are rejected with
-// `UnsupportedTxType`. The dispatcher maps `UnsupportedTxType` to JSON-RPC -32602.
-//
-// `eth_sendTransaction` similarly rejects request fields that imply typed
-// submission (`type`, `accessList`, `maxFeePerGas`, `maxPriorityFeePerGas`,
-// `maxFeePerBlobGas`, `blobVersionedHashes`, `blobs`, `commitments`, `proofs`,
-// `authorizationList`, `chainId`).
-//
-// When phase-1 scope changes to admit typed submission, both rejection paths
-// must be revisited together with the pool, mining, and signing surfaces.
-
 pub fn handleSendRawTransaction(
     allocator: std.mem.Allocator,
     rt: *runtime.NodeRuntime,
@@ -59,73 +46,83 @@ pub fn handleSendRawTransaction(
 
     if (raw_bytes.len == 0) return TxSubmissionError.InvalidHexData;
 
-    // EIP-2718 type byte range is 0x00..=0x7f; 0xc0..=0xff is RLP list (legacy).
-    // Anything in 0x80..=0xbf is RLP string and not a valid top-level tx encoding.
-    if (raw_bytes[0] <= 0x7f) return TxSubmissionError.UnsupportedTxType;
-    if (raw_bytes[0] < 0xc0) return TxSubmissionError.DecodeFailed;
-
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const arena_alloc = arena.allocator();
 
-    const decoded = tx_encoding.decodeLegacyEnvelope(raw_bytes) catch return TxSubmissionError.DecodeFailed;
+    const decoded = tx_encoding.decodeEnvelope(arena_alloc, raw_bytes) catch |err| switch (err) {
+        error.InvalidTransactionType => return if (raw_bytes[0] <= 0x7f)
+            TxSubmissionError.UnsupportedTxType
+        else
+            TxSubmissionError.DecodeFailed,
+        else => return TxSubmissionError.DecodeFailed,
+    };
+    const tx = tx_encoding.envelopeToLegacyLikeTx(decoded);
 
-    // Chain id check (legacy may be pre-EIP-155 so chain_id is null).
-    if (tx_encoding.legacyChainId(decoded)) |cid| {
+    if (tx_encoding.envelopeChainId(decoded)) |cid| {
         if (cid != rt.chain_id) return TxSubmissionError.ChainIdMismatch;
     }
 
-    const sender = tx_encoding.recoverLegacySender(arena_alloc, decoded) catch return TxSubmissionError.SenderRecoveryFailed;
+    const sender = tx_encoding.recoverEnvelopeSender(arena_alloc, decoded) catch return TxSubmissionError.SenderRecoveryFailed;
 
-    const is_create = decoded.to == null;
+    const is_create = tx.to == null;
     const hardfork = rt.pendingHardfork();
+    if (!rawTransactionTypeSupported(tx_encoding.envelopeReceiptType(decoded), hardfork)) {
+        return TxSubmissionError.UnsupportedTxType;
+    }
 
     // EIP-3860: cap initcode size for create transactions.
-    if (hardfork.isAtLeast(.SHANGHAI) and is_create and decoded.data.len > MAX_INITCODE_SIZE) {
+    if (hardfork.isAtLeast(.SHANGHAI) and is_create and tx.data.len > MAX_INITCODE_SIZE) {
         return TxSubmissionError.InitcodeTooLarge;
     }
 
     const current_nonce = rt.state.getNonce(sender) catch return TxSubmissionError.StateError;
-    if (decoded.nonce < current_nonce) return TxSubmissionError.NonceMismatch;
+    if (tx.nonce < current_nonce) return TxSubmissionError.NonceMismatch;
 
-    // Intrinsic gas.
-    const intrinsic = computeLegacyIntrinsicGas(is_create, decoded.data, hardfork);
-    if (intrinsic > decoded.gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
-    if (decoded.gas_limit > rt.dev_runtime.config.block_gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
-    if (decoded.gas_price < rt.gas_price) return TxSubmissionError.GasPriceBelowMinimum;
+    const intrinsic = computeEnvelopeIntrinsicGas(decoded, is_create, hardfork) catch return TxSubmissionError.IntrinsicGasExceedsLimit;
+    if (intrinsic > tx.gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
+    if (tx.gas_limit > rt.dev_runtime.config.block_gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
 
     // Balance covers value + max gas cost.
-    const max_gas_cost = decoded.gas_price * @as(u256, decoded.gas_limit);
-    const total_cost = decoded.value +| max_gas_cost;
+    const max_fee_per_gas = tx_encoding.envelopeMaxFeePerGas(decoded) orelse tx.gas_price;
+    const max_priority_fee_per_gas = tx_encoding.envelopeMaxPriorityFeePerGas(decoded) orelse tx.gas_price;
+    const max_gas_cost = max_fee_per_gas * @as(u256, tx.gas_limit);
+    const total_cost = tx.value +| max_gas_cost;
     const balance = rt.state.getBalance(sender) catch return TxSubmissionError.StateError;
     if (balance < total_cost) return TxSubmissionError.InsufficientBalance;
 
-    const tx_hash = computeTxHash(raw_bytes);
+    const canonical = tx_encoding.canonicalTransactionEnvelope(allocator, raw_bytes) catch |err| switch (err) {
+        error.OutOfMemory => return TxSubmissionError.OutOfMemory,
+        else => return TxSubmissionError.DecodeFailed,
+    };
+    defer canonical.deinit(allocator);
+
+    const tx_hash = computeTxHash(canonical.bytes);
 
     rt.pool.setNonce(sender, current_nonce) catch return TxSubmissionError.PoolInsertFailed;
     rt.pool.add(allocator, .{
         .sender = sender,
-        .nonce = decoded.nonce,
-        .gas_limit = decoded.gas_limit,
-        .max_fee_per_gas = decoded.gas_price,
-        .max_priority_fee_per_gas = decoded.gas_price,
+        .nonce = tx.nonce,
+        .gas_limit = tx.gas_limit,
+        .max_fee_per_gas = max_fee_per_gas,
+        .max_priority_fee_per_gas = max_priority_fee_per_gas,
         .hash = tx_hash,
-        .to = decoded.to,
-        .value = decoded.value,
-        .input = decoded.data,
-        .raw = raw_bytes,
-        .v = decoded.v,
-        .r = decoded.r,
-        .s = decoded.s,
+        .to = tx.to,
+        .value = tx.value,
+        .input = tx.data,
+        .raw = canonical.bytes,
+        .v = tx.v,
+        .r = tx.r,
+        .s = tx.s,
     }) catch |err| switch (err) {
         error.ReplacementUnderpriced => return TxSubmissionError.PoolInsertFailed,
         error.OutOfMemory => return TxSubmissionError.OutOfMemory,
     };
 
-    logTxAccepted(rt, "sendRawTransaction", sender, decoded.nonce, decoded.gas_limit, tx_hash);
+    logTxAccepted(rt, "sendRawTransaction", sender, tx.nonce, tx.gas_limit, tx_hash);
 
     switch (rt.mining_config) {
-        .auto => if (decoded.nonce == current_nonce) automine(rt) catch return TxSubmissionError.MiningFailed,
+        .auto => if (tx.nonce == current_nonce) automine(rt) catch return TxSubmissionError.MiningFailed,
         .manual, .interval => {},
     }
 
@@ -239,6 +236,48 @@ pub fn handleSendTransaction(
     }
 
     return .{ .value = .{ .bytes = tx_hash } };
+}
+
+pub fn handleSignTransaction(
+    allocator: std.mem.Allocator,
+    rt: *runtime.NodeRuntime,
+    params: jsonrpc.eth.SendTransaction.Params,
+) TxSubmissionError!jsonrpc.eth.SignTransaction.Result {
+    const request = parseSendTransactionRequest(allocator, params) catch |err| switch (err) {
+        error.UnsupportedTxType => return TxSubmissionError.UnsupportedTxType,
+        error.OutOfMemory => return TxSubmissionError.OutOfMemory,
+        error.InvalidAddress, error.InvalidTransactionRequest => return TxSubmissionError.InvalidHexData,
+    };
+    defer request.deinit(allocator);
+
+    const private_key = rt.managedPrivateKey(request.from) orelse return TxSubmissionError.UnmanagedAccount;
+    const nonce = request.nonce orelse (rt.state.getNonce(request.from) catch return TxSubmissionError.StateError);
+    const gas_price = request.gas_price orelse rt.gas_price;
+    var tx = primitives.Transaction.LegacyTransaction{
+        .nonce = nonce,
+        .gas_price = gas_price,
+        .gas_limit = request.gas orelse 0,
+        .to = request.to,
+        .value = request.value,
+        .data = request.data,
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    const hardfork = rt.pendingHardfork();
+    if (hardfork.isAtLeast(.SHANGHAI) and tx.to == null and tx.data.len > MAX_INITCODE_SIZE) {
+        return TxSubmissionError.InitcodeTooLarge;
+    }
+    const intrinsic = computeLegacyIntrinsicGas(tx.to == null, tx.data, hardfork);
+    tx.gas_limit = request.gas orelse intrinsic;
+    if (intrinsic > tx.gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
+
+    const signed = tx_encoding.signLegacyTransaction(allocator, tx, private_key, rt.chain_id) catch return TxSubmissionError.SigningFailed;
+    const raw = tx_encoding.encodeLegacyTransactionEnvelope(allocator, signed) catch return TxSubmissionError.SigningFailed;
+    defer allocator.free(raw);
+
+    return .{ .value = .{ .value = .{ .string = try hexBytesString(allocator, raw) } } };
 }
 
 // Phase-1-only: keys that imply a typed/dynamic-fee/blob/auth submission. Listed
@@ -362,6 +401,46 @@ fn computeLegacyIntrinsicGas(is_create: bool, data: []const u8, hardfork: guillo
     return tx_processor.intrinsicGasForFork(data, is_create, hardfork);
 }
 
+fn computeEnvelopeIntrinsicGas(
+    decoded: tx_encoding.DecodedEnvelope,
+    is_create: bool,
+    hardfork: guillotine_mini.Hardfork,
+) error{Overflow}!u64 {
+    const tx = tx_encoding.envelopeToLegacyLikeTx(decoded);
+    var gas = tx_processor.intrinsicGasForFork(tx.data, is_create, hardfork);
+    const access_list_gas = try transactionAccessListGasCost(tx_encoding.envelopeAccessList(decoded));
+    gas = try std.math.add(u64, gas, access_list_gas);
+    if (tx_encoding.envelopeReceiptType(decoded) == .eip7702) {
+        const auth_cost = try std.math.mul(u64, 25_000, tx_encoding.envelopeAuthorizationList(decoded).len);
+        gas = try std.math.add(u64, gas, auth_cost);
+    }
+    return gas;
+}
+
+fn transactionAccessListGasCost(access_list: []const primitives.Transaction.AccessListItem) error{Overflow}!u64 {
+    var gas: u64 = 0;
+    for (access_list) |entry| {
+        gas = try std.math.add(u64, gas, primitives.AccessList.ACCESS_LIST_ADDRESS_COST);
+        const storage_cost = try std.math.mul(
+            u64,
+            primitives.AccessList.ACCESS_LIST_STORAGE_KEY_COST,
+            @as(u64, @intCast(entry.storage_keys.len)),
+        );
+        gas = try std.math.add(u64, gas, storage_cost);
+    }
+    return gas;
+}
+
+fn rawTransactionTypeSupported(receipt_type: primitives.Receipt.TransactionType, hardfork: guillotine_mini.Hardfork) bool {
+    return switch (receipt_type) {
+        .legacy => true,
+        .eip2930 => hardfork.isAtLeast(.BERLIN),
+        .eip1559 => hardfork.isAtLeast(.LONDON),
+        .eip4844 => hardfork.isAtLeast(.CANCUN),
+        .eip7702 => hardfork.isAtLeast(.PRAGUE),
+    };
+}
+
 fn keccak(input: []const u8) [32]u8 {
     var out: [32]u8 = undefined;
     std.crypto.hash.sha3.Keccak256.hash(input, &out, .{});
@@ -372,6 +451,18 @@ fn keccak(input: []const u8) [32]u8 {
 
 fn computeTxHash(raw_bytes: []const u8) [32]u8 {
     return keccak(raw_bytes);
+}
+
+fn hexBytesString(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
+    const out = try allocator.alloc(u8, 2 + bytes.len * 2);
+    out[0] = '0';
+    out[1] = 'x';
+    const charset = "0123456789abcdef";
+    for (bytes, 0..) |byte, i| {
+        out[2 + i * 2] = charset[(byte >> 4) & 0x0f];
+        out[2 + i * 2 + 1] = charset[byte & 0x0f];
+    }
+    return out;
 }
 
 fn logTxAccepted(

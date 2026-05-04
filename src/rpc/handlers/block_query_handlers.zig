@@ -44,6 +44,31 @@ pub fn handleGetBlockByNumber(
     return .{ .block = null };
 }
 
+pub fn handleGetBlockByNumberValue(
+    allocator: std.mem.Allocator,
+    ctx: *const BlockQueryContext,
+    params: jsonrpc.eth.GetBlockByNumber.Params,
+) !std.json.Value {
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+    const scratch_allocator = scratch.allocator();
+
+    const tag = blockSpecToTag(scratch_allocator, params.block) catch |err| switch (err) {
+        error.InvalidBlockSpec => return error.InvalidParams,
+        else => return err,
+    };
+
+    const internal = try block_queries.getBlockByNumberWithReceipts(
+        scratch_allocator,
+        ctx.blockchain,
+        ctx.receipt_index,
+        tag,
+        params.hydrated_transactions,
+    );
+    if (internal) |resp| return try blockResponseValue(allocator, ctx, resp);
+    return .null;
+}
+
 // ============================================================================
 // eth_getBlockByHash
 // ============================================================================
@@ -64,6 +89,25 @@ pub fn handleGetBlockByHash(
         return .{ .block = try internalBlockToRpc(allocator, resp) };
     }
     return .{ .block = null };
+}
+
+pub fn handleGetBlockByHashValue(
+    allocator: std.mem.Allocator,
+    ctx: *const BlockQueryContext,
+    params: jsonrpc.eth.GetBlockByHash.Params,
+) !std.json.Value {
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+
+    const internal = try block_queries.getBlockByHashWithReceipts(
+        scratch.allocator(),
+        ctx.blockchain,
+        ctx.receipt_index,
+        params.block_hash.bytes,
+        params.hydrated_transactions,
+    );
+    if (internal) |resp| return try blockResponseValue(allocator, ctx, resp);
+    return .null;
 }
 
 // ============================================================================
@@ -153,11 +197,24 @@ pub fn handleGetTransactionReceipt(
     ctx: *const BlockQueryContext,
     params: jsonrpc.eth.GetTransactionReceipt.Params,
 ) !jsonrpc.eth.GetTransactionReceipt.Result {
-    const internal = try block_queries.getTransactionReceipt(allocator, ctx.receipt_index, params.transaction_hash.bytes);
+    const internal = try block_queries.getTransactionReceiptWithBlock(allocator, ctx.blockchain, ctx.receipt_index, params.transaction_hash.bytes);
     if (internal) |resp| {
         return .{ .value = try internalReceiptToRpc(allocator, resp) };
     }
     return .{ .value = null };
+}
+
+pub fn handleGetTransactionReceiptValue(
+    allocator: std.mem.Allocator,
+    ctx: *const BlockQueryContext,
+    params: jsonrpc.eth.GetTransactionReceipt.Params,
+) !std.json.Value {
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+
+    const internal = try block_queries.getTransactionReceiptWithBlock(scratch.allocator(), ctx.blockchain, ctx.receipt_index, params.transaction_hash.bytes);
+    if (internal) |resp| return try receiptResponseValue(allocator, resp);
+    return .null;
 }
 
 // ============================================================================
@@ -182,6 +239,28 @@ pub fn handleGetBlockReceipts(
         return .{ .value = rpc_receipts };
     }
     return .{ .value = null };
+}
+
+pub fn handleGetBlockReceiptsValue(
+    allocator: std.mem.Allocator,
+    ctx: *const BlockQueryContext,
+    params: jsonrpc.eth.GetBlockReceipts.Params,
+) !std.json.Value {
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+
+    const maybe_receipts = blockReceiptsFromSpec(scratch.allocator(), ctx, params.block) catch |err| switch (err) {
+        error.InvalidBlockSpec => return error.InvalidParams,
+        else => return err,
+    };
+    if (maybe_receipts) |resps| {
+        var array = std.json.Array.init(allocator);
+        for (resps) |resp| {
+            try array.append(try receiptResponseValue(allocator, resp));
+        }
+        return .{ .array = array };
+    }
+    return .null;
 }
 
 /// Resolve a BlockSpec to receipts. Accepts block numbers/tags as strings and
@@ -254,6 +333,31 @@ pub fn handleGetLogs(
     return .{ .logs = rpc_logs };
 }
 
+pub fn handleGetLogsValue(
+    allocator: std.mem.Allocator,
+    ctx: *const BlockQueryContext,
+    params: jsonrpc.eth.GetLogs.Params,
+) !std.json.Value {
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+    const scratch_allocator = scratch.allocator();
+
+    const filter = rpcFilterToInternal(scratch_allocator, ctx, params.filter) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidParams,
+    };
+    const internal = block_queries.getLogs(scratch_allocator, ctx.blockchain, ctx.log_index, filter) catch |err| switch (err) {
+        error.InvalidFilter => return error.InvalidParams,
+        else => return err,
+    };
+
+    var array = std.json.Array.init(allocator);
+    for (internal) |resp| {
+        try array.append(try logResponseValue(allocator, resp));
+    }
+    return .{ .array = array };
+}
+
 // ============================================================================
 // eth_getTransactionByHash
 // ============================================================================
@@ -273,6 +377,24 @@ pub fn handleGetTransactionByHash(
         return .{ .value = try internalTxToRpc(allocator, tx) };
     }
     return .{ .value = null };
+}
+
+pub fn handleGetTransactionByHashValue(
+    allocator: std.mem.Allocator,
+    ctx: *const BlockQueryContext,
+    params: jsonrpc.eth.GetTransactionByHash.Params,
+) !std.json.Value {
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+
+    const internal = try block_queries.getTransactionByHash(
+        scratch.allocator(),
+        ctx.blockchain,
+        ctx.receipt_index,
+        params.transaction_hash.bytes,
+    );
+    if (internal) |tx| return try transactionResponseValue(allocator, tx);
+    return .null;
 }
 
 // ============================================================================
@@ -296,6 +418,26 @@ pub fn handleGetTransactionByBlockHashAndIndex(
         return .{ .value = try internalTxToRpc(allocator, tx) };
     }
     return .{ .value = null };
+}
+
+pub fn handleGetTransactionByBlockHashAndIndexValue(
+    allocator: std.mem.Allocator,
+    ctx: *const BlockQueryContext,
+    params: jsonrpc.eth.GetTransactionByBlockHashAndIndex.Params,
+) !std.json.Value {
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+
+    const index = parseQuantityToU64(params.transaction_index) catch return error.InvalidParams;
+    const internal = try block_queries.getTransactionByBlockHashAndIndexWithReceipts(
+        scratch.allocator(),
+        ctx.blockchain,
+        ctx.receipt_index,
+        params.block_hash.bytes,
+        index,
+    );
+    if (internal) |tx| return try transactionResponseValue(allocator, tx);
+    return .null;
 }
 
 // ============================================================================
@@ -327,9 +469,306 @@ pub fn handleGetTransactionByBlockNumberAndIndex(
     return .{ .value = null };
 }
 
+pub fn handleGetTransactionByBlockNumberAndIndexValue(
+    allocator: std.mem.Allocator,
+    ctx: *const BlockQueryContext,
+    params: jsonrpc.eth.GetTransactionByBlockNumberAndIndex.Params,
+) !std.json.Value {
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+    const scratch_allocator = scratch.allocator();
+
+    const tag = blockSpecToTag(scratch_allocator, params.block) catch |err| switch (err) {
+        error.InvalidBlockSpec => return error.InvalidParams,
+        else => return err,
+    };
+
+    const index = parseQuantityToU64(params.transaction_index) catch return error.InvalidParams;
+    const internal = try block_queries.getTransactionByBlockNumberAndIndexWithReceipts(
+        scratch_allocator,
+        ctx.blockchain,
+        ctx.receipt_index,
+        tag,
+        index,
+    );
+    if (internal) |tx| return try transactionResponseValue(allocator, tx);
+    return .null;
+}
+
 // ============================================================================
 // Conversion Helpers
 // ============================================================================
+
+fn putJson(
+    obj: *std.json.ObjectMap,
+    allocator: std.mem.Allocator,
+    key: []const u8,
+    value: std.json.Value,
+) !void {
+    const owned_key = try allocator.dupe(u8, key);
+    errdefer allocator.free(owned_key);
+    try obj.put(owned_key, value);
+}
+
+fn quantityValue(allocator: std.mem.Allocator, n: anytype) !std.json.Value {
+    return .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{n}) };
+}
+
+fn bytesValue(allocator: std.mem.Allocator, bytes: []const u8) !std.json.Value {
+    if (bytes.len == 0) return .{ .string = try allocator.dupe(u8, "0x") };
+
+    const out = try allocator.alloc(u8, 2 + bytes.len * 2);
+    out[0] = '0';
+    out[1] = 'x';
+    writeHexLower(out[2..], bytes);
+    return .{ .string = out };
+}
+
+fn hashValue(allocator: std.mem.Allocator, h: [32]u8) !std.json.Value {
+    const out = try allocator.alloc(u8, 66);
+    out[0] = '0';
+    out[1] = 'x';
+    writeHexLower(out[2..], h[0..]);
+    return .{ .string = out };
+}
+
+fn addressValue(allocator: std.mem.Allocator, a: primitives.Address.Address) !std.json.Value {
+    const out = try allocator.alloc(u8, 42);
+    out[0] = '0';
+    out[1] = 'x';
+    writeHexLower(out[2..], a.bytes[0..]);
+    return .{ .string = out };
+}
+
+fn writeHexLower(out: []u8, src: []const u8) void {
+    const alphabet = "0123456789abcdef";
+    for (src, 0..) |byte, i| {
+        out[i * 2] = alphabet[(byte >> 4) & 0x0f];
+        out[i * 2 + 1] = alphabet[byte & 0x0f];
+    }
+}
+
+fn hashArrayValue(allocator: std.mem.Allocator, hashes: []const [32]u8) !std.json.Value {
+    var array = std.json.Array.init(allocator);
+    for (hashes) |hash| {
+        try array.append(try hashValue(allocator, hash));
+    }
+    return .{ .array = array };
+}
+
+fn blockTransactionsValue(
+    allocator: std.mem.Allocator,
+    transactions: block_queries.TransactionList,
+) !std.json.Value {
+    var array = std.json.Array.init(allocator);
+    switch (transactions) {
+        .hashes => |hashes| {
+            for (hashes) |hash| {
+                try array.append(try hashValue(allocator, hash));
+            }
+        },
+        .full => |txs| {
+            for (txs) |tx| {
+                try array.append(try transactionResponseValue(allocator, tx));
+            }
+        },
+    }
+    return .{ .array = array };
+}
+
+fn blockResponseValue(
+    allocator: std.mem.Allocator,
+    ctx: *const BlockQueryContext,
+    resp: block_queries.BlockResponse,
+) !std.json.Value {
+    var obj = std.json.ObjectMap.init(allocator);
+
+    try putJson(&obj, allocator, "hash", try hashValue(allocator, resp.hash));
+    try putJson(&obj, allocator, "parentHash", try hashValue(allocator, resp.parentHash));
+    try putJson(&obj, allocator, "sha3Uncles", try hashValue(allocator, resp.ommersHash));
+    try putJson(&obj, allocator, "miner", try addressValue(allocator, resp.miner));
+    try putJson(&obj, allocator, "stateRoot", try hashValue(allocator, resp.stateRoot));
+    try putJson(&obj, allocator, "transactionsRoot", try hashValue(allocator, resp.transactionsRoot));
+    try putJson(&obj, allocator, "receiptsRoot", try hashValue(allocator, resp.receiptsRoot));
+    try putJson(&obj, allocator, "logsBloom", try bytesValue(allocator, resp.logsBloom[0..]));
+    try putJson(&obj, allocator, "number", try quantityValue(allocator, resp.number));
+    try putJson(&obj, allocator, "gasLimit", try quantityValue(allocator, resp.gasLimit));
+    try putJson(&obj, allocator, "gasUsed", try quantityValue(allocator, resp.gasUsed));
+    try putJson(&obj, allocator, "timestamp", try quantityValue(allocator, resp.timestamp));
+    try putJson(&obj, allocator, "extraData", try bytesValue(allocator, resp.extraData));
+    try putJson(&obj, allocator, "mixHash", try hashValue(allocator, resp.mixHash));
+    try putJson(&obj, allocator, "nonce", try bytesValue(allocator, resp.nonce[0..]));
+    try putJson(&obj, allocator, "size", try quantityValue(allocator, resp.size));
+    try putJson(&obj, allocator, "transactions", try blockTransactionsValue(allocator, resp.transactions));
+    try putJson(&obj, allocator, "uncles", try hashArrayValue(allocator, resp.uncleHashes));
+    try putJson(&obj, allocator, "difficulty", try quantityValue(allocator, resp.difficulty));
+    if (resp.totalDifficulty) |td| try putJson(&obj, allocator, "totalDifficulty", try quantityValue(allocator, td));
+    if (resp.baseFeePerGas) |bfpg| try putJson(&obj, allocator, "baseFeePerGas", try quantityValue(allocator, bfpg));
+    if (resp.withdrawalsRoot) |wr| {
+        try putJson(&obj, allocator, "withdrawalsRoot", try hashValue(allocator, wr));
+        try putJson(&obj, allocator, "withdrawals", try withdrawalsValue(allocator, resp.withdrawals orelse &.{}));
+    }
+    if (resp.blobGasUsed) |bgu| try putJson(&obj, allocator, "blobGasUsed", try quantityValue(allocator, bgu));
+    if (resp.excessBlobGas) |ebg| try putJson(&obj, allocator, "excessBlobGas", try quantityValue(allocator, ebg));
+    if (resp.parentBeaconBlockRoot) |pbbr| try putJson(&obj, allocator, "parentBeaconBlockRoot", try hashValue(allocator, pbbr));
+    if (requestsHashForBlock(ctx, resp)) |requests_hash| try putJson(&obj, allocator, "requestsHash", try hashValue(allocator, requests_hash));
+
+    return .{ .object = obj };
+}
+
+fn requestsHashForBlock(ctx: *const BlockQueryContext, resp: block_queries.BlockResponse) ?[32]u8 {
+    for (ctx.rt.owned_block_bodies.items) |owned| {
+        if (std.mem.eql(u8, &owned.block_hash, &resp.hash)) return owned.requests_hash;
+    }
+
+    if (ctx.rt.hardforkAt(resp.number, resp.timestamp).isAtLeast(.PRAGUE)) {
+        var empty: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(&.{}, &empty, .{});
+        return empty;
+    }
+    return null;
+}
+
+fn transactionResponseValue(
+    allocator: std.mem.Allocator,
+    tx: block_queries.TxResponse,
+) !std.json.Value {
+    var obj = std.json.ObjectMap.init(allocator);
+
+    try putJson(&obj, allocator, "type", try quantityValue(allocator, tx.type_field));
+    try putJson(&obj, allocator, "hash", try hashValue(allocator, tx.hash));
+    try putJson(&obj, allocator, "nonce", try quantityValue(allocator, tx.nonce));
+    try putJson(&obj, allocator, "blockHash", if (tx.blockHash) |hash| try hashValue(allocator, hash) else .null);
+    try putJson(&obj, allocator, "blockNumber", if (tx.blockNumber) |n| try quantityValue(allocator, n) else .null);
+    if (tx.blockTimestamp) |timestamp| try putJson(&obj, allocator, "blockTimestamp", try quantityValue(allocator, timestamp));
+    try putJson(&obj, allocator, "transactionIndex", if (tx.transactionIndex) |i| try quantityValue(allocator, i) else .null);
+    try putJson(&obj, allocator, "from", try addressValue(allocator, tx.from));
+    try putJson(&obj, allocator, "to", if (tx.to) |to| try addressValue(allocator, to) else .null);
+    try putJson(&obj, allocator, "value", try quantityValue(allocator, tx.value));
+    try putJson(&obj, allocator, "gas", try quantityValue(allocator, tx.gas));
+    try putJson(&obj, allocator, "input", try bytesValue(allocator, tx.input));
+    if (tx.gas_price) |gas_price| try putJson(&obj, allocator, "gasPrice", try quantityValue(allocator, gas_price));
+    if (tx.max_priority_fee_per_gas) |value| try putJson(&obj, allocator, "maxPriorityFeePerGas", try quantityValue(allocator, value));
+    if (tx.max_fee_per_gas) |value| try putJson(&obj, allocator, "maxFeePerGas", try quantityValue(allocator, value));
+    if (tx.max_fee_per_blob_gas) |value| try putJson(&obj, allocator, "maxFeePerBlobGas", try quantityValue(allocator, value));
+    if (tx.access_list) |access_list| try putJson(&obj, allocator, "accessList", try accessListValue(allocator, access_list));
+    if (tx.blob_versioned_hashes) |hashes| try putJson(&obj, allocator, "blobVersionedHashes", try hashArrayValue(allocator, hashes));
+    if (tx.chain_id) |chain_id| try putJson(&obj, allocator, "chainId", try quantityValue(allocator, chain_id));
+    if (tx.authorization_list) |auth_list| try putJson(&obj, allocator, "authorizationList", try authorizationListValue(allocator, auth_list));
+    if (tx.y_parity != null and tx.type_field != 0) try putJson(&obj, allocator, "yParity", try quantityValue(allocator, tx.y_parity.?));
+    if (tx.v) |v| try putJson(&obj, allocator, "v", try quantityValue(allocator, v));
+    if (tx.r) |r| try putJson(&obj, allocator, "r", try quantityValue(allocator, r));
+    if (tx.s) |s| try putJson(&obj, allocator, "s", try quantityValue(allocator, s));
+
+    return .{ .object = obj };
+}
+
+fn accessListValue(
+    allocator: std.mem.Allocator,
+    access_list: []const block_queries.TxAccessListEntry,
+) !std.json.Value {
+    var array = std.json.Array.init(allocator);
+    for (access_list) |entry| {
+        var obj = std.json.ObjectMap.init(allocator);
+        try putJson(&obj, allocator, "address", try addressValue(allocator, entry.address));
+        try putJson(&obj, allocator, "storageKeys", try hashArrayValue(allocator, entry.storage_keys));
+        try array.append(.{ .object = obj });
+    }
+    return .{ .array = array };
+}
+
+fn authorizationListValue(
+    allocator: std.mem.Allocator,
+    authorization_list: []const block_queries.TxAuthorizationEntry,
+) !std.json.Value {
+    var array = std.json.Array.init(allocator);
+    for (authorization_list) |entry| {
+        var obj = std.json.ObjectMap.init(allocator);
+        try putJson(&obj, allocator, "chainId", try quantityValue(allocator, entry.chain_id));
+        try putJson(&obj, allocator, "address", try addressValue(allocator, entry.address));
+        try putJson(&obj, allocator, "nonce", try quantityValue(allocator, entry.nonce));
+        try putJson(&obj, allocator, "yParity", try quantityValue(allocator, entry.y_parity));
+        try putJson(&obj, allocator, "r", try quantityValue(allocator, entry.r));
+        try putJson(&obj, allocator, "s", try quantityValue(allocator, entry.s));
+        try array.append(.{ .object = obj });
+    }
+    return .{ .array = array };
+}
+
+fn withdrawalsValue(
+    allocator: std.mem.Allocator,
+    withdrawals: []const block_queries.WithdrawalResponse,
+) !std.json.Value {
+    var array = std.json.Array.init(allocator);
+    for (withdrawals) |withdrawal| {
+        var obj = std.json.ObjectMap.init(allocator);
+        try putJson(&obj, allocator, "index", try quantityValue(allocator, withdrawal.index));
+        try putJson(&obj, allocator, "validatorIndex", try quantityValue(allocator, withdrawal.validatorIndex));
+        try putJson(&obj, allocator, "address", try addressValue(allocator, withdrawal.address));
+        try putJson(&obj, allocator, "amount", try quantityValue(allocator, withdrawal.amount));
+        try array.append(.{ .object = obj });
+    }
+    return .{ .array = array };
+}
+
+fn receiptResponseValue(
+    allocator: std.mem.Allocator,
+    resp: block_queries.ReceiptResponse,
+) !std.json.Value {
+    var obj = std.json.ObjectMap.init(allocator);
+
+    try putJson(&obj, allocator, "transactionHash", try hashValue(allocator, resp.transactionHash));
+    try putJson(&obj, allocator, "transactionIndex", try quantityValue(allocator, resp.transactionIndex));
+    try putJson(&obj, allocator, "blockHash", try hashValue(allocator, resp.blockHash));
+    try putJson(&obj, allocator, "blockNumber", try quantityValue(allocator, resp.blockNumber));
+    try putJson(&obj, allocator, "from", try addressValue(allocator, resp.from));
+    try putJson(&obj, allocator, "to", if (resp.to) |to| try addressValue(allocator, to) else .null);
+    try putJson(&obj, allocator, "cumulativeGasUsed", try quantityValue(allocator, resp.cumulativeGasUsed));
+    try putJson(&obj, allocator, "gasUsed", try quantityValue(allocator, resp.gasUsed));
+    try putJson(&obj, allocator, "contractAddress", if (resp.contractAddress) |address| try addressValue(allocator, address) else .null);
+    try putJson(&obj, allocator, "logs", try logsArrayValue(allocator, resp.logs));
+    try putJson(&obj, allocator, "logsBloom", try bytesValue(allocator, resp.logsBloom[0..]));
+    if (resp.status) |status| {
+        try putJson(&obj, allocator, "status", try quantityValue(allocator, status));
+    } else if (resp.root) |root| {
+        try putJson(&obj, allocator, "root", try hashValue(allocator, root));
+    }
+    try putJson(&obj, allocator, "effectiveGasPrice", try quantityValue(allocator, resp.effectiveGasPrice));
+    try putJson(&obj, allocator, "type", try quantityValue(allocator, resp.type_field));
+    if (resp.blobGasUsed) |blob_gas_used| try putJson(&obj, allocator, "blobGasUsed", try quantityValue(allocator, blob_gas_used));
+    if (resp.blobGasPrice) |blob_gas_price| try putJson(&obj, allocator, "blobGasPrice", try quantityValue(allocator, blob_gas_price));
+
+    return .{ .object = obj };
+}
+
+fn logsArrayValue(
+    allocator: std.mem.Allocator,
+    logs: []const block_queries.LogResponse,
+) !std.json.Value {
+    var array = std.json.Array.init(allocator);
+    for (logs) |log| {
+        try array.append(try logResponseValue(allocator, log));
+    }
+    return .{ .array = array };
+}
+
+fn logResponseValue(
+    allocator: std.mem.Allocator,
+    resp: block_queries.LogResponse,
+) !std.json.Value {
+    var obj = std.json.ObjectMap.init(allocator);
+    try putJson(&obj, allocator, "removed", .{ .bool = resp.removed });
+    try putJson(&obj, allocator, "logIndex", if (resp.logIndex) |i| try quantityValue(allocator, i) else .null);
+    try putJson(&obj, allocator, "transactionIndex", if (resp.transactionIndex) |i| try quantityValue(allocator, i) else .null);
+    try putJson(&obj, allocator, "transactionHash", if (resp.transactionHash) |hash| try hashValue(allocator, hash) else .null);
+    try putJson(&obj, allocator, "blockHash", try hashValue(allocator, resp.blockHash));
+    try putJson(&obj, allocator, "blockNumber", if (resp.blockNumber) |n| try quantityValue(allocator, n) else .null);
+    if (resp.blockTimestamp) |timestamp| try putJson(&obj, allocator, "blockTimestamp", try quantityValue(allocator, timestamp));
+    try putJson(&obj, allocator, "address", try addressValue(allocator, resp.address));
+    try putJson(&obj, allocator, "data", try bytesValue(allocator, resp.data));
+    try putJson(&obj, allocator, "topics", try hashArrayValue(allocator, resp.topics));
+    return .{ .object = obj };
+}
 
 fn blockSpecToTag(allocator: std.mem.Allocator, spec: jsonrpc.types.BlockSpec) ![]u8 {
     switch (spec.value) {

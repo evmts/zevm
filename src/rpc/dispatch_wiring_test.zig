@@ -121,6 +121,8 @@ fn addPooledTransaction(rt: *runtime_mod.NodeRuntime, sender: primitives.Address
 
 const ContractMethodInventory = std.StringHashMap(void);
 const contract_method_prefixes = [_][]const u8{
+    "debug_",
+    "engine_",
     "eth_",
     "web3_",
     "net_",
@@ -168,7 +170,8 @@ fn collectQuotedMethodTokens(methods: *ContractMethodInventory, source: []const 
 }
 
 fn isConcreteMethodName(text: []const u8) bool {
-    if (methodPrefixAt(text) == null) return false;
+    const prefix = methodPrefixAt(text) orelse return false;
+    if (text.len <= prefix.len) return false;
     for (text) |char| {
         if (!isMethodNameChar(char)) return false;
     }
@@ -265,6 +268,9 @@ fn contractProbeParams(allocator: std.mem.Allocator, method: []const u8) !?std.j
         "eth_mining",
         "eth_syncing",
         "eth_protocolVersion",
+        "eth_newBlockFilter",
+        "eth_newPendingTransactionFilter",
+        "debug_getBadBlocks",
         "web3_clientVersion",
         "net_version",
         "net_listening",
@@ -303,11 +309,62 @@ fn contractProbeParams(allocator: std.mem.Allocator, method: []const u8) !?std.j
         "zevm_lightSyncStatus",
     })) return null;
 
+    if (methodIs(method, &.{ "debug_getRawBlock", "debug_getRawHeader", "debug_getRawReceipts" })) {
+        return try arrayParams(allocator, &.{.{ .string = "0x0" }});
+    }
+    if (std.mem.eql(u8, method, "debug_getRawTransaction")) {
+        return try arrayParams(allocator, &.{hash32Value()});
+    }
+    if (std.mem.eql(u8, method, "engine_exchangeCapabilities")) {
+        return try arrayParams(allocator, &.{.{ .array = std.json.Array.init(allocator) }});
+    }
+    if (std.mem.eql(u8, method, "engine_exchangeTransitionConfigurationV1")) {
+        return try arrayParams(allocator, &.{try emptyObjectValue(allocator)});
+    }
+    if (methodIs(method, &.{ "engine_forkchoiceUpdatedV1", "engine_forkchoiceUpdatedV2", "engine_forkchoiceUpdatedV3" })) {
+        var state = std.json.ObjectMap.init(allocator);
+        try state.put("headBlockHash", hash32Value());
+        try state.put("safeBlockHash", hash32Value());
+        try state.put("finalizedBlockHash", hash32Value());
+        return try arrayParams(allocator, &.{.{ .object = state }});
+    }
+    if (methodIs(method, &.{ "engine_newPayloadV1", "engine_newPayloadV2" })) {
+        return try arrayParams(allocator, &.{try emptyObjectValue(allocator)});
+    }
+    if (std.mem.eql(u8, method, "engine_newPayloadV3")) {
+        return try arrayParams(allocator, &.{ try emptyObjectValue(allocator), .{ .array = std.json.Array.init(allocator) }, hash32Value() });
+    }
+    if (methodIs(method, &.{ "engine_newPayloadV4", "engine_newPayloadV5" })) {
+        return try arrayParams(allocator, &.{ try emptyObjectValue(allocator), .{ .array = std.json.Array.init(allocator) }, hash32Value(), .{ .array = std.json.Array.init(allocator) } });
+    }
+    if (methodIs(method, &.{ "engine_getPayloadV1", "engine_getPayloadV2", "engine_getPayloadV3", "engine_getPayloadV4", "engine_getPayloadV5", "engine_getPayloadV6" })) {
+        return try arrayParams(allocator, &.{.{ .string = "0x0000000000000001" }});
+    }
+    if (methodIs(method, &.{ "engine_getPayloadBodiesByHashV1", "engine_getBlobsV1", "engine_getBlobsV2" })) {
+        var hashes = std.json.Array.init(allocator);
+        try hashes.append(hash32Value());
+        return try arrayParams(allocator, &.{.{ .array = hashes }});
+    }
+    if (std.mem.eql(u8, method, "engine_getPayloadBodiesByRangeV1")) {
+        return try arrayParams(allocator, &.{ .{ .string = "0x0" }, .{ .string = "0x1" } });
+    }
     if (methodIs(method, &.{ "eth_getBalance", "eth_getCode", "eth_getTransactionCount" })) {
         return try arrayParams(allocator, &.{ addressValue(), .{ .string = "latest" } });
     }
     if (std.mem.eql(u8, method, "eth_getStorageAt")) {
         return try arrayParams(allocator, &.{ addressValue(), bytes32Value(), .{ .string = "latest" } });
+    }
+    if (std.mem.eql(u8, method, "eth_getStorageValues")) {
+        var storage_request = std.json.ObjectMap.init(allocator);
+        var slots = std.json.Array.init(allocator);
+        try slots.append(bytes32Value());
+        try storage_request.put(managedAddressText(), .{ .array = slots });
+        return try arrayParams(allocator, &.{ .{ .object = storage_request }, .{ .string = "latest" } });
+    }
+    if (std.mem.eql(u8, method, "eth_getProof")) {
+        var slots = std.json.Array.init(allocator);
+        try slots.append(bytes32Value());
+        return try arrayParams(allocator, &.{ addressValue(), .{ .array = slots }, .{ .string = "latest" } });
     }
     if (std.mem.eql(u8, method, "eth_feeHistory")) {
         return try arrayParams(allocator, &.{ .{ .string = "0x1" }, .{ .string = "latest" } });
@@ -321,11 +378,42 @@ fn contractProbeParams(allocator: std.mem.Allocator, method: []const u8) !?std.j
     if (std.mem.eql(u8, method, "eth_estimateGas")) {
         return try arrayParams(allocator, &.{try transactionRequestValue(allocator)});
     }
+    if (std.mem.eql(u8, method, "eth_createAccessList")) {
+        return try arrayParams(allocator, &.{ try transactionRequestValue(allocator), .{ .string = "latest" } });
+    }
+    if (std.mem.eql(u8, method, "eth_simulateV1")) {
+        var payload = std.json.ObjectMap.init(allocator);
+        var blocks = std.json.Array.init(allocator);
+        try blocks.append(try emptyObjectValue(allocator));
+        try payload.put("blockStateCalls", .{ .array = blocks });
+        return try arrayParams(allocator, &.{.{ .object = payload }});
+    }
+    if (std.mem.eql(u8, method, "testing_buildBlockV1")) {
+        var attrs = std.json.ObjectMap.init(allocator);
+        try attrs.put("parentBeaconBlockRoot", bytes32Value());
+        try attrs.put("prevRandao", bytes32Value());
+        try attrs.put("suggestedFeeRecipient", addressValue());
+        try attrs.put("timestamp", .{ .string = "0x1" });
+        try attrs.put("withdrawals", .{ .array = std.json.Array.init(allocator) });
+        return try arrayParams(allocator, &.{ hash32Value(), .{ .object = attrs }, .{ .array = std.json.Array.init(allocator) }, .{ .string = "0x" } });
+    }
     if (std.mem.eql(u8, method, "eth_sendTransaction")) {
         return try arrayParams(allocator, &.{try transactionRequestValue(allocator)});
     }
     if (std.mem.eql(u8, method, "eth_sendRawTransaction")) {
         return try arrayParams(allocator, &.{.{ .string = "0x" }});
+    }
+    if (std.mem.eql(u8, method, "eth_sign")) {
+        return try arrayParams(allocator, &.{ .{ .string = managedAddressText() }, .{ .string = "0x" } });
+    }
+    if (std.mem.eql(u8, method, "eth_signTransaction")) {
+        return try arrayParams(allocator, &.{try transactionRequestValue(allocator)});
+    }
+    if (std.mem.eql(u8, method, "eth_newFilter")) {
+        return try arrayParams(allocator, &.{try emptyObjectValue(allocator)});
+    }
+    if (methodIs(method, &.{ "eth_getFilterChanges", "eth_getFilterLogs", "eth_uninstallFilter" })) {
+        return try arrayParams(allocator, &.{.{ .string = "0x1" }});
     }
     if (std.mem.eql(u8, method, "eth_getBlockByNumber")) {
         return try arrayParams(allocator, &.{ .{ .string = "latest" }, .{ .bool = false } });
@@ -350,6 +438,9 @@ fn contractProbeParams(allocator: std.mem.Allocator, method: []const u8) !?std.j
     }
     if (std.mem.eql(u8, method, "eth_getLogs")) {
         return try arrayParams(allocator, &.{try emptyObjectValue(allocator)});
+    }
+    if (std.mem.eql(u8, method, "txpool_contentFrom")) {
+        return try arrayParams(allocator, &.{addressValue()});
     }
     if (std.mem.eql(u8, method, "zevm_getAccount")) {
         return try arrayParams(allocator, &.{addressValue()});
@@ -1953,10 +2044,10 @@ test "engine capabilities expose implemented engine methods" {
         if (std.mem.eql(u8, item.string, "engine_newPayloadV3")) found_new_payload = true;
     }
     try std.testing.expect(found_forkchoice);
-    try std.testing.expect(!found_new_payload);
+    try std.testing.expect(found_new_payload);
 }
 
-test "unsupported engine lifecycle methods return method not found" {
+test "engine lifecycle methods are routed and validate params" {
     var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();
 
@@ -1971,8 +2062,13 @@ test "unsupported engine lifecycle methods return method not found" {
     };
 
     for (methods) |method| {
-        try expectErrorCode(&rt, method, null, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND);
+        try expectErrorCode(&rt, method, null, jsonrpc.envelope.ErrorCode.INVALID_PARAMS);
     }
+
+    var params = std.json.Array.init(std.testing.allocator);
+    defer params.deinit();
+    try params.append(.{ .string = "0x0000000000000001" });
+    try expectErrorCode(&rt, "engine_getPayloadV1", .{ .array = params }, dispatcher.RuntimeErrorCode.ENGINE_UNKNOWN_PAYLOAD);
 }
 
 test "engine forkchoice validates against known canonical blocks" {

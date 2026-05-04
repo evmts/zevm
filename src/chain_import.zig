@@ -23,10 +23,12 @@ pub const ImportStats = struct {
 };
 
 pub const OwnedBlockBody = struct {
+    block_hash: [32]u8 = primitives.Hash.ZERO,
     header_extra_data: ?[]u8 = null,
     transactions: []const primitives.BlockBody.TransactionData = &.{},
     ommers: []const primitives.BlockBody.UncleHeader = &.{},
     withdrawals: ?[]const primitives.BlockBody.Withdrawal = null,
+    requests_hash: ?[32]u8 = null,
 
     pub fn deinit(self: *OwnedBlockBody, allocator: std.mem.Allocator) void {
         if (self.header_extra_data) |bytes| {
@@ -118,8 +120,10 @@ pub fn decodeNextBlock(
     var owned_body = OwnedBlockBody{};
     errdefer owned_body.deinit(allocator);
 
-    var header = try decodeHeaderForImport(allocator, block_bytes[header_span.start..header_span.end]);
-    owned_body.header_extra_data = try decodeHeaderExtraData(allocator, block_bytes[header_span.start..header_span.end]);
+    const header_bytes = block_bytes[header_span.start..header_span.end];
+    var header = try decodeHeaderForImport(allocator, header_bytes);
+    owned_body.requests_hash = try decodeHeaderRequestsHash(allocator, header_bytes);
+    owned_body.header_extra_data = try decodeHeaderExtraData(allocator, header_bytes);
     header.extra_data = owned_body.header_extra_data orelse &.{};
 
     owned_body.transactions = try decodeTransactions(allocator, block_bytes, block_fields[1]);
@@ -135,8 +139,9 @@ pub fn decodeNextBlock(
     };
 
     var block = try primitives.Block.from(&header, &body, allocator);
-    std.crypto.hash.sha3.Keccak256.hash(block_bytes[header_span.start..header_span.end], &block.hash, .{});
+    std.crypto.hash.sha3.Keccak256.hash(header_bytes, &block.hash, .{});
     block.size = @intCast(block_bytes.len);
+    owned_body.block_hash = block.hash;
     return .{
         .block = block,
         .owned_body = owned_body,
@@ -180,12 +185,23 @@ fn decodeHeaderForImport(
     return header;
 }
 
+fn decodeHeaderRequestsHash(allocator: std.mem.Allocator, header_bytes: []const u8) !?[32]u8 {
+    const header_span = try itemSpan(header_bytes, 0);
+    if (header_span.kind != .list or header_span.start != 0 or header_span.end != header_bytes.len) return error.InvalidChainRlp;
+
+    const fields = try childSpans(allocator, header_bytes, header_span.payload_start, header_span.payload_end);
+    defer allocator.free(fields);
+    if (fields.len <= 20) return null;
+    return try parseRlpHash(header_bytes, fields[20]);
+}
+
 pub fn cloneBlockBody(
     allocator: std.mem.Allocator,
     block: *primitives.Block.Block,
 ) !OwnedBlockBody {
     var owned = OwnedBlockBody{};
     errdefer owned.deinit(allocator);
+    owned.block_hash = block.hash;
 
     if (block.header.extra_data.len > 0) {
         owned.header_extra_data = try allocator.dupe(u8, block.header.extra_data);

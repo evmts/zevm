@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const jsonrpc = @import("jsonrpc");
+const primitives = @import("primitives");
 const runtime = @import("../../node/runtime.zig");
 const block_builder = @import("../../block_builder.zig");
 const rpc_parse = @import("../parse.zig");
@@ -114,6 +115,95 @@ pub fn handleEthGetTransactionCount(
     try ensureCurrentStateSelector(rt, params.block);
     const nonce = try rt.getNonce(.{ .bytes = params.address.bytes });
     return .{ .value = try quantityHexU64(allocator, nonce) };
+}
+
+pub fn handleEthGetStorageValuesValue(
+    allocator: std.mem.Allocator,
+    rt: *runtime.NodeRuntime,
+    params: ?std.json.Value,
+) !std.json.Value {
+    const items = try paramsArrayItems(params);
+    if (items.len != 2) return error.InvalidParams;
+
+    const selected = rpc_parse.resolveTrustedBlockSelector(rt.head_block_number, items[1]) catch return error.InvalidParams;
+    if (selected != rt.head_block_number) return error.InvalidParams;
+
+    const requests = switch (items[0]) {
+        .object => |object| object,
+        else => return error.InvalidParams,
+    };
+    if (requests.count() == 0) return error.InvalidParams;
+
+    var result = std.json.ObjectMap.init(allocator);
+    errdefer {
+        var cleanup = std.json.Value{ .object = result };
+        deinitJsonValue(allocator, &cleanup);
+    }
+
+    var address_it = requests.iterator();
+    while (address_it.next()) |entry| {
+        const address = try rpc_parse.parseAddressString(entry.key_ptr.*);
+        const slots = switch (entry.value_ptr.*) {
+            .array => |array| array.items,
+            else => return error.InvalidParams,
+        };
+
+        var values = std.json.Array.init(allocator);
+        errdefer {
+            for (values.items) |*item| deinitJsonValue(allocator, item);
+            values.deinit();
+        }
+
+        for (slots) |slot_value| {
+            const slot_hash = try rpc_parse.parseHash32Value(slot_value);
+            const slot = std.mem.readInt(u256, &slot_hash, .big);
+            try values.append(try dataValueHexU256(allocator, try rt.getStorage(address, slot)));
+        }
+
+        const owned_key = try allocator.dupe(u8, entry.key_ptr.*);
+        errdefer allocator.free(owned_key);
+        try result.put(owned_key, .{ .array = values });
+    }
+
+    return .{ .object = result };
+}
+
+pub fn handleEthGetProofValue(
+    allocator: std.mem.Allocator,
+    rt: *runtime.NodeRuntime,
+    params: ?std.json.Value,
+) !std.json.Value {
+    const items = try paramsArrayItems(params);
+    if (items.len != 3) return error.InvalidParams;
+
+    const address = try rpc_parse.parseAddressValue(items[0]);
+    const storage_keys = switch (items[1]) {
+        .array => |array| array.items,
+        else => return error.InvalidParams,
+    };
+    const selected = resolveGetProofBlockSelector(rt, items[2]) catch return error.InvalidParams;
+    if (selected != rt.head_block_number) return error.InvalidParams;
+
+    const balance = try rt.getBalance(address);
+    const nonce = try rt.getNonce(address);
+    const code = try rt.getCode(address);
+    const code_hash = codeHash(code);
+    const storage_hash = try block_builder.computeStorageRoot(allocator, &rt.state, address);
+
+    var obj = std.json.ObjectMap.init(allocator);
+    errdefer {
+        var cleanup = std.json.Value{ .object = obj };
+        deinitJsonValue(allocator, &cleanup);
+    }
+
+    try putOwnedJsonValue(&obj, allocator, "address", try addressValue(allocator, address));
+    try putOwnedJsonValue(&obj, allocator, "accountProof", .{ .array = std.json.Array.init(allocator) });
+    try putOwnedJsonValue(&obj, allocator, "balance", try quantityValueHexU256(allocator, balance));
+    try putOwnedJsonValue(&obj, allocator, "codeHash", try hash32Value(allocator, code_hash));
+    try putOwnedJsonValue(&obj, allocator, "nonce", try quantityValueHexU64(allocator, nonce));
+    try putOwnedJsonValue(&obj, allocator, "storageHash", try hash32Value(allocator, storage_hash));
+    try putOwnedJsonValue(&obj, allocator, "storageProof", try storageProofValue(allocator, rt, address, storage_keys));
+    return .{ .object = obj };
 }
 
 pub fn parseEthGetBalanceParams(params: ?std.json.Value) !jsonrpc.eth.GetBalance.Params {
@@ -421,6 +511,10 @@ fn dataHexU256(allocator: std.mem.Allocator, value: u256) !jsonrpc.types.Quantit
     return .{ .value = .{ .string = try std.fmt.allocPrint(allocator, "0x{x:0>64}", .{value}) } };
 }
 
+fn dataValueHexU256(allocator: std.mem.Allocator, value: u256) !std.json.Value {
+    return .{ .string = try std.fmt.allocPrint(allocator, "0x{x:0>64}", .{value}) };
+}
+
 fn dataHexBytes(allocator: std.mem.Allocator, bytes: []const u8) !jsonrpc.types.Quantity {
     if (bytes.len == 0) {
         return .{ .value = .{ .string = try allocator.dupe(u8, "0x") } };
@@ -502,6 +596,97 @@ fn quantityValueHexU64(allocator: std.mem.Allocator, value: u64) !std.json.Value
 
 fn quantityValueHexU256(allocator: std.mem.Allocator, value: u256) !std.json.Value {
     return .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{value}) };
+}
+
+fn addressValue(allocator: std.mem.Allocator, address: primitives.Address) !std.json.Value {
+    const out = try allocator.alloc(u8, 42);
+    out[0] = '0';
+    out[1] = 'x';
+    writeHexLower(out[2..], &address.bytes);
+    return .{ .string = out };
+}
+
+fn hash32Value(allocator: std.mem.Allocator, hash: [32]u8) !std.json.Value {
+    const out = try allocator.alloc(u8, 66);
+    out[0] = '0';
+    out[1] = 'x';
+    writeHexLower(out[2..], &hash);
+    return .{ .string = out };
+}
+
+fn storageKeyValue(allocator: std.mem.Allocator, slot: u256) !std.json.Value {
+    return .{ .string = try std.fmt.allocPrint(allocator, "0x{x:0>64}", .{slot}) };
+}
+
+fn storageProofValue(
+    allocator: std.mem.Allocator,
+    rt: *runtime.NodeRuntime,
+    address: primitives.Address,
+    keys: []const std.json.Value,
+) !std.json.Value {
+    var array = std.json.Array.init(allocator);
+    errdefer {
+        for (array.items) |*item| {
+            deinitJsonValue(allocator, item);
+        }
+        array.deinit();
+    }
+
+    for (keys) |key_value| {
+        const slot = try parseProofStorageKey(key_value);
+        const value = try rt.getStorage(address, slot);
+
+        var entry = std.json.ObjectMap.init(allocator);
+        errdefer {
+            var cleanup = std.json.Value{ .object = entry };
+            deinitJsonValue(allocator, &cleanup);
+        }
+        try putOwnedJsonValue(&entry, allocator, "key", try quantityValueHexU256(allocator, slot));
+        try putOwnedJsonValue(&entry, allocator, "value", try quantityValueHexU256(allocator, value));
+        try putOwnedJsonValue(&entry, allocator, "proof", .{ .array = std.json.Array.init(allocator) });
+        try array.append(.{ .object = entry });
+    }
+
+    return .{ .array = array };
+}
+
+fn codeHash(code: []const u8) [32]u8 {
+    if (code.len == 0) return primitives.State.EMPTY_CODE_HASH;
+    var out: [32]u8 = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(code, &out, .{});
+    return out;
+}
+
+fn resolveGetProofBlockSelector(rt: *runtime.NodeRuntime, value: std.json.Value) !u64 {
+    if (value == .string) {
+        const text = value.string;
+        if (rpc_parse.isHash32(text)) {
+            const requested = try rpc_parse.parseHash32String(text);
+            const head_hash = rt.blockchain.getCanonicalHash(rt.head_block_number) orelse return error.InvalidParams;
+            if (!std.mem.eql(u8, &requested, &head_hash)) return error.InvalidParams;
+            return rt.head_block_number;
+        }
+    }
+    return rpc_parse.resolveTrustedBlockSelector(rt.head_block_number, value);
+}
+
+fn parseProofStorageKey(value: std.json.Value) !u256 {
+    if (value == .string and rpc_parse.isHash32(value.string)) {
+        const bytes = try rpc_parse.parseHash32String(value.string);
+        return std.mem.readInt(u256, &bytes, .big);
+    }
+    return rpc_parse.parseQuantityValue(u256, value) catch {
+        const text = switch (value) {
+            .string => |s| s,
+            else => return error.InvalidParams,
+        };
+        if (!rpc_parse.hasHexPrefix(text)) return error.InvalidParams;
+        const hex = text[2..];
+        if (hex.len == 0 or hex.len > 64 or hex.len % 2 != 0) return error.InvalidParams;
+        var bytes: [32]u8 = [_]u8{0} ** 32;
+        _ = std.fmt.hexToBytes(bytes[32 - hex.len / 2 ..], hex) catch return error.InvalidParams;
+        return std.mem.readInt(u256, &bytes, .big);
+    };
 }
 
 fn feeHistoryBaseFeeArray(

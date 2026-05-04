@@ -323,7 +323,7 @@ test "eth_call uses runtime base fee override" {
     try rt.setCode(target, &RETURN_BASE_FEE);
 
     var parsed = try parseJson(
-        \\[{"to":"0x1000000000000000000000000000000000000001"},"latest"]
+        \\[{"to":"0x1000000000000000000000000000000000000001","gasPrice":"0x1"},"latest"]
     );
     defer parsed.deinit();
 
@@ -381,7 +381,7 @@ test "simulation rejects unsupported transaction request fields" {
     defer rt.deinit();
 
     var parsed = try parseJson(
-        \\[{"to":"0x1000000000000000000000000000000000000001","maxFeePerGas":"0x1"},"latest"]
+        \\[{"to":"0x1000000000000000000000000000000000000001","unsupported":"0x1"},"latest"]
     );
     defer parsed.deinit();
 

@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const jsonrpc = @import("jsonrpc");
 const log = @import("../log.zig");
+const simulation = @import("handlers/simulation.zig");
 
 pub const HandlerRegistry = struct {
     on_method: ?*const fn (allocator: std.mem.Allocator, method_name: []const u8, params: ?std.json.Value) anyerror!std.json.Value = null,
@@ -11,10 +12,12 @@ pub const HandlerRegistry = struct {
 };
 
 pub const RuntimeErrorCode = struct {
+    pub const BUILD_BLOCK_FAILED: i32 = -32000;
     pub const MODE_UNSUPPORTED: i32 = -32010;
     pub const LIGHT_NOT_READY: i32 = -32011;
     pub const PROOF_VERIFY_FAILED: i32 = -32014;
     pub const MALFORMED_PROOF: i32 = -32015;
+    pub const ENGINE_UNKNOWN_PAYLOAD: i32 = -38001;
 };
 
 pub fn dispatch(allocator: std.mem.Allocator, request: jsonrpc.envelope.RequestEnvelope, handlers: *const HandlerRegistry) !jsonrpc.envelope.ResponseEnvelope {
@@ -43,6 +46,16 @@ pub fn dispatch(allocator: std.mem.Allocator, request: jsonrpc.envelope.RequestE
         error.InvalidParams => {
             return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.INVALID_PARAMS, "Invalid params");
         },
+        error.BuildBlockFailed => {
+            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.BUILD_BLOCK_FAILED, "Block building failed");
+        },
+        error.ExecutionFailed => {
+            var response = jsonrpc.envelope.ResponseEnvelope.makeError(request.id, 3, "execution reverted");
+            if (simulation.takeLastExecutionErrorData()) |data| {
+                response.error_value.?.data = .{ .string = data };
+            }
+            return response;
+        },
         error.ModeUnsupported => {
             return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.MODE_UNSUPPORTED, "Method unsupported in active mode");
         },
@@ -54,6 +67,9 @@ pub fn dispatch(allocator: std.mem.Allocator, request: jsonrpc.envelope.RequestE
         },
         error.ProofVerifyFailed => {
             return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.PROOF_VERIFY_FAILED, "Proof verification failed");
+        },
+        error.UnknownPayload => {
+            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.ENGINE_UNKNOWN_PAYLOAD, "Unknown payload");
         },
         else => {
             if (!isTestBuild()) {
@@ -137,8 +153,11 @@ fn isLocallyHandledMethod(method_name: []const u8) bool {
         std.mem.eql(u8, method_name, "net_listening") or
         std.mem.eql(u8, method_name, "net_peerCount") or
         std.mem.eql(u8, method_name, "txpool_content") or
+        std.mem.eql(u8, method_name, "txpool_contentFrom") or
         std.mem.eql(u8, method_name, "txpool_status") or
         std.mem.eql(u8, method_name, "txpool_inspect") or
+        std.mem.eql(u8, method_name, "testing_buildBlockV1") or
+        std.mem.eql(u8, method_name, "eth_getStorageValues") or
         std.mem.eql(u8, method_name, "eth_mining") or
         std.mem.eql(u8, method_name, "eth_protocolVersion") or
         std.mem.eql(u8, method_name, "zevm_setBalance") or

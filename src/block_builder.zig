@@ -153,6 +153,13 @@ pub fn buildBlockWithOptions(
         }
 
         const tx_options = tx_processor.ProcessTransactionOptions{
+            .access_list = item.access_list,
+            .receipt_type = item.receipt_type,
+            .max_fee_per_gas = item.max_fee_per_gas,
+            .max_priority_fee_per_gas = item.max_priority_fee_per_gas,
+            .authorization_list = item.authorization_list,
+            .blob_gas_used = item.blob_gas_used,
+            .blob_gas_price = item.blob_gas_price,
             .hardfork_override = if (options.hardfork_config) |config|
                 tx_processor.resolveHardforkWithConfig(config, effective_block_ctx)
             else
@@ -863,7 +870,7 @@ fn encodeLegacyTransactionEnvelope(
     return encodeRlpListFromEncodedFields(allocator, fields.items);
 }
 
-fn encodeReceiptEnvelope(
+pub fn encodeReceiptEnvelope(
     allocator: std.mem.Allocator,
     receipt: primitives.Receipt.Receipt,
 ) ![]u8 {

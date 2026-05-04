@@ -12,6 +12,14 @@ pub fn handleContent(
     return poolEntries(allocator, rt, .content);
 }
 
+pub fn handleContentFrom(
+    allocator: std.mem.Allocator,
+    rt: *const runtime.NodeRuntime,
+    params: ?std.json.Value,
+) !std.json.Value {
+    return poolEntriesFrom(allocator, rt, .content, try parseSingleAddressArg(params));
+}
+
 pub fn handleStatus(
     allocator: std.mem.Allocator,
     rt: *const runtime.NodeRuntime,
@@ -65,13 +73,41 @@ fn poolEntries(
     return .{ .object = obj };
 }
 
+fn poolEntriesFrom(
+    allocator: std.mem.Allocator,
+    rt: *const runtime.NodeRuntime,
+    shape: EntryShape,
+    sender: primitives.Address,
+) !std.json.Value {
+    var pending = std.json.ObjectMap.init(allocator);
+    var queued = std.json.ObjectMap.init(allocator);
+
+    for (rt.pool.items()) |tx| {
+        if (!std.mem.eql(u8, &tx.sender.bytes, &sender.bytes)) continue;
+        const section = switch (rt.pool.statusOf(tx.sender, tx.nonce)) {
+            .pending => &pending,
+            .queued => &queued,
+        };
+
+        switch (shape) {
+            .content => try appendContentTx(allocator, section, tx),
+            .inspect => try appendInspectTx(allocator, section, tx),
+        }
+    }
+
+    var obj = std.json.ObjectMap.init(allocator);
+    try putOwnedJson(&obj, allocator, "pending", .{ .object = pending });
+    try putOwnedJson(&obj, allocator, "queued", .{ .object = queued });
+    return .{ .object = obj };
+}
+
 fn appendContentTx(
     allocator: std.mem.Allocator,
     section: *std.json.ObjectMap,
     tx: txpool_mod.PooledTransaction,
 ) !void {
     var sender_buf: [42]u8 = undefined;
-    const sender_key = addressHex(&sender_buf, tx.sender);
+    const sender_key = checksumAddressHex(&sender_buf, tx.sender);
     const account = try getOrCreateAccount(allocator, section, sender_key);
     try putJsonOwnedKey(account, allocator, try decimalKey(allocator, tx.nonce), try transactionObject(allocator, tx));
 }
@@ -82,7 +118,7 @@ fn appendInspectTx(
     tx: txpool_mod.PooledTransaction,
 ) !void {
     var sender_buf: [42]u8 = undefined;
-    const sender_key = addressHex(&sender_buf, tx.sender);
+    const sender_key = checksumAddressHex(&sender_buf, tx.sender);
     const account = try getOrCreateAccount(allocator, section, sender_key);
     try putJsonOwnedKey(account, allocator, try decimalKey(allocator, tx.nonce), .{
         .string = try inspectSummary(allocator, tx),
@@ -114,7 +150,7 @@ fn inspectSummary(allocator: std.mem.Allocator, tx: txpool_mod.PooledTransaction
     if (tx.to) |to| {
         var to_buf: [42]u8 = undefined;
         return std.fmt.allocPrint(allocator, "{s}: {d} wei + {d} gas x {d} wei", .{
-            addressHex(&to_buf, to),
+            checksumAddressHex(&to_buf, to),
             tx.value,
             tx.gas_limit,
             tx.max_fee_per_gas,
@@ -161,6 +197,23 @@ fn validateNoParams(params: ?std.json.Value) !void {
     }
 }
 
+fn parseSingleAddressArg(params: ?std.json.Value) !primitives.Address {
+    const value = params orelse return error.InvalidParams;
+    const items = switch (value) {
+        .array => |array| array.items,
+        else => return error.InvalidParams,
+    };
+    if (items.len != 1) return error.InvalidParams;
+    const text = switch (items[0]) {
+        .string => |s| s,
+        else => return error.InvalidParams,
+    };
+    if (text.len != 42 or text[0] != '0' or text[1] != 'x') return error.InvalidParams;
+    var bytes: [20]u8 = undefined;
+    _ = std.fmt.hexToBytes(&bytes, text[2..]) catch return error.InvalidParams;
+    return .{ .bytes = bytes };
+}
+
 fn putOwnedJson(
     obj: *std.json.ObjectMap,
     allocator: std.mem.Allocator,
@@ -192,7 +245,7 @@ fn quantityHex(allocator: std.mem.Allocator, value: anytype) ![]u8 {
 
 fn addressString(allocator: std.mem.Allocator, address: primitives.Address) ![]u8 {
     var buf: [42]u8 = undefined;
-    return allocator.dupe(u8, addressHex(&buf, address));
+    return allocator.dupe(u8, checksumAddressHex(&buf, address));
 }
 
 fn hashString(allocator: std.mem.Allocator, hash: [32]u8) ![]u8 {
@@ -217,6 +270,23 @@ fn addressHex(buf: *[42]u8, address: primitives.Address) []const u8 {
     buf[1] = 'x';
     const hex = std.fmt.bytesToHex(&address.bytes, .lower);
     @memcpy(buf[2..], &hex);
+    return buf[0..];
+}
+
+fn checksumAddressHex(buf: *[42]u8, address: primitives.Address) []const u8 {
+    _ = addressHex(buf, address);
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(buf[2..42], &digest, .{});
+    for (buf[2..42], 0..) |*char, i| {
+        if (char.* < 'a' or char.* > 'f') continue;
+        const nibble = if ((i % 2) == 0)
+            digest[i / 2] >> 4
+        else
+            digest[i / 2] & 0x0f;
+        if (nibble >= 8) {
+            char.* -= 'a' - 'A';
+        }
+    }
     return buf[0..];
 }
 
