@@ -21,64 +21,64 @@ const VerifyError = error{
 };
 
 const execution_spec_state_fixture_paths = [_][]const u8{
-    "execution-spec-tests/src/ethereum_test_specs/tests/fixtures/chainid_paris_state_test_tx_type_0.json",
-    "execution-spec-tests/src/ethereum_test_specs/tests/fixtures/chainid_cancun_state_test_tx_type_0.json",
-    "execution-spec-tests/src/ethereum_test_specs/tests/fixtures/chainid_cancun_state_test_tx_type_1.json",
-    "execution-spec-tests/src/ethereum_test_specs/tests/fixtures/chainid_shanghai_state_test_tx_type_0.json",
+    "lib/execution-spec-tests/src/ethereum_test_specs/tests/fixtures/chainid_paris_state_test_tx_type_0.json",
+    "lib/execution-spec-tests/src/ethereum_test_specs/tests/fixtures/chainid_cancun_state_test_tx_type_0.json",
+    "lib/execution-spec-tests/src/ethereum_test_specs/tests/fixtures/chainid_cancun_state_test_tx_type_1.json",
+    "lib/execution-spec-tests/src/ethereum_test_specs/tests/fixtures/chainid_shanghai_state_test_tx_type_0.json",
 };
 
 const execution_spec_blockchain_fixture_paths = [_][]const u8{
-    "execution-spec-tests/src/ethereum_test_specs/tests/fixtures/blockchain_london_invalid_filled.json",
-    "execution-spec-tests/src/ethereum_test_specs/tests/fixtures/blockchain_london_valid_filled.json",
-    "execution-spec-tests/src/ethereum_test_specs/tests/fixtures/blockchain_shanghai_invalid_filled_engine.json",
-    "execution-spec-tests/src/ethereum_test_specs/tests/fixtures/blockchain_shanghai_valid_filled_engine.json",
-    "execution-spec-tests/src/ethereum_test_specs/tests/fixtures/chainid_cancun_blockchain_test_engine_tx_type_0.json",
-    "execution-spec-tests/src/ethereum_test_specs/tests/fixtures/chainid_cancun_blockchain_test_tx_type_0.json",
-    "execution-spec-tests/src/ethereum_test_specs/tests/fixtures/chainid_istanbul_blockchain_test_tx_type_0.json",
-    "execution-spec-tests/src/ethereum_test_specs/tests/fixtures/chainid_london_blockchain_test_tx_type_0.json",
-    "execution-spec-tests/src/ethereum_test_specs/tests/fixtures/chainid_paris_blockchain_test_engine_tx_type_0.json",
-    "execution-spec-tests/src/ethereum_test_specs/tests/fixtures/chainid_shanghai_blockchain_test_engine_tx_type_0.json",
+    "lib/execution-spec-tests/src/ethereum_test_specs/tests/fixtures/blockchain_london_invalid_filled.json",
+    "lib/execution-spec-tests/src/ethereum_test_specs/tests/fixtures/blockchain_london_valid_filled.json",
+    "lib/execution-spec-tests/src/ethereum_test_specs/tests/fixtures/blockchain_shanghai_invalid_filled_engine.json",
+    "lib/execution-spec-tests/src/ethereum_test_specs/tests/fixtures/blockchain_shanghai_valid_filled_engine.json",
+    "lib/execution-spec-tests/src/ethereum_test_specs/tests/fixtures/chainid_cancun_blockchain_test_engine_tx_type_0.json",
+    "lib/execution-spec-tests/src/ethereum_test_specs/tests/fixtures/chainid_cancun_blockchain_test_tx_type_0.json",
+    "lib/execution-spec-tests/src/ethereum_test_specs/tests/fixtures/chainid_istanbul_blockchain_test_tx_type_0.json",
+    "lib/execution-spec-tests/src/ethereum_test_specs/tests/fixtures/chainid_london_blockchain_test_tx_type_0.json",
+    "lib/execution-spec-tests/src/ethereum_test_specs/tests/fixtures/chainid_paris_blockchain_test_engine_tx_type_0.json",
+    "lib/execution-spec-tests/src/ethereum_test_specs/tests/fixtures/chainid_shanghai_blockchain_test_engine_tx_type_0.json",
 };
 
 const legacy_state_fixture_dirs = [_][]const u8{
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stArgsZeroOneBalance",
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stAttackTest",
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stBugs",
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stCallCodes",
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stChainId",
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stCodeCopyTest",
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stCodeSizeLimit",
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP150Specific",
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP1559",
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP158Specific",
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP2930",
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP3607",
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stExample",
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stHomesteadSpecific",
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stLogTests",
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stMemExpandingEIP150Calls",
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stPreCompiledContracts",
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stRecursiveCreate",
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stSLoadTest",
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stSelfBalance",
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stShift",
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stStackTests",
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stStaticFlagEnabled",
-    "ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stTransitionTest",
+    "lib/ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stArgsZeroOneBalance",
+    "lib/ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stAttackTest",
+    "lib/ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stBugs",
+    "lib/ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stCallCodes",
+    "lib/ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stChainId",
+    "lib/ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stCodeCopyTest",
+    "lib/ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stCodeSizeLimit",
+    "lib/ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP150Specific",
+    "lib/ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP1559",
+    "lib/ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP158Specific",
+    "lib/ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP2930",
+    "lib/ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stEIP3607",
+    "lib/ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stExample",
+    "lib/ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stHomesteadSpecific",
+    "lib/ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stLogTests",
+    "lib/ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stMemExpandingEIP150Calls",
+    "lib/ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stPreCompiledContracts",
+    "lib/ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stRecursiveCreate",
+    "lib/ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stSLoadTest",
+    "lib/ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stSelfBalance",
+    "lib/ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stShift",
+    "lib/ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stStackTests",
+    "lib/ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stStaticFlagEnabled",
+    "lib/ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stTransitionTest",
 };
 
 const hive_rpc_fixture_paths = [_][]const u8{
-    "execution-apis/tests/eth_chainId/get-chain-id.io",
-    "execution-apis/tests/eth_blobBaseFee/get-current-blobfee.io",
-    "execution-apis/tests/eth_getBalance/get-balance-unknown-account.io",
-    "execution-apis/tests/eth_getCode/get-code-unknown-account.io",
-    "execution-apis/tests/eth_getStorageAt/get-storage-unknown-account.io",
-    "execution-apis/tests/eth_getTransactionCount/get-nonce-unknown-account.io",
-    "execution-apis/tests/eth_syncing/check-syncing.io",
-    "execution-apis/tests/net_version/get-network-id.io",
+    "lib/execution-apis/tests/eth_chainId/get-chain-id.io",
+    "lib/execution-apis/tests/eth_blobBaseFee/get-current-blobfee.io",
+    "lib/execution-apis/tests/eth_getBalance/get-balance-unknown-account.io",
+    "lib/execution-apis/tests/eth_getCode/get-code-unknown-account.io",
+    "lib/execution-apis/tests/eth_getStorageAt/get-storage-unknown-account.io",
+    "lib/execution-apis/tests/eth_getTransactionCount/get-nonce-unknown-account.io",
+    "lib/execution-apis/tests/eth_syncing/check-syncing.io",
+    "lib/execution-apis/tests/net_version/get-network-id.io",
 };
 
-const hive_rpc_head_forkchoice_path = "execution-apis/tests/headfcu.json";
+const hive_rpc_head_forkchoice_path = "lib/execution-apis/tests/headfcu.json";
 
 // External fixture expansion remains tracked by release-readiness tickets:
 // state/block fixture discovery, broader legacy-state coverage, and the
@@ -530,7 +530,7 @@ fn runGeneratedStatePostCase(parent_allocator: std.mem.Allocator, fixture: std.j
 }
 
 fn runLegacyInvalidIntrinsicGasFixture(allocator: std.mem.Allocator, repo_root: []const u8, ctx: *VerifyContext) !void {
-    const label = "execution-spec-tests/tests/static/state_tests/stExample/invalidTrFiller.json";
+    const label = "lib/execution-spec-tests/tests/static/state_tests/stExample/invalidTrFiller.json";
     const task_id = ctx.claimTask(label) orelse return;
     const started_ns = ctx.startTask(task_id, "legacy-state-filler", label);
     runLegacyInvalidIntrinsicGasFixtureTask(allocator, repo_root) catch |err| {
@@ -547,7 +547,7 @@ fn runLegacyInvalidIntrinsicGasFixtureTask(parent_allocator: std.mem.Allocator, 
 
     const path = try std.fs.path.join(allocator, &.{
         repo_root,
-        "execution-spec-tests/tests/static/state_tests/stExample/invalidTrFiller.json",
+        "lib/execution-spec-tests/tests/static/state_tests/stExample/invalidTrFiller.json",
     });
     defer allocator.free(path);
 
@@ -824,7 +824,7 @@ fn assertLegacyLogsHash(allocator: std.mem.Allocator, logs: []const primitives.E
 }
 
 fn runBlockchainFixtureSmoke(allocator: std.mem.Allocator, repo_root: []const u8, ctx: *VerifyContext) !void {
-    const label = "ethereum-tests/BlockchainTests/ValidBlocks/bcExample/optionsTest.json";
+    const label = "lib/ethereum-tests/BlockchainTests/ValidBlocks/bcExample/optionsTest.json";
     const task_id = ctx.claimTask(label) orelse return;
     const started_ns = ctx.startTask(task_id, "blockchain-smoke", label);
     runBlockchainFixtureSmokeTask(allocator, repo_root) catch |err| {
@@ -841,7 +841,7 @@ fn runBlockchainFixtureSmokeTask(parent_allocator: std.mem.Allocator, repo_root:
 
     const path = try std.fs.path.join(allocator, &.{
         repo_root,
-        "ethereum-tests/BlockchainTests/ValidBlocks/bcExample/optionsTest.json",
+        "lib/ethereum-tests/BlockchainTests/ValidBlocks/bcExample/optionsTest.json",
     });
     defer allocator.free(path);
 
@@ -970,18 +970,18 @@ fn blockHeaderFromFixtureBlock(block: std.json.Value) !std.json.Value {
 fn runHiveRpcCompatibilityFixtures(allocator: std.mem.Allocator, repo_root: []const u8, zevm_bin: []const u8, ctx: *VerifyContext) !void {
     const simulator_path = try std.fs.path.join(allocator, &.{
         repo_root,
-        "hive/simulators/ethereum/rpc-compat/testload.go",
+        "lib/hive/simulators/ethereum/rpc-compat/testload.go",
     });
     defer allocator.free(simulator_path);
     std.fs.accessAbsolute(simulator_path, .{}) catch return VerifyError.InvalidFixture;
 
-    const forkenv_path = try std.fs.path.join(allocator, &.{ repo_root, "execution-apis/tests/forkenv.json" });
+    const forkenv_path = try std.fs.path.join(allocator, &.{ repo_root, "lib/execution-apis/tests/forkenv.json" });
     defer allocator.free(forkenv_path);
     var forkenv = try readJson(allocator, forkenv_path);
     defer forkenv.deinit();
-    const genesis_path = try std.fs.path.join(allocator, &.{ repo_root, "execution-apis/tests/genesis.json" });
+    const genesis_path = try std.fs.path.join(allocator, &.{ repo_root, "lib/execution-apis/tests/genesis.json" });
     defer allocator.free(genesis_path);
-    const chain_rlp_path = try std.fs.path.join(allocator, &.{ repo_root, "execution-apis/tests/chain.rlp" });
+    const chain_rlp_path = try std.fs.path.join(allocator, &.{ repo_root, "lib/execution-apis/tests/chain.rlp" });
     defer allocator.free(chain_rlp_path);
 
     const ports = try reserveDistinctLoopbackPorts();

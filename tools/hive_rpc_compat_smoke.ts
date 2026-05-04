@@ -11,7 +11,7 @@ const defaultPattern =
   "rpc-compat/(client launch|eth_chainId/get-chain-id|eth_blobBaseFee/get-current-blobfee|eth_getBalance/get-balance-unknown-account|eth_getCode/get-code-unknown-account|eth_getStorageAt/get-storage-unknown-account|eth_getTransactionCount/get-nonce-unknown-account|eth_syncing/check-syncing|net_version/get-network-id)";
 const testPattern = process.env.ZEVM_HIVE_RPC_COMPAT_PATTERN ?? defaultPattern;
 const clientTemplate = join(root, "tools/hive/zevm-client");
-const clientDir = join(root, "hive/clients/zevm");
+const clientDir = join(root, "lib/hive/clients/zevm");
 const hiveBin = join(root, "zig-out/hive/hive");
 const hiveResultsRoot = join(root, "zig-out/hive/logs");
 const hiveOutput = join(root, "zig-out/hive/rpc-compat-smoke.out");
@@ -85,12 +85,7 @@ async function main(): Promise<void> {
 
   const executionApisRef =
     process.env.ZEVM_HIVE_EXECUTION_APIS_REF ??
-    (await output(["git", "-C", join(root, "execution-apis"), "rev-parse", "HEAD"]));
-
-  for (const sibling of ["voltaire", "guillotine-mini"]) {
-    const path = join(root, "..", sibling);
-    if (!existsSync(path)) throw new Error(`missing sibling checkout: ${path}`);
-  }
+    (await output(["git", "-C", join(root, "lib/execution-apis"), "rev-parse", "HEAD"]));
 
   process.on("exit", cleanupClientDir);
   process.on("SIGINT", () => {
@@ -114,10 +109,6 @@ async function main(): Promise<void> {
   await run([
     "docker",
     "build",
-    "--build-context",
-    `voltaire=${join(root, "..", "voltaire")}`,
-    "--build-context",
-    `guillotine-mini=${join(root, "..", "guillotine-mini")}`,
     "--build-arg",
     `ZIG_VERSION=${zigVersion}`,
     "-f",
@@ -129,7 +120,7 @@ async function main(): Promise<void> {
 
   mkdirSync(dirname(hiveBin), { recursive: true });
   mkdirSync(hiveResultsRoot, { recursive: true });
-  await run(["go", "build", "-o", hiveBin, "."], { cwd: join(root, "hive") });
+  await run(["go", "build", "-o", hiveBin, "."], { cwd: join(root, "lib/hive") });
 
   const hiveLog = await run(
     [
@@ -149,7 +140,7 @@ async function main(): Promise<void> {
       "--client",
       "zevm",
     ],
-    { cwd: join(root, "hive"), capture: true },
+    { cwd: join(root, "lib/hive"), capture: true },
   );
   writeFileSync(hiveOutput, hiveLog);
 

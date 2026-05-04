@@ -179,7 +179,7 @@
       "surfaceSection": "PRD 3.5",
       "surfaceCategory": "runtime",
       "assertionType": "default-graph-test",
-      "assertionIdentifier": ".smithers/external-test-suites.json; tools/external_verify.zig",
+      "assertionIdentifier": "tools/external_verify.zig",
       "expectedContractOutcome": "Official Ethereum state, blockchain, and execution-spec fixture coverage either passes in the release gate or has explicit phase-1 exclusions.",
       "coverageStatus": "covered"
     },
@@ -188,7 +188,7 @@
       "surfaceSection": "PRD 3.5",
       "surfaceCategory": "method",
       "assertionType": "default-graph-test",
-      "assertionIdentifier": ".smithers/external-test-suites.json; tools/hive_rpc_compat_smoke.ts",
+      "assertionIdentifier": "tools/hive_rpc_compat_smoke.ts",
       "expectedContractOutcome": "Hive rpc-compat lifecycle coverage either passes in the release gate or has explicit phase-1 exclusions.",
       "coverageStatus": "covered"
     }

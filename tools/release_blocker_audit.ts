@@ -22,9 +22,9 @@ Static release-blocker audit that does not execute ZEVM build artifacts unless
 --include-launch-preflight is supplied.
 
 Options:
-  --allow-dirty                 do not fail on dirty ZEVM/dependency worktrees
+  --allow-dirty                 do not fail on a dirty ZEVM worktree
   --allow-open-qualification    do not fail on qualification gap/blocked rows
-  --allow-partial-external      do not fail on malformed partial external suite metadata
+  --allow-partial-external      accepted for older workflows; external scope is source-encoded
   --include-launch-preflight    also run the macOS executable launch preflight
   --help                        show this help
 `);
@@ -86,6 +86,26 @@ function printLines(value: string, maxLines: number): void {
   if (lines.length > maxLines) process.stderr.write(`... ${lines.length - maxLines} more line(s)\n`);
 }
 
+async function checkDependencyManifest(): Promise<void> {
+  const manifest = await Bun.file("build.zig.zon").text();
+  const legacyPaths = ["../voltaire", "../guillotine-mini"];
+  for (const legacyPath of legacyPaths) {
+    if (manifest.includes(legacyPath)) {
+      fail(`build.zig.zon still references legacy sibling dependency path: ${legacyPath}`);
+    }
+  }
+
+  const requiredUrls = [
+    "https://github.com/evmts/voltaire/archive/",
+    "https://github.com/evmts/guillotine-mini/archive/",
+  ];
+  for (const requiredUrl of requiredUrls) {
+    if (!manifest.includes(requiredUrl)) {
+      fail(`build.zig.zon is missing immutable dependency URL pin: ${requiredUrl}`);
+    }
+  }
+}
+
 function checkCleanGit(name: string, path: string): void {
   const absolutePath = resolve(rootDir, path);
   const inside = run(["git", "-C", absolutePath, "rev-parse", "--is-inside-work-tree"]);
@@ -141,41 +161,33 @@ async function checkQualificationMap(): Promise<void> {
   }
 }
 
-async function checkExternalSuites(): Promise<void> {
-  try {
-    const data = await Bun.file(".smithers/external-test-suites.json").json();
-    const suites = Array.isArray(data.suites) ? data.suites : [];
-    const partial = suites.filter((suite: { status?: string }) => suite.status === "partial");
-    const invalid = suites.filter((suite: { status?: string }) => suite.status !== "complete" && suite.status !== "partial");
-    const malformedPartial = partial.filter((suite: { reason?: unknown; activeCases?: unknown; remaining?: unknown }) => {
-      const hasReason = typeof suite.reason === "string" && suite.reason.trim().length !== 0;
-      const activeCases = Array.isArray(suite.activeCases) ? suite.activeCases : [];
-      const remaining = Array.isArray(suite.remaining) ? suite.remaining : [];
-      const hasActiveCases = activeCases.some((entry) => typeof entry === "string" && entry.trim().length !== 0);
-      const hasRemaining = remaining.some((entry) => typeof entry === "string" && entry.trim().length !== 0);
-      return !hasReason || !hasActiveCases || !hasRemaining;
-    });
-
-    process.stdout.write(
-      `release-blocker-audit: external complete=${suites.length - partial.length - invalid.length} partial=${partial.length} invalid=${invalid.length}\n`,
-    );
-
-    if (invalid.length !== 0) {
-      fail("external suite manifest has unsupported statuses");
-      for (const suite of invalid) {
-        process.stderr.write(`- ${suite.name}: ${suite.status}\n`);
-      }
+async function checkExternalSuiteEvidence(): Promise<void> {
+  const externalVerify = await Bun.file("tools/external_verify.zig").text();
+  const requiredExternalScopes = [
+    "execution_spec_state_fixture_paths",
+    "execution_spec_blockchain_fixture_paths",
+    "legacy_state_fixture_dirs",
+    "hive_rpc_fixture_paths",
+  ];
+  for (const scope of requiredExternalScopes) {
+    if (!externalVerify.includes(scope)) {
+      fail(`tools/external_verify.zig is missing external verification scope: ${scope}`);
     }
-
-    if (!allowPartialExternal && malformedPartial.length !== 0) {
-      fail("partial external suites need reason, activeCases, and remaining scope");
-      for (const suite of malformedPartial) {
-        process.stderr.write(`- ${suite.name}\n`);
-      }
-    }
-  } catch (error) {
-    fail(`external test suite manifest is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
   }
+
+  const hiveSmoke = await Bun.file("tools/hive_rpc_compat_smoke.ts").text();
+  const requiredHiveEvidence = [
+    "defaultPattern",
+    "ZEVM_HIVE_RPC_COMPAT_PATTERN",
+    "ethereum/rpc-compat",
+  ];
+  for (const evidence of requiredHiveEvidence) {
+    if (!hiveSmoke.includes(evidence)) {
+      fail(`tools/hive_rpc_compat_smoke.ts is missing Hive smoke evidence: ${evidence}`);
+    }
+  }
+
+  process.stdout.write("release-blocker-audit: external suite scope is source-encoded in tools/external_verify.zig and tools/hive_rpc_compat_smoke.ts\n");
 }
 
 function checkMarkers(): void {
@@ -193,6 +205,8 @@ function checkMarkers(): void {
     "!tools/release_blocker_audit.ts",
     "-g",
     "!tools/macos_launch_policy_preflight.ts",
+    "-g",
+    "!**/package-lock.json",
     markerPattern,
     "src",
     "tools",
@@ -221,12 +235,11 @@ function checkLaunchPreflight(): void {
 
 if (requireCommand("git")) {
   checkCleanGit("zevm", ".");
-  checkCleanGit("voltaire", "../voltaire");
-  checkCleanGit("guillotine-mini", "../guillotine-mini");
 }
 
 await checkQualificationMap();
-await checkExternalSuites();
+await checkDependencyManifest();
+await checkExternalSuiteEvidence();
 checkMarkers();
 checkLaunchPreflight();
 

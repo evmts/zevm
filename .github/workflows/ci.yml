@@ -36,27 +36,28 @@ jobs:
           path: zevm
           submodules: recursive
 
-      - name: Checkout voltaire
-        uses: actions/checkout@v4
-        with:
-          repository: evmts/voltaire
-          path: voltaire
-
-      - name: Checkout guillotine-mini
-        uses: actions/checkout@v4
-        with:
-          repository: evmts/guillotine-mini
-          path: guillotine-mini
-
       - name: Set up Zig
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Install native build dependencies
         run: sudo apt-get update && sudo apt-get install -y cargo perl rustc
 
-      - name: Verify sibling dependency layout
+      - name: Install npm package dependencies
+        working-directory: zevm
+        run: npm --prefix npm/zevm install --ignore-scripts
+
+      - name: Fetch Zig package dependencies
+        working-directory: zevm
+        run: zig build --fetch
+
+      - name: Verify package dependency pins
         working-directory: zevm
         run: zig build dependency-preflight -- --zig-version "$ZIG_VERSION"
 
@@ -67,6 +68,28 @@ jobs:
       - name: Fast verification
         working-directory: zevm
         run: zig build verify-fast
+
+      - name: C ABI smoke
+        working-directory: zevm
+        run: zig build c-smoke
+
+      - name: N-API smoke
+        working-directory: zevm
+        run: zig build npm-smoke
+
+      - name: Release binary artifact smoke
+        working-directory: zevm
+        run: zig build release-binaries -Doptimize=ReleaseSafe
+
+      - name: NPM native artifact smoke
+        working-directory: zevm
+        run: zig build npm-platform-artifacts -Doptimize=ReleaseSafe
+
+      - name: TypeScript package checks
+        working-directory: zevm
+        run: |
+          npm --prefix npm/zevm run typecheck
+          npm --prefix npm/zevm run build
 
       - name: Qualification map structural check
         working-directory: zevm
@@ -99,18 +122,6 @@ jobs:
           path: zevm
           submodules: recursive
 
-      - name: Checkout voltaire
-        uses: actions/checkout@v4
-        with:
-          repository: evmts/voltaire
-          path: voltaire
-
-      - name: Checkout guillotine-mini
-        uses: actions/checkout@v4
-        with:
-          repository: evmts/guillotine-mini
-          path: guillotine-mini
-
       - name: Set up Zig
         uses: mlugg/setup-zig@v2
         with:
@@ -118,6 +129,10 @@ jobs:
 
       - name: Install native build dependencies
         run: sudo apt-get update && sudo apt-get install -y cargo perl rustc
+
+      - name: Fetch Zig package dependencies
+        working-directory: zevm
+        run: zig build --fetch
 
       - name: Verify release qualification coverage
         working-directory: zevm
@@ -142,18 +157,6 @@ jobs:
         with:
           path: zevm
           submodules: recursive
-
-      - name: Checkout voltaire
-        uses: actions/checkout@v4
-        with:
-          repository: evmts/voltaire
-          path: voltaire
-
-      - name: Checkout guillotine-mini
-        uses: actions/checkout@v4
-        with:
-          repository: evmts/guillotine-mini
-          path: guillotine-mini
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -256,20 +259,6 @@ jobs:
           echo "guillotine_mini_revision=$(jq -r '.guillotineMiniGitRevision' "$ARTIFACT_DIR/release-tuple.json")" >> "$GITHUB_OUTPUT"
           echo "zig_version=$(jq -r '.zigVersion' "$ARTIFACT_DIR/release-tuple.json")" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout Voltaire tuple revision
-        uses: actions/checkout@v4
-        with:
-          repository: evmts/voltaire
-          ref: ${{ steps.release_tuple.outputs.voltaire_revision }}
-          path: voltaire
-
-      - name: Checkout Guillotine Mini tuple revision
-        uses: actions/checkout@v4
-        with:
-          repository: evmts/guillotine-mini
-          ref: ${{ steps.release_tuple.outputs.guillotine_mini_revision }}
-          path: guillotine-mini
-
       - name: Set up tuple Zig
         uses: mlugg/setup-zig@v2
         with:
@@ -290,9 +279,12 @@ jobs:
         working-directory: zevm
         run: |
           test "$(git rev-parse HEAD)" = "${{ steps.release_tuple.outputs.zevm_revision }}"
-          test "$(git -C ../voltaire rev-parse HEAD)" = "${{ steps.release_tuple.outputs.voltaire_revision }}"
-          test "$(git -C ../guillotine-mini rev-parse HEAD)" = "${{ steps.release_tuple.outputs.guillotine_mini_revision }}"
           test "$(zig version)" = "${{ steps.release_tuple.outputs.zig_version }}"
+          zig build --fetch
+          zig build dependency-preflight -- \
+            --zig-version "${{ steps.release_tuple.outputs.zig_version }}" \
+            --voltaire-revision "${{ steps.release_tuple.outputs.voltaire_revision }}" \
+            --guillotine-mini-revision "${{ steps.release_tuple.outputs.guillotine_mini_revision }}"
           zig build verify
           zig build qualification-check -- --require-covered
 
