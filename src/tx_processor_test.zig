@@ -478,6 +478,58 @@ test "reject invalid dynamic fee caps" {
     try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(sender));
 }
 
+test "dynamic fee transaction exposes effective gas precharge during execution" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    const sender = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
+    const contract = primitives.Address{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 19 };
+    const sender_balance: u256 = 1_000_000_000_000_000_000;
+    const gas_limit: u64 = 60_000;
+    const base_fee: u256 = 11;
+    const priority_fee: u256 = 100;
+    const max_fee: u256 = 1000;
+    const effective_gas_price = base_fee + priority_fee;
+
+    var block_ctx = defaultBlockContext();
+    block_ctx.block_base_fee = base_fee;
+
+    try sm.setBalance(sender, sender_balance);
+    try sm.setNonce(sender, 0);
+    try sm.setCode(contract, &.{ 0x33, 0x31, 0x60, 0x00, 0x55, 0x00 });
+
+    var receipt = try tx_processor.processTransactionWithOptions(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        sender,
+        makeLegacyTx(.{
+            .to = contract,
+            .value = 0,
+            .data = &.{},
+            .gas_limit = gas_limit,
+            .gas_price = max_fee,
+            .nonce = 0,
+        }),
+        block_ctx,
+        .{
+            .receipt_type = .eip1559,
+            .max_fee_per_gas = max_fee,
+            .max_priority_fee_per_gas = priority_fee,
+            .hardfork_override = .LONDON,
+        },
+    );
+    defer receipt.deinit(std.testing.allocator);
+
+    try std.testing.expect(receipt.status.?.success);
+    try std.testing.expectEqual(effective_gas_price, receipt.effective_gas_price);
+    try std.testing.expectEqual(
+        sender_balance - gas_limit * effective_gas_price,
+        try sm.getStorage(contract, 0),
+    );
+}
+
 test "reject transaction gas limit above block gas limit" {
     var sm = try state_manager.StateManager.init(std.testing.allocator, null);
     defer sm.deinit();

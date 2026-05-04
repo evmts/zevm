@@ -399,15 +399,21 @@ pub fn processTransactionWithOptions(
     }
     const effective_gas_price: u256 = if (charge_fees) computed_effective_gas_price else 0;
     const effective_blob_gas_price: u256 = if (charge_fees) blob_gas_price else 0;
-    const max_gas_cost: u256 = if (charge_fees) potential_max_gas_cost else 0;
-    const max_blob_gas_cost: u256 = if (charge_fees) potential_max_blob_gas_cost else 0;
-    const max_fee_cost: u256 = if (charge_fees) potential_max_fee_cost else 0;
+    const prepaid_gas_cost = if (charge_fees)
+        std.math.mul(u256, effective_gas_price, @as(u256, tx.gas_limit)) catch return TxError.StateError
+    else
+        0;
+    const prepaid_blob_gas_cost = if (charge_fees)
+        std.math.mul(u256, effective_blob_gas_price, blob_gas_used) catch return TxError.StateError
+    else
+        0;
+    const prepaid_fee_cost = std.math.add(u256, prepaid_gas_cost, prepaid_blob_gas_cost) catch return TxError.StateError;
 
     sm.checkpoint() catch return TxError.StateError;
     var transaction_checkpoint_open = true;
     errdefer if (transaction_checkpoint_open) sm.revert();
 
-    sm.setBalance(caller, balance - max_fee_cost) catch return TxError.StateError;
+    sm.setBalance(caller, balance - prepaid_fee_cost) catch return TxError.StateError;
     if (!options.skip_nonce_state_increment) {
         const next_nonce = if (options.skip_nonce_validation)
             current_nonce +% 1
@@ -541,9 +547,9 @@ pub fn processTransactionWithOptions(
     const effective_gas_used_u256: u256 = @as(u256, effective_gas_used);
 
     const charged_gas_wei = std.math.mul(u256, effective_gas_price, effective_gas_used_u256) catch return TxError.StateError;
-    const gas_refund_wei = max_gas_cost - charged_gas_wei;
+    const gas_refund_wei = prepaid_gas_cost - charged_gas_wei;
     const charged_blob_gas_wei = std.math.mul(u256, effective_blob_gas_price, blob_gas_used) catch return TxError.StateError;
-    const blob_gas_refund_wei = max_blob_gas_cost - charged_blob_gas_wei;
+    const blob_gas_refund_wei = prepaid_blob_gas_cost - charged_blob_gas_wei;
     const total_refund_wei = std.math.add(u256, gas_refund_wei, blob_gas_refund_wei) catch return TxError.StateError;
     const caller_balance = sm.getBalance(caller) catch return TxError.StateError;
     sm.setBalance(caller, std.math.add(u256, caller_balance, total_refund_wei) catch return TxError.StateError) catch return TxError.StateError;
