@@ -1,0 +1,36 @@
+{
+  "inputs": {
+    "src/index.ts": {
+      "bytes": 2276,
+      "imports": [
+        {
+          "path": "<runtime>",
+          "kind": "import-statement",
+          "external": true
+        }
+      ],
+      "format": "esm"
+    }
+  },
+  "outputs": {
+    ".alchemy/out/zevm-docs/index.js.map": {
+      "imports": [],
+      "exports": [],
+      "inputs": {},
+      "bytes": 4054
+    },
+    ".alchemy/out/zevm-docs/index.js": {
+      "imports": [],
+      "exports": [
+        "default"
+      ],
+      "entryPoint": "src/index.ts",
+      "inputs": {
+        "src/index.ts": {
+          "bytesInOutput": 2222
+        }
+      },
+      "bytes": 2441
+    }
+  }
+}

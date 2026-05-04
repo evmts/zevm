@@ -1,0 +1,44 @@
+{
+  "kind": "cloudflare::DnsRecords",
+  "id": "zevm-sh-dns",
+  "fqn": "zevm-docs/williamcory/zevm-sh-dns",
+  "seq": 0,
+  "data": {},
+  "status": "created",
+  "output": {
+    "Symbol(alchemy::ResourceKind)": "cloudflare::DnsRecords",
+    "Symbol(alchemy::ResourceID)": "zevm-sh-dns",
+    "Symbol(alchemy::ResourceFQN)": "zevm-docs/williamcory/zevm-sh-dns",
+    "Symbol(alchemy::ResourceScope)": {
+      "@scope": null
+    },
+    "Symbol(alchemy::ResourceSeq)": 0,
+    "zoneId": "19e2460495f1890a4dbb84d068a5e0d9",
+    "records": [
+      {
+        "id": "c25b1b2b52ab023c22fe4bf1eed60a10",
+        "name": "zevm.sh",
+        "type": "A",
+        "content": "192.0.2.1",
+        "ttl": 1,
+        "proxied": true,
+        "comment": null,
+        "tags": [],
+        "createdAt": 1777877478227,
+        "modifiedAt": 1777877478227,
+        "zoneId": "19e2460495f1890a4dbb84d068a5e0d9"
+      }
+    ]
+  },
+  "props": {
+    "zoneId": "19e2460495f1890a4dbb84d068a5e0d9",
+    "records": [
+      {
+        "name": "zevm.sh",
+        "type": "A",
+        "content": "192.0.2.1",
+        "proxied": true
+      }
+    ]
+  }
+}

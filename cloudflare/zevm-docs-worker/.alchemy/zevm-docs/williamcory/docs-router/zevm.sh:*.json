@@ -1,0 +1,27 @@
+{
+  "kind": "cloudflare::Route",
+  "id": "zevm.sh/*",
+  "fqn": "zevm-docs/williamcory/docs-router/zevm.sh/*",
+  "seq": 0,
+  "data": {},
+  "status": "created",
+  "output": {
+    "Symbol(alchemy::ResourceKind)": "cloudflare::Route",
+    "Symbol(alchemy::ResourceID)": "zevm.sh/*",
+    "Symbol(alchemy::ResourceFQN)": "zevm-docs/williamcory/docs-router/zevm.sh/*",
+    "Symbol(alchemy::ResourceScope)": {
+      "@scope": null
+    },
+    "Symbol(alchemy::ResourceSeq)": 0,
+    "id": "f39a4c786c264945be805d6eaab260b6",
+    "pattern": "zevm.sh/*",
+    "script": "zevm-docs",
+    "zoneId": "19e2460495f1890a4dbb84d068a5e0d9"
+  },
+  "props": {
+    "pattern": "zevm.sh/*",
+    "script": "zevm-docs",
+    "adopt": true,
+    "dev": false
+  }
+}

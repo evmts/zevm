@@ -1,0 +1,79 @@
+{
+  "kind": "cloudflare::Worker",
+  "id": "docs-router",
+  "fqn": "zevm-docs/williamcory/docs-router",
+  "seq": 1,
+  "data": {},
+  "status": "updated",
+  "output": {
+    "Symbol(alchemy::ResourceKind)": "cloudflare::Worker",
+    "Symbol(alchemy::ResourceID)": "docs-router",
+    "Symbol(alchemy::ResourceFQN)": "zevm-docs/williamcory/docs-router",
+    "Symbol(alchemy::ResourceScope)": {
+      "@scope": null
+    },
+    "Symbol(alchemy::ResourceSeq)": 1,
+    "name": "zevm-docs",
+    "entrypoint": "./src/index.ts",
+    "compatibilityDate": "2026-05-04",
+    "bindings": {
+      "ASSETS": {
+        "type": "assets",
+        "path": "./public"
+      }
+    },
+    "assets": {
+      "run_worker_first": true
+    },
+    "routes": [
+      {
+        "Symbol(alchemy::ResourceKind)": "cloudflare::Route",
+        "Symbol(alchemy::ResourceID)": "zevm.sh/*",
+        "Symbol(alchemy::ResourceFQN)": "zevm-docs/williamcory/docs-router/zevm.sh/*",
+        "Symbol(alchemy::ResourceScope)": {
+          "@scope": null
+        },
+        "Symbol(alchemy::ResourceSeq)": 0,
+        "id": "f39a4c786c264945be805d6eaab260b6",
+        "pattern": "zevm.sh/*",
+        "script": "zevm-docs",
+        "zoneId": "19e2460495f1890a4dbb84d068a5e0d9"
+      }
+    ],
+    "type": "service",
+    "id": "docs-router",
+    "cwd": "",
+    "compatibilityFlags": [],
+    "format": "esm",
+    "createdAt": {
+      "@date": "2026-05-04T06:50:23.039Z"
+    },
+    "updatedAt": {
+      "@date": "2026-05-04T07:11:31.936Z"
+    },
+    "url": "https://zevm-docs.willcory10.workers.dev",
+    "dev": {
+      "hasRemote": true
+    }
+  },
+  "props": {
+    "name": "zevm-docs",
+    "entrypoint": "./src/index.ts",
+    "compatibilityDate": "2026-05-04",
+    "bindings": {
+      "ASSETS": {
+        "type": "assets",
+        "path": "./public"
+      }
+    },
+    "assets": {
+      "run_worker_first": true
+    },
+    "routes": [
+      {
+        "pattern": "zevm.sh/*",
+        "adopt": true
+      }
+    ]
+  }
+}
