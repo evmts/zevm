@@ -1,0 +1,181 @@
+export type RlpInput = string | number | bigint | Uint8Array | RlpInput[] | null | undefined;
+export type NestedUint8Array = Array<Uint8Array | NestedUint8Array>;
+
+export interface RlpDecoded {
+  data: Uint8Array | NestedUint8Array;
+  remainder: Uint8Array;
+}
+
+const textEncoder = new TextEncoder();
+
+function invalid(message: string): Error {
+  return new Error(`invalid RLP: ${message}`);
+}
+
+function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
+  if (parts.length === 0) return new Uint8Array();
+  if (parts.length === 1) return parts[0]!;
+  let length = 0;
+  for (const part of parts) length += part.length;
+  const out = new Uint8Array(length);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+function bigEndianIntegerBytes(value: bigint): Uint8Array {
+  if (value < 0n) {
+    throw invalid("integer must be unsigned");
+  }
+  if (value === 0n) {
+    return new Uint8Array();
+  }
+  let hex = value.toString(16);
+  if (hex.length % 2 === 1) hex = `0${hex}`;
+  return hexToBytes(hex);
+}
+
+function numberToBytes(value: number): Uint8Array {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw invalid("number input must be a safe unsigned integer");
+  }
+  return bigEndianIntegerBytes(BigInt(value));
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const raw = hex.startsWith("0x") ? hex.slice(2) : hex;
+  if (raw.length === 0) return new Uint8Array();
+  const padded = raw.length % 2 === 0 ? raw : `0${raw}`;
+  const out = new Uint8Array(padded.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    const byte = Number.parseInt(padded.slice(i * 2, i * 2 + 2), 16);
+    if (Number.isNaN(byte)) {
+      throw invalid("hex input contains non-hex characters");
+    }
+    out[i] = byte;
+  }
+  return out;
+}
+
+function inputToBytes(input: Exclude<RlpInput, RlpInput[]>): Uint8Array {
+  if (input === null || input === undefined) return new Uint8Array();
+  if (input instanceof Uint8Array) return input;
+  if (typeof input === "bigint") return bigEndianIntegerBytes(input);
+  if (typeof input === "number") return numberToBytes(input);
+  if (typeof input === "string") {
+    return input.startsWith("0x") ? hexToBytes(input) : textEncoder.encode(input);
+  }
+  throw invalid(`unsupported input type ${typeof input}`);
+}
+
+function encodeLength(length: number, offset: number): Uint8Array {
+  if (length < 56) {
+    return Uint8Array.of(offset + length);
+  }
+  const lengthBytes = bigEndianIntegerBytes(BigInt(length));
+  return concatBytes([Uint8Array.of(offset + 55 + lengthBytes.length), lengthBytes]);
+}
+
+export function encode(input: RlpInput): Uint8Array {
+  if (Array.isArray(input)) {
+    const encodedItems = input.map((item) => encode(item));
+    return concatBytes([encodeLength(encodedItems.reduce((sum, item) => sum + item.length, 0), 0xc0), ...encodedItems]);
+  }
+
+  const bytes = inputToBytes(input);
+  if (bytes.length === 1 && bytes[0]! < 0x80) {
+    return bytes;
+  }
+  return concatBytes([encodeLength(bytes.length, 0x80), bytes]);
+}
+
+function readLength(bytes: Uint8Array, offset: number, lengthOfLength: number): number {
+  if (lengthOfLength === 0) throw invalid("empty length prefix");
+  if (offset + lengthOfLength > bytes.length) throw invalid("length prefix exceeds input");
+  if (bytes[offset] === 0) throw invalid("length prefix has leading zeros");
+
+  let length = 0;
+  for (const byte of bytes.subarray(offset, offset + lengthOfLength)) {
+    length = length * 256 + byte;
+    if (!Number.isSafeInteger(length)) throw invalid("payload length exceeds safe integer range");
+  }
+  return length;
+}
+
+function requireAvailable(bytes: Uint8Array, start: number, length: number): void {
+  if (start + length > bytes.length) throw invalid("payload exceeds input");
+}
+
+function decodeItem(bytes: Uint8Array, offset: number): { data: Uint8Array | NestedUint8Array; nextOffset: number } {
+  requireAvailable(bytes, offset, 1);
+  const first = bytes[offset]!;
+
+  if (first <= 0x7f) {
+    return { data: bytes.slice(offset, offset + 1), nextOffset: offset + 1 };
+  }
+
+  if (first <= 0xb7) {
+    const length = first - 0x80;
+    const start = offset + 1;
+    requireAvailable(bytes, start, length);
+    if (length === 1 && bytes[start]! < 0x80) {
+      throw invalid("single-byte payloads below 0x80 must not be length-prefixed");
+    }
+    return { data: bytes.slice(start, start + length), nextOffset: start + length };
+  }
+
+  if (first <= 0xbf) {
+    const lengthOfLength = first - 0xb7;
+    const length = readLength(bytes, offset + 1, lengthOfLength);
+    if (length < 56) throw invalid("long string form used for short payload");
+    const start = offset + 1 + lengthOfLength;
+    requireAvailable(bytes, start, length);
+    return { data: bytes.slice(start, start + length), nextOffset: start + length };
+  }
+
+  if (first <= 0xf7) {
+    const length = first - 0xc0;
+    const start = offset + 1;
+    requireAvailable(bytes, start, length);
+    return { data: decodeListPayload(bytes, start, start + length), nextOffset: start + length };
+  }
+
+  const lengthOfLength = first - 0xf7;
+  const length = readLength(bytes, offset + 1, lengthOfLength);
+  if (length < 56) throw invalid("long list form used for short payload");
+  const start = offset + 1 + lengthOfLength;
+  requireAvailable(bytes, start, length);
+  return { data: decodeListPayload(bytes, start, start + length), nextOffset: start + length };
+}
+
+function decodeListPayload(bytes: Uint8Array, start: number, end: number): NestedUint8Array {
+  const out: NestedUint8Array = [];
+  let offset = start;
+  while (offset < end) {
+    const decoded = decodeItem(bytes, offset);
+    out.push(decoded.data);
+    offset = decoded.nextOffset;
+  }
+  if (offset !== end) throw invalid("list payload length mismatch");
+  return out;
+}
+
+export function decode(input: RlpInput, stream?: false): Uint8Array | NestedUint8Array;
+export function decode(input: RlpInput, stream: true): RlpDecoded;
+export function decode(input: RlpInput, stream = false): Uint8Array | NestedUint8Array | RlpDecoded {
+  if (input === null || input === undefined) return new Uint8Array();
+  const bytes = inputToBytes(input as Exclude<RlpInput, RlpInput[]>);
+  if (bytes.length === 0) return new Uint8Array();
+
+  const decoded = decodeItem(bytes, 0);
+  const remainder = bytes.slice(decoded.nextOffset);
+  if (stream) return { data: decoded.data, remainder };
+  if (remainder.length !== 0) throw invalid("remainder must be empty");
+  return decoded.data;
+}
+
+export const Rlp = { encode, decode };
+export const RLP = Rlp;

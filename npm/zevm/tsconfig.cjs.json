@@ -1,0 +1,23 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": false,
+    "declarationMap": false,
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "outDir": "dist-cjs"
+  },
+  "include": [
+    "src/rlp.ts",
+    "src/receipt.ts",
+    "src/receipt-manager.ts",
+    "src/evm-error.ts",
+    "src/common.ts",
+    "src/evm.ts",
+    "src/trie.ts",
+    "src/tx.ts",
+    "src/txpool.ts",
+    "src/util.ts",
+    "src/statemanager.ts"
+  ]
+}

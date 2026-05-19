@@ -11,6 +11,61 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./rlp": {
+      "types": "./dist/rlp.d.ts",
+      "import": "./dist/rlp.js",
+      "require": "./dist/rlp.cjs"
+    },
+    "./receipt": {
+      "types": "./dist/receipt.d.ts",
+      "import": "./dist/receipt.js",
+      "require": "./dist/receipt.cjs"
+    },
+    "./receipt-manager": {
+      "types": "./dist/receipt-manager.d.ts",
+      "import": "./dist/receipt-manager.js",
+      "require": "./dist/receipt-manager.cjs"
+    },
+    "./evm-error": {
+      "types": "./dist/evm-error.d.ts",
+      "import": "./dist/evm-error.js",
+      "require": "./dist/evm-error.cjs"
+    },
+    "./common": {
+      "types": "./dist/common.d.ts",
+      "import": "./dist/common.js",
+      "require": "./dist/common.cjs"
+    },
+    "./evm": {
+      "types": "./dist/evm.d.ts",
+      "import": "./dist/evm.js",
+      "require": "./dist/evm.cjs"
+    },
+    "./trie": {
+      "types": "./dist/trie.d.ts",
+      "import": "./dist/trie.js",
+      "require": "./dist/trie.cjs"
+    },
+    "./tx": {
+      "types": "./dist/tx.d.ts",
+      "import": "./dist/tx.js",
+      "require": "./dist/tx.cjs"
+    },
+    "./txpool": {
+      "types": "./dist/txpool.d.ts",
+      "import": "./dist/txpool.js",
+      "require": "./dist/txpool.cjs"
+    },
+    "./util": {
+      "types": "./dist/util.d.ts",
+      "import": "./dist/util.js",
+      "require": "./dist/util.cjs"
+    },
+    "./statemanager": {
+      "types": "./dist/statemanager.d.ts",
+      "import": "./dist/statemanager.js",
+      "require": "./dist/statemanager.cjs"
     }
   },
   "files": [
@@ -19,9 +74,17 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node scripts/move-cjs.cjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "smoke:native": "node scripts/smoke.cjs ../../zig-out/npm/native/zevm.node"
+  },
+  "dependencies": {
+    "@ethereumjs/common": "^10.1.1",
+    "@ethereumjs/evm": "^10.1.1",
+    "@ethereumjs/trie": "6.2.1",
+    "@ethereumjs/tx": "^10.1.1",
+    "@noble/curves": "^2.2.0",
+    "@noble/hashes": "^2.2.0"
   },
   "optionalDependencies": {
     "@evmts/zevm-darwin-arm64": "0.0.0",
@@ -30,6 +93,7 @@
     "@evmts/zevm-linux-x64-gnu": "0.0.0"
   },
   "devDependencies": {
+    "@types/debug": "^4.1.13",
     "@types/node": "^22.15.0",
     "typescript": "^5.9.0"
   }
