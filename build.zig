@@ -409,15 +409,29 @@ fn rustTargetTriple(target: std.Build.ResolvedTarget) []const u8 {
             },
             else => unsupportedTarget("unsupported Linux Rust ABI"),
         },
+        .freebsd => switch (target.result.cpu.arch) {
+            .x86_64 => "x86_64-unknown-freebsd",
+            .aarch64 => "aarch64-unknown-freebsd",
+            else => unsupportedTarget("unsupported FreeBSD Rust architecture"),
+        },
         .macos => switch (target.result.cpu.arch) {
             .x86_64 => "x86_64-apple-darwin",
             .aarch64 => "aarch64-apple-darwin",
             else => unsupportedTarget("unsupported macOS Rust architecture"),
         },
-        .windows => switch (target.result.cpu.arch) {
-            .x86_64 => "x86_64-pc-windows-gnu",
-            .x86 => "i686-pc-windows-gnu",
-            .aarch64 => "aarch64-pc-windows-gnu",
+        .windows => switch (target.result.abi) {
+            .gnu => switch (target.result.cpu.arch) {
+                .x86_64 => "x86_64-pc-windows-gnu",
+                .x86 => "i686-pc-windows-gnu",
+                .aarch64 => "aarch64-pc-windows-gnu",
+                else => unsupportedTarget("unsupported Windows GNU Rust architecture"),
+            },
+            .msvc => switch (target.result.cpu.arch) {
+                .x86_64 => "x86_64-pc-windows-msvc",
+                .x86 => "i686-pc-windows-msvc",
+                .aarch64 => "aarch64-pc-windows-msvc",
+                else => unsupportedTarget("unsupported Windows MSVC Rust architecture"),
+            },
             else => unsupportedTarget("unsupported Windows Rust architecture"),
         },
         else => unsupportedTarget("unsupported Rust target OS"),
@@ -439,10 +453,12 @@ fn needsPortableRustCrypto(target: std.Build.ResolvedTarget) bool {
 fn releaseTargetName(b: *std.Build, target: std.Build.ResolvedTarget) []const u8 {
     const arch = switch (target.result.cpu.arch) {
         .aarch64 => "aarch64",
+        .x86 => "x86",
         .x86_64 => "x86_64",
         else => unsupportedTarget("unsupported release CPU architecture"),
     };
     const os = switch (target.result.os.tag) {
+        .freebsd => "freebsd",
         .macos => "macos",
         .linux => "linux",
         .windows => "windows",
@@ -457,10 +473,12 @@ fn releaseTargetName(b: *std.Build, target: std.Build.ResolvedTarget) []const u8
 fn npmPlatformName(b: *std.Build, target: std.Build.ResolvedTarget) []const u8 {
     const arch = switch (target.result.cpu.arch) {
         .aarch64 => "arm64",
+        .x86 => "ia32",
         .x86_64 => "x64",
         else => unsupportedTarget("unsupported npm CPU architecture"),
     };
     const os = switch (target.result.os.tag) {
+        .freebsd => "freebsd",
         .macos => "darwin",
         .linux => "linux",
         .windows => "win32",

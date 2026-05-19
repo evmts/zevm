@@ -1,0 +1,11 @@
+{
+  "name": "@evmts/zevm-linux-arm64-musl",
+  "version": "0.0.0",
+  "description": "ZEVM native Node-API addon for Linux arm64 musl.",
+  "license": "MIT",
+  "os": ["linux"],
+  "cpu": ["arm64"],
+  "libc": ["musl"],
+  "main": "./zevm.node",
+  "files": ["zevm.node", "README.md"]
+}

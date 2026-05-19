@@ -41,14 +41,25 @@ type Native = {
 
 const require = createRequire(import.meta.url);
 
-const platformPackages: Record<string, string> = {
-  "darwin-arm64": "@evmts/zevm-darwin-arm64",
-  "darwin-x64": "@evmts/zevm-darwin-x64",
-  "linux-arm64-gnu": "@evmts/zevm-linux-arm64-gnu",
-  "linux-x64-gnu": "@evmts/zevm-linux-x64-gnu",
+const platformPackages: Record<string, readonly string[]> = {
+  "darwin-arm64": ["@evmts/zevm-darwin-arm64"],
+  "darwin-x64": ["@evmts/zevm-darwin-x64"],
+  "freebsd-arm64": ["@evmts/zevm-freebsd-arm64"],
+  "freebsd-x64": ["@evmts/zevm-freebsd-x64"],
+  "linux-arm64-gnu": ["@evmts/zevm-linux-arm64-gnu"],
+  "linux-arm64-musl": ["@evmts/zevm-linux-arm64-musl"],
+  "linux-x64-gnu": ["@evmts/zevm-linux-x64-gnu"],
+  "linux-x64-musl": ["@evmts/zevm-linux-x64-musl"],
+  "win32-arm64-msvc": ["@evmts/zevm-win32-arm64-msvc"],
+  "win32-ia32-msvc": ["@evmts/zevm-win32-ia32-msvc"],
+  "win32-x64-msvc": ["@evmts/zevm-win32-x64-msvc"],
 };
 
 function nativePackageKey(): string {
+  if (process.platform === "win32") {
+    return `${process.platform}-${process.arch}-msvc`;
+  }
+
   if (process.platform !== "linux") {
     return `${process.platform}-${process.arch}`;
   }
@@ -73,8 +84,9 @@ function loadNative(): Native {
     return require(override) as Native;
   }
 
-  const packageName = platformPackages[nativePackageKey()];
-  if (packageName) {
+  const packageKey = nativePackageKey();
+  const packageNames = platformPackages[packageKey] ?? [];
+  for (const packageName of packageNames) {
     try {
       return require(packageName) as Native;
     } catch (err) {
@@ -90,7 +102,9 @@ function loadNative(): Native {
     return require(localAddon) as Native;
   }
 
-  throw new Error(`No ZEVM native addon found for ${process.platform}-${process.arch}`);
+  throw new Error(
+    `No ZEVM native addon found for ${packageKey}. Supported prebuilds: ${Object.keys(platformPackages).join(", ")}`,
+  );
 }
 
 const native = loadNative();

@@ -1,0 +1,10 @@
+{
+  "name": "@evmts/zevm-freebsd-x64",
+  "version": "0.0.0",
+  "description": "ZEVM native Node-API addon for FreeBSD x64.",
+  "license": "MIT",
+  "os": ["freebsd"],
+  "cpu": ["x64"],
+  "main": "./zevm.node",
+  "files": ["zevm.node", "README.md"]
+}

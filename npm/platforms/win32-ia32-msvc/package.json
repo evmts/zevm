@@ -1,0 +1,10 @@
+{
+  "name": "@evmts/zevm-win32-ia32-msvc",
+  "version": "0.0.0",
+  "description": "ZEVM native Node-API addon for Windows ia32 MSVC.",
+  "license": "MIT",
+  "os": ["win32"],
+  "cpu": ["ia32"],
+  "main": "./zevm.node",
+  "files": ["zevm.node", "README.md"]
+}
