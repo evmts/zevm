@@ -7,6 +7,7 @@ const log_index_mod = @import("../../log_index.zig");
 const receipt_index_mod = @import("../../receipt_index.zig");
 const runtime = @import("../../node/runtime.zig");
 const rpc_parse = @import("../parse.zig");
+const txpool_handlers = @import("txpool.zig");
 
 /// Context needed by block query handlers beyond NodeRuntime.
 pub const BlockQueryContext = struct {
@@ -25,7 +26,7 @@ pub fn handleGetBlockByNumber(
     ctx: *const BlockQueryContext,
     params: jsonrpc.eth.GetBlockByNumber.Params,
 ) !jsonrpc.eth.GetBlockByNumber.Result {
-    const tag = blockSpecToTag(allocator, params.block) catch |err| switch (err) {
+    const tag = blockSpecToTag(allocator, ctx, params.block) catch |err| switch (err) {
         error.InvalidBlockSpec => return error.InvalidParams,
         else => return err,
     };
@@ -53,7 +54,7 @@ pub fn handleGetBlockByNumberValue(
     defer scratch.deinit();
     const scratch_allocator = scratch.allocator();
 
-    const tag = blockSpecToTag(scratch_allocator, params.block) catch |err| switch (err) {
+    const tag = blockSpecToTag(scratch_allocator, ctx, params.block) catch |err| switch (err) {
         error.InvalidBlockSpec => return error.InvalidParams,
         else => return err,
     };
@@ -135,7 +136,7 @@ pub fn handleGetBlockTransactionCountByNumber(
     ctx: *const BlockQueryContext,
     params: jsonrpc.eth.GetBlockTransactionCountByNumber.Params,
 ) !jsonrpc.eth.GetBlockTransactionCountByNumber.Result {
-    const tag = blockSpecToTag(allocator, params.block) catch |err| switch (err) {
+    const tag = blockSpecToTag(allocator, ctx, params.block) catch |err| switch (err) {
         error.InvalidBlockSpec => return error.InvalidParams,
         else => return err,
     };
@@ -175,7 +176,7 @@ pub fn handleGetUncleCountByBlockNumber(
     ctx: *const BlockQueryContext,
     params: jsonrpc.eth.GetUncleCountByBlockNumber.Params,
 ) !jsonrpc.eth.GetUncleCountByBlockNumber.Result {
-    const tag = blockSpecToTag(allocator, params.block) catch |err| switch (err) {
+    const tag = blockSpecToTag(allocator, ctx, params.block) catch |err| switch (err) {
         error.InvalidBlockSpec => return error.InvalidParams,
         else => return err,
     };
@@ -276,7 +277,8 @@ fn blockReceiptsFromSpec(
                 return try block_queries.getBlockReceiptsByHash(allocator, ctx.blockchain, ctx.receipt_index, hash_bytes);
             }
             if (!isTrustedBlockSelector(s)) return error.InvalidBlockSpec;
-            return try block_queries.getBlockReceipts(allocator, ctx.blockchain, ctx.receipt_index, s);
+            const tag = try blockSelectorStringToTag(allocator, ctx, s);
+            return try block_queries.getBlockReceipts(allocator, ctx.blockchain, ctx.receipt_index, tag);
         },
         .object => |obj| {
             if (obj.get("blockHash")) |bh_value| {
@@ -291,7 +293,8 @@ fn blockReceiptsFromSpec(
                 switch (bn_value) {
                     .string => |s| {
                         if (!isTrustedBlockSelector(s)) return error.InvalidBlockSpec;
-                        return try block_queries.getBlockReceipts(allocator, ctx.blockchain, ctx.receipt_index, s);
+                        const tag = try blockSelectorStringToTag(allocator, ctx, s);
+                        return try block_queries.getBlockReceipts(allocator, ctx.blockchain, ctx.receipt_index, tag);
                     },
                     else => return error.InvalidBlockSpec,
                 }
@@ -346,6 +349,15 @@ pub fn handleGetLogsValue(
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.InvalidParams,
     };
+    return handleGetLogsFilterValue(allocator, scratch_allocator, ctx, filter);
+}
+
+pub fn handleGetLogsFilterValue(
+    allocator: std.mem.Allocator,
+    scratch_allocator: std.mem.Allocator,
+    ctx: *const BlockQueryContext,
+    filter: log_index_mod.LogFilter,
+) !std.json.Value {
     const internal = block_queries.getLogs(scratch_allocator, ctx.blockchain, ctx.log_index, filter) catch |err| switch (err) {
         error.InvalidFilter => return error.InvalidParams,
         else => return err,
@@ -394,6 +406,11 @@ pub fn handleGetTransactionByHashValue(
         params.transaction_hash.bytes,
     );
     if (internal) |tx| return try transactionResponseValue(allocator, tx);
+    for (ctx.rt.pool.items()) |pooled| {
+        if (std.mem.eql(u8, &pooled.hash, &params.transaction_hash.bytes)) {
+            return txpool_handlers.transactionObject(allocator, pooled);
+        }
+    }
     return .null;
 }
 
@@ -449,7 +466,7 @@ pub fn handleGetTransactionByBlockNumberAndIndex(
     ctx: *const BlockQueryContext,
     params: jsonrpc.eth.GetTransactionByBlockNumberAndIndex.Params,
 ) !jsonrpc.eth.GetTransactionByBlockNumberAndIndex.Result {
-    const tag = blockSpecToTag(allocator, params.block) catch |err| switch (err) {
+    const tag = blockSpecToTag(allocator, ctx, params.block) catch |err| switch (err) {
         error.InvalidBlockSpec => return error.InvalidParams,
         else => return err,
     };
@@ -478,7 +495,7 @@ pub fn handleGetTransactionByBlockNumberAndIndexValue(
     defer scratch.deinit();
     const scratch_allocator = scratch.allocator();
 
-    const tag = blockSpecToTag(scratch_allocator, params.block) catch |err| switch (err) {
+    const tag = blockSpecToTag(scratch_allocator, ctx, params.block) catch |err| switch (err) {
         error.InvalidBlockSpec => return error.InvalidParams,
         else => return err,
     };
@@ -770,14 +787,37 @@ fn logResponseValue(
     return .{ .object = obj };
 }
 
-fn blockSpecToTag(allocator: std.mem.Allocator, spec: jsonrpc.types.BlockSpec) ![]u8 {
+fn blockSpecToTag(
+    allocator: std.mem.Allocator,
+    ctx: *const BlockQueryContext,
+    spec: jsonrpc.types.BlockSpec,
+) ![]u8 {
     switch (spec.value) {
         .string => |s| {
             if (!isTrustedBlockSelector(s)) return error.InvalidBlockSpec;
-            return try allocator.dupe(u8, s);
+            return try blockSelectorStringToTag(allocator, ctx, s);
         },
         else => return error.InvalidBlockSpec,
     }
+}
+
+fn blockSelectorStringToTag(
+    allocator: std.mem.Allocator,
+    ctx: *const BlockQueryContext,
+    selector: []const u8,
+) ![]u8 {
+    if (std.mem.eql(u8, selector, "safe")) {
+        const number = ctx.rt.engineSafeBlockNumber() orelse return try allocator.dupe(u8, "0xffffffffffffffff");
+        return try std.fmt.allocPrint(allocator, "0x{x}", .{number});
+    }
+    if (std.mem.eql(u8, selector, "finalized")) {
+        const number = ctx.rt.engineFinalizedBlockNumber() orelse return try allocator.dupe(u8, "0xffffffffffffffff");
+        return try std.fmt.allocPrint(allocator, "0x{x}", .{number});
+    }
+    if (std.mem.eql(u8, selector, "latest") or std.mem.eql(u8, selector, "pending")) {
+        return try std.fmt.allocPrint(allocator, "0x{x}", .{ctx.rt.head_block_number});
+    }
+    return try allocator.dupe(u8, selector);
 }
 
 fn quantityFromU64(allocator: std.mem.Allocator, n: u64) !jsonrpc.types.Quantity {
@@ -1007,7 +1047,7 @@ fn internalLogToRpc(
     };
 }
 
-fn rpcFilterToInternal(
+pub fn rpcFilterToInternal(
     allocator: std.mem.Allocator,
     ctx: *const BlockQueryContext,
     filter: jsonrpc.types.Quantity,
@@ -1074,12 +1114,12 @@ fn resolveFilterBlock(ctx: *const BlockQueryContext, value: std.json.Value) !u64
     switch (value) {
         .string => |s| {
             if (std.mem.eql(u8, s, "latest") or
-                std.mem.eql(u8, s, "pending") or
-                std.mem.eql(u8, s, "safe") or
-                std.mem.eql(u8, s, "finalized"))
+                std.mem.eql(u8, s, "pending"))
             {
                 return ctx.blockchain.getHeadBlockNumber() orelse 0;
             }
+            if (std.mem.eql(u8, s, "safe")) return ctx.rt.engineSafeBlockNumber() orelse std.math.maxInt(u64);
+            if (std.mem.eql(u8, s, "finalized")) return ctx.rt.engineFinalizedBlockNumber() orelse std.math.maxInt(u64);
             if (std.mem.eql(u8, s, "earliest")) return 0;
             return rpc_parse.parseQuantityString(u64, s);
         },

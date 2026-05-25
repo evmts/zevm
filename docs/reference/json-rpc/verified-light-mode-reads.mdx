@@ -132,11 +132,11 @@ Operator runbook cross-link: [Run Light Mode -> Choose Startup Checkpoint Input]
 
 In light mode, these supported trusted-mode method families are mode-gated and return `-32010`:
 
-- `eth_call`, `eth_estimateGas`
-- `eth_feeHistory` (mode-gated in light mode; returns `-32010`)
+- `eth_call`, `eth_estimateGas`, `eth_createAccessList`, `eth_simulateV1`, `testing_buildBlockV1`
+- trusted-only read extensions such as `eth_feeHistory`, `eth_getProof`, and `eth_getStorageValues`
 - transaction submission (`eth_sendTransaction`, `eth_sendRawTransaction`)
 - mining, snapshots, mutation controls, impersonation controls
-- canonical block/receipt/log queries
+- canonical block/receipt/log queries and debug/raw inspection methods
 
 Out-of-contract note:
 

@@ -50,6 +50,7 @@ Selector alias scope on this page:
 | `eth_getTransactionByBlockHashAndIndex` | `[blockHash, index]` | transaction object or `null` | unknown block or out-of-range index -> `null`; malformed hash/index -> `-32602` |
 | `eth_getTransactionReceipt` | `[transactionHash]` | receipt object or `null` | unknown tx -> `null`; malformed hash -> `-32602` |
 | `eth_getBlockReceipts` | `[block]` (`ReceiptSelector`) | receipt array or `null` | unknown block -> `null`; malformed selector -> `-32602` |
+| `eth_getBlockAccessList` | `[block]` (`BlockNumberOrTagOrHash`) | block access list or `null` | unknown block or retained block without access-list data -> `null`; malformed selector -> `-32602` |
 | `eth_getLogs` | `[filter]` | log array | no matches -> `[]`; malformed filter or invalid selector combinations -> `-32602` |
 | `eth_newBlockFilter` | `[]` or omitted | filter id `QuantityHex` | non-empty params -> `-32602` |
 | `eth_newPendingTransactionFilter` | `[]` or omitted | filter id `QuantityHex` | non-empty params -> `-32602` |
@@ -66,6 +67,7 @@ Lookup behavior:
 - index params for `eth_getTransactionByBlockNumberAndIndex` and `eth_getTransactionByBlockHashAndIndex` must be `QuantityHex` and are interpreted as zero-based transaction positions within the resolved canonical block
 - `eth_getTransactionByHash` does not surface txpool-only pending entries; it returns `null` until a transaction is canonical in a mined block
 - `eth_getTransactionReceipt` is mined-only; it returns `null` before inclusion
+- `eth_getBlockAccessList` accepts block number/tag/hash selectors and returns `null` for unknown blocks or retained-history blocks without Amsterdam block access-list data
 - filter ids are process-local `QuantityHex` values; phase-1 trusted mode validates lifecycle calls but does not retain historical filter deltas
 
 ## Object Shapes

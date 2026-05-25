@@ -4,6 +4,7 @@ const state_manager = @import("state-manager");
 const guillotine_mini = @import("guillotine_mini");
 const block_builder = @import("block_builder.zig");
 const genesis = @import("genesis.zig");
+const hardfork_schedule = @import("hardfork_schedule.zig");
 const tx_processor = @import("tx_processor.zig");
 const host_adapter = @import("host_adapter.zig");
 const dev_runtime = @import("rpc/dev_runtime.zig");
@@ -110,6 +111,70 @@ test "buildBlock enforces block gas limit" {
     try std.testing.expect(!std.mem.eql(u8, &result.state_root, &primitives.Hash.ZERO));
 }
 
+test "buildBlock enforces Cancun blob gas limit" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    const host = adapter.hostInterface();
+
+    const sender = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
+    const recipient = primitives.Address{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 19 };
+
+    try sm.setBalance(sender, 1_000_000_000);
+    try sm.setNonce(sender, 0);
+
+    var versioned_hashes: [7][32]u8 = undefined;
+    var txs: [7]tx_processor.ExecutionTx = undefined;
+    for (&txs, 0..) |*tx, i| {
+        versioned_hashes[i] = [_]u8{@as(u8, @intCast(i + 1))} ** 32;
+        versioned_hashes[i][0] = 0x01;
+        tx.* = .{
+            .caller = sender,
+            .tx = makeLegacyTx(.{
+                .to = recipient,
+                .value = 0,
+                .data = &[_]u8{},
+                .gas_limit = 21_000,
+                .gas_price = 1,
+                .nonce = @intCast(i),
+            }),
+            .receipt_type = .eip4844,
+            .max_fee_per_gas = 1,
+            .max_priority_fee_per_gas = 0,
+            .blob_gas_used = primitives.Blob.BLOB_GAS_PER_BLOB,
+            .blob_gas_price = 0,
+            .max_fee_per_blob_gas = 1,
+            .blob_versioned_hashes = versioned_hashes[i .. i + 1],
+        };
+    }
+
+    const withdrawals = [_]primitives.BlockBody.Withdrawal{};
+    var result = try block_builder.buildBlockWithOptions(
+        std.testing.allocator,
+        &sm,
+        host,
+        &txs,
+        blockContextWithGasLimit(1_000_000),
+        .{
+            .fork = .cancun,
+            .hardfork_config = hardfork_schedule.ChainConfig{ .cancun_timestamp = 0 },
+            .withdrawals = &withdrawals,
+        },
+    );
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 6), result.receipts.len);
+    try std.testing.expectEqual(@as(u64, 6 * primitives.Blob.BLOB_GAS_PER_BLOB), result.blob_gas_used);
+    try std.testing.expectEqual(@as(usize, 6), result.included_tx_indexes.len);
+    for (result.included_tx_indexes, 0..) |tx_index, expected| {
+        try std.testing.expectEqual(expected, tx_index);
+    }
+
+    const expected_root = try block_builder.computeTransactionsRoot(std.testing.allocator, txs[0..6]);
+    try std.testing.expectEqualSlices(u8, &expected_root, &result.transactions_root);
+}
+
 test "computeStateRoot matches premine trie root" {
     var sm = try state_manager.StateManager.init(std.testing.allocator, null);
     defer sm.deinit();
@@ -205,6 +270,67 @@ test "buildBlock rejects invalid included tx and reverts block state" {
 
     try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(sender));
     try std.testing.expectEqual(@as(u256, 0), try sm.getBalance(recipient));
+}
+
+test "buildBlockWithOptions skips invalid txpool candidates when requested" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    const host = adapter.hostInterface();
+
+    const sender = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
+    const recipient = primitives.Address{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 19 };
+
+    try sm.setBalance(sender, 1_000_000);
+    try sm.setNonce(sender, 0);
+
+    const txs = [_]tx_processor.ExecutionTx{
+        .{
+            .caller = sender,
+            .tx = makeLegacyTx(.{
+                .to = recipient,
+                .value = 0,
+                .data = &[_]u8{},
+                .gas_limit = 21_000,
+                .gas_price = 1,
+                .nonce = 0,
+            }),
+        },
+        .{
+            .caller = sender,
+            .tx = makeLegacyTx(.{
+                .to = recipient,
+                .value = 0,
+                .data = &[_]u8{},
+                .gas_limit = 21_000,
+                .gas_price = 2,
+                .nonce = 0,
+            }),
+        },
+    };
+
+    var block_ctx = blockContextWithGasLimit(30_000_000);
+    block_ctx.block_base_fee = 2;
+
+    var result = try block_builder.buildBlockWithOptions(
+        std.testing.allocator,
+        &sm,
+        host,
+        &txs,
+        block_ctx,
+        .{
+            .fork = .london,
+            .hardfork_config = hardfork_schedule.ChainConfig{ .london_block = 0 },
+            .skip_invalid_transactions = true,
+        },
+    );
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.receipts.len);
+    try std.testing.expectEqual(@as(usize, 1), result.included_tx_indexes.len);
+    try std.testing.expectEqual(@as(usize, 1), result.included_tx_indexes[0]);
+    try std.testing.expectEqual(@as(u64, 1), try sm.getNonce(sender));
 }
 
 test "buildBlock aborts and reverts when EVM host read records an error" {

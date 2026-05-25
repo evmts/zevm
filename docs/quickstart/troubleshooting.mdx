@@ -152,7 +152,7 @@ These HTTP statuses are transport-level behavior, not JSON-RPC error objects.
 | `404` | Request path does not match the ZEVM JSON-RPC endpoint (`/`) | Send requests to `/` (for example `http://127.0.0.1:8545/`), remove extra path segments (`/rpc`, `/v1`, etc.), and check reverse-proxy path rewrites |
 | `405` | Request to `/` used a method other than `POST` | Use `POST` for JSON-RPC calls; update client/proxy health checks that currently use `GET` on `/` |
 | `415` | `POST /` request has missing/unsupported `Content-Type` | Set `Content-Type: application/json` (parameters like `application/json; charset=utf-8` are allowed) and ensure proxies do not strip or overwrite the header |
-| `413` | Request body is larger than `1,048,576` bytes | Split the request, reduce batch size, or move oversized tooling payloads outside the JSON-RPC call |
+| `413` | Request body is larger than `8,388,608` bytes | Split the request, reduce batch size, or move oversized tooling payloads outside the JSON-RPC call |
 | `204` | Notification-only request (or notification-only batch), so ZEVM returns no JSON-RPC body by design | Include an `id` if you expect a JSON-RPC response payload; keep notification calls id-less when no response is needed |
 
 Quick transport checks:
@@ -171,11 +171,11 @@ curl -i -X POST http://127.0.0.1:8545/ \
   -H 'content-type: text/plain' \
   --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}'
 
-# 413: body larger than the fixed 1 MiB transport limit
+# 413: body larger than the fixed 8 MiB transport limit
 python3 - <<'PY' | curl -i -X POST http://127.0.0.1:8545/ \
   -H 'content-type: application/json' \
   --data-binary @-
-print(' ' * 1048577)
+print(' ' * 8388609)
 PY
 
 # 204: notification (no id)

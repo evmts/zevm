@@ -67,22 +67,11 @@ const legacy_state_fixture_dirs = [_][]const u8{
     "lib/ethereum-tests/LegacyTests/Cancun/GeneralStateTests/stTransitionTest",
 };
 
-const hive_rpc_fixture_paths = [_][]const u8{
-    "lib/execution-apis/tests/eth_chainId/get-chain-id.io",
-    "lib/execution-apis/tests/eth_blobBaseFee/get-current-blobfee.io",
-    "lib/execution-apis/tests/eth_getBalance/get-balance-unknown-account.io",
-    "lib/execution-apis/tests/eth_getCode/get-code-unknown-account.io",
-    "lib/execution-apis/tests/eth_getStorageAt/get-storage-unknown-account.io",
-    "lib/execution-apis/tests/eth_getTransactionCount/get-nonce-unknown-account.io",
-    "lib/execution-apis/tests/eth_syncing/check-syncing.io",
-    "lib/execution-apis/tests/net_version/get-network-id.io",
-};
-
 const hive_rpc_head_forkchoice_path = "lib/execution-apis/tests/headfcu.json";
 
 // External fixture expansion remains tracked by release-readiness tickets:
 // state/block fixture discovery, broader legacy-state coverage, and the
-// remaining rpc-compat .io lifecycle inputs are not complete yet.
+// non-rpc Hive simulator coverage are not complete yet.
 
 const VerifyOptions = struct {
     shard_index: usize = 0,
@@ -1018,6 +1007,9 @@ fn runHiveRpcCompatibilityFixtures(allocator: std.mem.Allocator, repo_root: []co
         ctx.finishTask(task_id, "hive-rpc-compat", started_ns);
     }
 
+    const hive_rpc_fixture_paths = try discoverHiveRpcFixturePaths(allocator, repo_root);
+    defer freeStringList(allocator, hive_rpc_fixture_paths);
+
     for (hive_rpc_fixture_paths) |relative_path| {
         const path = try std.fs.path.join(allocator, &.{ repo_root, relative_path });
         defer allocator.free(path);
@@ -1034,6 +1026,67 @@ fn runHiveRpcCompatibilityFixtures(allocator: std.mem.Allocator, repo_root: []co
         };
         ctx.finishTask(task_id, "hive-rpc-compat", started_ns);
     }
+}
+
+fn discoverHiveRpcFixturePaths(allocator: std.mem.Allocator, repo_root: []const u8) ![][]const u8 {
+    const tests_dir = try std.fs.path.join(allocator, &.{ repo_root, "lib/execution-apis/tests" });
+    defer allocator.free(tests_dir);
+
+    var root = try std.fs.openDirAbsolute(tests_dir, .{ .iterate = true });
+    defer root.close();
+
+    var method_dirs = std.ArrayList([]const u8){};
+    defer {
+        for (method_dirs.items) |method_dir| allocator.free(method_dir);
+        method_dirs.deinit(allocator);
+    }
+
+    var root_it = root.iterate();
+    while (try root_it.next()) |entry| {
+        if (entry.kind != .directory) continue;
+        try method_dirs.append(allocator, try allocator.dupe(u8, entry.name));
+    }
+    std.mem.sort([]const u8, method_dirs.items, {}, lessThanBytes);
+
+    var paths = std.ArrayList([]const u8){};
+    errdefer {
+        for (paths.items) |path| allocator.free(path);
+        paths.deinit(allocator);
+    }
+
+    for (method_dirs.items) |method_dir| {
+        var subdir = try root.openDir(method_dir, .{ .iterate = true });
+        defer subdir.close();
+
+        var file_names = std.ArrayList([]const u8){};
+        defer {
+            for (file_names.items) |file_name| allocator.free(file_name);
+            file_names.deinit(allocator);
+        }
+
+        var sub_it = subdir.iterate();
+        while (try sub_it.next()) |entry| {
+            if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".io")) continue;
+            try file_names.append(allocator, try allocator.dupe(u8, entry.name));
+        }
+        std.mem.sort([]const u8, file_names.items, {}, lessThanBytes);
+
+        for (file_names.items) |file_name| {
+            try paths.append(allocator, try std.fmt.allocPrint(
+                allocator,
+                "lib/execution-apis/tests/{s}/{s}",
+                .{ method_dir, file_name },
+            ));
+        }
+    }
+
+    if (paths.items.len == 0) return VerifyError.InvalidFixture;
+    return try paths.toOwnedSlice(allocator);
+}
+
+fn freeStringList(allocator: std.mem.Allocator, strings: []const []const u8) void {
+    for (strings) |string| allocator.free(string);
+    allocator.free(strings);
 }
 
 const ReservedPorts = struct {
@@ -1092,6 +1145,7 @@ fn writeHiveRpcCompatibilityConfig(
         \\        "tangerineWhistleBlock": {d},
         \\        "spuriousDragonBlock": {d},
         \\        "byzantiumBlock": {d},
+        \\        "constantinopleBlock": {d},
         \\        "petersburgBlock": {d},
         \\        "istanbulBlock": {d},
         \\        "muirGlacierBlock": {d},
@@ -1102,7 +1156,8 @@ fn writeHiveRpcCompatibilityConfig(
         \\        "mergeBlock": {d},
         \\        "shanghaiTimestamp": {d},
         \\        "cancunTimestamp": {d},
-        \\        "pragueTimestamp": {d}
+        \\        "pragueTimestamp": {d},
+        \\        "osakaTimestamp": {d}
         \\      }}
         \\    }}
         \\  }}
@@ -1113,6 +1168,7 @@ fn writeHiveRpcCompatibilityConfig(
         try forkenvU64Default(forkenv, "HIVE_FORK_TANGERINE", 0),
         try forkenvU64Default(forkenv, "HIVE_FORK_SPURIOUS", 0),
         try forkenvU64Default(forkenv, "HIVE_FORK_BYZANTIUM", 0),
+        try forkenvU64Default(forkenv, "HIVE_FORK_CONSTANTINOPLE", 0),
         try forkenvU64Default(forkenv, "HIVE_FORK_PETERSBURG", 0),
         try forkenvU64Default(forkenv, "HIVE_FORK_ISTANBUL", 0),
         try forkenvU64Default(forkenv, "HIVE_FORK_MUIR_GLACIER", 0),
@@ -1124,6 +1180,7 @@ fn writeHiveRpcCompatibilityConfig(
         try forkenvU64Default(forkenv, "HIVE_SHANGHAI_TIMESTAMP", 0),
         try forkenvU64Default(forkenv, "HIVE_CANCUN_TIMESTAMP", 0),
         try forkenvU64Default(forkenv, "HIVE_PRAGUE_TIMESTAMP", json_max_i64),
+        try forkenvU64Default(forkenv, "HIVE_OSAKA_TIMESTAMP", json_max_i64),
     });
 
     const body = try out.toOwnedSlice();
@@ -1200,6 +1257,7 @@ const RpcIoMessage = struct {
 
 const RpcIoTest = struct {
     messages: []RpcIoMessage,
+    speconly: bool,
 
     fn deinit(self: *RpcIoTest, allocator: std.mem.Allocator) void {
         for (self.messages) |message| {
@@ -1214,6 +1272,8 @@ fn readRpcIoTest(allocator: std.mem.Allocator, path: []const u8) !RpcIoTest {
     defer allocator.free(bytes);
 
     var messages = std.ArrayList(RpcIoMessage){};
+    var in_header = true;
+    var speconly = false;
     errdefer {
         for (messages.items) |message| allocator.free(message.data);
         messages.deinit(allocator);
@@ -1222,9 +1282,18 @@ fn readRpcIoTest(allocator: std.mem.Allocator, path: []const u8) !RpcIoTest {
     var lines = std.mem.splitScalar(u8, bytes, '\n');
     while (lines.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, " \t\r");
-        if (line.len == 0 or std.mem.startsWith(u8, line, "//")) continue;
+        if (line.len == 0) continue;
+
+        if (std.mem.startsWith(u8, line, "//")) {
+            if (in_header) {
+                const comment = std.mem.trim(u8, line[2..], " \t\r");
+                if (std.mem.startsWith(u8, comment, "speconly:")) speconly = true;
+            }
+            continue;
+        }
 
         if (std.mem.startsWith(u8, line, ">>") or std.mem.startsWith(u8, line, "<<")) {
+            in_header = false;
             const data = std.mem.trim(u8, line[2..], " \t\r");
             var parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{ .allocate = .alloc_always }) catch return VerifyError.InvalidFixture;
             parsed.deinit();
@@ -1238,7 +1307,10 @@ fn readRpcIoTest(allocator: std.mem.Allocator, path: []const u8) !RpcIoTest {
     }
 
     if (messages.items.len == 0) return VerifyError.InvalidFixture;
-    return .{ .messages = try messages.toOwnedSlice(allocator) };
+    return .{
+        .messages = try messages.toOwnedSlice(allocator),
+        .speconly = speconly,
+    };
 }
 
 fn runRpcIoTest(allocator: std.mem.Allocator, port: u16, test_case: RpcIoTest) !void {
@@ -1254,7 +1326,11 @@ fn runRpcIoTest(allocator: std.mem.Allocator, port: u16, test_case: RpcIoTest) !
             response = try waitForRpc(allocator, port, message.data);
         } else {
             const body = response orelse return VerifyError.InvalidFixture;
-            try expectJsonEqual(allocator, message.data, body);
+            if (test_case.speconly and !try jsonTextHasError(allocator, body)) {
+                try expectJsonStructure(allocator, message.data, body);
+            } else {
+                try expectJsonEqual(allocator, message.data, body);
+            }
             allocator.free(body);
             response = null;
         }
@@ -1282,10 +1358,49 @@ fn expectJsonEqual(allocator: std.mem.Allocator, expected_text: []const u8, actu
     var actual = std.json.parseFromSlice(std.json.Value, allocator, actual_text, .{ .allocate = .alloc_always }) catch return VerifyError.UnexpectedRpcResponse;
     defer actual.deinit();
 
-    if (!jsonValuesEqual(expected.value, actual.value)) return VerifyError.UnexpectedRpcResponse;
+    if (!jsonValuesEqual(expected.value, actual.value, false)) {
+        std.debug.print("external-verify: expected response {s}\nexternal-verify: actual response {s}\n", .{ expected_text, actual_text });
+        return VerifyError.UnexpectedRpcResponse;
+    }
 }
 
-fn jsonValuesEqual(expected: std.json.Value, actual: std.json.Value) bool {
+fn jsonTextHasError(allocator: std.mem.Allocator, text: []const u8) !bool {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, text, .{ .allocate = .alloc_always }) catch return VerifyError.UnexpectedRpcResponse;
+    defer parsed.deinit();
+    return switch (parsed.value) {
+        .object => |object| object.get("error") != null,
+        else => false,
+    };
+}
+
+fn expectJsonStructure(allocator: std.mem.Allocator, expected_text: []const u8, actual_text: []const u8) !void {
+    var expected = std.json.parseFromSlice(std.json.Value, allocator, expected_text, .{ .allocate = .alloc_always }) catch return VerifyError.UnexpectedRpcResponse;
+    defer expected.deinit();
+    var actual = std.json.parseFromSlice(std.json.Value, allocator, actual_text, .{ .allocate = .alloc_always }) catch return VerifyError.UnexpectedRpcResponse;
+    defer actual.deinit();
+
+    if (!jsonStructureMatches(expected.value, actual.value)) return VerifyError.UnexpectedRpcResponse;
+}
+
+fn jsonStructureMatches(expected: std.json.Value, actual: std.json.Value) bool {
+    if (expected != .object) return @as(std.meta.Tag(std.json.Value), expected) == @as(std.meta.Tag(std.json.Value), actual);
+    if (actual != .object) return false;
+
+    var expected_it = expected.object.iterator();
+    while (expected_it.next()) |entry| {
+        const actual_value = actual.object.get(entry.key_ptr.*) orelse return false;
+        if (@as(std.meta.Tag(std.json.Value), entry.value_ptr.*) != @as(std.meta.Tag(std.json.Value), actual_value)) return false;
+        if ((entry.value_ptr.* == .object or entry.value_ptr.* == .array) and !jsonStructureMatches(entry.value_ptr.*, actual_value)) return false;
+    }
+
+    var actual_it = actual.object.iterator();
+    while (actual_it.next()) |entry| {
+        if (expected.object.get(entry.key_ptr.*) == null) return false;
+    }
+    return true;
+}
+
+fn jsonValuesEqual(expected: std.json.Value, actual: std.json.Value, ignore_error_message: bool) bool {
     if (@as(std.meta.Tag(std.json.Value), expected) != @as(std.meta.Tag(std.json.Value), actual)) return false;
     return switch (expected) {
         .null => true,
@@ -1297,20 +1412,37 @@ fn jsonValuesEqual(expected: std.json.Value, actual: std.json.Value) bool {
         .array => |array| blk: {
             if (array.items.len != actual.array.items.len) break :blk false;
             for (array.items, actual.array.items) |expected_item, actual_item| {
-                if (!jsonValuesEqual(expected_item, actual_item)) break :blk false;
+                if (!jsonValuesEqual(expected_item, actual_item, false)) break :blk false;
             }
             break :blk true;
         },
         .object => |object| blk: {
-            if (object.count() != actual.object.count()) break :blk false;
+            if (jsonObjectComparableFieldCount(object, ignore_error_message) !=
+                jsonObjectComparableFieldCount(actual.object, ignore_error_message))
+            {
+                break :blk false;
+            }
             var it = object.iterator();
             while (it.next()) |entry| {
+                if (ignore_error_message and std.mem.eql(u8, entry.key_ptr.*, "message")) continue;
                 const actual_value = actual.object.get(entry.key_ptr.*) orelse break :blk false;
-                if (!jsonValuesEqual(entry.value_ptr.*, actual_value)) break :blk false;
+                const child_ignore_error_message = std.mem.eql(u8, entry.key_ptr.*, "error");
+                if (!jsonValuesEqual(entry.value_ptr.*, actual_value, child_ignore_error_message)) break :blk false;
             }
             break :blk true;
         },
     };
+}
+
+fn jsonObjectComparableFieldCount(object: std.json.ObjectMap, ignore_error_message: bool) usize {
+    if (!ignore_error_message) return object.count();
+    var count: usize = 0;
+    var it = object.iterator();
+    while (it.next()) |entry| {
+        if (std.mem.eql(u8, entry.key_ptr.*, "message")) continue;
+        count += 1;
+    }
+    return count;
 }
 
 fn readJson(allocator: std.mem.Allocator, path: []const u8) !std.json.Parsed(std.json.Value) {

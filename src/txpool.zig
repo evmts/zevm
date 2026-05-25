@@ -12,11 +12,15 @@ pub const PooledTransaction = struct {
     gas_limit: u64,
     max_fee_per_gas: u256,
     max_priority_fee_per_gas: u256 = 0,
+    max_fee_per_blob_gas: ?u256 = null,
+    receipt_type: primitives.Receipt.TransactionType = .legacy,
     hash: [32]u8,
     to: ?primitives.Address = null,
     value: u256 = 0,
     input: []const u8 = &.{},
     raw: []const u8 = &.{},
+    blob_versioned_hashes: []const [32]u8 = &.{},
+    blob_sidecars: []const primitives.Blob.BlobSidecar = &.{},
     v: u64 = 0,
     r: [32]u8 = [_]u8{0} ** 32,
     s: [32]u8 = [_]u8{0} ** 32,
@@ -48,8 +52,7 @@ pub const TransactionPool = struct {
 
     pub fn clear(self: *TransactionPool) void {
         for (self.transactions.items) |tx| {
-            self.allocator.free(tx.input);
-            self.allocator.free(tx.raw);
+            self.freeStoredTransaction(tx);
         }
         self.transactions.clearRetainingCapacity();
         self.sender_nonces.clearRetainingCapacity();
@@ -64,11 +67,7 @@ pub const TransactionPool = struct {
         }
 
         for (self.transactions.items) |tx| {
-            var cloned = tx;
-            cloned.input = try allocator.dupe(u8, tx.input);
-            errdefer allocator.free(cloned.input);
-            cloned.raw = try allocator.dupe(u8, tx.raw);
-            errdefer allocator.free(cloned.raw);
+            const cloned = try cloneTransaction(allocator, tx);
             try out.transactions.append(allocator, cloned);
         }
 
@@ -95,23 +94,13 @@ pub const TransactionPool = struct {
                 return error.ReplacementUnderpriced;
             }
 
-            var stored = tx;
-            stored.input = try self.allocator.dupe(u8, tx.input);
-            errdefer self.allocator.free(stored.input);
-            stored.raw = try self.allocator.dupe(u8, tx.raw);
-            errdefer self.allocator.free(stored.raw);
-
-            self.allocator.free(self.transactions.items[index].input);
-            self.allocator.free(self.transactions.items[index].raw);
+            const stored = try cloneTransaction(self.allocator, tx);
+            self.freeStoredTransaction(self.transactions.items[index]);
             self.transactions.items[index] = stored;
             return;
         }
 
-        var stored = tx;
-        stored.input = try self.allocator.dupe(u8, tx.input);
-        errdefer self.allocator.free(stored.input);
-        stored.raw = try self.allocator.dupe(u8, tx.raw);
-        errdefer self.allocator.free(stored.raw);
+        const stored = try cloneTransaction(self.allocator, tx);
         try self.transactions.append(self.allocator, stored);
     }
 
@@ -157,8 +146,7 @@ pub const TransactionPool = struct {
             }
 
             self.advanceSenderNonce(tx.sender, tx.nonce);
-            self.allocator.free(tx.input);
-            self.allocator.free(tx.raw);
+            self.freeStoredTransaction(tx);
             _ = self.transactions.orderedRemove(index);
         }
     }
@@ -169,8 +157,7 @@ pub const TransactionPool = struct {
             const tx = self.transactions.items[index];
             if (!sameHash(tx.hash, hash)) continue;
 
-            self.allocator.free(tx.input);
-            self.allocator.free(tx.raw);
+            self.freeStoredTransaction(tx);
             _ = self.transactions.orderedRemove(index);
             return true;
         }
@@ -229,7 +216,30 @@ pub const TransactionPool = struct {
         }
         return null;
     }
+
+    fn freeStoredTransaction(self: *TransactionPool, tx: PooledTransaction) void {
+        if (tx.input.len > 0) self.allocator.free(tx.input);
+        if (tx.raw.len > 0) self.allocator.free(tx.raw);
+        if (tx.blob_versioned_hashes.len > 0) self.allocator.free(tx.blob_versioned_hashes);
+        if (tx.blob_sidecars.len > 0) self.allocator.free(tx.blob_sidecars);
+    }
 };
+
+fn cloneTransaction(
+    allocator: std.mem.Allocator,
+    tx: PooledTransaction,
+) !PooledTransaction {
+    var cloned = tx;
+    cloned.input = try allocator.dupe(u8, tx.input);
+    errdefer allocator.free(cloned.input);
+    cloned.raw = try allocator.dupe(u8, tx.raw);
+    errdefer allocator.free(cloned.raw);
+    cloned.blob_versioned_hashes = try allocator.dupe([32]u8, tx.blob_versioned_hashes);
+    errdefer allocator.free(cloned.blob_versioned_hashes);
+    cloned.blob_sidecars = try allocator.dupe(primitives.Blob.BlobSidecar, tx.blob_sidecars);
+    errdefer allocator.free(cloned.blob_sidecars);
+    return cloned;
+}
 
 fn containsHash(hashes: []const [32]u8, hash: [32]u8) bool {
     for (hashes) |candidate| {

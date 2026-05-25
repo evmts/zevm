@@ -36,24 +36,33 @@ pub const RequestTelemetryFields = struct {
     mode: []const u8,
 };
 
-pub const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
+pub const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_HTTP_HEAD_BYTES: usize = 8192;
 pub const DEFAULT_MAX_ACTIVE_CONNECTIONS: usize = 64;
 pub const DEFAULT_READ_TIMEOUT_MS: u32 = 15_000;
 pub const DEFAULT_WRITE_TIMEOUT_MS: u32 = 15_000;
+pub const DEFAULT_ENGINE_JWT_SECRET = "secretsecretsecretsecretsecretse";
+pub const DEFAULT_ENGINE_JWT_MAX_TIME_DRIFT_SECONDS: i64 = 60;
 
 const CONNECTION_SLOT_WAIT_NS = 50 * std.time.ns_per_ms;
+const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
 
 pub const TransportLimits = struct {
     max_active_connections: usize = DEFAULT_MAX_ACTIVE_CONNECTIONS,
     read_timeout_ms: u32 = DEFAULT_READ_TIMEOUT_MS,
     write_timeout_ms: u32 = DEFAULT_WRITE_TIMEOUT_MS,
     max_request_body_bytes: usize = MAX_REQUEST_BODY_BYTES,
+    jwt_secret: ?[]const u8 = null,
+    jwt_max_time_drift_seconds: i64 = DEFAULT_ENGINE_JWT_MAX_TIME_DRIFT_SECONDS,
 };
 
 const json_content_type_header = std.http.Header{
     .name = "content-type",
     .value = "application/json",
+};
+const jwt_authenticate_header = std.http.Header{
+    .name = "www-authenticate",
+    .value = "Bearer",
 };
 
 pub fn run(allocator: std.mem.Allocator, server_config: ServerConfig, handlers: *const dispatcher.HandlerRegistry) !void {
@@ -85,6 +94,9 @@ pub const RpcServer = struct {
     ) !RpcServer {
         std.debug.assert(limits.max_active_connections > 0);
         std.debug.assert(limits.max_request_body_bytes > 0);
+        if (limits.jwt_secret != null) {
+            std.debug.assert(limits.jwt_max_time_drift_seconds >= 0);
+        }
 
         const listen_address = try std.net.Address.parseIp(server_config.host, server_config.port);
         const tcp_server = try listen_address.listen(.{ .reuse_address = true });
@@ -451,6 +463,21 @@ fn handleRequest(
         return true;
     }
 
+    if (limits.jwt_secret) |jwt_secret| {
+        const authorization = authorizationHeaderValue(request);
+        const authorized = if (authorization) |header_value|
+            try validateJwtAuthorization(allocator, header_value, jwt_secret, std.time.timestamp(), limits.jwt_max_time_drift_seconds)
+        else
+            false;
+        if (!authorized) {
+            try request.respond("", .{
+                .status = .unauthorized,
+                .extra_headers = &[_]std.http.Header{jwt_authenticate_header},
+            });
+            return true;
+        }
+    }
+
     if (!isJsonContentType(request.head.content_type)) {
         try request.respond("", .{
             .status = .unsupported_media_type,
@@ -514,6 +541,162 @@ fn isJsonContentType(content_type: ?[]const u8) bool {
     const media_type = std.mem.trim(u8, parts.first(), " \t");
 
     return std.ascii.eqlIgnoreCase(media_type, "application/json");
+}
+
+fn authorizationHeaderValue(request: *const std.http.Server.Request) ?[]const u8 {
+    var headers = request.iterateHeaders();
+    while (headers.next()) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, "authorization")) {
+            return header.value;
+        }
+    }
+
+    return null;
+}
+
+fn validateJwtAuthorization(
+    allocator: std.mem.Allocator,
+    authorization: []const u8,
+    secret: []const u8,
+    now_seconds: i64,
+    max_time_drift_seconds: i64,
+) !bool {
+    const token = bearerToken(authorization) orelse return false;
+    return validateJwtToken(allocator, token, secret, now_seconds, max_time_drift_seconds);
+}
+
+fn bearerToken(authorization: []const u8) ?[]const u8 {
+    var parts = std.mem.tokenizeAny(u8, authorization, " \t");
+    const scheme = parts.next() orelse return null;
+    const token = parts.next() orelse return null;
+    if (parts.next() != null) return null;
+    if (!std.ascii.eqlIgnoreCase(scheme, "Bearer")) return null;
+    return if (token.len == 0) null else token;
+}
+
+fn validateJwtToken(
+    allocator: std.mem.Allocator,
+    token: []const u8,
+    secret: []const u8,
+    now_seconds: i64,
+    max_time_drift_seconds: i64,
+) !bool {
+    if (max_time_drift_seconds < 0) return false;
+
+    const header_end = std.mem.indexOfScalar(u8, token, '.') orelse return false;
+    const payload_end_relative = std.mem.indexOfScalar(u8, token[header_end + 1 ..], '.') orelse return false;
+    const payload_end = header_end + 1 + payload_end_relative;
+    if (std.mem.indexOfScalar(u8, token[payload_end + 1 ..], '.') != null) return false;
+
+    const header_segment = token[0..header_end];
+    const payload_segment = token[header_end + 1 .. payload_end];
+    const signature_segment = token[payload_end + 1 ..];
+    if (header_segment.len == 0 or payload_segment.len == 0 or signature_segment.len == 0) return false;
+
+    if (!try jwtHeaderUsesHs256(allocator, header_segment)) return false;
+    if (!try jwtSignatureValid(allocator, token[0..payload_end], signature_segment, secret)) return false;
+
+    const iat = try jwtPayloadIat(allocator, payload_segment) orelse return false;
+    const drift = if (now_seconds >= iat) now_seconds - iat else iat - now_seconds;
+    return drift <= max_time_drift_seconds;
+}
+
+fn jwtHeaderUsesHs256(allocator: std.mem.Allocator, encoded_header: []const u8) !bool {
+    const header_json = decodeBase64UrlNoPad(allocator, encoded_header) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return false,
+    };
+    defer allocator.free(header_json);
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, header_json, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return false,
+    };
+    defer parsed.deinit();
+
+    const object = switch (parsed.value) {
+        .object => |object| object,
+        else => return false,
+    };
+    const alg = object.get("alg") orelse return false;
+    return switch (alg) {
+        .string => |value| std.mem.eql(u8, value, "HS256"),
+        else => false,
+    };
+}
+
+fn jwtPayloadIat(allocator: std.mem.Allocator, encoded_payload: []const u8) !?i64 {
+    const payload_json = decodeBase64UrlNoPad(allocator, encoded_payload) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
+    defer allocator.free(payload_json);
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload_json, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
+    defer parsed.deinit();
+
+    const object = switch (parsed.value) {
+        .object => |object| object,
+        else => return null,
+    };
+    const iat = object.get("iat") orelse return null;
+    return switch (iat) {
+        .integer => |value| value,
+        .float => |value| if (std.math.isFinite(value) and @floor(value) == value and value >= @as(f64, @floatFromInt(std.math.minInt(i64))) and value <= @as(f64, @floatFromInt(std.math.maxInt(i64))))
+            @as(i64, @intFromFloat(value))
+        else
+            null,
+        else => null,
+    };
+}
+
+fn jwtSignatureValid(
+    allocator: std.mem.Allocator,
+    signing_input: []const u8,
+    encoded_signature: []const u8,
+    secret: []const u8,
+) !bool {
+    const signature = decodeBase64UrlNoPad(allocator, encoded_signature) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return false,
+    };
+    defer allocator.free(signature);
+    if (signature.len != HmacSha256.mac_length) return false;
+
+    var expected: [HmacSha256.mac_length]u8 = undefined;
+    HmacSha256.create(&expected, signing_input, secret);
+
+    var actual: [HmacSha256.mac_length]u8 = undefined;
+    @memcpy(actual[0..], signature);
+
+    return std.crypto.timing_safe.eql([HmacSha256.mac_length]u8, expected, actual);
+}
+
+fn decodeBase64UrlNoPad(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const size = std.base64.url_safe_no_pad.Decoder.calcSizeForSlice(source) catch |err| switch (err) {
+        error.InvalidPadding => return error.InvalidJwtBase64,
+        else => return err,
+    };
+    const out = try allocator.alloc(u8, size);
+    errdefer allocator.free(out);
+    std.base64.url_safe_no_pad.Decoder.decode(out, source) catch |err| switch (err) {
+        error.InvalidCharacter, error.InvalidPadding => return error.InvalidJwtBase64,
+        else => return err,
+    };
+    return out;
+}
+
+pub fn validateJwtAuthorizationForTest(
+    allocator: std.mem.Allocator,
+    authorization: []const u8,
+    secret: []const u8,
+    now_seconds: i64,
+    max_time_drift_seconds: i64,
+) !bool {
+    return validateJwtAuthorization(allocator, authorization, secret, now_seconds, max_time_drift_seconds);
 }
 
 fn readRequestBody(allocator: std.mem.Allocator, request: *std.http.Server.Request, max_request_body_bytes: usize) ![]u8 {

@@ -46,7 +46,7 @@ It defines:
 - JSON-RPC success responses -> HTTP `200`
 - JSON-RPC error responses -> HTTP `200`
 - notification-only request or notification-only batch -> HTTP `204` with empty body
-- request body limit is `1,048,576` bytes; larger bodies return HTTP `413` with no JSON-RPC body
+- request body limit is `8,388,608` bytes; larger bodies return HTTP `413` with no JSON-RPC body
 - HTTP header read buffer limit is `8,192` bytes; oversized or malformed headers close the connection without a JSON-RPC body
 - listener accepts up to `64` active TCP connections; slow clients are isolated at the connection layer and do not block other accepted clients
 - accepted connections use `15,000` ms read and write socket timeouts
@@ -201,18 +201,29 @@ Proof failure contract when ready:
 
 ### 7.1 TransactionRequest (phase 1)
 
-`TransactionRequest` is used by `eth_call`, `eth_estimateGas`, and `eth_sendTransaction`.
+`TransactionRequest` is used by `eth_call`, `eth_estimateGas`, `eth_createAccessList`, `eth_simulateV1` call entries, `eth_sendTransaction`, and `eth_signTransaction`.
 
-Allowed fields only:
+Trusted simulation accepts the execution-apis request shape below. Trusted submission and signing remain legacy-only in phase 1 and reject the typed/dynamic/blob/auth fields listed in the submission constraints.
+
+Common fields:
 
 | Field | Type | Rule |
 | --- | --- | --- |
-| `from` | `Address` | required for `eth_sendTransaction`; optional for `eth_call` and `eth_estimateGas` |
+| `from` | `Address` | required for `eth_sendTransaction` and `eth_signTransaction`; optional for simulation methods |
 | `to` | `Address` or `null` | omitted or `null` for create |
 | `gas` | `QuantityHex` | optional |
 | `gasPrice` | `QuantityHex` | optional |
+| `maxFeePerGas` | `QuantityHex` | accepted by simulation methods; rejected by submission/signing |
+| `maxPriorityFeePerGas` | `QuantityHex` | accepted by simulation methods; rejected by submission/signing |
+| `maxFeePerBlobGas` | `QuantityHex` | accepted by simulation methods; rejected by submission/signing |
 | `value` | `QuantityHex` | optional |
 | `nonce` | `QuantityHex` | optional |
+| `chainId` | `QuantityHex` | accepted by simulation methods; rejected by submission/signing |
+| `type` | `QuantityHex` or hex-like quantity string | accepted by simulation methods; rejected by submission/signing |
+| `accessList` | array | accepted by simulation methods; rejected by submission/signing |
+| `blobVersionedHashes` | array of `Hash32` | accepted by simulation methods; rejected by submission/signing |
+| `blobs`, `commitments`, `proofs` | arrays | shape-validated by simulation methods; rejected by submission/signing |
+| `authorizationList` | array | shape-validated by simulation methods; rejected by submission/signing |
 | `data` | `HexData` | optional |
 | `input` | `HexData` | optional alias of `data` |
 
@@ -224,8 +235,9 @@ Field rules:
 
 Fee-model and tx-type constraints:
 
-- phase-1 request fee field is `gasPrice`
-- `maxFeePerGas`, `maxPriorityFeePerGas`, `maxFeePerBlobGas`, `blobVersionedHashes`, `accessList`, `authorizationList`, `type`, and `chainId` are unsupported in `TransactionRequest` and fail with `-32602`
+- phase-1 submission/signing fee field is `gasPrice`
+- `eth_sendTransaction` and `eth_signTransaction` reject `maxFeePerGas`, `maxPriorityFeePerGas`, `maxFeePerBlobGas`, `blobVersionedHashes`, `blobs`, `commitments`, `proofs`, `accessList`, `authorizationList`, `type`, and `chainId` with `-32602`
+- simulation methods accept typed/dynamic/blob/auth request fields for execution-apis compatibility; malformed field shapes or unsupported type values fail with `-32602`
 - if `eth_sendTransaction` omits `gasPrice`, ZEVM uses trusted-mode node gas price (`eth_gasPrice`) at submission time
 
 ### 7.2 Supported transaction envelope types
@@ -698,16 +710,16 @@ The Engine API listener is trusted-mode only and disabled unless startup config 
 | `engine_exchangeCapabilities` | `[capabilities]` where `capabilities` is an array of strings | array of implemented Engine method names | `-32602` for malformed params |
 | `engine_exchangeTransitionConfigurationV1` | `[config]` where `config` is an object | object echo of the supplied transition config | `-32602` for malformed params |
 | `engine_getClientVersionV1` | `[clientVersion]` where `clientVersion` is a ClientVersionV1 object | single-element array identifying ZEVM | `-32602` for malformed params |
-| `engine_forkchoiceUpdatedV1` / `engine_forkchoiceUpdatedV2` / `engine_forkchoiceUpdatedV3` / `engine_forkchoiceUpdatedV4` | `[forkchoiceState]` or `[forkchoiceState, null]` | `{ payloadStatus, payloadId: null }` | `-32602` for malformed params or non-null payload attributes |
-| `engine_newPayloadV1` / `engine_newPayloadV2` | `[executionPayload]` | `PayloadStatusV1`; current trusted implementation returns `SYNCING` without importing the payload | `-32602` for malformed params |
-| `engine_newPayloadV3` | `[executionPayload, expectedBlobVersionedHashes, parentBeaconBlockRoot]` | `PayloadStatusV1`; current trusted implementation returns `SYNCING` without importing the payload | `-32602` for malformed params |
-| `engine_newPayloadV4` / `engine_newPayloadV5` | `[executionPayload, expectedBlobVersionedHashes, parentBeaconBlockRoot, executionRequests]` | `PayloadStatusV1`; current trusted implementation returns `SYNCING` without importing the payload | `-32602` for malformed params |
+| `engine_forkchoiceUpdatedV1` / `engine_forkchoiceUpdatedV2` / `engine_forkchoiceUpdatedV3` / `engine_forkchoiceUpdatedV4` | `[forkchoiceState]`, `[forkchoiceState, null]`, or `[forkchoiceState, payloadAttributes]` | `{ payloadStatus, payloadId }`; `payloadId` is non-null when payload attributes are accepted | `-32602` for malformed params |
+| `engine_newPayloadV1` / `engine_newPayloadV2` | `[executionPayload]` | `PayloadStatusV1`; imports locally valid payloads and returns `VALID`, returns `SYNCING` for unknown parents, and returns `INVALID` / `INVALID_BLOCK_HASH` for failed validation | `-32602` for malformed params |
+| `engine_newPayloadV3` | `[executionPayload, expectedBlobVersionedHashes, parentBeaconBlockRoot]` | `PayloadStatusV1`; validates blob-versioned hashes, imports locally valid payloads, and returns spec status values | `-32602` for malformed params |
+| `engine_newPayloadV4` / `engine_newPayloadV5` | `[executionPayload, expectedBlobVersionedHashes, parentBeaconBlockRoot, executionRequests]` | `PayloadStatusV1`; validates execution requests hash input, imports locally valid payloads, and returns spec status values | `-32602` for malformed params |
 | `engine_getPayloadV1` / `engine_getPayloadV2` / `engine_getPayloadV3` / `engine_getPayloadV4` / `engine_getPayloadV5` / `engine_getPayloadV6` | `[payloadId]` where `payloadId` is 8 bytes of `HexData` | payload envelope when known | `-38001` for unknown payload id; `-32602` for malformed params |
 | `engine_getPayloadBodiesByHashV1` / `engine_getPayloadBodiesByHashV2` | `[blockHashes]` where `blockHashes` is an array of `Hash32` values | array of payload body objects or `null` for unknown hashes; V2 includes `blockAccessList: null` | `-32602` for malformed params or more than 1024 hashes |
 | `engine_getPayloadBodiesByRangeV1` / `engine_getPayloadBodiesByRangeV2` | `[startBlockNumber, count]` | array of payload body objects or `null` for unknown numbers; V2 includes `blockAccessList: null` | `-32602` for malformed params, zero count, more than 1024 bodies, or range overflow |
 | `engine_getBlobsV1` / `engine_getBlobsV2` / `engine_getBlobsV3` | `[versionedHashes]` where `versionedHashes` is an array of `Hash32` values | array of blob records or `null` for unknown hashes; phase-1 trusted mode returns `null` per requested hash | `-32602` for malformed params or more than 1024 hashes |
 
-`forkchoiceState` must include `headBlockHash`, `safeBlockHash`, and `finalizedBlockHash` as `Hash32` strings. `safeBlockHash` and `finalizedBlockHash` may be zero hashes. A known local `headBlockHash` returns `VALID` and updates the canonical head; unknown referenced hashes return `SYNCING`. Payload-building storage remains minimal in phase 1: get-payload methods report unknown payload ids with `-38001`, and new-payload methods validate request shape but do not import execution payloads into canonical history.
+`forkchoiceState` must include `headBlockHash`, `safeBlockHash`, and `finalizedBlockHash` as `Hash32` strings. `safeBlockHash` and `finalizedBlockHash` may be zero hashes. A known local `headBlockHash` returns `VALID` and updates the canonical head; unknown referenced hashes return `SYNCING`. Non-null payload attributes create a short-lived local payload build job and return an 8-byte `payloadId`; the versioned Engine getPayload methods return the corresponding payload envelope until the runtime is reset or the process exits.
 
 ## 9. Trusted-Mode `zevm_*` Methods
 
@@ -896,10 +908,14 @@ Field contract:
 | `zevm_setCoinbase` | `[address]` | `true` | `anvil_setCoinbase`, `hardhat_setCoinbase` |
 | `zevm_setBlockGasLimit` | `[gasLimit]` | `true` | `anvil_setBlockGasLimit`, `evm_setBlockGasLimit` |
 | `zevm_setNextBlockBaseFeePerGas` | `[baseFee]` | `true` | `anvil_setNextBlockBaseFeePerGas`, `hardhat_setNextBlockBaseFeePerGas` |
+| `zevm_setPrevRandao` | `[prevRandao]` | `true` | `anvil_setPrevRandao`, `hardhat_setPrevRandao` |
 | `zevm_setMinGasPrice` | `[gasPrice]` | `true` | `anvil_setMinGasPrice`, `hardhat_setMinGasPrice` |
 | `zevm_deal` | `[address, value]` | `true` | `anvil_deal` |
 | `zevm_dealErc20` | `[token, address, value]` | `true` | `anvil_dealErc20` |
 | `zevm_setErc20Allowance` | `[token, owner, spender, value]` | `true` | `anvil_setErc20Allowance` |
+| `zevm_enableTraces` | `[]` or omitted | `true` | `anvil_enableTraces` |
+| `zevm_addCompilationResult` | `[compilerVersion, compilerInput, compilerOutput]` | `true` | `hardhat_addCompilationResult` |
+| `hardhat_setLoggingEnabled` | `[enabled]` | `true` | none |
 | `zevm_metadata` | `[]` or omitted | `NodeMetadata` | `anvil_metadata`, `hardhat_metadata` |
 | `zevm_nodeInfo` | `[]` or omitted | `NodeInfo` | `anvil_nodeInfo` |
 
@@ -915,6 +931,9 @@ Parameter token typing contract (applies to the `Exact params` column above):
 | `transactionHash` | `Hash32` | section 1 `Hash32` |
 | `transactionHashes` | array of `Hash32` | each element must satisfy section 1 `Hash32` |
 | `enabled` | boolean | JSON boolean |
+| `prevRandao` | `Hash32` | section 1 `Hash32`; one-shot next-block override |
+| `compilerVersion` | JSON string | accepted as compatibility input |
+| `compilerInput`, `compilerOutput` | JSON object | accepted as compatibility input |
 | `seconds`, `count`, `intervalSeconds`, `chainId`, `balance`, `delta`, `nonce`, `snapshotId`, `timestamp`, `gasLimit`, `baseFee`, `gasPrice`, `value` | `QuantityHex` | section 1 `QuantityHex` |
 | `url` | string | non-empty `http://` or `https://` URL string |
 | `forkConfig` | `null` or object | exact forms: `null`, `{ "url": "https://..." }`, or `{ "url": "https://...", "blockNumber": "0x..." }`; when present, `blockNumber` is `QuantityHex` |
@@ -1079,15 +1098,7 @@ Result construction:
 
 ## 12. Deferred Trusted Helpers
 
-These are outside the exact phase-1 contract:
-
-| Canonical deferred helper | Deferred accepted aliases |
-| --- | --- |
-| `zevm_enableTraces` | `anvil_enableTraces` |
-| `zevm_addCompilationResult` | `hardhat_addCompilationResult` |
-| `zevm_setPrevRandao` | `hardhat_setPrevRandao` |
-
-`hardhat_setLoggingEnabled` is deferred as a compatibility alias of `zevm_enableTraces`.
+No trusted helper methods are deferred in the current trusted-mode contract. Debug tracing methods remain outside the public surface in section 14.
 
 ## 13. Light-Mode Methods
 

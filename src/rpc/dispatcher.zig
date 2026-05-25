@@ -18,6 +18,9 @@ pub const RuntimeErrorCode = struct {
     pub const PROOF_VERIFY_FAILED: i32 = -32014;
     pub const MALFORMED_PROOF: i32 = -32015;
     pub const ENGINE_UNKNOWN_PAYLOAD: i32 = -38001;
+    pub const ENGINE_INVALID_FORKCHOICE_STATE: i32 = -38002;
+    pub const ENGINE_INVALID_PAYLOAD_ATTRIBUTES: i32 = -38003;
+    pub const ENGINE_TOO_LARGE_REQUEST: i32 = -38004;
 };
 
 pub fn dispatch(allocator: std.mem.Allocator, request: jsonrpc.envelope.RequestEnvelope, handlers: *const HandlerRegistry) !jsonrpc.envelope.ResponseEnvelope {
@@ -76,6 +79,15 @@ pub fn dispatch(allocator: std.mem.Allocator, request: jsonrpc.envelope.RequestE
         },
         error.UnknownPayload => {
             return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.ENGINE_UNKNOWN_PAYLOAD, "Unknown payload");
+        },
+        error.InvalidForkchoiceState => {
+            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.ENGINE_INVALID_FORKCHOICE_STATE, "Invalid forkchoice state");
+        },
+        error.InvalidPayloadAttributes => {
+            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.ENGINE_INVALID_PAYLOAD_ATTRIBUTES, "Invalid payload attributes");
+        },
+        error.TooLargeRequest => {
+            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.ENGINE_TOO_LARGE_REQUEST, "Too large request");
         },
         else => {
             if (!isTestBuild()) {
@@ -215,9 +227,17 @@ fn isLocallyHandledMethod(method_name: []const u8) bool {
         std.mem.eql(u8, method_name, "zevm_setNextBlockBaseFeePerGas") or
         std.mem.eql(u8, method_name, "anvil_setNextBlockBaseFeePerGas") or
         std.mem.eql(u8, method_name, "hardhat_setNextBlockBaseFeePerGas") or
+        std.mem.eql(u8, method_name, "zevm_setPrevRandao") or
+        std.mem.eql(u8, method_name, "anvil_setPrevRandao") or
+        std.mem.eql(u8, method_name, "hardhat_setPrevRandao") or
         std.mem.eql(u8, method_name, "zevm_setMinGasPrice") or
         std.mem.eql(u8, method_name, "anvil_setMinGasPrice") or
         std.mem.eql(u8, method_name, "hardhat_setMinGasPrice") or
+        std.mem.eql(u8, method_name, "zevm_enableTraces") or
+        std.mem.eql(u8, method_name, "anvil_enableTraces") or
+        std.mem.eql(u8, method_name, "hardhat_setLoggingEnabled") or
+        std.mem.eql(u8, method_name, "zevm_addCompilationResult") or
+        std.mem.eql(u8, method_name, "hardhat_addCompilationResult") or
         std.mem.eql(u8, method_name, "zevm_impersonateAccount") or
         std.mem.eql(u8, method_name, "anvil_impersonateAccount") or
         std.mem.eql(u8, method_name, "hardhat_impersonateAccount") or

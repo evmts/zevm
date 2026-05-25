@@ -101,7 +101,7 @@ ZEVM reads the file at startup and imports the top-level `alloc` object. Account
 
 ZEVM imports the stream after genesis initialization as query-only block history and advances the canonical head to the last imported block. Imported block bodies retain raw transaction envelopes for block transaction arrays and transaction-by-block/index lookups.
 
-`chainRlp` does not execute imported transactions, validate post-state roots, materialize account/storage state, or populate receipt/log indexes in phase 1. State-backed reads, `eth_call`, `eth_estimateGas`, receipts, and logs continue to use the local runtime state created from genesis plus subsequent local transactions. The startup log emits `chain_rlp_query_only_imported` with `state_materialized=false`, `receipts_indexed=false`, and `logs_indexed=false` whenever this path is used.
+`chainRlp` does not execute imported transactions, validate post-state roots, materialize account/storage state, or populate receipt/log indexes in phase 1. State-backed reads, simulation/testing methods, receipts, and logs continue to use the local runtime state created from genesis plus subsequent local transactions. The startup log emits `chain_rlp_query_only_imported` with `state_materialized=false`, `receipts_indexed=false`, and `logs_indexed=false` whenever this path is used.
 
 ## Engine API Listener
 
@@ -111,7 +111,7 @@ Trusted mode can expose a second plain-HTTP Engine API listener with top-level `
 { "engineRpc": { "host": "127.0.0.1", "port": 8551 } }
 ```
 
-The implemented Engine surface covers capability exchange, transition configuration exchange, forkchoice updates that validate referenced hashes against ZEVM's local block history, payload status shape validation, payload body lookup against local blocks, and blob lookup stubs. It does not make ZEVM a full consensus-client-facing execution engine yet; payload building/import storage remains minimal.
+The implemented Engine surface covers capability exchange, transition configuration exchange, forkchoice updates that validate referenced hashes against ZEVM's local block history, payload attribute build jobs, strict local payload import for known canonical parents, getPayload lookup for known payload ids, payload body lookup against local blocks, and blob lookup nulls for unavailable sidecars. It does not make ZEVM a full consensus-client-facing execution engine yet; remote P2P sync and blob sidecar retention remain out of scope.
 
 Implemented Engine listener methods:
 
@@ -120,8 +120,8 @@ Implemented Engine listener methods:
 | `engine_exchangeCapabilities` | `[capabilities]` where `capabilities` is an array of strings | array of implemented Engine method names |
 | `engine_exchangeTransitionConfigurationV1` | `[config]` where `config` is an object | echo of the supplied transition config |
 | `engine_getClientVersionV1` | `[clientVersion]` | single-element ZEVM client version array |
-| `engine_forkchoiceUpdatedV1` / `engine_forkchoiceUpdatedV2` / `engine_forkchoiceUpdatedV3` / `engine_forkchoiceUpdatedV4` | `[forkchoiceState]` or `[forkchoiceState, null]` | `{ payloadStatus, payloadId: null }` |
-| `engine_newPayloadV1` / `engine_newPayloadV2` / `engine_newPayloadV3` / `engine_newPayloadV4` / `engine_newPayloadV5` | version-specific payload validation params | `PayloadStatusV1`; current implementation returns `SYNCING` without importing the payload |
+| `engine_forkchoiceUpdatedV1` / `engine_forkchoiceUpdatedV2` / `engine_forkchoiceUpdatedV3` / `engine_forkchoiceUpdatedV4` | `[forkchoiceState]`, `[forkchoiceState, null]`, or `[forkchoiceState, payloadAttributes]` | `{ payloadStatus, payloadId }`; `payloadId` is non-null when payload attributes are accepted |
+| `engine_newPayloadV1` / `engine_newPayloadV2` / `engine_newPayloadV3` / `engine_newPayloadV4` / `engine_newPayloadV5` | version-specific payload validation params | `PayloadStatusV1`; locally valid payloads with known canonical parents import as `VALID`, unknown parents return `SYNCING`, invalid payloads return `INVALID` or `INVALID_BLOCK_HASH` |
 | `engine_getPayloadV1` / `engine_getPayloadV2` / `engine_getPayloadV3` / `engine_getPayloadV4` / `engine_getPayloadV5` / `engine_getPayloadV6` | `[payloadId]` | payload envelope when known; `-38001` for unknown payload id |
 | `engine_getPayloadBodiesByHashV1` / `engine_getPayloadBodiesByHashV2` / `engine_getPayloadBodiesByRangeV1` / `engine_getPayloadBodiesByRangeV2` | hash/range body lookup params | payload body array with `null` for unknown local blocks; V2 includes `blockAccessList: null` |
 | `engine_getBlobsV1` / `engine_getBlobsV2` / `engine_getBlobsV3` | `[versionedHashes]` | blob array with `null` for unknown hashes |

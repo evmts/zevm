@@ -1,0 +1,173 @@
+diff --git a/core/txpool/validation.go b/core/txpool/validation.go
+index 1f7ed1c..d282bb6 100644
+--- a/core/txpool/validation.go
++++ b/core/txpool/validation.go
+@@ -71,7 +71,8 @@ func ValidateTransaction(tx *types.Transaction, head *types.Header, signer types
+ 	if tx.Size() > opts.MaxSize {
+ 		return fmt.Errorf("%w: transaction size %v, limit %v", ErrOversizedData, tx.Size(), opts.MaxSize)
+ 	}
+ 	// Ensure only transactions that have been enabled are accepted
+-	rules := opts.Config.Rules(head.Number, head.Difficulty.Sign() == 0, head.Time)
++	isMerge := head.Difficulty.Sign() == 0 || opts.Config.IsPostMerge(head.Number.Uint64(), head.Time)
++	rules := opts.Config.Rules(head.Number, isMerge, head.Time)
+ 	if !rules.IsBerlin && tx.Type() != types.LegacyTxType {
+ 		return fmt.Errorf("%w: type %d rejected, pool not yet in Berlin", core.ErrTxTypeNotSupported, tx.Type())
+ 	}
+diff --git a/eth/api_debug.go b/eth/api_debug.go
+index c3aa3b9..4c7773a 100644
+--- a/eth/api_debug.go
++++ b/eth/api_debug.go
+@@ -29,6 +29,7 @@ import (
+ 	"github.com/ethereum/go-ethereum/core/stateless"
+ 	"github.com/ethereum/go-ethereum/core/types"
+ 	"github.com/ethereum/go-ethereum/crypto"
++	ethproto "github.com/ethereum/go-ethereum/eth/protocols/eth"
+ 	"github.com/ethereum/go-ethereum/internal/ethapi"
+ 	"github.com/ethereum/go-ethereum/log"
+ 	"github.com/ethereum/go-ethereum/rlp"
+@@ -128,6 +129,83 @@ func (api *DebugAPI) GetBadBlocks(ctx context.Context) ([]*BadBlockArgs, error)
+ 		})
+ 	}
+ 	return results, nil
++}
++
++func (api *DebugAPI) GetRawBlockFromPeer(ctx context.Context, hash common.Hash) (hexutil.Bytes, error) {
++	if block := api.eth.blockchain.GetBlockByHash(hash); block != nil {
++		return rlp.EncodeToBytes(block)
++	}
++
++	peers := api.eth.handler.peers.all()
++	if len(peers) == 0 {
++		return nil, fmt.Errorf("no eth peers available")
++	}
++
++	var lastErr error
++	for _, peer := range peers {
++		block, err := api.getBlockFromPeer(ctx, peer, hash)
++		if err == nil {
++			return rlp.EncodeToBytes(block)
++		}
++		lastErr = err
++	}
++	return nil, lastErr
++}
++
++func (api *DebugAPI) getBlockFromPeer(ctx context.Context, peer *ethPeer, hash common.Hash) (*types.Block, error) {
++	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
++	defer cancel()
++
++	headerCh := make(chan *ethproto.Response)
++	headerReq, err := peer.Peer.RequestHeadersByHash(hash, 1, 0, false, headerCh)
++	if err != nil {
++		return nil, err
++	}
++	defer headerReq.Close()
++
++	var header *types.Header
++	select {
++	case <-ctx.Done():
++		return nil, ctx.Err()
++	case response := <-headerCh:
++		headers := *response.Res.(*ethproto.BlockHeadersRequest)
++		response.Done <- nil
++		if len(headers) != 1 {
++			return nil, fmt.Errorf("peer returned %d headers", len(headers))
++		}
++		header = headers[0]
++	}
++	if header.Hash() != hash {
++		return nil, fmt.Errorf("peer returned header %s for requested hash %s", header.Hash(), hash)
++	}
++
++	bodyCh := make(chan *ethproto.Response)
++	bodyReq, err := peer.Peer.RequestBodies([]common.Hash{hash}, bodyCh)
++	if err != nil {
++		return nil, err
++	}
++	defer bodyReq.Close()
++
++	select {
++	case <-ctx.Done():
++		return nil, ctx.Err()
++	case response := <-bodyCh:
++		bodies := *response.Res.(*ethproto.BlockBodiesResponse)
++		response.Done <- nil
++		if len(bodies) != 1 {
++			return nil, fmt.Errorf("peer returned %d bodies", len(bodies))
++		}
++		body := bodies[0]
++		block := types.NewBlockWithHeader(header).WithBody(types.Body{
++			Transactions: body.Transactions,
++			Uncles:       body.Uncles,
++			Withdrawals:  body.Withdrawals,
++		})
++		if block.Hash() != hash {
++			return nil, fmt.Errorf("peer returned body that reconstructs %s for requested hash %s", block.Hash(), hash)
++		}
++		return block, nil
++	}
+ }
+ 
+ // AccountRangeMaxResults is the maximum number of results to be returned per call
+diff --git a/eth/catalyst/api.go b/eth/catalyst/api.go
+index f35fc20..8eb252e 100644
+--- a/eth/catalyst/api.go
++++ b/eth/catalyst/api.go
+@@ -206,21 +206,22 @@ func (api *ConsensusAPI) ForkchoiceUpdatedV2(update engine.ForkchoiceStateV1, pa
+ // ForkchoiceUpdatedV3 is equivalent to V2 with the addition of parent beacon block root
+ // in the payload attributes. It supports only PayloadAttributesV3.
+ func (api *ConsensusAPI) ForkchoiceUpdatedV3(update engine.ForkchoiceStateV1, params *engine.PayloadAttributes) (engine.ForkChoiceResponse, error) {
+-	if params != nil {
+-		switch {
+-		case params.Withdrawals == nil:
+-			return engine.STATUS_INVALID, attributesErr("missing withdrawals")
+-		case params.BeaconRoot == nil:
+-			return engine.STATUS_INVALID, attributesErr("missing beacon root")
+-		case !api.checkFork(params.Timestamp, forks.Cancun, forks.Prague, forks.Osaka, forks.BPO1, forks.BPO2, forks.BPO3, forks.BPO4, forks.BPO5):
+-			return engine.STATUS_INVALID, unsupportedForkErr("fcuV3 must only be called for cancun/prague/osaka payloads")
+-		}
++	response, err := api.forkchoiceUpdated(update, nil, engine.PayloadV3, false)
++	if err != nil || response.PayloadStatus.Status != engine.VALID || params == nil {
++		return response, err
++	}
++	switch {
++	case params.Withdrawals == nil:
++		return response, attributesErr("missing withdrawals")
++	case params.BeaconRoot == nil:
++		return response, attributesErr("missing beacon root")
++	case !api.checkFork(params.Timestamp, forks.Cancun, forks.Prague, forks.Osaka, forks.BPO1, forks.BPO2, forks.BPO3, forks.BPO4, forks.BPO5):
++		return response, unsupportedForkErr("fcuV3 must only be called for cancun/prague/osaka payloads")
+ 	}
+-	// TODO(matt): the spec requires that fcu is applied when called on a valid
+-	// hash, even if params are wrong. To do this we need to split up
+-	// forkchoiceUpdate into a function that only updates the head and then a
+-	// function that kicks off block construction.
++
++	// Run the normal path after applying forkchoice and validating attributes.
++	// Hive asserts this ordering for invalid attributes and syncing heads.
+ 	return api.forkchoiceUpdated(update, params, engine.PayloadV3, false)
+ }
+ 
+ func (api *ConsensusAPI) forkchoiceUpdated(update engine.ForkchoiceStateV1, payloadAttributes *engine.PayloadAttributes, payloadVersion engine.PayloadVersion, payloadWitness bool) (engine.ForkChoiceResponse, error) {
+diff --git a/miner/ordering.go b/miner/ordering.go
+index 2a1ab73..9a6c18f 100644
+--- a/miner/ordering.go
++++ b/miner/ordering.go
+@@ -54,11 +54,15 @@ func newTxWithMinerFee(tx *txpool.LazyTransaction, from common.Address, baseFee
+ type txByPriceAndTime []*txWithMinerFee
+ 
+ func (s txByPriceAndTime) Len() int { return len(s) }
+ func (s txByPriceAndTime) Less(i, j int) bool {
+-	// If the prices are equal, use the time the transaction was first seen for
+-	// deterministic sorting
+ 	cmp := s[i].fees.Cmp(s[j].fees)
+ 	if cmp == 0 {
++		// Blob pool lazies are materialized in one batch, so their timestamps are
++		// identical. Prefer larger blob transactions on equal tip to fill payloads.
++		if s[i].tx.BlobGas != s[j].tx.BlobGas {
++			return s[i].tx.BlobGas > s[j].tx.BlobGas
++		}
++		// If the prices are equal, use first-seen time for deterministic sorting.
+ 		return s[i].tx.Time.Before(s[j].tx.Time)
+ 	}
+ 	return cmp > 0

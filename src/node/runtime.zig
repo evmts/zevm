@@ -20,6 +20,7 @@ const hardfork_schedule = @import("../hardfork_schedule.zig");
 const light_proof = @import("../light_proof.zig");
 const tx_encoding = @import("../transaction_encoding.zig");
 const log = @import("../log.zig");
+const rpc_parse = @import("../rpc/parse.zig");
 const guillotine_mini = @import("guillotine_mini");
 
 /// Hardhat/Anvil-style deterministic dev accounts.
@@ -182,6 +183,7 @@ pub const NodeConfig = struct {
     fork_url: ?[]const u8 = null,
     fork_block_number: ?u64 = null,
     fork_rpc_resolver: ?ForkRpcResolver = null,
+    engine_sync_fallback_url: ?[]const u8 = null,
     genesis_alloc_path: ?[]const u8 = null,
     chain_rlp_path: ?[]const u8 = null,
     light: LightConfig = .{},
@@ -321,6 +323,60 @@ pub const LightReadSelector = union(enum) {
 
 const OwnedBlockBody = chain_import.OwnedBlockBody;
 
+pub const EnginePayloadImportStatus = enum {
+    valid,
+    invalid,
+    invalid_block_hash,
+    syncing,
+};
+
+pub const EnginePayloadImportResult = struct {
+    status: EnginePayloadImportStatus,
+    latest_valid_hash: ?[32]u8 = null,
+    validation_error: ?[]const u8 = null,
+};
+
+const EngineInvalidPayloadRecord = struct {
+    latest_valid_hash: ?[32]u8 = null,
+    validation_error: ?[]const u8 = null,
+};
+
+const ENGINE_SYNC_FALLBACK_MAX_ANCESTORS: usize = 512;
+
+const FetchedEngineFallbackBlock = struct {
+    block: primitives.Block.Block,
+    owned_body: OwnedBlockBody,
+    requests_hash: ?[32]u8,
+
+    fn deinit(self: *FetchedEngineFallbackBlock, allocator: std.mem.Allocator) void {
+        self.owned_body.deinit(allocator);
+    }
+};
+
+pub const EnginePayloadAttributes = struct {
+    timestamp: u64,
+    prev_randao: [32]u8,
+    fee_recipient: primitives.Address,
+    withdrawals: []const primitives.BlockBody.Withdrawal = &.{},
+    has_withdrawals: bool = false,
+    parent_beacon_block_root: ?[32]u8 = null,
+    payload_version: u8 = 1,
+
+    pub fn deinit(self: *EnginePayloadAttributes, allocator: std.mem.Allocator) void {
+        if (self.withdrawals.len > 0) allocator.free(self.withdrawals);
+        self.withdrawals = &.{};
+    }
+};
+
+pub const EnginePayloadJob = struct {
+    parent_hash: [32]u8,
+    attrs: EnginePayloadAttributes,
+
+    pub fn deinit(self: *EnginePayloadJob, allocator: std.mem.Allocator) void {
+        self.attrs.deinit(allocator);
+    }
+};
+
 const QueryIndexSnapshot = struct {
     blockchain: blockchain_mod.Blockchain,
     owned_block_bodies: std.ArrayList(OwnedBlockBody),
@@ -336,10 +392,24 @@ const QueryIndexSnapshot = struct {
     }
 };
 
+const CanonicalMaterialization = struct {
+    state: state_manager.StateManager,
+    receipt_index: receipt_index_mod.ReceiptIndex,
+    log_index: log_index_mod.LogIndex,
+
+    fn deinit(self: *CanonicalMaterialization, allocator: std.mem.Allocator) void {
+        self.state.deinit();
+        self.receipt_index.deinit(allocator);
+        self.log_index.deinit(allocator);
+    }
+};
+
 const SnapshotEntry = struct {
     state_snapshot_id: u64,
     head_block_number: u64,
     head_block_timestamp: u64,
+    engine_safe_hash: ?[32]u8,
+    engine_finalized_hash: ?[32]u8,
     coinbase: primitives.Address,
     gas_price: u256,
     base_fee: u256,
@@ -355,6 +425,36 @@ const SnapshotEntry = struct {
     query_indexes: QueryIndexSnapshot,
     impersonated_accounts: std.AutoHashMap(primitives.Address, bool),
     auto_impersonate_account: bool,
+};
+
+pub const RpcFilter = union(enum) {
+    block: BlockFilterState,
+    pending_transaction: PendingTransactionFilterState,
+    log: LogFilterState,
+
+    pub fn deinit(self: *RpcFilter, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .block, .pending_transaction => {},
+            .log => |*state| {
+                log_index_mod.deinitLogFilter(allocator, &state.filter);
+            },
+        }
+    }
+};
+
+pub const BlockFilterState = struct {
+    last_block_number: u64,
+};
+
+pub const PendingTransactionFilterState = struct {
+    next_event_index: usize,
+};
+
+pub const LogFilterState = struct {
+    filter: log_index_mod.LogFilter,
+    next_block_number: u64,
+    to_block_omitted: bool,
+    block_hash_polled: bool = false,
 };
 
 pub const NodeRuntime = struct {
@@ -394,8 +494,22 @@ pub const NodeRuntime = struct {
     fork_config: ?ForkConfig,
     fork_backend: ?*state_manager.ForkBackend,
     fork_rpc_resolver: ?ForkRpcResolver,
+    engine_sync_fallback_url: ?[]u8,
     snapshots: std.AutoHashMap(u64, SnapshotEntry),
     next_snapshot_id: u64,
+    rpc_filters: std.AutoHashMap(u64, RpcFilter),
+    next_rpc_filter_id: u64,
+    engine_payload_jobs: std.AutoHashMap(u64, EnginePayloadJob),
+    next_engine_payload_id: u64,
+    engine_safe_hash: ?[32]u8,
+    engine_finalized_hash: ?[32]u8,
+    engine_import_state: ?state_manager.StateManager,
+    engine_import_state_hash: ?[32]u8,
+    replay_state_cache: ?state_manager.StateManager,
+    replay_state_cache_number: ?u64,
+    replay_state_cache_hash: ?[32]u8,
+    engine_invalid_payloads: std.AutoHashMap([32]u8, EngineInvalidPayloadRecord),
+    pending_transaction_filter_events: std.ArrayList([32]u8),
     impersonated_accounts: std.AutoHashMap(primitives.Address, bool),
     auto_impersonate_account: bool,
     runtime_mutex: std.Thread.Mutex,
@@ -433,6 +547,12 @@ pub const NodeRuntime = struct {
             .block_number = config.fork_block_number,
         } else null);
         errdefer freeForkConfig(allocator, initial_fork_config);
+
+        const owned_engine_sync_fallback_url = if (config.engine_sync_fallback_url) |url|
+            try allocator.dupe(u8, url)
+        else
+            null;
+        errdefer if (owned_engine_sync_fallback_url) |url| allocator.free(url);
 
         const fork_backend = try createForkBackend(allocator, initial_fork_config);
         errdefer destroyForkBackend(allocator, fork_backend);
@@ -556,6 +676,15 @@ pub const NodeRuntime = struct {
         var snapshots = std.AutoHashMap(u64, SnapshotEntry).init(allocator);
         errdefer snapshots.deinit();
 
+        var rpc_filters = std.AutoHashMap(u64, RpcFilter).init(allocator);
+        errdefer rpc_filters.deinit();
+
+        var engine_payload_jobs = std.AutoHashMap(u64, EnginePayloadJob).init(allocator);
+        errdefer engine_payload_jobs.deinit();
+
+        var engine_invalid_payloads = std.AutoHashMap([32]u8, EngineInvalidPayloadRecord).init(allocator);
+        errdefer engine_invalid_payloads.deinit();
+
         var impersonated_accounts = std.AutoHashMap(primitives.Address, bool).init(allocator);
         errdefer impersonated_accounts.deinit();
 
@@ -609,8 +738,22 @@ pub const NodeRuntime = struct {
             .fork_config = initial_fork_config,
             .fork_backend = fork_backend,
             .fork_rpc_resolver = resolver,
+            .engine_sync_fallback_url = owned_engine_sync_fallback_url,
             .snapshots = snapshots,
             .next_snapshot_id = 1,
+            .rpc_filters = rpc_filters,
+            .next_rpc_filter_id = 1,
+            .engine_payload_jobs = engine_payload_jobs,
+            .next_engine_payload_id = 1,
+            .engine_safe_hash = null,
+            .engine_finalized_hash = null,
+            .engine_import_state = null,
+            .engine_import_state_hash = null,
+            .replay_state_cache = null,
+            .replay_state_cache_number = null,
+            .replay_state_cache_hash = null,
+            .engine_invalid_payloads = engine_invalid_payloads,
+            .pending_transaction_filter_events = .{},
             .impersonated_accounts = impersonated_accounts,
             .auto_impersonate_account = false,
             .runtime_mutex = .{},
@@ -1060,6 +1203,7 @@ pub const NodeRuntime = struct {
             var block_options = mining_coordinator.MiningBlockOptions{
                 .prevrandao = coordinator.next_prevrandao,
                 .dev_runtime = &self.dev_runtime,
+                .skip_invalid_transactions = true,
             };
             const parent_hash = self.blockchain.getCanonicalHash(self.head_block_number) orelse return error.MissingParentBlock;
             var block_ctx = block_builder.blockContextWithEnvironmentOverrides(
@@ -1135,6 +1279,10 @@ pub const NodeRuntime = struct {
     }
 
     fn executionTransactionFromPooled(pooled: txpool.PooledTransaction) tx_processor.ExecutionTx {
+        const blob_gas_used: ?u256 = if (pooled.receipt_type == .eip4844)
+            @as(u256, pooled.blob_versioned_hashes.len) * @as(u256, primitives.Blob.BLOB_GAS_PER_BLOB)
+        else
+            null;
         return .{
             .caller = pooled.sender,
             .tx = .{
@@ -1148,6 +1296,12 @@ pub const NodeRuntime = struct {
                 .r = pooled.r,
                 .s = pooled.s,
             },
+            .receipt_type = pooled.receipt_type,
+            .max_fee_per_gas = pooled.max_fee_per_gas,
+            .max_priority_fee_per_gas = pooled.max_priority_fee_per_gas,
+            .blob_gas_used = blob_gas_used,
+            .max_fee_per_blob_gas = pooled.max_fee_per_blob_gas,
+            .blob_versioned_hashes = if (pooled.blob_versioned_hashes.len == 0) null else pooled.blob_versioned_hashes,
         };
     }
 
@@ -1165,6 +1319,253 @@ pub const NodeRuntime = struct {
 
     pub fn setAutoImpersonateAccount(self: *NodeRuntime, enabled: bool) void {
         self.auto_impersonate_account = enabled;
+    }
+
+    pub fn createBlockFilter(self: *NodeRuntime) !u64 {
+        const id = self.allocateRpcFilterId();
+        try self.rpc_filters.put(id, .{ .block = .{
+            .last_block_number = self.head_block_number,
+        } });
+        return id;
+    }
+
+    pub fn createPendingTransactionFilter(self: *NodeRuntime) !u64 {
+        const id = self.allocateRpcFilterId();
+        try self.rpc_filters.put(id, .{ .pending_transaction = .{
+            .next_event_index = self.pending_transaction_filter_events.items.len,
+        } });
+        return id;
+    }
+
+    pub fn createLogFilterOwned(
+        self: *NodeRuntime,
+        filter: log_index_mod.LogFilter,
+        next_block_number: u64,
+        to_block_omitted: bool,
+    ) !u64 {
+        const id = self.allocateRpcFilterId();
+        try self.rpc_filters.put(id, .{ .log = .{
+            .filter = filter,
+            .next_block_number = next_block_number,
+            .to_block_omitted = to_block_omitted,
+        } });
+        return id;
+    }
+
+    pub fn rpcFilter(self: *NodeRuntime, id: u64) ?*RpcFilter {
+        return self.rpc_filters.getPtr(id);
+    }
+
+    pub fn removeRpcFilter(self: *NodeRuntime, id: u64) bool {
+        if (self.rpc_filters.fetchRemove(id)) |removed| {
+            var filter = removed.value;
+            filter.deinit(self.allocator);
+            return true;
+        }
+        return false;
+    }
+
+    pub fn recordPendingTransactionFilterEvent(self: *NodeRuntime, hash: [32]u8) !void {
+        for (self.pending_transaction_filter_events.items) |seen| {
+            if (std.mem.eql(u8, &seen, &hash)) return;
+        }
+        try self.pending_transaction_filter_events.append(self.allocator, hash);
+    }
+
+    pub fn pendingTransactionFilterEventsSince(self: *const NodeRuntime, index: usize) []const [32]u8 {
+        if (index >= self.pending_transaction_filter_events.items.len) return self.pending_transaction_filter_events.items[self.pending_transaction_filter_events.items.len..];
+        return self.pending_transaction_filter_events.items[index..];
+    }
+
+    fn allocateRpcFilterId(self: *NodeRuntime) u64 {
+        const id = self.next_rpc_filter_id;
+        self.next_rpc_filter_id +|= 1;
+        if (self.next_rpc_filter_id == 0) self.next_rpc_filter_id = 1;
+        return id;
+    }
+
+    fn clearRpcFilters(self: *NodeRuntime) void {
+        var it = self.rpc_filters.valueIterator();
+        while (it.next()) |filter| filter.deinit(self.allocator);
+        self.rpc_filters.clearRetainingCapacity();
+        self.next_rpc_filter_id = 1;
+        self.pending_transaction_filter_events.clearRetainingCapacity();
+    }
+
+    pub fn createEnginePayloadJob(
+        self: *NodeRuntime,
+        parent_hash: [32]u8,
+        attrs: EnginePayloadAttributes,
+    ) !u64 {
+        const id = self.next_engine_payload_id;
+        self.next_engine_payload_id +|= 1;
+        if (self.next_engine_payload_id == 0) self.next_engine_payload_id = 1;
+
+        var owned_attrs = try cloneEnginePayloadAttributes(self.allocator, attrs);
+        errdefer owned_attrs.deinit(self.allocator);
+        try self.engine_payload_jobs.put(id, .{
+            .parent_hash = parent_hash,
+            .attrs = owned_attrs,
+        });
+        return id;
+    }
+
+    pub fn enginePayloadJob(self: *NodeRuntime, id: u64) ?EnginePayloadJob {
+        return self.engine_payload_jobs.get(id);
+    }
+
+    fn clearEnginePayloadJobs(self: *NodeRuntime) void {
+        var it = self.engine_payload_jobs.valueIterator();
+        while (it.next()) |job| job.deinit(self.allocator);
+        self.engine_payload_jobs.clearRetainingCapacity();
+        self.next_engine_payload_id = 1;
+    }
+
+    fn clearEngineImportState(self: *NodeRuntime) void {
+        if (self.engine_import_state) |*state| {
+            state.deinit();
+        }
+        self.engine_import_state = null;
+        self.engine_import_state_hash = null;
+    }
+
+    fn clearReplayStateCache(self: *NodeRuntime) void {
+        if (self.replay_state_cache) |*state| {
+            state.deinit();
+        }
+        self.replay_state_cache = null;
+        self.replay_state_cache_number = null;
+        self.replay_state_cache_hash = null;
+    }
+
+    fn clearEngineInvalidPayloads(self: *NodeRuntime) void {
+        self.engine_invalid_payloads.clearRetainingCapacity();
+    }
+
+    fn rememberInvalidEnginePayload(
+        self: *NodeRuntime,
+        hash: [32]u8,
+        latest_valid_hash: ?[32]u8,
+        validation_error: ?[]const u8,
+    ) !void {
+        try self.engine_invalid_payloads.put(hash, .{
+            .latest_valid_hash = latest_valid_hash,
+            .validation_error = validation_error,
+        });
+    }
+
+    pub fn engineInvalidPayloadResult(self: *NodeRuntime, hash: [32]u8) ?EnginePayloadImportResult {
+        const record = self.engine_invalid_payloads.get(hash) orelse return null;
+        return .{
+            .status = .invalid,
+            .latest_valid_hash = record.latest_valid_hash,
+            .validation_error = record.validation_error,
+        };
+    }
+
+    fn importEngineMissingAncestors(self: *NodeRuntime, missing_hash: [32]u8) anyerror!bool {
+        const fallback_url = self.engine_sync_fallback_url orelse return false;
+        var fetched = std.ArrayList(FetchedEngineFallbackBlock){};
+        defer {
+            for (fetched.items) |*item| item.deinit(self.allocator);
+            fetched.deinit(self.allocator);
+        }
+
+        var cursor = missing_hash;
+        var depth: usize = 0;
+        while (self.blockchain.getBlockLocal(cursor) == null) {
+            if (self.engine_invalid_payloads.contains(cursor)) return true;
+            if (depth >= ENGINE_SYNC_FALLBACK_MAX_ANCESTORS) {
+                const cursor_hex = std.fmt.bytesToHex(cursor, .lower);
+                log.warn(.rpc, "engine_sync_fallback_depth_exceeded missing_hash=0x{s} depth={}", .{ cursor_hex[0..], depth });
+                return false;
+            }
+
+            var fetched_block = self.fetchEngineFallbackBlock(fallback_url, cursor) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => {
+                    const cursor_hex = std.fmt.bytesToHex(cursor, .lower);
+                    log.warn(.rpc, "engine_sync_fallback_fetch_failed hash=0x{s} error={s}", .{ cursor_hex[0..], @errorName(err) });
+                    return false;
+                },
+            };
+            if (!std.mem.eql(u8, &fetched_block.block.hash, &cursor)) {
+                const expected_hex = std.fmt.bytesToHex(cursor, .lower);
+                const actual_hex = std.fmt.bytesToHex(fetched_block.block.hash, .lower);
+                fetched_block.deinit(self.allocator);
+                log.warn(.rpc, "engine_sync_fallback_hash_mismatch expected=0x{s} actual=0x{s}", .{ expected_hex[0..], actual_hex[0..] });
+                return false;
+            }
+
+            cursor = fetched_block.block.header.parent_hash;
+            fetched.append(self.allocator, fetched_block) catch |err| {
+                fetched_block.deinit(self.allocator);
+                return err;
+            };
+            depth += 1;
+        }
+
+        var index = fetched.items.len;
+        while (index > 0) {
+            index -= 1;
+            const item = &fetched.items[index];
+            const imported = try self.importEnginePayloadBlock(item.block, item.requests_hash);
+            switch (imported.status) {
+                .valid, .invalid, .invalid_block_hash => {},
+                .syncing => return false,
+            }
+        }
+
+        return self.blockchain.getBlockLocal(missing_hash) != null or self.engine_invalid_payloads.contains(missing_hash);
+    }
+
+    fn fetchEngineFallbackBlock(
+        self: *NodeRuntime,
+        fallback_url: []const u8,
+        block_hash: [32]u8,
+    ) anyerror!FetchedEngineFallbackBlock {
+        const hash_hex = std.fmt.bytesToHex(block_hash, .lower);
+        const params_json = try std.fmt.allocPrint(self.allocator, "[\"0x{s}\"]", .{hash_hex[0..]});
+        defer self.allocator.free(params_json);
+
+        const result_json = try self.fetchEngineFallbackRawBlock(fallback_url, params_json);
+        defer self.allocator.free(result_json);
+
+        const parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, result_json, .{
+            .allocate = .alloc_always,
+        });
+        defer parsed.deinit();
+        if (parsed.value == .null) return error.EngineSyncFallbackBlockMissing;
+
+        const raw = try rpc_parse.parseHexDataBytes(self.allocator, parsed.value);
+        defer self.allocator.free(raw);
+
+        var decoded = try chain_import.decodeNextBlock(self.allocator, raw);
+        errdefer decoded.owned_body.deinit(self.allocator);
+        return .{
+            .block = decoded.block,
+            .owned_body = decoded.owned_body,
+            .requests_hash = decoded.owned_body.requests_hash,
+        };
+    }
+
+    fn fetchEngineFallbackRawBlock(
+        self: *NodeRuntime,
+        fallback_url: []const u8,
+        params_json: []const u8,
+    ) anyerror![]u8 {
+        return resolveForkRpcViaHttp(null, self.allocator, .{
+            .url = fallback_url,
+            .method = "debug_getRawBlockFromPeer",
+            .params_json = params_json,
+        }) catch |peer_err| switch (peer_err) {
+            error.OutOfMemory => return peer_err,
+            else => return resolveForkRpcViaHttp(null, self.allocator, .{
+                .url = fallback_url,
+                .method = "debug_getRawBlock",
+                .params_json = params_json,
+            }),
+        };
     }
 
     pub fn isImpersonatingAccount(self: *const NodeRuntime, address: primitives.Address) bool {
@@ -1308,6 +1709,8 @@ pub const NodeRuntime = struct {
             .state_snapshot_id = state_snapshot_id,
             .head_block_number = self.head_block_number,
             .head_block_timestamp = self.head_block_timestamp,
+            .engine_safe_hash = self.engine_safe_hash,
+            .engine_finalized_hash = self.engine_finalized_hash,
             .coinbase = self.coinbase,
             .gas_price = self.gas_price,
             .base_fee = self.base_fee,
@@ -1356,6 +1759,11 @@ pub const NodeRuntime = struct {
 
         self.head_block_number = entry.head_block_number;
         self.head_block_timestamp = entry.head_block_timestamp;
+        self.engine_safe_hash = entry.engine_safe_hash;
+        self.engine_finalized_hash = entry.engine_finalized_hash;
+        self.clearEngineImportState();
+        self.clearReplayStateCache();
+        self.clearEngineInvalidPayloads();
         self.coinbase = entry.coinbase;
         self.gas_price = entry.gas_price;
         self.base_fee = entry.base_fee;
@@ -1422,12 +1830,19 @@ pub const NodeRuntime = struct {
         self.coinbase = self.default_coinbase;
         self.head_block_number = 0;
         self.head_block_timestamp = 0;
+        self.engine_safe_hash = null;
+        self.engine_finalized_hash = null;
+        self.clearEngineImportState();
+        self.clearReplayStateCache();
+        self.clearEngineInvalidPayloads();
         self.gas_price = self.default_gas_price;
         self.base_fee = self.default_base_fee;
         self.blob_base_fee = self.default_blob_base_fee;
         self.max_priority_fee = self.default_max_priority_fee;
         self.mining_config = self.default_mining_config;
         self.pool.clear();
+        self.clearRpcFilters();
+        self.clearEnginePayloadJobs();
         self.time_offset = 0;
         self.next_block_timestamp = null;
         self.block_timestamp_interval = null;
@@ -1460,9 +1875,18 @@ pub const NodeRuntime = struct {
             self.light = null;
         }
         self.clearSnapshots();
+        self.clearRpcFilters();
+        self.clearEnginePayloadJobs();
+        self.clearEngineImportState();
+        self.clearReplayStateCache();
+        self.clearEngineInvalidPayloads();
         self.pool.deinit();
         self.dev_runtime.deinit(self.allocator);
         self.snapshots.deinit();
+        self.rpc_filters.deinit();
+        self.engine_payload_jobs.deinit();
+        self.engine_invalid_payloads.deinit();
+        self.pending_transaction_filter_events.deinit(self.allocator);
         self.impersonated_accounts.deinit();
         self.log_index.deinit(self.allocator);
         self.receipt_index.deinit(self.allocator);
@@ -1480,6 +1904,10 @@ pub const NodeRuntime = struct {
         self.state.deinit();
         destroyForkBackend(self.allocator, self.fork_backend);
         freeForkConfig(self.allocator, self.fork_config);
+        if (self.engine_sync_fallback_url) |url| {
+            self.allocator.free(url);
+            self.engine_sync_fallback_url = null;
+        }
         self.fork_backend = null;
         self.fork_config = null;
     }
@@ -1487,6 +1915,117 @@ pub const NodeRuntime = struct {
     pub fn replayStateToBlock(self: *NodeRuntime, block_number: u64) !state_manager.StateManager {
         if (block_number > self.head_block_number) return error.InvalidParams;
 
+        var materialized = try self.materializeCanonicalStateAndIndexes(block_number);
+        materialized.receipt_index.deinit(self.allocator);
+        materialized.log_index.deinit(self.allocator);
+        return materialized.state;
+    }
+
+    pub fn readStateAtBlock(self: *NodeRuntime, block_number: u64) !*state_manager.StateManager {
+        if (block_number > self.head_block_number) return error.InvalidParams;
+        if (block_number == self.head_block_number) return &self.state;
+        return self.cachedReplayStateToBlock(block_number);
+    }
+
+    fn cachedReplayStateToBlock(self: *NodeRuntime, block_number: u64) !*state_manager.StateManager {
+        const target_hash = self.blockchain.getCanonicalHash(block_number) orelse return error.ImportedBlockMissing;
+
+        if (self.replay_state_cache != null) {
+            const cached_number = self.replay_state_cache_number.?;
+            const cached_hash = self.replay_state_cache_hash.?;
+            const canonical_cached_hash = self.blockchain.getCanonicalHash(cached_number);
+            const cache_still_canonical = if (canonical_cached_hash) |hash|
+                std.mem.eql(u8, &hash, &cached_hash)
+            else
+                false;
+
+            if (cache_still_canonical) {
+                if (cached_number == block_number) return &self.replay_state_cache.?;
+                if (cached_number < block_number) {
+                    try self.extendReplayStateCache(cached_number + 1, block_number);
+                    self.replay_state_cache_number = block_number;
+                    self.replay_state_cache_hash = target_hash;
+                    return &self.replay_state_cache.?;
+                }
+            }
+
+            self.clearReplayStateCache();
+        }
+
+        var materialized = try self.materializeCanonicalStateAndIndexes(block_number);
+        materialized.receipt_index.deinit(self.allocator);
+        materialized.log_index.deinit(self.allocator);
+        self.replay_state_cache = materialized.state;
+        self.replay_state_cache_number = block_number;
+        self.replay_state_cache_hash = target_hash;
+        return &self.replay_state_cache.?;
+    }
+
+    fn extendReplayStateCache(self: *NodeRuntime, from_block_number: u64, to_block_number: u64) !void {
+        if (from_block_number > to_block_number) return;
+
+        var temp_receipt_index = receipt_index_mod.ReceiptIndex.init(self.allocator);
+        defer temp_receipt_index.deinit(self.allocator);
+        var temp_log_index = log_index_mod.LogIndex.init();
+        defer temp_log_index.deinit(self.allocator);
+
+        var number = from_block_number;
+        while (number <= to_block_number) : (number += 1) {
+            const block = self.blockchain.getBlockByNumberLocal(number) orelse return error.ImportedBlockMissing;
+            _ = try materializeImportedBlock(
+                self.allocator,
+                &self.replay_state_cache.?,
+                &self.blockchain,
+                &temp_receipt_index,
+                &temp_log_index,
+                self.chain_id,
+                self.hardfork_config,
+                self.blob_base_fee,
+                block,
+                .{},
+            );
+        }
+    }
+
+    pub fn replayStateToBlockHash(self: *NodeRuntime, block_hash: [32]u8) !state_manager.StateManager {
+        var path = std.ArrayList(primitives.Block.Block){};
+        defer path.deinit(self.allocator);
+
+        var cursor = self.blockchain.getBlockLocal(block_hash) orelse return error.ImportedBlockMissing;
+        while (cursor.header.number > 0) {
+            try path.append(self.allocator, cursor);
+            cursor = self.blockchain.getBlockLocal(cursor.header.parent_hash) orelse return error.MissingParentBlock;
+        }
+
+        var historical = try self.initReplayState();
+        errdefer historical.deinit();
+
+        var receipt_index = receipt_index_mod.ReceiptIndex.init(self.allocator);
+        defer receipt_index.deinit(self.allocator);
+        var log_index = log_index_mod.LogIndex.init();
+        defer log_index.deinit(self.allocator);
+
+        var index = path.items.len;
+        while (index > 0) {
+            index -= 1;
+            _ = try materializeImportedBlock(
+                self.allocator,
+                &historical,
+                &self.blockchain,
+                &receipt_index,
+                &log_index,
+                self.chain_id,
+                self.hardfork_config,
+                self.blob_base_fee,
+                path.items[index],
+                .{},
+            );
+        }
+
+        return historical;
+    }
+
+    fn initReplayState(self: *NodeRuntime) !state_manager.StateManager {
         var historical = try state_manager.StateManager.init(self.allocator, null);
         errdefer historical.deinit();
 
@@ -1499,10 +2038,17 @@ pub const NodeRuntime = struct {
             }
         }
 
+        return historical;
+    }
+
+    fn materializeCanonicalStateAndIndexes(self: *NodeRuntime, block_number: u64) !CanonicalMaterialization {
+        var historical = try self.initReplayState();
+        errdefer historical.deinit();
+
         var receipt_index = receipt_index_mod.ReceiptIndex.init(self.allocator);
-        defer receipt_index.deinit(self.allocator);
+        errdefer receipt_index.deinit(self.allocator);
         var log_index = log_index_mod.LogIndex.init();
-        defer log_index.deinit(self.allocator);
+        errdefer log_index.deinit(self.allocator);
 
         var number: u64 = 1;
         while (number <= block_number) : (number += 1) {
@@ -1517,10 +2063,318 @@ pub const NodeRuntime = struct {
                 self.hardfork_config,
                 self.blob_base_fee,
                 block,
+                .{},
             );
         }
 
-        return historical;
+        return .{
+            .state = historical,
+            .receipt_index = receipt_index,
+            .log_index = log_index,
+        };
+    }
+
+    fn materializeCanonicalExtension(self: *NodeRuntime, from_block_number: u64, to_block_number: u64) !void {
+        if (to_block_number <= from_block_number) return;
+
+        var receipt_backup = try self.receipt_index.clone(self.allocator);
+        var receipt_backup_live = true;
+
+        var log_backup = try self.log_index.clone(self.allocator);
+        var log_backup_live = true;
+        var indexes_committed = false;
+        defer {
+            if (!indexes_committed) {
+                self.receipt_index.deinit(self.allocator);
+                self.log_index.deinit(self.allocator);
+                self.receipt_index = receipt_backup;
+                self.log_index = log_backup;
+                receipt_backup_live = false;
+                log_backup_live = false;
+            }
+            if (receipt_backup_live) receipt_backup.deinit(self.allocator);
+            if (log_backup_live) log_backup.deinit(self.allocator);
+        }
+
+        try self.state.checkpoint();
+        var state_committed = false;
+        defer if (!state_committed) self.state.revert();
+
+        var number = from_block_number + 1;
+        while (number <= to_block_number) : (number += 1) {
+            const block = (try self.blockchain.getBlockByNumber(number)) orelse return error.ImportedBlockMissing;
+            _ = try materializeImportedBlock(
+                self.allocator,
+                &self.state,
+                &self.blockchain,
+                &self.receipt_index,
+                &self.log_index,
+                self.chain_id,
+                self.hardfork_config,
+                self.blob_base_fee,
+                block,
+                .{},
+            );
+        }
+
+        self.state.commit();
+        state_committed = true;
+        indexes_committed = true;
+        receipt_backup.deinit(self.allocator);
+        receipt_backup_live = false;
+        log_backup.deinit(self.allocator);
+        log_backup_live = false;
+    }
+
+    pub fn importEnginePayloadBlock(
+        self: *NodeRuntime,
+        payload_block: primitives.Block.Block,
+        requests_hash: ?[32]u8,
+    ) anyerror!EnginePayloadImportResult {
+        var block = payload_block;
+        const computed_hash = block_builder.computeHeaderHashWithRequestsHash(self.allocator, &block.header, requests_hash) catch |err| {
+            if (err == error.OutOfMemory) return err;
+            return .{ .status = .invalid_block_hash, .validation_error = "invalid block hash" };
+        };
+        if (!std.mem.eql(u8, &computed_hash, &block.hash)) {
+            return .{ .status = .invalid_block_hash, .validation_error = "blockHash does not match payload header" };
+        }
+
+        if (self.engine_invalid_payloads.get(block.hash)) |record| {
+            return .{
+                .status = .invalid,
+                .latest_valid_hash = record.latest_valid_hash,
+                .validation_error = record.validation_error,
+            };
+        }
+
+        if (self.blockchain.getBlockLocal(block.hash) != null) {
+            return .{ .status = .valid, .latest_valid_hash = block.hash };
+        }
+
+        const parent = self.blockchain.getBlockLocal(block.header.parent_hash) orelse parent: {
+            if (self.engine_invalid_payloads.get(block.header.parent_hash)) |record| {
+                try self.rememberInvalidEnginePayload(
+                    block.hash,
+                    record.latest_valid_hash,
+                    record.validation_error orelse "invalid ancestor",
+                );
+                return .{
+                    .status = .invalid,
+                    .latest_valid_hash = record.latest_valid_hash,
+                    .validation_error = record.validation_error orelse "invalid ancestor",
+                };
+            }
+            if (try self.importEngineMissingAncestors(block.header.parent_hash)) {
+                if (self.engine_invalid_payloads.get(block.header.parent_hash)) |record| {
+                    try self.rememberInvalidEnginePayload(
+                        block.hash,
+                        record.latest_valid_hash,
+                        record.validation_error orelse "invalid ancestor",
+                    );
+                    return .{
+                        .status = .invalid,
+                        .latest_valid_hash = record.latest_valid_hash,
+                        .validation_error = record.validation_error orelse "invalid ancestor",
+                    };
+                }
+                if (self.blockchain.getBlockLocal(block.header.parent_hash)) |resolved_parent| {
+                    break :parent resolved_parent;
+                }
+            }
+            return .{ .status = .syncing };
+        };
+
+        var replayed_state: ?state_manager.StateManager = null;
+        defer if (replayed_state) |*state| state.deinit();
+        var checkpointed_import_state = false;
+        defer if (checkpointed_import_state) self.engine_import_state.?.revert();
+        var temp_receipt_index = receipt_index_mod.ReceiptIndex.init(self.allocator);
+        defer temp_receipt_index.deinit(self.allocator);
+        var temp_log_index = log_index_mod.LogIndex.init();
+        defer temp_log_index.deinit(self.allocator);
+
+        const sm = blk: {
+            if (self.engine_import_state_hash) |cached_hash| {
+                if (self.engine_import_state != null and std.mem.eql(u8, &cached_hash, &parent.hash)) {
+                    try self.engine_import_state.?.checkpoint();
+                    checkpointed_import_state = true;
+                    break :blk &self.engine_import_state.?;
+                }
+            }
+
+            replayed_state = try self.replayStateToBlockHash(parent.hash);
+            break :blk &replayed_state.?;
+        };
+
+        _ = materializeImportedBlock(
+            self.allocator,
+            sm,
+            &self.blockchain,
+            &temp_receipt_index,
+            &temp_log_index,
+            self.chain_id,
+            self.hardfork_config,
+            self.blob_base_fee,
+            block,
+            .{
+                .strict = true,
+                .validate_tx_chain_id = true,
+                .requests_hash = requests_hash,
+            },
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => {
+                log.warn(.rpc, "engine_new_payload_invalid block_number={} error={s}", .{ block.header.number, @errorName(err) });
+                try self.rememberInvalidEnginePayload(block.hash, parent.hash, @errorName(err));
+                return .{ .status = .invalid, .latest_valid_hash = parent.hash, .validation_error = @errorName(err) };
+            },
+        };
+
+        var owned_body = try chain_import.cloneBlockBody(self.allocator, &block);
+        owned_body.requests_hash = requests_hash;
+        var owned = false;
+        errdefer if (!owned) owned_body.deinit(self.allocator);
+        try self.blockchain.putBlock(block);
+        try self.owned_block_bodies.append(self.allocator, owned_body);
+        owned = true;
+
+        if (checkpointed_import_state) {
+            self.engine_import_state.?.commit();
+            checkpointed_import_state = false;
+            self.engine_import_state_hash = block.hash;
+        } else {
+            const import_state = replayed_state orelse return error.ImportedBlockMissing;
+            replayed_state = null;
+            self.clearEngineImportState();
+            self.clearReplayStateCache();
+            self.engine_import_state = import_state;
+            self.engine_import_state_hash = block.hash;
+        }
+
+        return .{ .status = .valid, .latest_valid_hash = block.hash };
+    }
+
+    pub fn setEngineCanonicalHead(self: *NodeRuntime, head_hash: [32]u8) !EnginePayloadImportResult {
+        const head_block = self.blockchain.getBlockLocal(head_hash) orelse {
+            return .{ .status = .syncing };
+        };
+        const current_head_hash = self.blockchain.getCanonicalHash(self.head_block_number);
+        const already_current = if (current_head_hash) |hash| std.mem.eql(u8, &hash, &head_hash) else false;
+
+        if (!already_current) {
+            const previous_head_hash = current_head_hash;
+            const previous_head_number = self.head_block_number;
+            const can_extend_current = if (previous_head_hash) |hash|
+                head_block.header.number >= previous_head_number and self.localBlockIsAncestorOf(hash, head_hash)
+            else
+                false;
+
+            try self.blockchain.setCanonicalHead(head_hash);
+            if (can_extend_current) {
+                self.materializeCanonicalExtension(previous_head_number, head_block.header.number) catch |err| {
+                    if (previous_head_hash) |hash| self.blockchain.setCanonicalHead(hash) catch {};
+                    return err;
+                };
+            } else {
+                var materialized = self.materializeCanonicalStateAndIndexes(head_block.header.number) catch |err| {
+                    if (previous_head_hash) |hash| self.blockchain.setCanonicalHead(hash) catch {};
+                    return err;
+                };
+                var materialized_assigned = false;
+                defer if (!materialized_assigned) materialized.deinit(self.allocator);
+                self.state.deinit();
+                self.receipt_index.deinit(self.allocator);
+                self.log_index.deinit(self.allocator);
+                self.state = materialized.state;
+                self.receipt_index = materialized.receipt_index;
+                self.log_index = materialized.log_index;
+                materialized_assigned = true;
+            }
+        }
+        self.pruneCanonicalChainAbove(head_block.header.number);
+
+        try self.removeCanonicalBranchTransactionsFromPool(head_hash, current_head_hash);
+
+        self.head_block_number = head_block.header.number;
+        self.head_block_timestamp = head_block.header.timestamp;
+        if (head_block.header.base_fee_per_gas) |base_fee| self.base_fee = base_fee;
+        if (head_block.header.excess_blob_gas) |excess| self.blob_base_fee = primitives.Blob.calculateBlobGasPrice(excess);
+        return .{ .status = .valid, .latest_valid_hash = head_hash };
+    }
+
+    fn pruneCanonicalChainAbove(self: *NodeRuntime, head_number: u64) void {
+        const max_number = self.blockchain.getHeadBlockNumber() orelse return;
+        if (max_number <= head_number) return;
+
+        var number = head_number + 1;
+        while (true) {
+            _ = self.blockchain.block_store.canonical_chain.remove(number);
+            if (number == max_number) break;
+            number += 1;
+        }
+    }
+
+    fn removeCanonicalBranchTransactionsFromPool(
+        self: *NodeRuntime,
+        head_hash: [32]u8,
+        stop_hash: ?[32]u8,
+    ) !void {
+        var mined_hashes = std.ArrayList([32]u8){};
+        defer mined_hashes.deinit(self.allocator);
+
+        var cursor = self.blockchain.getBlockLocal(head_hash) orelse return error.ImportedBlockMissing;
+        while (true) {
+            if (stop_hash) |hash| {
+                if (std.mem.eql(u8, &cursor.hash, &hash)) break;
+            }
+
+            for (cursor.body.transactions) |tx| {
+                try mined_hashes.append(self.allocator, tx_encoding.transactionHash(tx.raw));
+            }
+
+            if (cursor.header.number == 0) break;
+            cursor = self.blockchain.getBlockLocal(cursor.header.parent_hash) orelse return error.ImportedBlockMissing;
+        }
+
+        self.pool.removeMined(mined_hashes.items);
+    }
+
+    pub fn setEngineFinalityHeads(
+        self: *NodeRuntime,
+        safe_hash: ?[32]u8,
+        finalized_hash: ?[32]u8,
+    ) void {
+        self.engine_safe_hash = safe_hash;
+        self.engine_finalized_hash = finalized_hash;
+    }
+
+    pub fn engineSafeBlockNumber(self: *const NodeRuntime) ?u64 {
+        const hash = self.engine_safe_hash orelse return null;
+        const block = @constCast(&self.blockchain).getBlockLocal(hash) orelse return null;
+        return block.header.number;
+    }
+
+    pub fn engineFinalizedBlockNumber(self: *const NodeRuntime) ?u64 {
+        const hash = self.engine_finalized_hash orelse return null;
+        const block = @constCast(&self.blockchain).getBlockLocal(hash) orelse return null;
+        return block.header.number;
+    }
+
+    pub fn localBlockIsAncestorOf(
+        self: *const NodeRuntime,
+        ancestor_hash: [32]u8,
+        descendant_hash: [32]u8,
+    ) bool {
+        var chain = @constCast(&self.blockchain);
+        const ancestor = chain.getBlockLocal(ancestor_hash) orelse return false;
+        var cursor = chain.getBlockLocal(descendant_hash) orelse return false;
+        if (ancestor.header.number > cursor.header.number) return false;
+
+        while (cursor.header.number > ancestor.header.number) {
+            cursor = chain.getBlockLocal(cursor.header.parent_hash) orelse return false;
+        }
+        return std.mem.eql(u8, &cursor.hash, &ancestor_hash);
     }
 
     fn rebuildState(self: *NodeRuntime, target_fork: ?ForkConfig) !void {
@@ -1692,6 +2546,7 @@ pub const NodeRuntime = struct {
             .gas_limit = block_ctx.block_gas_limit,
             .gas_used = result.total_gas_used,
             .timestamp = block_ctx.block_timestamp,
+            .mix_hash = u256ToHash(block_ctx.block_prevrandao),
             .base_fee_per_gas = if (hardfork.isAtLeast(.LONDON)) block_ctx.block_base_fee else null,
             .withdrawals_root = if (hardfork.isAtLeast(.SHANGHAI))
                 (result.withdrawals_root orelse primitives.BlockHeader.EMPTY_WITHDRAWALS_ROOT)
@@ -1784,6 +2639,21 @@ fn deinitSnapshotEntry(allocator: std.mem.Allocator, entry: *SnapshotEntry) void
     entry.query_indexes.deinit(allocator);
     entry.pool.deinit();
     entry.impersonated_accounts.deinit();
+}
+
+fn cloneEnginePayloadAttributes(
+    allocator: std.mem.Allocator,
+    attrs: EnginePayloadAttributes,
+) !EnginePayloadAttributes {
+    return .{
+        .timestamp = attrs.timestamp,
+        .prev_randao = attrs.prev_randao,
+        .fee_recipient = attrs.fee_recipient,
+        .withdrawals = if (attrs.withdrawals.len == 0) &.{} else try allocator.dupe(primitives.BlockBody.Withdrawal, attrs.withdrawals),
+        .has_withdrawals = attrs.has_withdrawals,
+        .parent_beacon_block_root = attrs.parent_beacon_block_root,
+        .payload_version = attrs.payload_version,
+    };
 }
 
 fn cloneQueryIndexSnapshot(
@@ -1883,6 +2753,12 @@ const ImportedBlockStats = struct {
     state_root_mismatch: bool = false,
 };
 
+const MaterializeImportedBlockOptions = struct {
+    strict: bool = false,
+    validate_tx_chain_id: bool = false,
+    requests_hash: ?[32]u8 = null,
+};
+
 fn materializeImportedChain(
     allocator: std.mem.Allocator,
     sm: *state_manager.StateManager,
@@ -1908,6 +2784,7 @@ fn materializeImportedChain(
             hardfork_config,
             blob_base_fee,
             block,
+            .{},
         ) catch |err| {
             if (err == error.OutOfMemory) return err;
             stats.stopped_block_number = block_number;
@@ -1939,6 +2816,7 @@ fn materializeImportedBlock(
     hardfork_config: hardfork_schedule.ChainConfig,
     blob_base_fee: u256,
     block: primitives.Block.Block,
+    options: MaterializeImportedBlockOptions,
 ) !ImportedBlockStats {
     try sm.checkpoint();
     var committed = false;
@@ -1975,10 +2853,17 @@ fn materializeImportedBlock(
     for (block.body.transactions, 0..) |transaction_data, tx_index| {
         var decoded = try tx_encoding.decodeEnvelope(allocator, transaction_data.raw);
         defer decoded.deinit(allocator);
+        if (options.validate_tx_chain_id) {
+            if (tx_encoding.envelopeChainId(decoded)) |tx_chain_id| {
+                if (tx_chain_id != chain_id) return error.InvalidTransactionChainId;
+            }
+        }
         const tx = tx_encoding.envelopeToLegacyLikeTx(decoded);
         const sender = try tx_encoding.recoverEnvelopeSender(allocator, decoded);
         const access_list = try processorAccessListFromEnvelope(allocator, tx_encoding.envelopeAccessList(decoded));
         defer allocator.free(access_list);
+        const blob_versioned_hashes = try tx_encoding.envelopeBlobVersionedHashBytes(allocator, decoded);
+        defer if (blob_versioned_hashes) |hashes| allocator.free(hashes);
 
         var receipt = try tx_processor.processTransactionWithOptions(
             allocator,
@@ -1996,6 +2881,7 @@ fn materializeImportedBlock(
                 .blob_gas_used = tx_encoding.envelopeBlobGasUsed(decoded),
                 .blob_gas_price = if (tx_encoding.envelopeBlobGasUsed(decoded) != null) block_ctx.blob_base_fee else null,
                 .max_fee_per_blob_gas = tx_encoding.envelopeMaxFeePerBlobGas(decoded),
+                .blob_versioned_hashes = blob_versioned_hashes,
                 .hardfork_override = hardfork,
             },
         );
@@ -2069,6 +2955,20 @@ fn materializeImportedBlock(
     const state_root = try block_builder.computeStateRootForFork(allocator, sm, blockBuilderHardfork(hardfork));
     stats.state_root_mismatch = !std.mem.eql(u8, &state_root, &block.header.state_root);
 
+    if (options.strict) {
+        const parent = blockchain.getBlockLocal(block.header.parent_hash) orelse return error.MissingParentBlock;
+        _ = try block_builder.validateBlock(allocator, .{
+            .header = &block.header,
+            .parent_header = &parent.header,
+            .fork = blockBuilderHardfork(hardfork),
+            .transaction_envelopes = block.body.transactions,
+            .receipts = receipts.items,
+            .withdrawals = block.body.withdrawals,
+            .state_root = state_root,
+            .requests_hash = options.requests_hash,
+        });
+    }
+
     sm.commit();
     committed = true;
 
@@ -2098,7 +2998,10 @@ fn importedBlockContext(
             primitives.Blob.calculateBlobGasPrice(excess)
         else
             blob_base_fee,
-        .block_hashes = try recentBlockHashesForImportedExecution(blockchain, block.header.number, recent_hashes),
+        .block_hashes = if (block.header.number == 0)
+            recent_hashes[0..0]
+        else
+            try blockchain.last256BlockHashesLocal(block.header.parent_hash, recent_hashes),
     };
 }
 
@@ -2223,6 +3126,12 @@ fn freeBlockTransactions(
     chain_import.freeTransactions(allocator, transactions);
 }
 
+fn u256ToHash(value: u256) [32]u8 {
+    var out: [32]u8 = undefined;
+    std.mem.writeInt(u256, &out, value, .big);
+    return out;
+}
+
 fn initBlockchainWithGenesis(
     allocator: std.mem.Allocator,
     chain_id: u64,
@@ -2237,8 +3146,10 @@ fn initBlockchainWithGenesis(
     errdefer blockchain.deinit();
 
     const genesis_fork = hardfork_schedule.resolveHardforkWithConfig(hardfork_config, 0, genesis_header.timestamp);
-    const genesis_base_fee = genesis_header.base_fee_per_gas;
-    const derive_post_london_fields = genesis_base_fee != null;
+    const genesis_base_fee = genesis_header.base_fee_per_gas orelse if (genesis_fork.isAtLeast(.LONDON))
+        DEFAULT_BASE_FEE
+    else
+        null;
     const header = primitives.BlockHeader.BlockHeader{
         .parent_hash = genesis_header.parent_hash,
         .ommers_hash = primitives.BlockHeader.EMPTY_OMMERS_HASH,
@@ -2256,13 +3167,13 @@ fn initBlockchainWithGenesis(
         .mix_hash = genesis_header.mix_hash,
         .nonce = genesis_header.nonce,
         .base_fee_per_gas = genesis_base_fee,
-        .withdrawals_root = genesis_header.withdrawals_root orelse if (derive_post_london_fields and genesis_fork.isAtLeast(.SHANGHAI))
+        .withdrawals_root = genesis_header.withdrawals_root orelse if (genesis_fork.isAtLeast(.SHANGHAI))
             primitives.BlockHeader.EMPTY_WITHDRAWALS_ROOT
         else
             null,
-        .blob_gas_used = genesis_header.blob_gas_used orelse if (derive_post_london_fields and genesis_fork.isAtLeast(.CANCUN)) 0 else null,
-        .excess_blob_gas = genesis_header.excess_blob_gas orelse if (derive_post_london_fields and genesis_fork.isAtLeast(.CANCUN)) 0 else null,
-        .parent_beacon_block_root = genesis_header.parent_beacon_block_root orelse if (derive_post_london_fields and genesis_fork.isAtLeast(.CANCUN))
+        .blob_gas_used = genesis_header.blob_gas_used orelse if (genesis_fork.isAtLeast(.CANCUN)) 0 else null,
+        .excess_blob_gas = genesis_header.excess_blob_gas orelse if (genesis_fork.isAtLeast(.CANCUN)) 0 else null,
+        .parent_beacon_block_root = genesis_header.parent_beacon_block_root orelse if (genesis_fork.isAtLeast(.CANCUN))
             primitives.Hash.ZERO
         else
             null,
@@ -2349,6 +3260,7 @@ test "Hive rpc-compat chain materializes canonical state roots" {
             hive_hardfork_config,
             1,
             block,
+            .{},
         );
 
         if (block_stats.state_root_mismatch) {

@@ -39,16 +39,27 @@ test "resolveBlockNumber: earliest returns 0" {
     try std.testing.expectEqual(@as(u64, 0), try block_spec.resolveBlockNumber(&rt, makeSpec("earliest")));
 }
 
-test "resolveBlockNumber: safe returns head" {
+test "resolveBlockNumber: safe is unavailable until Engine forkchoice sets it" {
     var rt = try makeRuntime();
     defer rt.deinit();
-    try std.testing.expectEqual(@as(u64, 10), try block_spec.resolveBlockNumber(&rt, makeSpec("safe")));
+    try std.testing.expectError(error.BlockUnavailable, block_spec.resolveBlockNumber(&rt, makeSpec("safe")));
 }
 
-test "resolveBlockNumber: finalized returns head" {
+test "resolveBlockNumber: finalized is unavailable until Engine forkchoice sets it" {
     var rt = try makeRuntime();
     defer rt.deinit();
-    try std.testing.expectEqual(@as(u64, 10), try block_spec.resolveBlockNumber(&rt, makeSpec("finalized")));
+    try std.testing.expectError(error.BlockUnavailable, block_spec.resolveBlockNumber(&rt, makeSpec("finalized")));
+}
+
+test "resolveBlockNumber: safe and finalized use Engine forkchoice heads" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+
+    const genesis = (try rt.blockchain.getBlockByNumber(0)).?;
+    rt.setEngineFinalityHeads(genesis.hash, genesis.hash);
+
+    try std.testing.expectEqual(@as(u64, 0), try block_spec.resolveBlockNumber(&rt, makeSpec("safe")));
+    try std.testing.expectEqual(@as(u64, 0), try block_spec.resolveBlockNumber(&rt, makeSpec("finalized")));
 }
 
 test "resolveBlockNumber: hex 0x0 returns 0" {

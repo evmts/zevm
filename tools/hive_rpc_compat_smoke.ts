@@ -1,14 +1,13 @@
 #!/usr/bin/env bun
 
-import { existsSync, mkdirSync, rmSync, copyFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, rmSync, copyFileSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const image = process.env.ZEVM_HIVE_IMAGE ?? "zevm/hive-client:local";
 const zigVersion = process.env.ZIG_VERSION ?? "0.15.2";
-const defaultPattern =
-  "rpc-compat/(client launch|eth_chainId/get-chain-id|eth_blobBaseFee/get-current-blobfee|eth_getBalance/get-balance-unknown-account|eth_getCode/get-code-unknown-account|eth_getStorageAt/get-storage-unknown-account|eth_getTransactionCount/get-nonce-unknown-account|eth_syncing/check-syncing|net_version/get-network-id)";
+const defaultPattern = "rpc-compat/.*";
 const testPattern = process.env.ZEVM_HIVE_RPC_COMPAT_PATTERN ?? defaultPattern;
 const clientTemplate = join(root, "tools/hive/zevm-client");
 const clientDir = join(root, "lib/hive/clients/zevm");
@@ -73,6 +72,40 @@ async function requireCommand(command: string): Promise<void> {
   await output(["which", command]);
 }
 
+function resolveGitLikeHead(repoDir: string): string {
+  const dotGit = join(repoDir, ".git");
+  let gitDir = dotGit;
+  if (existsSync(dotGit)) {
+    const dotGitText = readFileSync(dotGit, "utf8").trim();
+    if (dotGitText.startsWith("gitdir:")) {
+      gitDir = resolve(repoDir, dotGitText.slice("gitdir:".length).trim());
+    }
+  }
+
+  const head = readFileSync(join(gitDir, "HEAD"), "utf8").trim();
+  if (/^[0-9a-f]{40}$/i.test(head)) return head;
+
+  const ref = head.match(/^ref:\s+(.+)$/);
+  if (!ref) throw new Error(`cannot resolve HEAD for ${repoDir}`);
+
+  const looseRef = join(gitDir, ref[1]);
+  if (existsSync(looseRef)) {
+    const revision = readFileSync(looseRef, "utf8").trim();
+    if (/^[0-9a-f]{40}$/i.test(revision)) return revision;
+  }
+
+  const packedRefs = join(gitDir, "packed-refs");
+  if (existsSync(packedRefs)) {
+    for (const line of readFileSync(packedRefs, "utf8").split("\n")) {
+      if (line.startsWith("#") || line.startsWith("^") || line.trim() === "") continue;
+      const [revision, name] = line.trim().split(/\s+/, 2);
+      if (name === ref[1] && /^[0-9a-f]{40}$/i.test(revision)) return revision;
+    }
+  }
+
+  throw new Error(`cannot resolve ${ref[1]} for ${repoDir}`);
+}
+
 function cleanupClientDir(): void {
   if (existsSync(join(clientDir, ".zevm-generated"))) {
     rmSync(clientDir, { recursive: true, force: true });
@@ -85,7 +118,7 @@ async function main(): Promise<void> {
 
   const executionApisRef =
     process.env.ZEVM_HIVE_EXECUTION_APIS_REF ??
-    (await output(["git", "-C", join(root, "lib/execution-apis"), "rev-parse", "HEAD"]));
+    resolveGitLikeHead(join(root, "lib/execution-apis"));
 
   process.on("exit", cleanupClientDir);
   process.on("SIGINT", () => {

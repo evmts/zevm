@@ -41,7 +41,7 @@ If trusted startup supplies a chain RLP stream, ZEVM imports each encoded block 
 
 Phase-1 chain RLP import does not execute imported transactions, validate post-state roots, materialize account/storage state, or populate receipt/log indexes. State-backed reads, simulation, receipts, and logs remain bound to genesis plus subsequent local execution. Startup logs must identify this path as query-only.
 
-If trusted startup enables `engineRpc`, ZEVM binds a second plain-HTTP Engine API listener. The implemented Engine surface covers the checked-in execution-apis method names, including capability exchange, client version exchange, transition configuration echo, forkchoice updates that validate referenced hashes against local block history, payload status shape validation, payload body lookups, and blob lookup stubs. Full Engine payload execution/building and retained Amsterdam block-access-list/blob data are not release-ready.
+If trusted startup enables `engineRpc`, ZEVM binds a second plain-HTTP Engine API listener. The implemented Engine surface covers the checked-in execution-apis method names, including capability exchange, client version exchange, transition configuration echo, forkchoice updates that validate referenced hashes against local block history, payload attribute build jobs, strict local payload import for known canonical parents, getPayload lookup for known payload ids, payload body lookups, and blob lookup nulls for unavailable sidecars. Remote P2P sync, retained blob sidecars, and retained Amsterdam block-access-list data are not release-ready.
 
 ## 3. Fee Model And Tx Types
 
@@ -51,8 +51,9 @@ Transaction admission, simulation, mining, and block persistence use the same ru
 
 For `TransactionRequest`:
 
-- accepted fee field: `gasPrice`
-- unsupported fee/type fields fail with `-32602` (`maxFeePerGas`, `maxPriorityFeePerGas`, `maxFeePerBlobGas`, `blobVersionedHashes`, `accessList`, `authorizationList`, `type`, `chainId`)
+- submission/signing accepted fee field: `gasPrice`
+- submission/signing reject typed/dynamic/blob/auth fields with `-32602` (`maxFeePerGas`, `maxPriorityFeePerGas`, `maxFeePerBlobGas`, `blobVersionedHashes`, `blobs`, `commitments`, `proofs`, `accessList`, `authorizationList`, `type`, `chainId`)
+- simulation methods accept typed/dynamic/blob/auth request fields for execution-apis compatibility
 
 For `eth_sendRawTransaction`:
 
@@ -82,7 +83,7 @@ Detailed trigger and timestamp precedence rules are normative in `docs/specs/jso
 Trusted-mode standard methods include:
 
 - core reads (`eth_chainId`, `eth_blockNumber`, account/state reads, fee reads, `eth_feeHistory`)
-- simulation (`eth_call`, `eth_estimateGas`)
+- simulation and execution testing (`eth_call`, `eth_estimateGas`, `eth_createAccessList`, `eth_simulateV1`, `testing_buildBlockV1`)
 - submission (`eth_sendTransaction`, `eth_sendRawTransaction`)
 - queries (`eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getBlockTransactionCountByHash`, `eth_getBlockTransactionCountByNumber`, `eth_getTransactionByHash`, `eth_getTransactionByBlockHashAndIndex`, `eth_getTransactionByBlockNumberAndIndex`, `eth_getTransactionReceipt`, `eth_getBlockReceipts`, `eth_getLogs`)
 - phase-1 transaction/receipt/log payloads exclude nonstandard `blockTimestamp` extension fields
@@ -91,7 +92,7 @@ Trusted nonstandard controls are canonical `zevm_*` methods with exact accepted 
 
 Phase-1 light-mode boundary for simulation:
 
-- `eth_call` and `eth_estimateGas` remain trusted-only and return `-32010` in light mode
+- `eth_call`, `eth_estimateGas`, `eth_createAccessList`, `eth_simulateV1`, and `testing_buildBlockV1` remain trusted-only and return `-32010` in light mode
 - `eth_call` is a deferred light-mode proof-backed target
 
 ## 6. Selector Semantics

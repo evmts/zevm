@@ -57,6 +57,7 @@ fn poolEntries(
     var queued = std.json.ObjectMap.init(allocator);
 
     for (rt.pool.items()) |tx| {
+        if (isBlobPoolOnly(tx)) continue;
         const section = switch (rt.pool.statusOf(tx.sender, tx.nonce)) {
             .pending => &pending,
             .queued => &queued,
@@ -84,6 +85,7 @@ fn poolEntriesFrom(
     var queued = std.json.ObjectMap.init(allocator);
 
     for (rt.pool.items()) |tx| {
+        if (isBlobPoolOnly(tx)) continue;
         if (!std.mem.eql(u8, &tx.sender.bytes, &sender.bytes)) continue;
         const section = switch (rt.pool.statusOf(tx.sender, tx.nonce)) {
             .pending => &pending,
@@ -126,7 +128,7 @@ fn appendInspectTx(
     });
 }
 
-fn transactionObject(allocator: std.mem.Allocator, tx: txpool_mod.PooledTransaction) !std.json.Value {
+pub fn transactionObject(allocator: std.mem.Allocator, tx: txpool_mod.PooledTransaction) !std.json.Value {
     if (tx.raw.len != 0) {
         var decoded = tx_encoding.decodeEnvelope(allocator, tx.raw) catch |err| switch (err) {
             error.OutOfMemory => return err,
@@ -193,6 +195,13 @@ fn decodedTransactionObject(
         },
     }
     return .{ .object = obj };
+}
+
+fn isBlobPoolOnly(tx: txpool_mod.PooledTransaction) bool {
+    return tx.receipt_type == .eip4844 or
+        tx.max_fee_per_blob_gas != null or
+        tx.blob_versioned_hashes.len != 0 or
+        tx.blob_sidecars.len != 0;
 }
 
 fn putCommonTransactionFields(

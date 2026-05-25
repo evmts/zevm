@@ -87,6 +87,7 @@ pub const BuildBlockOptions = struct {
     requests: RequestsByType = .{},
     state_root: ?[32]u8 = null,
     dev_runtime: ?*dev_runtime.DevRuntime = null,
+    skip_invalid_transactions: bool = false,
 };
 
 pub const BlockCommitments = struct {
@@ -185,6 +186,7 @@ pub fn buildBlockWithOptions(
 
     var total_gas_used: u64 = 0;
     var total_blob_gas_used: u64 = 0;
+    const blob_gas_cap = maxBlobGasPerBlock(effective_fork);
 
     for (transactions, 0..) |item, tx_index| {
         if (total_gas_used >= effective_block_ctx.block_gas_limit) {
@@ -196,6 +198,12 @@ pub fn buildBlockWithOptions(
             continue;
         }
 
+        const item_blob_gas_used = try executionTxBlobGasUsed(item);
+        if (blob_gas_cap) |cap| {
+            if (item_blob_gas_used > cap) continue;
+            if (total_blob_gas_used > cap - item_blob_gas_used) continue;
+        }
+
         const tx_options = tx_processor.ProcessTransactionOptions{
             .access_list = item.access_list,
             .receipt_type = item.receipt_type,
@@ -205,6 +213,7 @@ pub fn buildBlockWithOptions(
             .blob_gas_used = item.blob_gas_used,
             .blob_gas_price = item.blob_gas_price,
             .max_fee_per_blob_gas = item.max_fee_per_blob_gas,
+            .blob_versioned_hashes = item.blob_versioned_hashes,
             .hardfork_override = if (options.hardfork_config) |config|
                 tx_processor.resolveHardforkWithConfig(config, effective_block_ctx)
             else
@@ -221,10 +230,16 @@ pub fn buildBlockWithOptions(
             tx_options,
         ) catch |err| switch (err) {
             tx_processor.TxError.NonceMismatch,
+            tx_processor.TxError.SenderNotEOA,
+            tx_processor.TxError.UnsupportedTransactionType,
             tx_processor.TxError.IntrinsicGasExceedsLimit,
             tx_processor.TxError.InsufficientBalance,
             tx_processor.TxError.GasPriceBelowBaseFee,
-            => return error.InvalidIncludedTransaction,
+            tx_processor.TxError.TipExceedsFeeCap,
+            => {
+                if (options.skip_invalid_transactions) continue;
+                return error.InvalidIncludedTransaction;
+            },
             else => return err,
         };
 
@@ -270,7 +285,7 @@ pub fn buildBlockWithOptions(
         try applyMinerReward(sm, block_ctx.block_coinbase, effective_fork);
     }
 
-    const transactions_root = try computeTransactionsRoot(allocator, transactions);
+    const transactions_root = try computeIncludedTransactionsRoot(allocator, transactions, included_tx_indexes.items);
     const receipts_root = try computeReceiptsRoot(allocator, receipts.items);
     const logs_bloom = aggregateLogsBloom(receipts.items);
     const effective_requests = requestsWithPragueSystemOutputs(options.requests, system_requests);
@@ -324,6 +339,9 @@ pub fn blockContextWithEnvironmentOverrides(
     }
     if (rt.config.next_block_timestamp) |timestamp| {
         effective.block_timestamp = timestamp;
+    }
+    if (rt.config.prev_randao) |prev_randao| {
+        effective.block_prevrandao = prev_randao;
     }
     if (rt.config.blob_base_fee) |blob_base_fee| {
         effective.blob_base_fee = blob_base_fee;
@@ -471,6 +489,22 @@ pub fn computeTransactionsRoot(
     }
 
     return primitives.TrieHash.trie_root(allocator, keys, values);
+}
+
+fn computeIncludedTransactionsRoot(
+    allocator: std.mem.Allocator,
+    transactions: []const tx_processor.ExecutionTx,
+    included_tx_indexes: []const usize,
+) ![32]u8 {
+    const included = try allocator.alloc(tx_processor.ExecutionTx, included_tx_indexes.len);
+    defer allocator.free(included);
+
+    for (included_tx_indexes, 0..) |tx_index, out_index| {
+        if (tx_index >= transactions.len) return error.InvalidIncludedTransactionIndex;
+        included[out_index] = transactions[tx_index];
+    }
+
+    return computeTransactionsRoot(allocator, included);
 }
 
 pub fn computeRawTransactionsRoot(
@@ -1097,6 +1131,11 @@ fn blobGasUsedFromReceipts(receipts: []const primitives.Receipt.Receipt) !u64 {
         total = std.math.add(u64, total, try receiptBlobGasUsed(receipt)) catch return error.BlobGasOverflow;
     }
     return total;
+}
+
+fn executionTxBlobGasUsed(tx: tx_processor.ExecutionTx) !u64 {
+    const blob_gas = tx.blob_gas_used orelse return 0;
+    return std.math.cast(u64, blob_gas) orelse error.BlobGasOverflow;
 }
 
 fn receiptBlobGasUsed(receipt: primitives.Receipt.Receipt) !u64 {

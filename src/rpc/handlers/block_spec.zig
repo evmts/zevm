@@ -5,6 +5,7 @@ const rpc_parse = @import("../parse.zig");
 
 pub const BlockSpecError = error{
     BlockOutOfRange,
+    BlockUnavailable,
     InvalidBlockSpec,
 };
 
@@ -12,11 +13,15 @@ pub fn resolveBlockNumber(rt: *const runtime.NodeRuntime, block_spec: jsonrpc.ty
     switch (block_spec.value) {
         .string => |s| {
             if (std.mem.eql(u8, s, "latest") or
-                std.mem.eql(u8, s, "pending") or
-                std.mem.eql(u8, s, "safe") or
-                std.mem.eql(u8, s, "finalized"))
+                std.mem.eql(u8, s, "pending"))
             {
                 return rt.head_block_number;
+            }
+            if (std.mem.eql(u8, s, "safe")) {
+                return rt.engineSafeBlockNumber() orelse error.BlockUnavailable;
+            }
+            if (std.mem.eql(u8, s, "finalized")) {
+                return rt.engineFinalizedBlockNumber() orelse error.BlockUnavailable;
             }
             if (std.mem.eql(u8, s, "earliest")) {
                 return 0;

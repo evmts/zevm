@@ -7,19 +7,40 @@ zevm_pid=""
 geth_p2p_pid=""
 geth_graphql_pid=""
 graphql_proxy_pid=""
+engine_mirror_pid=""
 proxy_pids=()
 config_path="$(mktemp)"
 geth_p2p_datadir=""
 geth_graphql_datadir=""
 geth_genesis_path=""
+generated_chain_rlp_path=""
 jwt_secret_path="$(mktemp)"
 internal_rpc_port="${ZEVM_HIVE_INTERNAL_RPC_PORT:-18545}"
 internal_engine_port="${ZEVM_HIVE_INTERNAL_ENGINE_PORT:-18551}"
+engine_mirror_port="${ZEVM_HIVE_ENGINE_MIRROR_PORT:-18552}"
 public_engine_target_port="$internal_engine_port"
 public_rpc_target_port="$internal_rpc_port"
+geth_p2p_http_port="${ZEVM_HIVE_GETH_P2P_HTTP_PORT:-18554}"
+geth_p2p_http_enabled="false"
+geth_p2p_nodekeyhex="${ZEVM_HIVE_GETH_NODEKEYHEX:-9c647b8b7c4e7c3490668fb6c11473619db80c93704c70893d3813af4090c39c}"
 geth_graphql_port="${ZEVM_HIVE_GETH_GRAPHQL_PORT:-18546}"
 graphql_proxy_port="${ZEVM_HIVE_GRAPHQL_PROXY_PORT:-18547}"
+block_rlp_files=()
+engine_api_mode="false"
+if [ "${HIVE_TERMINAL_TOTAL_DIFFICULTY_PASSED:-}" = "1" ]; then
+  engine_api_mode="true"
+fi
+default_shanghai_timestamp="0"
+default_cancun_timestamp="0"
+if [ "$engine_api_mode" = "true" ]; then
+  default_shanghai_timestamp="9223372036854775807"
+  default_cancun_timestamp="9223372036854775807"
+fi
 rpc_url="http://127.0.0.1:${internal_rpc_port}"
+engine_sync_fallback_rpc="${ZEVM_ENGINE_SYNC_FALLBACK_RPC:-}"
+if [ "$engine_api_mode" = "true" ] && [ -z "$engine_sync_fallback_rpc" ]; then
+  engine_sync_fallback_rpc="http://127.0.0.1:${geth_p2p_http_port}"
+fi
 mining_type="manual"
 mining_block_time="0"
 if [ -n "${HIVE_CLIQUE_PERIOD:-}" ]; then
@@ -28,6 +49,22 @@ if [ -n "${HIVE_CLIQUE_PERIOD:-}" ]; then
 fi
 
 cleanup() {
+  if [ "${HIVE_LOGLEVEL:-3}" -ge 5 ] 2>/dev/null; then
+    for log_file in \
+      /tmp/zevm-geth-init.log \
+      /tmp/zevm-geth-import.log \
+      /tmp/zevm-geth-p2p.log \
+      /tmp/zevm-geth-graphql.log \
+      /tmp/zevm-graphql-proxy.log \
+      /tmp/zevm-engine-mirror-proxy.log
+    do
+      if [ -f "$log_file" ]; then
+        printf '===== %s =====\n' "$log_file" >&2
+        cat "$log_file" >&2
+      fi
+    done
+  fi
+
   for proxy_pid in "${proxy_pids[@]}"; do
     kill "$proxy_pid" >/dev/null 2>&1 || true
   done
@@ -43,10 +80,16 @@ cleanup() {
   if [ -n "$graphql_proxy_pid" ]; then
     kill "$graphql_proxy_pid" >/dev/null 2>&1 || true
   fi
+  if [ -n "$engine_mirror_pid" ]; then
+    kill "$engine_mirror_pid" >/dev/null 2>&1 || true
+  fi
   rm -f "$config_path"
   rm -f "$jwt_secret_path"
   if [ -n "$geth_genesis_path" ]; then
     rm -f "$geth_genesis_path"
+  fi
+  if [ -n "$generated_chain_rlp_path" ]; then
+    rm -f "$generated_chain_rlp_path"
   fi
   if [ -n "$geth_p2p_datadir" ]; then
     rm -rf "$geth_p2p_datadir"
@@ -58,7 +101,9 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 wait_for_rpc() {
-  for _ in $(seq 1 200); do
+  local attempts="${ZEVM_HIVE_RPC_WAIT_ATTEMPTS:-2400}"
+  local interval="${ZEVM_HIVE_RPC_WAIT_INTERVAL:-0.05}"
+  for _ in $(seq 1 "$attempts"); do
     if curl -fsS \
       -H 'content-type: application/json' \
       --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' \
@@ -70,7 +115,7 @@ wait_for_rpc() {
       echo "zevm exited before RPC became ready" >&2
       return 1
     fi
-    sleep 0.05
+    sleep "$interval"
   done
 
   echo "timed out waiting for zevm RPC" >&2
@@ -117,25 +162,81 @@ geth_genesis() {
   fi
 
   geth_genesis_path="$(mktemp)"
-  jq '
-    if (.config // null) != null and (.config.cancunTime // null) != null and (.config.blobSchedule // null) == null then
-      .config.blobSchedule = {
-        cancun: {target: 3, max: 6, baseFeeUpdateFraction: 3338477},
-        prague: {target: 6, max: 9, baseFeeUpdateFraction: 5007716}
-      }
-    else
+  jq \
+    --argjson chainId "$chain_id" \
+    --argjson homestead "${HIVE_FORK_HOMESTEAD:-null}" \
+    --argjson daoBlock "${HIVE_FORK_DAO_BLOCK:-null}" \
+    --argjson daoVote "${HIVE_FORK_DAO_VOTE:-null}" \
+    --argjson tangerine "${HIVE_FORK_TANGERINE:-null}" \
+    --argjson spurious "${HIVE_FORK_SPURIOUS:-null}" \
+    --argjson byzantium "${HIVE_FORK_BYZANTIUM:-null}" \
+    --argjson constantinople "${HIVE_FORK_CONSTANTINOPLE:-null}" \
+    --argjson petersburg "${HIVE_FORK_PETERSBURG:-null}" \
+    --argjson istanbul "${HIVE_FORK_ISTANBUL:-null}" \
+    --argjson muir "${HIVE_FORK_MUIR_GLACIER:-null}" \
+    --argjson berlin "${HIVE_FORK_BERLIN:-null}" \
+    --argjson london "${HIVE_FORK_LONDON:-null}" \
+    --argjson arrow "${HIVE_FORK_ARROW_GLACIER:-null}" \
+    --argjson gray "${HIVE_FORK_GRAY_GLACIER:-null}" \
+    --argjson terminal "${HIVE_TERMINAL_TOTAL_DIFFICULTY:-9223372036854775807}" \
+    --argjson shanghaiTs "${HIVE_SHANGHAI_TIMESTAMP:-null}" \
+    --argjson cancunTs "${HIVE_CANCUN_TIMESTAMP:-null}" \
+    --argjson pragueTs "${HIVE_PRAGUE_TIMESTAMP:-null}" \
+    '
+    def set_if($key; $value):
+      if $value == null then . else .[$key] = $value end;
+
+    .config = ((.config // {}) + {chainId: $chainId})
+    | .config |= (
       .
-    end
+      | set_if("homesteadBlock"; $homestead)
+      | set_if("daoForkBlock"; $daoBlock)
+      | if $daoVote == null then . else .daoForkSupport = ($daoVote != 0) end
+      | set_if("eip150Block"; $tangerine)
+      | set_if("eip155Block"; $spurious)
+      | set_if("eip158Block"; $spurious)
+      | set_if("byzantiumBlock"; $byzantium)
+      | set_if("constantinopleBlock"; $constantinople)
+      | set_if("petersburgBlock"; $petersburg)
+      | set_if("istanbulBlock"; $istanbul)
+      | set_if("muirGlacierBlock"; $muir)
+      | set_if("berlinBlock"; $berlin)
+      | set_if("londonBlock"; $london)
+      | set_if("arrowGlacierBlock"; $arrow)
+      | set_if("grayGlacierBlock"; $gray)
+      | if $terminal == null then . else .terminalTotalDifficulty = $terminal | .terminalTotalDifficultyPassed = true end
+      | set_if("shanghaiTime"; $shanghaiTs)
+      | set_if("cancunTime"; $cancunTs)
+      | set_if("pragueTime"; $pragueTs)
+      | if (.cancunTime // null) != null and (.blobSchedule // null) == null then
+        .blobSchedule = {
+          cancun: {target: 3, max: 6, baseFeeUpdateFraction: 3338477},
+          prague: {target: 6, max: 9, baseFeeUpdateFraction: 5007716}
+        }
+      else
+        .
+      end
+      | if (.terminalTotalDifficulty // null) != null and (.terminalTotalDifficultyPassed // null) == null then
+        .terminalTotalDifficultyPassed = true
+      else
+        .
+      end
+    )
   ' "$genesis_path" > "$geth_genesis_path"
   printf '%s' "$geth_genesis_path"
 }
 
 start_geth_p2p_sidecar() {
-  if [ -z "${HIVE_NETWORK_ID:-}" ] && [ -z "${HIVE_DISCV5:-}" ]; then
+  if [ "$engine_api_mode" != "true" ] &&
+    [ -z "${HIVE_NETWORK_ID:-}" ] &&
+    [ -z "${HIVE_DISCV5:-}" ] &&
+    [ "$has_block_rlp_dir" != "true" ]; then
     return 0
   fi
-  if [ -z "${HIVE_BOOTNODE:-}" ] &&
+  if [ "$engine_api_mode" != "true" ] &&
+    [ -z "${HIVE_BOOTNODE:-}" ] &&
     [ -z "${HIVE_DISCV5:-}" ] &&
+    [ "$has_block_rlp_dir" != "true" ] &&
     [ -z "${ZEVM_HIVE_FORCE_P2P_SIDECAR:-}" ] &&
     [ -n "${HIVE_MERGE_BLOCK_ID:-}" ] &&
     [ "${HIVE_MERGE_BLOCK_ID:-0}" != "0" ]; then
@@ -145,6 +246,10 @@ start_geth_p2p_sidecar() {
     return 0
   fi
 
+  if [ -n "${HIVE_BOOTNODE:-}" ] && [ -z "${ZEVM_HIVE_GETH_NODEKEYHEX:-}" ]; then
+    geth_p2p_nodekeyhex="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+  fi
+
   geth_p2p_datadir="$(mktemp -d)"
   if [ "$has_genesis" = "true" ]; then
     geth --state.scheme=hash --datadir "$geth_p2p_datadir" init "$(geth_genesis)" >/tmp/zevm-geth-init.log 2>&1 || {
@@ -152,7 +257,16 @@ start_geth_p2p_sidecar() {
       return 1
     }
   fi
-  if [ "$has_chain_rlp" = "true" ]; then
+  if [ "$has_block_rlp_dir" = "true" ]; then
+    : > /tmp/zevm-geth-import.log
+    local block_file
+    for block_file in "${block_rlp_files[@]}"; do
+      geth --state.scheme=hash --datadir "$geth_p2p_datadir" import "$block_file" >>/tmp/zevm-geth-import.log 2>&1 || {
+        echo "warning: geth p2p sidecar rejected ${block_file}; continuing with imported chain" >&2
+        tail -n 20 /tmp/zevm-geth-import.log >&2 || true
+      }
+    done
+  elif [ "$has_chain_rlp" = "true" ]; then
     geth --state.scheme=hash --datadir "$geth_p2p_datadir" import "$chain_rlp_path" >/tmp/zevm-geth-import.log 2>&1 || {
       echo "warning: geth p2p sidecar could not import chain.rlp; continuing with initialized chain" >&2
       cat /tmp/zevm-geth-import.log >&2
@@ -160,25 +274,49 @@ start_geth_p2p_sidecar() {
   fi
 
   printf '%s' '7365637265747365637265747365637265747365637265747365637265747365' > "$jwt_secret_path"
-  public_engine_target_port="18553"
+  if [ "$engine_api_mode" != "true" ]; then
+    public_engine_target_port="18553"
+  fi
+  local http_args=("--http=false")
+  local discovery_args=()
+  if [ -n "${HIVE_DISCV5:-}" ]; then
+    discovery_args=(--discv5)
+  fi
   local container_ip
   container_ip="$(hostname -i | awk '{print $1}')"
+  if [ "$engine_api_mode" = "true" ] ||
+    { [ -n "${HIVE_BOOTNODE:-}" ] && [ "$has_chain_rlp" != "true" ]; } ||
+    [ "$has_block_rlp_dir" = "true" ]; then
+    geth_p2p_http_enabled="true"
+    if [ "$engine_api_mode" != "true" ]; then
+      public_rpc_target_port="$geth_p2p_http_port"
+    fi
+    http_args=(
+      --http
+      --http.addr 127.0.0.1
+      --http.port "$geth_p2p_http_port"
+      --http.api eth,net,web3,txpool,debug
+      --http.vhosts '*'
+      --rpc.allow-unprotected-txs
+    )
+  fi
   geth \
     --state.scheme=hash \
     --datadir "$geth_p2p_datadir" \
     --datadir.minfreedisk=0 \
-    --nodekeyhex 9c647b8b7c4e7c3490668fb6c11473619db80c93704c70893d3813af4090c39c \
+    --nodekeyhex "$geth_p2p_nodekeyhex" \
     --networkid "${HIVE_NETWORK_ID:-$chain_id}" \
     --bootnodes="${HIVE_BOOTNODE:-}" \
     --syncmode full \
     --nat "extip:${container_ip}" \
     --port 30303 \
     --discovery.port 30303 \
+    "${discovery_args[@]}" \
     --authrpc.addr 127.0.0.1 \
     --authrpc.port 18553 \
     --authrpc.jwtsecret "$jwt_secret_path" \
     --authrpc.vhosts '*' \
-    --http=false \
+    "${http_args[@]}" \
     --ws=false \
     --ipcdisable \
     --verbosity "${HIVE_LOGLEVEL:-3}" \
@@ -241,8 +379,17 @@ wait_for_geth_p2p() {
 
   for _ in $(seq 1 200); do
     if ( : < /dev/tcp/127.0.0.1/30303 ) >/dev/null 2>&1; then
-      sleep 0.25
-      return 0
+      if [ "$geth_p2p_http_enabled" != "true" ]; then
+        sleep 0.25
+        return 0
+      fi
+      if curl -fsS \
+        -H 'content-type: application/json' \
+        --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' \
+        "http://127.0.0.1:${geth_p2p_http_port}" >/dev/null 2>&1; then
+        sleep 0.25
+        return 0
+      fi
     fi
 
     if ! kill -0 "$geth_p2p_pid" >/dev/null 2>&1; then
@@ -296,6 +443,43 @@ start_graphql_proxy() {
   public_rpc_target_port="$graphql_proxy_port"
 }
 
+start_engine_mirror_proxy() {
+  if [ "$engine_api_mode" != "true" ] || [ -z "$geth_p2p_pid" ]; then
+    return 0
+  fi
+  python3 /hive-bin/engine_mirror_proxy.py \
+    --listen-port "$engine_mirror_port" \
+    --primary-port "$internal_engine_port" \
+    --mirror-port 18553 \
+    --jwt-secret-file "$jwt_secret_path" \
+    >/tmp/zevm-engine-mirror-proxy.log 2>&1 &
+  engine_mirror_pid="$!"
+  public_engine_target_port="$engine_mirror_port"
+}
+
+wait_for_engine_mirror_proxy() {
+  if [ "$engine_api_mode" != "true" ] || [ -z "$engine_mirror_pid" ]; then
+    return 0
+  fi
+
+  for _ in $(seq 1 200); do
+    if curl -fsS "http://127.0.0.1:${engine_mirror_port}/healthz" >/dev/null 2>&1; then
+      return 0
+    fi
+
+    if ! kill -0 "$engine_mirror_pid" >/dev/null 2>&1; then
+      echo "Engine mirror proxy exited before HTTP became ready" >&2
+      cat /tmp/zevm-engine-mirror-proxy.log >&2 || true
+      return 1
+    fi
+    sleep 0.05
+  done
+
+  echo "timed out waiting for Engine mirror proxy" >&2
+  cat /tmp/zevm-engine-mirror-proxy.log >&2 || true
+  return 1
+}
+
 wait_for_graphql_proxy() {
   if [ "${HIVE_GRAPHQL_ENABLED:-}" != "1" ]; then
     return 0
@@ -331,9 +515,19 @@ fi
 
 has_chain_rlp=false
 chain_rlp_path=""
+has_zevm_chain_rlp=false
+zevm_chain_rlp_path=""
+has_block_rlp_dir=false
 if [ -f /chain.rlp ]; then
   has_chain_rlp=true
   chain_rlp_path="/chain.rlp"
+  has_zevm_chain_rlp=true
+  zevm_chain_rlp_path="/chain.rlp"
+elif [ -d /blocks ]; then
+  has_block_rlp_dir=true
+  while IFS= read -r block_file; do
+    block_rlp_files+=("$block_file")
+  done < <(find /blocks -maxdepth 1 -type f -name '*.rlp' | sort)
 fi
 
 jq -n \
@@ -341,8 +535,8 @@ jq -n \
   --arg blobBaseFee "$blob_base_fee" \
   --argjson hasGenesis "$has_genesis" \
   --arg genesisPath "$genesis_path" \
-  --argjson hasChainRlp "$has_chain_rlp" \
-  --arg chainRlpPath "$chain_rlp_path" \
+  --argjson hasChainRlp "$has_zevm_chain_rlp" \
+  --arg chainRlpPath "$zevm_chain_rlp_path" \
   --argjson homestead "${HIVE_FORK_HOMESTEAD:-0}" \
   --argjson tangerine "${HIVE_FORK_TANGERINE:-0}" \
   --argjson spurious "${HIVE_FORK_SPURIOUS:-0}" \
@@ -356,21 +550,23 @@ jq -n \
   --argjson arrow "${HIVE_FORK_ARROW_GLACIER:-0}" \
   --argjson gray "${HIVE_FORK_GRAY_GLACIER:-0}" \
   --argjson merge "${HIVE_MERGE_BLOCK_ID:-0}" \
-  --argjson shanghaiTs "${HIVE_SHANGHAI_TIMESTAMP:-0}" \
-  --argjson cancunTs "${HIVE_CANCUN_TIMESTAMP:-0}" \
-  --argjson pragueTs "${HIVE_PRAGUE_TIMESTAMP:-9223372036854775807}" \
-  --arg internalRpcPort "$internal_rpc_port" \
-  --arg internalEnginePort "$internal_engine_port" \
-  --arg miningType "$mining_type" \
-  --argjson miningBlockTime "$mining_block_time" \
+  --argjson shanghaiTs "${HIVE_SHANGHAI_TIMESTAMP:-$default_shanghai_timestamp}" \
+  --argjson cancunTs "${HIVE_CANCUN_TIMESTAMP:-$default_cancun_timestamp}" \
+	  --argjson pragueTs "${HIVE_PRAGUE_TIMESTAMP:-9223372036854775807}" \
+	  --arg internalRpcPort "$internal_rpc_port" \
+	  --arg internalEnginePort "$internal_engine_port" \
+	  --arg engineSyncFallbackRpc "$engine_sync_fallback_rpc" \
+	  --arg miningType "$mining_type" \
+	  --argjson miningBlockTime "$mining_block_time" \
   '{
     rpc: { host: "127.0.0.1", port: ($internalRpcPort | tonumber) },
     engineRpc: { host: "127.0.0.1", port: ($internalEnginePort | tonumber) },
     mode: {
       trusted: {
-        chainId: $chainId,
-        blobBaseFee: $blobBaseFee,
-        mining: (if $miningType == "interval" then { type: "interval", blockTime: $miningBlockTime } else { type: "manual" } end),
+	        chainId: $chainId,
+	        blobBaseFee: $blobBaseFee,
+	        engineSyncFallbackRpc: (if $engineSyncFallbackRpc == "" then null else $engineSyncFallbackRpc end),
+	        mining: (if $miningType == "interval" then { type: "interval", blockTime: $miningBlockTime } else { type: "manual" } end),
         genesis: (if $hasGenesis then $genesisPath else null end),
         chainRlp: (if $hasChainRlp then $chainRlpPath else null end),
         hardfork: {
@@ -405,6 +601,8 @@ start_graphql_proxy
 wait_for_graphql_proxy
 start_geth_p2p_sidecar
 wait_for_geth_p2p
+start_engine_mirror_proxy
+wait_for_engine_mirror_proxy
 
 seed_txpool="${ZEVM_HIVE_SEED_TXPOOL:-}"
 if [ -z "$seed_txpool" ]; then

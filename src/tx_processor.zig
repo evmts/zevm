@@ -31,6 +31,7 @@ pub const ExecutionTx = struct {
     blob_gas_used: ?u256 = null,
     blob_gas_price: ?u256 = null,
     max_fee_per_blob_gas: ?u256 = null,
+    blob_versioned_hashes: ?[]const [32]u8 = null,
 };
 
 pub const ProcessTransactionOptions = struct {

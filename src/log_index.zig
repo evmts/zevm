@@ -10,6 +10,20 @@ pub const LogFilter = struct {
     topics: ?[]const ?[]const [32]u8 = null,
 };
 
+pub fn deinitLogFilter(allocator: std.mem.Allocator, filter: *LogFilter) void {
+    if (filter.addresses) |addresses| {
+        allocator.free(addresses);
+        filter.addresses = null;
+    }
+    if (filter.topics) |topics| {
+        for (topics) |maybe_topic_set| {
+            if (maybe_topic_set) |topic_set| allocator.free(topic_set);
+        }
+        allocator.free(topics);
+        filter.topics = null;
+    }
+}
+
 /// An indexed log entry with block_hash stored alongside (EventLog lacks block_hash).
 pub const IndexedLog = struct {
     log: primitives.EventLog.EventLog,

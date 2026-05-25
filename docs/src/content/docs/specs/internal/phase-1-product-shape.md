@@ -72,7 +72,7 @@ Non-normative summary of `docs/specs/prd.md` section 3.3:
 Phase-1 trusted-mode summary includes:
 
 - core reads and fee reads
-- simulation (`eth_call`, `eth_estimateGas`)
+- simulation and execution testing (`eth_call`, `eth_estimateGas`, `eth_createAccessList`, `eth_simulateV1`, `testing_buildBlockV1`)
 - transaction submission (`eth_sendTransaction`, `eth_sendRawTransaction`)
 - mining controls and timestamp controls
 - canonical block/transaction/receipt/log query methods (including `eth_getLogs`)

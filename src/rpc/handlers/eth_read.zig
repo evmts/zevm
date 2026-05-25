@@ -84,13 +84,8 @@ pub fn handleEthGetBalance(
     params: jsonrpc.eth.GetBalance.Params,
 ) !jsonrpc.eth.GetBalance.Result {
     const selected = resolveStateReadBlockNumber(rt, params.block) catch return error.InvalidParams;
-    const balance = if (selected == rt.head_block_number)
-        try rt.getBalance(.{ .bytes = params.address.bytes })
-    else blk: {
-        var state = try rt.replayStateToBlock(selected);
-        defer state.deinit();
-        break :blk try state.getBalance(.{ .bytes = params.address.bytes });
-    };
+    const read_state = try rt.readStateAtBlock(selected);
+    const balance = try read_state.getBalance(.{ .bytes = params.address.bytes });
     return .{ .value = try quantityHexU256(allocator, balance) };
 }
 
@@ -100,14 +95,8 @@ pub fn handleEthGetCode(
     params: jsonrpc.eth.GetCode.Params,
 ) !jsonrpc.eth.GetCode.Result {
     const selected = resolveStateReadBlockNumber(rt, params.block) catch return error.InvalidParams;
-    if (selected == rt.head_block_number) {
-        const code = try rt.getCode(.{ .bytes = params.address.bytes });
-        return .{ .value = try dataHexBytes(allocator, code) };
-    }
-
-    var state = try rt.replayStateToBlock(selected);
-    defer state.deinit();
-    const code = try state.getCode(.{ .bytes = params.address.bytes });
+    const read_state = try rt.readStateAtBlock(selected);
+    const code = try read_state.getCode(.{ .bytes = params.address.bytes });
     return .{ .value = try dataHexBytes(allocator, code) };
 }
 
@@ -118,13 +107,8 @@ pub fn handleEthGetStorageAt(
 ) !jsonrpc.eth.GetStorageAt.Result {
     const selected = resolveStateReadBlockNumber(rt, params.block) catch return error.InvalidParams;
     const slot = parseStorageSlotToU256(params.storage_slot) catch return error.InvalidParams;
-    const value = if (selected == rt.head_block_number)
-        try rt.getStorage(.{ .bytes = params.address.bytes }, slot)
-    else blk: {
-        var state = try rt.replayStateToBlock(selected);
-        defer state.deinit();
-        break :blk try state.getStorage(.{ .bytes = params.address.bytes }, slot);
-    };
+    const read_state = try rt.readStateAtBlock(selected);
+    const value = try read_state.getStorage(.{ .bytes = params.address.bytes }, slot);
     return .{ .value = try dataHexU256(allocator, value) };
 }
 
@@ -134,13 +118,8 @@ pub fn handleEthGetTransactionCount(
     params: jsonrpc.eth.GetTransactionCount.Params,
 ) !jsonrpc.eth.GetTransactionCount.Result {
     const selected = resolveStateReadBlockNumber(rt, params.block) catch return error.InvalidParams;
-    const nonce = if (selected == rt.head_block_number)
-        try rt.getNonce(.{ .bytes = params.address.bytes })
-    else blk: {
-        var state = try rt.replayStateToBlock(selected);
-        defer state.deinit();
-        break :blk try state.getNonce(.{ .bytes = params.address.bytes });
-    };
+    const read_state = try rt.readStateAtBlock(selected);
+    const nonce = try read_state.getNonce(.{ .bytes = params.address.bytes });
     return .{ .value = try quantityHexU64(allocator, nonce) };
 }
 
@@ -153,14 +132,7 @@ pub fn handleEthGetStorageValuesValue(
     if (items.len != 2) return error.InvalidParams;
 
     const selected = resolveStateReadBlockNumberValue(rt, items[1]) catch return error.InvalidParams;
-    var historical_state: ?state_manager.StateManager = null;
-    defer if (historical_state) |*state| state.deinit();
-    const read_state = if (selected == rt.head_block_number)
-        &rt.state
-    else blk: {
-        historical_state = try rt.replayStateToBlock(selected);
-        break :blk &historical_state.?;
-    };
+    const read_state = try rt.readStateAtBlock(selected);
 
     const requests = switch (items[0]) {
         .object => |object| object,
@@ -216,14 +188,7 @@ pub fn handleEthGetProofValue(
         else => return error.InvalidParams,
     };
     const selected = resolveStateReadBlockNumberValue(rt, items[2]) catch return error.InvalidParams;
-    var historical_state: ?state_manager.StateManager = null;
-    defer if (historical_state) |*state| state.deinit();
-    const read_state = if (selected == rt.head_block_number)
-        &rt.state
-    else blk: {
-        historical_state = try rt.replayStateToBlock(selected);
-        break :blk &historical_state.?;
-    };
+    const read_state = try rt.readStateAtBlock(selected);
 
     const balance = try read_state.getBalance(address);
     const nonce = try read_state.getNonce(address);
@@ -532,7 +497,7 @@ fn parseStorageSlotToU256(q: jsonrpc.types.Quantity) !u256 {
 }
 
 fn resolveBlockParam(rt: *const runtime.NodeRuntime, spec: jsonrpc.types.BlockSpec) !u64 {
-    return rpc_parse.resolveTrustedBlockSelector(rt.head_block_number, spec.value) catch return error.InvalidParams;
+    return resolveTrustedRuntimeBlockSelector(rt, spec.value) catch return error.InvalidParams;
 }
 
 fn resolveStateReadBlockNumber(rt: *runtime.NodeRuntime, spec: jsonrpc.types.BlockSpec) !u64 {
@@ -546,7 +511,7 @@ fn resolveStateReadBlockNumberValue(rt: *runtime.NodeRuntime, value: std.json.Va
                 const hash = try rpc_parse.parseHash32String(text);
                 return resolveBlockHashSelector(rt, hash, true);
             }
-            const selected = rpc_parse.resolveTrustedBlockSelector(rt.head_block_number, value) catch return error.InvalidParams;
+            const selected = resolveTrustedRuntimeBlockSelector(rt, value) catch return error.InvalidParams;
             if (selected > rt.head_block_number) return error.InvalidParams;
             return selected;
         },
@@ -583,6 +548,17 @@ fn resolveBlockHashSelector(rt: *runtime.NodeRuntime, hash: [32]u8, require_cano
     const canonical = rt.blockchain.getCanonicalHash(block.header.number) orelse return error.InvalidParams;
     if (require_canonical and !std.mem.eql(u8, &canonical, &hash)) return error.InvalidParams;
     return block.header.number;
+}
+
+fn resolveTrustedRuntimeBlockSelector(rt: *const runtime.NodeRuntime, value: std.json.Value) !u64 {
+    switch (value) {
+        .string => |text| {
+            if (std.mem.eql(u8, text, "safe")) return rt.engineSafeBlockNumber() orelse error.InvalidParams;
+            if (std.mem.eql(u8, text, "finalized")) return rt.engineFinalizedBlockNumber() orelse error.InvalidParams;
+        },
+        else => {},
+    }
+    return rpc_parse.resolveTrustedBlockSelector(rt.head_block_number, value);
 }
 
 fn ensureCurrentStateSelector(rt: *const runtime.NodeRuntime, spec: jsonrpc.types.BlockSpec) !void {

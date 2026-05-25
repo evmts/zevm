@@ -16,7 +16,7 @@ Trusted mode is ZEVM's writable local development node.
 Trusted mode is the mode for local execution and local writes:
 
 - core reads against local state
-- simulation (`eth_call`, `eth_estimateGas`)
+- simulation and execution testing (`eth_call`, `eth_estimateGas`, `eth_createAccessList`, `eth_simulateV1`, `testing_buildBlockV1`)
 - transaction submission and mining
 - canonical block, receipt, and log queries (including `eth_getLogs`)
 - snapshots, revert, impersonation, state mutation, and time controls

@@ -89,7 +89,7 @@ server {
 This pattern keeps TLS/auth/IP filtering in the proxy layer while ZEVM remains plain HTTP on local/private transport in phase 1.
 For a light-mode operator checklist, see [Light-Mode Configuration -> RPC Exposure And Hardening](./light-mode#rpc-exposure-and-hardening).
 
-Phase-1 transport limits are fixed, not configurable: `64` active TCP connections, `15,000` ms read/write socket timeouts, `8,192` byte HTTP header buffer, and `1,048,576` byte request body limit. Larger request bodies return HTTP `413` without a JSON-RPC body.
+Phase-1 transport limits are fixed, not configurable: `64` active TCP connections, `15,000` ms read/write socket timeouts, `8,192` byte HTTP header buffer, and `8,388,608` byte request body limit. Larger request bodies return HTTP `413` without a JSON-RPC body.
 
 ## Startup Logging Surfaces (Phase 1)
 

@@ -85,6 +85,56 @@ pub fn canonicalTransactionEnvelope(
     return .{ .bytes = canonical, .owned = canonical };
 }
 
+pub fn eip4844BlobSidecars(
+    allocator: std.mem.Allocator,
+    raw: []const u8,
+    expected_hashes: []const primitives.Blob.VersionedHash,
+) TransactionEncodingError!?[]const primitives.Blob.BlobSidecar {
+    if (raw.len == 0 or raw[0] != 0x03) return null;
+    const payload = try decodeTypedPayload(raw, 0x03);
+    var payload_index: usize = 0;
+    const first = try parseRlpItem(payload, &payload_index);
+    switch (first) {
+        .string => return null,
+        .list => {
+            const blobs = try rlpItemList(try parseRlpItem(payload, &payload_index));
+            const commitments = try rlpItemList(try parseRlpItem(payload, &payload_index));
+            const proofs = try rlpItemList(try parseRlpItem(payload, &payload_index));
+            if (payload_index != payload.len) return error.InvalidLength;
+            if (try rlpListItemCount(blobs) != expected_hashes.len) return error.InvalidLength;
+            if (try rlpListItemCount(commitments) != expected_hashes.len) return error.InvalidLength;
+            if (try rlpListItemCount(proofs) != expected_hashes.len) return error.InvalidLength;
+
+            const sidecars = try allocator.alloc(primitives.Blob.BlobSidecar, expected_hashes.len);
+            errdefer allocator.free(sidecars);
+
+            var blob_index: usize = 0;
+            var commitment_index: usize = 0;
+            var proof_index: usize = 0;
+            for (sidecars, 0..) |*sidecar, index| {
+                const blob = try rlpItemString(try parseRlpItem(blobs, &blob_index));
+                const commitment = try rlpItemString(try parseRlpItem(commitments, &commitment_index));
+                const proof = try rlpItemString(try parseRlpItem(proofs, &proof_index));
+                if (blob.len != primitives.Blob.BYTES_PER_BLOB) return error.InvalidLength;
+                if (commitment.len != 48) return error.InvalidLength;
+                if (proof.len != 48) return error.InvalidLength;
+                @memcpy(sidecar.blob[0..], blob);
+                sidecar.commitment = commitment[0..48].*;
+                sidecar.proof = proof[0..48].*;
+
+                const versioned_hash = primitives.Blob.commitmentToVersionedHash(sidecar.commitment);
+                if (!std.mem.eql(u8, &versioned_hash.bytes, &expected_hashes[index].bytes)) {
+                    return error.InvalidLength;
+                }
+            }
+            if (blob_index != blobs.len or commitment_index != commitments.len or proof_index != proofs.len) {
+                return error.InvalidLength;
+            }
+            return sidecars;
+        },
+    }
+}
+
 pub fn envelopeToLegacyLikeTx(decoded: DecodedEnvelope) primitives.Transaction.LegacyTransaction {
     return switch (decoded) {
         .legacy => |tx| tx,
@@ -195,6 +245,25 @@ pub fn envelopeMaxFeePerBlobGas(decoded: DecodedEnvelope) ?u256 {
         .eip4844 => |tx| tx.max_fee_per_blob_gas,
         else => null,
     };
+}
+
+pub fn envelopeBlobVersionedHashes(decoded: DecodedEnvelope) ?[]const primitives.Blob.VersionedHash {
+    return switch (decoded) {
+        .eip4844 => |tx| tx.blob_versioned_hashes,
+        else => null,
+    };
+}
+
+pub fn envelopeBlobVersionedHashBytes(
+    allocator: std.mem.Allocator,
+    decoded: DecodedEnvelope,
+) !?[]const [32]u8 {
+    const hashes = envelopeBlobVersionedHashes(decoded) orelse return null;
+    const out = try allocator.alloc([32]u8, hashes.len);
+    for (hashes, 0..) |hash, index| {
+        out[index] = hash.bytes;
+    }
+    return out;
 }
 
 pub fn envelopeAuthorizationList(decoded: DecodedEnvelope) []const primitives.Authorization.Authorization {
@@ -652,6 +721,16 @@ fn rlpItemList(item: RlpItem) TransactionEncodingError![]const u8 {
     };
 }
 
+fn rlpListItemCount(payload: []const u8) TransactionEncodingError!usize {
+    var count: usize = 0;
+    var index: usize = 0;
+    while (index < payload.len) {
+        _ = try parseRlpItem(payload, &index);
+        count += 1;
+    }
+    return count;
+}
+
 fn rlpItemToTransactionAccessList(
     allocator: std.mem.Allocator,
     item: RlpItem,
@@ -895,6 +974,73 @@ test "legacy envelope encodes signature scalars canonically" {
         0x82, 0xaa, 0xbb, 0x25, 0x01, 0x81, 0x80,
     };
     try std.testing.expectEqualSlices(u8, &expected, encoded);
+}
+
+test "eip4844 blob sidecars decode from network wrapper" {
+    const allocator = std.testing.allocator;
+
+    const blob = try allocator.alloc(u8, primitives.Blob.BYTES_PER_BLOB);
+    defer allocator.free(blob);
+    @memset(blob, 0xab);
+    const commitment = [_]u8{0x11} ** 48;
+    const proof = [_]u8{0x22} ** 48;
+    const versioned_hash = primitives.Blob.commitmentToVersionedHash(commitment);
+    const versioned_hashes = [_]primitives.Blob.VersionedHash{versioned_hash};
+
+    const tx = primitives.Transaction.Eip4844Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 1,
+        .max_fee_per_gas = 2,
+        .gas_limit = 21_000,
+        .to = primitives.Address{ .bytes = [_]u8{0x33} ** 20 },
+        .value = 0,
+        .data = &.{},
+        .access_list = &.{},
+        .max_fee_per_blob_gas = 3,
+        .blob_versioned_hashes = &versioned_hashes,
+        .y_parity = 1,
+        .r = [_]u8{0x44} ** 32,
+        .s = [_]u8{0x55} ** 32,
+    };
+    const canonical = try primitives.Transaction.encodeEip4844ForSigning(allocator, tx);
+    defer allocator.free(canonical);
+
+    const encoded_blob = try primitives.Rlp.encodeBytes(allocator, blob);
+    defer allocator.free(encoded_blob);
+    const encoded_commitment = try primitives.Rlp.encodeBytes(allocator, &commitment);
+    defer allocator.free(encoded_commitment);
+    const encoded_proof = try primitives.Rlp.encodeBytes(allocator, &proof);
+    defer allocator.free(encoded_proof);
+
+    const blob_fields = [_][]const u8{encoded_blob};
+    const commitment_fields = [_][]const u8{encoded_commitment};
+    const proof_fields = [_][]const u8{encoded_proof};
+    const blobs = try encodeRlpListFromEncodedFields(allocator, &blob_fields);
+    defer allocator.free(blobs);
+    const commitments = try encodeRlpListFromEncodedFields(allocator, &commitment_fields);
+    defer allocator.free(commitments);
+    const proofs = try encodeRlpListFromEncodedFields(allocator, &proof_fields);
+    defer allocator.free(proofs);
+
+    const wrapper_fields = [_][]const u8{ canonical[1..], blobs, commitments, proofs };
+    const wrapper_payload = try encodeRlpListFromEncodedFields(allocator, &wrapper_fields);
+    defer allocator.free(wrapper_payload);
+    const raw = try allocator.alloc(u8, wrapper_payload.len + 1);
+    defer allocator.free(raw);
+    raw[0] = 0x03;
+    @memcpy(raw[1..], wrapper_payload);
+
+    const canonical_from_wrapper = try canonicalTransactionEnvelope(allocator, raw);
+    defer canonical_from_wrapper.deinit(allocator);
+    try std.testing.expectEqualSlices(u8, canonical, canonical_from_wrapper.bytes);
+
+    const sidecars = (try eip4844BlobSidecars(allocator, raw, &versioned_hashes)).?;
+    defer allocator.free(sidecars);
+    try std.testing.expectEqual(@as(usize, 1), sidecars.len);
+    try std.testing.expectEqualSlices(u8, blob, sidecars[0].blob[0..]);
+    try std.testing.expectEqualSlices(u8, &commitment, sidecars[0].commitment[0..]);
+    try std.testing.expectEqualSlices(u8, &proof, sidecars[0].proof[0..]);
 }
 
 test "legacy envelope decodes pre-eip155 and eip155 chain ids" {

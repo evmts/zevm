@@ -818,6 +818,13 @@ fn applyBlockOverrides(block_ctx: *guillotine_mini.BlockContext, value: std.json
 }
 
 fn resolveTrustedBlockSelector(rt: *const runtime.NodeRuntime, value: std.json.Value) !u64 {
+    switch (value) {
+        .string => |text| {
+            if (std.mem.eql(u8, text, "safe")) return rt.engineSafeBlockNumber() orelse error.InvalidParams;
+            if (std.mem.eql(u8, text, "finalized")) return rt.engineFinalizedBlockNumber() orelse error.InvalidParams;
+        },
+        else => {},
+    }
     return rpc_parse.resolveTrustedBlockSelector(rt.head_block_number, value);
 }
 

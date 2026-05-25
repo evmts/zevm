@@ -30,6 +30,33 @@ fn parseQuantityHex(text: []const u8) !u64 {
     return std.fmt.parseInt(u64, text[2..], 16);
 }
 
+fn base64UrlEncode(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const out = try allocator.alloc(u8, std.base64.url_safe_no_pad.Encoder.calcSize(source.len));
+    errdefer allocator.free(out);
+    _ = std.base64.url_safe_no_pad.Encoder.encode(out, source);
+    return out;
+}
+
+fn makeJwt(allocator: std.mem.Allocator, secret: []const u8, iat: i64) ![]u8 {
+    const header_segment = try base64UrlEncode(allocator, "{\"alg\":\"HS256\",\"typ\":\"JWT\"}");
+    defer allocator.free(header_segment);
+
+    const payload_json = try std.fmt.allocPrint(allocator, "{{\"iat\":{}}}", .{iat});
+    defer allocator.free(payload_json);
+    const payload_segment = try base64UrlEncode(allocator, payload_json);
+    defer allocator.free(payload_segment);
+
+    const signing_input = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ header_segment, payload_segment });
+    defer allocator.free(signing_input);
+
+    var signature: [std.crypto.auth.hmac.sha2.HmacSha256.mac_length]u8 = undefined;
+    std.crypto.auth.hmac.sha2.HmacSha256.create(&signature, signing_input, secret);
+    const signature_segment = try base64UrlEncode(allocator, signature[0..]);
+    defer allocator.free(signature_segment);
+
+    return std.fmt.allocPrint(allocator, "{s}.{s}", .{ signing_input, signature_segment });
+}
+
 fn successHandler(allocator: std.mem.Allocator, method_name: []const u8, params: ?std.json.Value) anyerror!std.json.Value {
     _ = allocator;
     _ = params;
@@ -603,6 +630,75 @@ test "application/json content-type allows media-type parameters" {
     defer parsed.deinit();
 
     try std.testing.expectEqual(@as(i64, 7), (try getObjectField(parsed.value, "result")).integer);
+}
+
+test "engine JWT auth validates bearer signature and time drift" {
+    const now: i64 = 1_700_000_000;
+    const token = try makeJwt(std.testing.allocator, server.DEFAULT_ENGINE_JWT_SECRET, now);
+    defer std.testing.allocator.free(token);
+    const authorization = try std.fmt.allocPrint(std.testing.allocator, "Bearer {s}", .{token});
+    defer std.testing.allocator.free(authorization);
+
+    try std.testing.expect(try server.validateJwtAuthorizationForTest(
+        std.testing.allocator,
+        authorization,
+        server.DEFAULT_ENGINE_JWT_SECRET,
+        now + server.DEFAULT_ENGINE_JWT_MAX_TIME_DRIFT_SECONDS,
+        server.DEFAULT_ENGINE_JWT_MAX_TIME_DRIFT_SECONDS,
+    ));
+    try std.testing.expect(!try server.validateJwtAuthorizationForTest(
+        std.testing.allocator,
+        authorization,
+        server.DEFAULT_ENGINE_JWT_SECRET,
+        now + server.DEFAULT_ENGINE_JWT_MAX_TIME_DRIFT_SECONDS + 1,
+        server.DEFAULT_ENGINE_JWT_MAX_TIME_DRIFT_SECONDS,
+    ));
+}
+
+test "engine JWT auth rejects incorrect secrets and malformed bearer values" {
+    const now: i64 = 1_700_000_000;
+    const token = try makeJwt(std.testing.allocator, "wrongsecret", now);
+    defer std.testing.allocator.free(token);
+    const authorization = try std.fmt.allocPrint(std.testing.allocator, "Bearer {s}", .{token});
+    defer std.testing.allocator.free(authorization);
+
+    try std.testing.expect(!try server.validateJwtAuthorizationForTest(
+        std.testing.allocator,
+        authorization,
+        server.DEFAULT_ENGINE_JWT_SECRET,
+        now,
+        server.DEFAULT_ENGINE_JWT_MAX_TIME_DRIFT_SECONDS,
+    ));
+    try std.testing.expect(!try server.validateJwtAuthorizationForTest(
+        std.testing.allocator,
+        token,
+        server.DEFAULT_ENGINE_JWT_SECRET,
+        now,
+        server.DEFAULT_ENGINE_JWT_MAX_TIME_DRIFT_SECONDS,
+    ));
+}
+
+test "blob-sized HTTP body reaches JSON-RPC parser" {
+    const handlers = dispatcher.HandlerRegistry{};
+    const old_one_mib_limit = 1024 * 1024;
+    const body = try std.testing.allocator.alloc(u8, old_one_mib_limit + 1);
+    defer std.testing.allocator.free(body);
+    @memset(body, ' ');
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        body,
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(std.http.Status.ok, response.status);
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+
+    const error_object = try getObjectField(parsed.value, "error");
+    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.PARSE_ERROR), (try getObjectField(error_object, "code")).integer);
 }
 
 test "oversized HTTP body returns 413 without JSON-RPC body" {

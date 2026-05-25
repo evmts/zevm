@@ -65,7 +65,10 @@ pub fn main() !void {
                     std.heap.page_allocator,
                     engine_rpc,
                     &handlers,
-                    .{},
+                    .{
+                        .jwt_secret = zevm.rpc.server.DEFAULT_ENGINE_JWT_SECRET,
+                        .jwt_max_time_drift_seconds = zevm.rpc.server.DEFAULT_ENGINE_JWT_MAX_TIME_DRIFT_SECONDS,
+                    },
                 ) catch |err| exitStartupError("startup failed phase=engine_rpc_listener mode=trusted host={s} port={} error={s}", .{
                     engine_rpc.host,
                     engine_rpc.port,

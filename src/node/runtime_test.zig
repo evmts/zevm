@@ -438,6 +438,20 @@ test "NodeRuntime mineBlocks consumes next block timestamp override once" {
     try std.testing.expect(rt.dev_runtime.config.next_block_timestamp == null);
 }
 
+test "NodeRuntime mineBlocks consumes prevRandao override once" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    rt.dev_runtime.config.prev_randao = 0x42;
+    try rt.mineBlocks(2, 1);
+
+    const block_1 = (try rt.blockchain.getBlockByNumber(1)).?;
+    const block_2 = (try rt.blockchain.getBlockByNumber(2)).?;
+    try std.testing.expectEqual(@as(u256, 0x42), std.mem.readInt(u256, &block_1.header.mix_hash, .big));
+    try std.testing.expectEqual(@as(u256, 0), std.mem.readInt(u256, &block_2.header.mix_hash, .big));
+    try std.testing.expect(rt.dev_runtime.config.prev_randao == null);
+}
+
 test "NodeRuntime configured block timestamp interval controls explicit mining" {
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();
@@ -452,6 +466,57 @@ test "NodeRuntime configured block timestamp interval controls explicit mining" 
 
     rt.removeBlockTimestampInterval();
     try std.testing.expectEqual(@as(?u64, null), rt.block_timestamp_interval);
+}
+
+test "NodeRuntime engine import rejects descendants of known invalid payload" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    try rt.mineBlocks(2, 1);
+    const genesis_block = (try rt.blockchain.getBlockByNumber(0)).?;
+    const block_1 = (try rt.blockchain.getBlockByNumber(1)).?;
+    const block_2 = (try rt.blockchain.getBlockByNumber(2)).?;
+
+    var invalid_parent = block_1;
+    invalid_parent.header.state_root[31] ^= 0x01;
+    invalid_parent.hash = try block_builder.computeHeaderHashWithRequestsHash(
+        std.testing.allocator,
+        &invalid_parent.header,
+        null,
+    );
+
+    const invalid_result = try rt.importEnginePayloadBlock(invalid_parent, null);
+    try std.testing.expectEqual(runtime.EnginePayloadImportStatus.invalid, invalid_result.status);
+    try std.testing.expect(invalid_result.latest_valid_hash != null);
+    try std.testing.expectEqualSlices(u8, &genesis_block.hash, &invalid_result.latest_valid_hash.?);
+
+    var child = block_2;
+    child.header.parent_hash = invalid_parent.hash;
+    child.hash = try block_builder.computeHeaderHashWithRequestsHash(std.testing.allocator, &child.header, null);
+
+    const child_result = try rt.importEnginePayloadBlock(child, null);
+    try std.testing.expectEqual(runtime.EnginePayloadImportStatus.invalid, child_result.status);
+    try std.testing.expect(child_result.latest_valid_hash != null);
+    try std.testing.expectEqualSlices(u8, &genesis_block.hash, &child_result.latest_valid_hash.?);
+}
+
+test "NodeRuntime engine forkchoice rollback prunes stale canonical numbers" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    try rt.mineBlocks(3, 1);
+    const block_1 = (try rt.blockchain.getBlockByNumber(1)).?;
+    const block_3 = (try rt.blockchain.getBlockByNumber(3)).?;
+    try std.testing.expectEqual(@as(u64, 3), rt.head_block_number);
+    try std.testing.expectEqual(@as(?u64, 3), rt.blockchain.getHeadBlockNumber());
+
+    const applied = try rt.setEngineCanonicalHead(block_1.hash);
+    try std.testing.expectEqual(runtime.EnginePayloadImportStatus.valid, applied.status);
+    try std.testing.expectEqual(@as(u64, 1), rt.head_block_number);
+    try std.testing.expectEqual(@as(?u64, 1), rt.blockchain.getHeadBlockNumber());
+    try std.testing.expect(rt.blockchain.getCanonicalHash(2) == null);
+    try std.testing.expect((try rt.blockchain.getBlockByNumber(2)) == null);
+    try std.testing.expect(rt.blockchain.getBlockLocal(block_3.hash) != null);
 }
 
 test "NodeRuntime snapshot and reset preserve time controls" {

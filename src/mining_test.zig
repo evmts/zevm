@@ -117,6 +117,21 @@ test "nextExcessBlobGas uses Prague target on the transition child" {
     );
 }
 
+test "nextExcessBlobGas uses supplied chain config for early Cancun schedules" {
+    const config = mining_coordinator.ChainConfig{ .cancun_timestamp = 0 };
+    const parent_header = makeHeader(.{
+        .number = 3,
+        .timestamp = 0x1237,
+        .blob_gas_used = mining_coordinator.CANCUN_MAX_BLOB_GAS_PER_BLOCK,
+        .excess_blob_gas = 0,
+    });
+
+    try std.testing.expectEqual(
+        @as(u64, mining_coordinator.CANCUN_TARGET_BLOB_GAS_PER_BLOCK),
+        mining_coordinator.nextExcessBlobGasForChildWithConfig(config, parent_header, 4, 0x1238),
+    );
+}
+
 test "nextBlobBaseFee uses fork-specific update fractions" {
     try std.testing.expectEqual(@as(u256, 0), mining_coordinator.nextBlobBaseFee(0, .SHANGHAI));
     try std.testing.expectEqual(@as(u256, 1), mining_coordinator.nextBlobBaseFee(0, .CANCUN));

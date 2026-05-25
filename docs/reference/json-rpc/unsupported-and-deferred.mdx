@@ -38,23 +38,24 @@ Not part of the current contract:
 
 ### Current mode-gated simulation behavior
 
-- `eth_call` and `eth_estimateGas` are trusted-only methods in phase 1
+- `eth_call`, `eth_estimateGas`, `eth_createAccessList`, `eth_simulateV1`, and `testing_buildBlockV1` are trusted-only methods in phase 1
 - in light mode, well-formed requests to those methods return JSON-RPC `-32010` (unsupported in active mode)
 
 ### Mode-gated trusted-only read extensions
 
-- `eth_accounts`, `eth_coinbase`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_blobBaseFee`, `eth_feeHistory`, and `eth_getStorageValues` are trusted-only
+- `eth_accounts`, `eth_coinbase`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_blobBaseFee`, `eth_feeHistory`, `eth_getProof`, and `eth_getStorageValues` are trusted-only
 - in light mode, well-formed requests to those methods return JSON-RPC `-32010` (unsupported in active mode)
 
 ### Mode-gated trusted-only compatibility utilities
 
-- `web3_clientVersion`, `web3_sha3`, `net_version`, `net_listening`, `net_peerCount`, `eth_mining`, `eth_syncing`, `eth_protocolVersion`, `txpool_content`, `txpool_contentFrom`, `txpool_status`, and `txpool_inspect` are trusted-only compatibility methods
+- `rpc_modules`, `web3_clientVersion`, `web3_sha3`, `net_version`, `net_listening`, `net_peerCount`, `eth_mining`, `eth_hashrate`, `eth_getWork`, `eth_submitWork`, `eth_submitHashrate`, `eth_syncing`, `eth_protocolVersion`, `txpool_content`, `txpool_contentFrom`, `txpool_status`, and `txpool_inspect` are trusted-only compatibility methods
+- `debug_getBadBlocks`, `debug_getRawBlock`, `debug_getRawHeader`, `debug_getRawReceipts`, and `debug_getRawTransaction` are trusted-only debug/raw inspection methods
 - in light mode, well-formed requests to those methods return JSON-RPC `-32010` (unsupported in active mode)
 
 ### Optional Engine API listener
 
 - Engine API methods are trusted-only and are available only on the optional trusted-mode Engine API listener
-- get-payload methods report unknown payload ids with `-38001`; new-payload methods validate request shape but do not import execution payloads into canonical history
+- get-payload methods report unknown payload ids with `-38001`; new-payload methods validate request shape, import locally valid payloads, and return spec payload status values
 
 ### Error-mapping summary
 
@@ -64,15 +65,7 @@ Not part of the current contract:
 
 ## Deferred Trusted Helpers
 
-These helper families are outside the current trusted-mode contract.
-
-| Canonical deferred helper | Deferred accepted aliases |
-| --- | --- |
-| `zevm_enableTraces` | `anvil_enableTraces` |
-| `zevm_addCompilationResult` | `hardhat_addCompilationResult` |
-| `zevm_setPrevRandao` | `hardhat_setPrevRandao` |
-
-`hardhat_setLoggingEnabled` is deferred as a compatibility alias of `zevm_enableTraces`.
+No trusted helper methods are deferred in the current trusted-mode contract. Debug tracing methods remain outside the public surface above.
 
 ## Notes For Integrators
 

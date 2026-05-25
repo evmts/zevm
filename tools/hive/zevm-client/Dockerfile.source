@@ -1,11 +1,13 @@
 # syntax=docker/dockerfile:1.7
 
 ARG ZIG_VERSION=0.15.2
-ARG GETH_VERSION=v1.13.15
+ARG GETH_VERSION=v1.16.7
+ARG ZEVM_DOCKER_OPTIMIZE=ReleaseSafe
 
 FROM alpine:3.20 AS builder
 ARG TARGETARCH
 ARG ZIG_VERSION
+ARG ZEVM_DOCKER_OPTIMIZE
 
 RUN apk add --no-cache bash build-base ca-certificates cargo curl git linux-headers perl rust xz
 RUN set -eu; \
@@ -25,12 +27,19 @@ COPY build.zig build.zig.zon LICENSE README.md ./
 COPY include ./include
 COPY npm ./npm
 COPY src ./src
-COPY tools ./tools
+COPY tools/*.zig tools/*.c ./tools/
 COPY docs/specs/qualification ./docs/specs/qualification
 RUN zig build --fetch
-RUN zig build -Doptimize=ReleaseSafe
+RUN zig build -Doptimize=${ZEVM_DOCKER_OPTIMIZE}
 
-FROM ethereum/client-go:${GETH_VERSION} AS geth-sidecar
+FROM golang:1.25-alpine AS geth-sidecar
+ARG GETH_VERSION
+RUN apk add --no-cache build-base git linux-headers
+WORKDIR /src/go-ethereum
+COPY tools/hive/zevm-client/geth-hive.patch /tmp/geth-hive.patch
+RUN git clone --depth 1 --branch "${GETH_VERSION}" https://github.com/ethereum/go-ethereum.git . && \
+    git apply /tmp/geth-hive.patch && \
+    go build -trimpath -ldflags="-s -w" -o /usr/local/bin/geth ./cmd/geth
 
 FROM alpine:3.20
 RUN apk add --no-cache bash ca-certificates curl jq python3 socat
@@ -38,8 +47,9 @@ COPY --from=builder /src/zevm/zig-out/bin/zevm /usr/local/bin/zevm
 COPY --from=geth-sidecar /usr/local/bin/geth /usr/local/bin/geth
 COPY tools/hive/zevm-client/zevm-hive.sh /zevm-hive.sh
 COPY tools/hive/zevm-client/graphql_proxy.py /hive-bin/graphql_proxy.py
+COPY tools/hive/zevm-client/engine_mirror_proxy.py /hive-bin/engine_mirror_proxy.py
 COPY tools/hive/zevm-client/enode.sh /hive-bin/enode.sh
-RUN chmod +x /zevm-hive.sh /hive-bin/enode.sh && \
+RUN chmod +x /zevm-hive.sh /hive-bin/enode.sh /hive-bin/engine_mirror_proxy.py && \
     echo "zevm hive-client local" > /version.txt
 
 EXPOSE 8545 8551

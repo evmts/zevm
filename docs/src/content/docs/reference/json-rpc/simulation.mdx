@@ -1,16 +1,16 @@
 ---
 title: Simulation
-description: Trusted-mode eth_call and eth_estimateGas contract, including TransactionRequest and StateOverrideSet.
+description: Trusted-mode execution simulation contract, including TransactionRequest and override sets.
 ---
 
 # Simulation
 
-`eth_call` and `eth_estimateGas` are trusted-mode simulation methods.
+`eth_call`, `eth_estimateGas`, `eth_createAccessList`, `eth_simulateV1`, and `testing_buildBlockV1` are trusted-mode execution simulation methods.
 
 - trusted mode: supported
 - light mode: unsupported (`-32010`)
 
-Both methods execute on a checkpoint-and-revert path and do not mutate canonical state.
+These methods execute on a checkpoint-and-revert path and do not mutate canonical state.
 
 ## Methods
 
@@ -18,6 +18,9 @@ Both methods execute on a checkpoint-and-revert path and do not mutate canonical
 | --- | --- | --- | --- |
 | `eth_call` | `[tx, block]` or `[tx, block, stateOverrides]` | `HexData` | `-32602` malformed tx, selector, or overrides; `-32603` runtime execution failure; `-32010` in light mode |
 | `eth_estimateGas` | `[tx]`, `[tx, block]`, or `[tx, block, stateOverrides]` | `QuantityHex` | `-32602` malformed tx, selector, or overrides; `-32603` runtime execution failure; `-32010` in light mode |
+| `eth_createAccessList` | `[tx]` or `[tx, block]` | object with `accessList` and `gasUsed` | `-32602` malformed tx or selector; `-32603` unrecoverable execution failure; `-32010` in light mode |
+| `eth_simulateV1` | `[payload]` or `[payload, block]` | array of simulated block result objects | `-32602` malformed payload or selector; per-call execution failures are returned inside call results; `-32010` in light mode |
+| `testing_buildBlockV1` | `[parentHash, payloadAttributes, transactions|null, extraData]` | engine API builder payload envelope | `-32602` malformed params; `-32000` when supplied transactions cannot be applied; `-32010` in light mode |
 
 Any tuple length not listed above returns `-32602`.
 
@@ -26,6 +29,9 @@ Execution outcome semantics:
 - success path:
   - `eth_call` returns `HexData`
   - `eth_estimateGas` returns `QuantityHex`
+  - `eth_createAccessList` returns a generated access-list envelope; the current implementation returns an empty access list when no tracer-derived entries are available
+  - `eth_simulateV1` returns block-scoped call result objects and reverts all canonical state changes before responding
+  - `testing_buildBlockV1` builds a payload envelope without changing the canonical chain or head
 - runtime execution failure path (for example revert, out-of-gas, invalid execution in simulation context): JSON-RPC `-32603` with message `Internal error`, no `result`, and no revert-data result payload
 - omitted transaction field defaults:
   - `from`: trusted runtime coinbase
@@ -54,12 +60,21 @@ Allowed fields only:
 
 | Field | Type | Rule |
 | --- | --- | --- |
-| `from` | `Address` | optional for `eth_call` and `eth_estimateGas` |
+| `from` | `Address` | optional |
 | `to` | `Address` or `null` | omitted or `null` for create |
 | `gas` | `QuantityHex` | optional |
 | `gasPrice` | `QuantityHex` | optional |
+| `maxFeePerGas` | `QuantityHex` | optional dynamic-fee field |
+| `maxPriorityFeePerGas` | `QuantityHex` | optional dynamic-fee field |
+| `maxFeePerBlobGas` | `QuantityHex` | optional blob-fee field |
 | `value` | `QuantityHex` | optional |
 | `nonce` | `QuantityHex` | optional |
+| `chainId` | `QuantityHex` | optional |
+| `type` | `QuantityHex` | optional transaction type |
+| `accessList` | access-list array | optional |
+| `blobVersionedHashes` | array of `Hash32` | optional |
+| `blobs`, `commitments`, `proofs` | arrays | accepted and shape-validated for blob-style requests |
+| `authorizationList` | array | accepted and shape-validated for EIP-7702-style requests |
 | `data` | `HexData` | optional |
 | `input` | `HexData` | optional alias of `data` |
 
@@ -68,7 +83,7 @@ Rules:
 - `data` and `input` may both be omitted
 - if both are present, they must be byte-identical
 - any field not listed above returns `-32602`
-- unsupported request fields return `-32602`: `maxFeePerGas`, `maxPriorityFeePerGas`, `maxFeePerBlobGas`, `blobVersionedHashes`, `accessList`, `authorizationList`, `type`, `chainId`
+- transaction types `0x0` through `0x4` are accepted by the simulation parser; unsupported type values return an RPC error
 
 ## `StateOverrideSet`
 
@@ -80,6 +95,9 @@ Rules:
 | `nonce` | `QuantityHex` |
 | `code` | `HexData` |
 | `storage` | object mapping `Bytes32` slot -> `Bytes32` value |
+| `state` | object mapping `Bytes32` slot -> `Bytes32` value, replacing existing storage |
+| `stateDiff` | object mapping `Bytes32` slot -> `Bytes32` value |
+| `movePrecompileToAddress` | `Address`, for `eth_simulateV1` precompile move tests |
 
 Example:
 

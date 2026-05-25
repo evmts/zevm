@@ -16,7 +16,7 @@ If this summary differs from normative wording, precedence is explicit:
 | --- | --- | --- | --- |
 | Transport (`/`, `POST`, JSON-RPC over HTTP) | supported | supported | PRD section 6; JSON-RPC contract sections 3 and 4 |
 | Standard core reads | supported | limited to phase-1 proof-backed subset; readiness-gated where defined | PRD sections 3.1, 4.2, 10; JSON-RPC contract sections 8.1 and 13 |
-| Simulation (`eth_call`, `eth_estimateGas`) | supported | unsupported (`-32010`) in phase 1 | PRD sections 3.1 and 3.2; JSON-RPC contract sections 8.2, 13, 14 |
+| Execution simulation/testing (`eth_call`, `eth_estimateGas`, `eth_createAccessList`, `eth_simulateV1`, `testing_buildBlockV1`) | supported | unsupported (`-32010`) in phase 1 | PRD sections 3.1 and 3.2; JSON-RPC contract sections 8.2, 13, 14 |
 | Submission and dev-node controls | supported | unsupported (`-32010`) in phase 1 | JSON-RPC contract sections 8.3, 9.3, 13 |
 | Canonical block/receipt/log queries | supported | unsupported (`-32010`) in phase 1 | PRD sections 3.1 and 10; JSON-RPC contract sections 8.4 and 13 |
 | Light sync status surface (`zevm_lightSyncStatus`) | unsupported (`-32010`) | supported | PRD sections 4.2 and 10; JSON-RPC contract sections 7.10 and 13 |

@@ -29,7 +29,7 @@ In JSON-RPC docs, the current public ZEVM RPC contract is:
 - JSON-RPC success and error envelopes return HTTP `200`
 - notification-only request or notification-only batch returns HTTP `204` with empty body
 - JSON-RPC responses use content type `application/json`
-- request bodies larger than `1,048,576` bytes return HTTP `413` with no JSON-RPC body
+- request bodies larger than `8,388,608` bytes return HTTP `413` with no JSON-RPC body
 - HTTP headers are capped by an `8,192` byte read buffer; oversized or malformed headers close the connection without a JSON-RPC body
 - listener concurrency is bounded at `64` active TCP connections; each connection has `15,000` ms read and write socket timeouts
 - slow clients do not block unrelated accepted clients; JSON-RPC handler dispatch is serialized within one ZEVM process to protect runtime state
@@ -156,16 +156,17 @@ Startup policy context:
 
 ### Trusted mode
 
-- Core reads: `eth_chainId`, `eth_blockNumber`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getStorageValues`, `eth_getTransactionCount`, `eth_accounts`, `eth_coinbase`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_blobBaseFee`, `eth_feeHistory`
-- Simulation: `eth_call`, `eth_estimateGas`
+- Core reads: `eth_chainId`, `eth_blockNumber`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getStorageValues`, `eth_getProof`, `eth_getTransactionCount`, `eth_accounts`, `eth_coinbase`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_blobBaseFee`, `eth_feeHistory`
+- Simulation and execution testing: `eth_call`, `eth_estimateGas`, `eth_createAccessList`, `eth_simulateV1`, `testing_buildBlockV1`
 - Submission: `eth_sendTransaction`, `eth_sendRawTransaction`
-- Compatibility utilities: `web3_clientVersion`, `web3_sha3`, `net_version`, `net_listening`, `net_peerCount`, `eth_mining`, `eth_syncing`, `eth_protocolVersion`
+- Compatibility utilities: `rpc_modules`, `web3_clientVersion`, `web3_sha3`, `net_version`, `net_listening`, `net_peerCount`, `eth_mining`, `eth_hashrate`, `eth_getWork`, `eth_submitWork`, `eth_submitHashrate`, `eth_syncing`, `eth_protocolVersion`
 - Mining/txpool controls: trusted `zevm_*` mining and txpool controls (plus accepted aliases)
 - Txpool introspection: `txpool_content`, `txpool_contentFrom`, `txpool_status`, `txpool_inspect`
 - Block-environment/time/reset/fork-source controls: trusted `zevm_*` block-environment/time/reset/fork-source controls (plus accepted aliases)
-- Queries: `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getBlockTransactionCountByNumber`, `eth_getBlockTransactionCountByHash`, `eth_getUncleCountByBlockNumber`, `eth_getUncleCountByBlockHash`, `eth_getTransactionByHash`, `eth_getTransactionByBlockNumberAndIndex`, `eth_getTransactionByBlockHashAndIndex`, `eth_getTransactionReceipt`, `eth_getBlockReceipts`, `eth_getLogs`, and filter lifecycle methods
+- Queries: `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getBlockTransactionCountByNumber`, `eth_getBlockTransactionCountByHash`, `eth_getUncleCountByBlockNumber`, `eth_getUncleCountByBlockHash`, `eth_getUncleByBlockNumberAndIndex`, `eth_getUncleByBlockHashAndIndex`, `eth_getTransactionByHash`, `eth_getTransactionByBlockNumberAndIndex`, `eth_getTransactionByBlockHashAndIndex`, `eth_getTransactionReceipt`, `eth_getBlockReceipts`, `eth_getBlockAccessList`, `eth_getLogs`, and filter lifecycle methods
+- Debug/raw inspection: `debug_getBadBlocks`, `debug_getRawBlock`, `debug_getRawHeader`, `debug_getRawReceipts`, `debug_getRawTransaction`
 - Account/state/chain-id/snapshot/impersonation/funding/metadata controls: trusted `zevm_*` account/state/chain-id/snapshot/impersonation/funding/metadata controls (plus accepted aliases)
-- Optional Engine API listener: `engine_*` methods from the generated execution API surface when trusted startup enables `engineRpc` or `--engine-host` / `--engine-port`; payload building/import storage remains minimal in phase 1
+- Optional Engine API listener: `engine_*` methods from the generated execution API surface when trusted startup enables `engineRpc` or `--engine-host` / `--engine-port`; supports local payload build jobs, strict `newPayload` import for known local parents, `getPayload` by payload id, payload-body lookup, and null blob sidecar lookup for unavailable blobs
 
 Snapshot/revert boundary in trusted mode: `zevm_snapshot`/`zevm_revert` affect trusted local runtime state only, do not capture light-mode sync/checkpoint state, and do not mutate remote fork-source state.
 
@@ -173,7 +174,7 @@ Snapshot/revert boundary in trusted mode: `zevm_snapshot`/`zevm_revert` affect t
 
 - Always callable: `zevm_lightSyncStatus`, `eth_chainId`
 - Readiness-gated: `eth_blockNumber`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getTransactionCount`
-- simulation methods are trusted-only in phase 1; light-mode `eth_call` and `eth_estimateGas` return `-32010`, and `eth_call` remains a deferred light-mode proof-backed target
+- simulation and execution-testing methods are trusted-only in phase 1; light-mode `eth_call`, `eth_estimateGas`, `eth_createAccessList`, `eth_simulateV1`, and `testing_buildBlockV1` return `-32010`, and `eth_call` remains a deferred light-mode proof-backed target
 
 > Readiness gate: while light mode is not ready, readiness-gated calls return `-32011`. See [Verified Light-Mode Reads Methods](./verified-light-mode-reads#methods) and [Readiness And Proof Rules](./verified-light-mode-reads#readiness-and-proof-rules).
 

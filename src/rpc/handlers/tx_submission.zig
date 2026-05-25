@@ -67,7 +67,8 @@ pub fn handleSendRawTransaction(
 
     const is_create = tx.to == null;
     const hardfork = rt.pendingHardfork();
-    if (!rawTransactionTypeSupported(tx_encoding.envelopeReceiptType(decoded), hardfork)) {
+    const receipt_type = tx_encoding.envelopeReceiptType(decoded);
+    if (!rawTransactionTypeSupported(receipt_type, hardfork)) {
         return TxSubmissionError.UnsupportedTxType;
     }
 
@@ -86,8 +87,13 @@ pub fn handleSendRawTransaction(
     // Balance covers value + max gas cost.
     const max_fee_per_gas = tx_encoding.envelopeMaxFeePerGas(decoded) orelse tx.gas_price;
     const max_priority_fee_per_gas = tx_encoding.envelopeMaxPriorityFeePerGas(decoded) orelse tx.gas_price;
-    const max_gas_cost = max_fee_per_gas * @as(u256, tx.gas_limit);
-    const total_cost = tx.value +| max_gas_cost;
+    const max_gas_cost = std.math.mul(u256, max_fee_per_gas, @as(u256, tx.gas_limit)) catch return TxSubmissionError.InsufficientBalance;
+    const max_blob_gas_cost = std.math.mul(
+        u256,
+        tx_encoding.envelopeMaxFeePerBlobGas(decoded) orelse 0,
+        tx_encoding.envelopeBlobGasUsed(decoded) orelse 0,
+    ) catch return TxSubmissionError.InsufficientBalance;
+    const total_cost = tx.value +| max_gas_cost +| max_blob_gas_cost;
     const balance = rt.state.getBalance(sender) catch return TxSubmissionError.StateError;
     if (balance < total_cost) return TxSubmissionError.InsufficientBalance;
 
@@ -99,32 +105,50 @@ pub fn handleSendRawTransaction(
 
     const tx_hash = computeTxHash(canonical.bytes);
 
-    if (tx_encoding.envelopeReceiptType(decoded) != .eip4844) {
-        rt.pool.setNonce(sender, current_nonce) catch return TxSubmissionError.PoolInsertFailed;
-        rt.pool.add(allocator, .{
-            .sender = sender,
-            .nonce = tx.nonce,
-            .gas_limit = tx.gas_limit,
-            .max_fee_per_gas = max_fee_per_gas,
-            .max_priority_fee_per_gas = max_priority_fee_per_gas,
-            .hash = tx_hash,
-            .to = tx.to,
-            .value = tx.value,
-            .input = tx.data,
-            .raw = canonical.bytes,
-            .v = tx.v,
-            .r = tx.r,
-            .s = tx.s,
-        }) catch |err| switch (err) {
-            error.ReplacementUnderpriced => return TxSubmissionError.PoolInsertFailed,
+    const blob_versioned_hashes = tx_encoding.envelopeBlobVersionedHashBytes(allocator, decoded) catch return TxSubmissionError.OutOfMemory;
+    defer if (blob_versioned_hashes) |hashes| allocator.free(hashes);
+    const blob_sidecars = if (receipt_type == .eip4844)
+        tx_encoding.eip4844BlobSidecars(
+            allocator,
+            raw_bytes,
+            tx_encoding.envelopeBlobVersionedHashes(decoded) orelse &.{},
+        ) catch |err| switch (err) {
             error.OutOfMemory => return TxSubmissionError.OutOfMemory,
-        };
-    }
+            else => return TxSubmissionError.DecodeFailed,
+        }
+    else
+        null;
+    defer if (blob_sidecars) |sidecars| allocator.free(sidecars);
+
+    rt.pool.setNonce(sender, current_nonce) catch return TxSubmissionError.PoolInsertFailed;
+    rt.pool.add(allocator, .{
+        .sender = sender,
+        .nonce = tx.nonce,
+        .gas_limit = tx.gas_limit,
+        .max_fee_per_gas = max_fee_per_gas,
+        .max_priority_fee_per_gas = max_priority_fee_per_gas,
+        .max_fee_per_blob_gas = tx_encoding.envelopeMaxFeePerBlobGas(decoded),
+        .receipt_type = receipt_type,
+        .hash = tx_hash,
+        .to = tx.to,
+        .value = tx.value,
+        .input = tx.data,
+        .raw = canonical.bytes,
+        .blob_versioned_hashes = blob_versioned_hashes orelse &.{},
+        .blob_sidecars = blob_sidecars orelse &.{},
+        .v = tx.v,
+        .r = tx.r,
+        .s = tx.s,
+    }) catch |err| switch (err) {
+        error.ReplacementUnderpriced => return TxSubmissionError.PoolInsertFailed,
+        error.OutOfMemory => return TxSubmissionError.OutOfMemory,
+    };
+    rt.recordPendingTransactionFilterEvent(tx_hash) catch return TxSubmissionError.OutOfMemory;
 
     logTxAccepted(rt, "sendRawTransaction", sender, tx.nonce, tx.gas_limit, tx_hash);
 
     switch (rt.mining_config) {
-        .auto => if (tx_encoding.envelopeReceiptType(decoded) != .eip4844 and tx.nonce == current_nonce)
+        .auto => if (receipt_type != .eip4844 and tx.nonce == current_nonce)
             automine(rt) catch return TxSubmissionError.MiningFailed,
         .manual, .interval => {},
     }
@@ -230,6 +254,7 @@ pub fn handleSendTransaction(
         error.ReplacementUnderpriced => return TxSubmissionError.PoolInsertFailed,
         error.OutOfMemory => return TxSubmissionError.OutOfMemory,
     };
+    rt.recordPendingTransactionFilterEvent(tx_hash) catch return TxSubmissionError.OutOfMemory;
 
     logTxAccepted(rt, "sendTransaction", request.from, tx.nonce, tx.gas_limit, tx_hash);
 

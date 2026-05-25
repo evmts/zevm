@@ -116,6 +116,46 @@ test "txpool_content groups pending and queued transactions by sender and decima
     try std.testing.expectEqual(.null, try field(pending_tx, "transactionIndex"));
 }
 
+test "txpool_content omits blob-pool-only transactions while status counts them" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+
+    const sender = runtime.DEFAULT_DEV_ACCOUNTS[0];
+    try rt.pool.setNonce(sender, 0);
+    try rt.pool.add(std.testing.allocator, .{
+        .sender = sender,
+        .nonce = 0,
+        .gas_limit = 21_000,
+        .max_fee_per_gas = 1_000_000_000,
+        .hash = makeHash(0x11),
+    });
+    try rt.pool.add(std.testing.allocator, .{
+        .sender = sender,
+        .nonce = 1,
+        .gas_limit = 21_000,
+        .max_fee_per_gas = 1_000_000_000,
+        .max_fee_per_blob_gas = 1,
+        .receipt_type = .eip4844,
+        .hash = makeHash(0x22),
+    });
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const status = try txpool.handleStatus(arena.allocator(), &rt, null);
+    const status_obj = try expectObject(status);
+    try std.testing.expectEqualStrings("0x2", (try field(status_obj, "pending")).string);
+
+    const content = try txpool.handleContent(arena.allocator(), &rt, null);
+    const root = try expectObject(content);
+    const pending = try expectObject(try field(root, "pending"));
+    const account_key = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+    const pending_account = try expectObject(try field(pending, account_key));
+
+    _ = try field(pending_account, "0");
+    try std.testing.expect(pending_account.get("1") == null);
+}
+
 test "txpool_inspect returns geth-style summaries" {
     var rt = try makeRuntime();
     defer rt.deinit();

@@ -69,6 +69,7 @@ pub const TrustedConfig = struct {
     mining_config: mining.MiningConfig,
     hardfork_config: hardfork_schedule.ChainConfig,
     fork: ?ForkConfig,
+    engine_sync_fallback_url: ?[]const u8,
     genesis_alloc_path: ?[]const u8,
     chain_rlp_path: ?[]const u8,
 
@@ -86,6 +87,7 @@ pub const TrustedConfig = struct {
             .hardfork_config = self.hardfork_config,
             .fork_url = if (self.fork) |fork| fork.url else null,
             .fork_block_number = if (self.fork) |fork| fork.block_number else null,
+            .engine_sync_fallback_url = self.engine_sync_fallback_url,
             .genesis_alloc_path = self.genesis_alloc_path,
             .chain_rlp_path = self.chain_rlp_path,
         };
@@ -143,6 +145,9 @@ pub const AppConfig = struct {
                 if (trusted.fork) |fork| {
                     allocator.free(fork.url);
                 }
+                if (trusted.engine_sync_fallback_url) |url| {
+                    allocator.free(url);
+                }
                 if (trusted.genesis_alloc_path) |path| {
                     allocator.free(path);
                 }
@@ -197,6 +202,7 @@ const FileTrusted = struct {
     mining_config: ?mining.MiningConfig = null,
     hardfork_config: ?FileHardforkConfig = null,
     fork: ?FileFork = null,
+    engine_sync_fallback_url: ?[]const u8 = null,
     genesis_alloc_path: ?[]const u8 = null,
     chain_rlp_path: ?[]const u8 = null,
 };
@@ -409,6 +415,11 @@ fn resolveTrusted(
     else
         null;
     errdefer if (chain_rlp_path) |path| allocator.free(path);
+    const engine_sync_fallback_url = if (file_value.engine_sync_fallback_url) |url|
+        try allocator.dupe(u8, url)
+    else
+        null;
+    errdefer if (engine_sync_fallback_url) |url| allocator.free(url);
     const chain_id = options.chain_id orelse file_value.chain_id orelse node_runtime.DEFAULT_CHAIN_ID;
 
     return .{
@@ -423,6 +434,7 @@ fn resolveTrusted(
         .mining_config = try resolveMining(options, file_value.mining_config),
         .hardfork_config = resolveHardforkConfig(chain_id, file_value.hardfork_config),
         .fork = fork,
+        .engine_sync_fallback_url = engine_sync_fallback_url,
         .genesis_alloc_path = genesis_alloc_path,
         .chain_rlp_path = chain_rlp_path,
     };
@@ -747,6 +759,8 @@ fn parseTrusted(value: std.json.Value) LoadError!FileTrusted {
             trusted.hardfork_config = try parseHardforkConfig(entry.value_ptr.*);
         } else if (std.mem.eql(u8, key, "fork")) {
             trusted.fork = try parseFork(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "engineSyncFallbackRpc")) {
+            trusted.engine_sync_fallback_url = try parseOptionalString(entry.value_ptr.*);
         } else if (std.mem.eql(u8, key, "genesis")) {
             trusted.genesis_alloc_path = try parseOptionalString(entry.value_ptr.*);
         } else if (std.mem.eql(u8, key, "chainRlp")) {
@@ -983,6 +997,7 @@ fn deinitModeConfig(allocator: std.mem.Allocator, mode_config: ModeConfig) void 
     switch (mode_config) {
         .trusted => |trusted| {
             freeFork(allocator, trusted.fork);
+            if (trusted.engine_sync_fallback_url) |url| allocator.free(url);
             if (trusted.genesis_alloc_path) |path| allocator.free(path);
             if (trusted.chain_rlp_path) |path| allocator.free(path);
         },

@@ -6,7 +6,9 @@ const dispatch_wiring = @import("dispatch_wiring.zig");
 const genesis_mod = @import("../genesis.zig");
 const light_proof = @import("../light_proof.zig");
 const mining = @import("../mining.zig");
+const block_builder = @import("../block_builder.zig");
 const runtime_mod = @import("../node/runtime.zig");
+const tx_encoding = @import("../transaction_encoding.zig");
 
 fn makeRequest(method: []const u8, params: ?std.json.Value) !jsonrpc.envelope.RequestEnvelope {
     return .{
@@ -25,6 +27,21 @@ fn dispatchQuantityRequest(
     var params = std.json.Array.init(std.testing.allocator);
     defer params.deinit();
     try params.append(.{ .string = quantity });
+
+    var request = try makeRequest(method, .{ .array = params });
+    defer request.deinit(std.testing.allocator);
+
+    return dispatcher.dispatch(std.testing.allocator, request, handlers);
+}
+
+fn dispatchBoolRequest(
+    handlers: *const dispatcher.HandlerRegistry,
+    method: []const u8,
+    value: bool,
+) !jsonrpc.envelope.ResponseEnvelope {
+    var params = std.json.Array.init(std.testing.allocator);
+    defer params.deinit();
+    try params.append(.{ .bool = value });
 
     var request = try makeRequest(method, .{ .array = params });
     defer request.deinit(std.testing.allocator);
@@ -135,84 +152,12 @@ const contract_method_prefixes = [_][]const u8{
     "evm_",
 };
 
-const upstream_execution_api_methods = [_][]const u8{
-    "debug_getBadBlocks",
-    "debug_getRawBlock",
-    "debug_getRawHeader",
-    "debug_getRawReceipts",
-    "debug_getRawTransaction",
-    "engine_exchangeCapabilities",
-    "engine_exchangeTransitionConfigurationV1",
-    "engine_forkchoiceUpdatedV1",
-    "engine_forkchoiceUpdatedV2",
-    "engine_forkchoiceUpdatedV3",
-    "engine_forkchoiceUpdatedV4",
-    "engine_getBlobsV1",
-    "engine_getBlobsV2",
-    "engine_getBlobsV3",
-    "engine_getClientVersionV1",
-    "engine_getPayloadBodiesByHashV1",
-    "engine_getPayloadBodiesByHashV2",
-    "engine_getPayloadBodiesByRangeV1",
-    "engine_getPayloadBodiesByRangeV2",
-    "engine_getPayloadV1",
-    "engine_getPayloadV2",
-    "engine_getPayloadV3",
-    "engine_getPayloadV4",
-    "engine_getPayloadV5",
-    "engine_getPayloadV6",
-    "engine_newPayloadV1",
-    "engine_newPayloadV2",
-    "engine_newPayloadV3",
-    "engine_newPayloadV4",
-    "engine_newPayloadV5",
-    "eth_accounts",
-    "eth_blobBaseFee",
-    "eth_blockNumber",
-    "eth_call",
-    "eth_chainId",
-    "eth_coinbase",
-    "eth_createAccessList",
-    "eth_estimateGas",
-    "eth_feeHistory",
-    "eth_gasPrice",
-    "eth_getBalance",
-    "eth_getBlockAccessList",
-    "eth_getBlockByHash",
-    "eth_getBlockByNumber",
-    "eth_getBlockReceipts",
-    "eth_getBlockTransactionCountByHash",
-    "eth_getBlockTransactionCountByNumber",
-    "eth_getCode",
-    "eth_getFilterChanges",
-    "eth_getFilterLogs",
-    "eth_getLogs",
-    "eth_getProof",
-    "eth_getStorageAt",
-    "eth_getStorageValues",
-    "eth_getTransactionByBlockHashAndIndex",
-    "eth_getTransactionByBlockNumberAndIndex",
-    "eth_getTransactionByHash",
-    "eth_getTransactionCount",
-    "eth_getTransactionReceipt",
-    "eth_getUncleCountByBlockHash",
-    "eth_getUncleCountByBlockNumber",
-    "eth_maxPriorityFeePerGas",
-    "eth_newBlockFilter",
-    "eth_newFilter",
-    "eth_newPendingTransactionFilter",
-    "eth_sendRawTransaction",
-    "eth_sendTransaction",
-    "eth_sign",
-    "eth_signTransaction",
-    "eth_simulateV1",
-    "eth_syncing",
-    "eth_uninstallFilter",
-    "net_version",
-    "testing_buildBlockV1",
-    "txpool_content",
-    "txpool_contentFrom",
-    "txpool_status",
+const upstream_execution_api_method_dirs = [_][]const u8{
+    "lib/execution-apis/src/eth",
+    "lib/execution-apis/src/debug",
+    "lib/execution-apis/src/txpool",
+    "lib/execution-apis/src/testing",
+    "lib/execution-apis/src/engine/openrpc/methods",
 };
 
 fn collectContractMethodInventory(allocator: std.mem.Allocator, methods: *ContractMethodInventory) !void {
@@ -228,6 +173,36 @@ fn collectSourceMethodInventory(allocator: std.mem.Allocator, methods: *Contract
 
     try collectQuotedMethodTokens(methods, dispatcher_source);
     try collectQuotedMethodTokens(methods, wiring_source);
+}
+
+fn collectUpstreamExecutionApiMethodInventory(allocator: std.mem.Allocator, methods: *ContractMethodInventory) !void {
+    const cwd = std.fs.cwd();
+    for (upstream_execution_api_method_dirs) |dir_path| {
+        var dir = try cwd.openDir(dir_path, .{ .iterate = true });
+        defer dir.close();
+
+        var entries = dir.iterate();
+        while (try entries.next()) |entry| {
+            if (entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, entry.name, ".yaml") and !std.mem.endsWith(u8, entry.name, ".yml")) continue;
+
+            const file_path = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
+            const contents = try cwd.readFileAlloc(allocator, file_path, 2 * 1024 * 1024);
+            try collectTopLevelYamlMethods(methods, contents);
+        }
+    }
+}
+
+fn collectTopLevelYamlMethods(methods: *ContractMethodInventory, contents: []const u8) !void {
+    var lines = std.mem.splitScalar(u8, contents, '\n');
+    while (lines.next()) |line| {
+        const prefix = "- name: ";
+        if (!std.mem.startsWith(u8, line, prefix)) continue;
+
+        const method = std.mem.trim(u8, line[prefix.len..], " \t\r'\"");
+        if (!isConcreteMethodName(method)) continue;
+        if (!methods.contains(method)) try methods.put(method, {});
+    }
 }
 
 fn collectMethodsFromSection(
@@ -316,15 +291,17 @@ fn expectInventoriesEqual(contract_methods: *ContractMethodInventory, source_met
     if (missing_from_source != 0 or missing_from_contract != 0) return error.JsonRpcContractInventoryMismatch;
 }
 
-fn expectMethodsPresent(
-    methods: *ContractMethodInventory,
-    comptime inventory_name: []const u8,
-    required_methods: []const []const u8,
+fn expectInventoryContains(
+    haystack: *ContractMethodInventory,
+    comptime haystack_name: []const u8,
+    needle: *ContractMethodInventory,
+    comptime needle_name: []const u8,
 ) !void {
     var missing: usize = 0;
-    for (required_methods) |method| {
-        if (!methods.contains(method)) {
-            std.debug.print("{s} is missing upstream execution API method: {s}\n", .{ inventory_name, method });
+    var needle_it = needle.keyIterator();
+    while (needle_it.next()) |method| {
+        if (!haystack.contains(method.*)) {
+            std.debug.print("{s} is missing {s} method: {s}\n", .{ haystack_name, needle_name, method.* });
             missing += 1;
         }
     }
@@ -406,6 +383,8 @@ fn contractProbeParams(allocator: std.mem.Allocator, method: []const u8) !?std.j
         "hardhat_metadata",
         "zevm_nodeInfo",
         "anvil_nodeInfo",
+        "zevm_enableTraces",
+        "anvil_enableTraces",
         "zevm_lightSyncStatus",
     })) return null;
 
@@ -632,6 +611,9 @@ fn contractProbeParams(allocator: std.mem.Allocator, method: []const u8) !?std.j
         "zevm_setNextBlockBaseFeePerGas",
         "anvil_setNextBlockBaseFeePerGas",
         "hardhat_setNextBlockBaseFeePerGas",
+        "zevm_setPrevRandao",
+        "anvil_setPrevRandao",
+        "hardhat_setPrevRandao",
         "zevm_setMinGasPrice",
         "anvil_setMinGasPrice",
         "hardhat_setMinGasPrice",
@@ -660,8 +642,16 @@ fn contractProbeParams(allocator: std.mem.Allocator, method: []const u8) !?std.j
         "evm_setAutomine",
         "zevm_autoImpersonateAccount",
         "anvil_autoImpersonateAccount",
+        "hardhat_setLoggingEnabled",
     })) {
         return try arrayParams(allocator, &.{.{ .bool = true }});
+    }
+    if (methodIs(method, &.{ "zevm_addCompilationResult", "hardhat_addCompilationResult" })) {
+        return try arrayParams(allocator, &.{
+            .{ .string = "0.8.24" },
+            try emptyObjectValue(allocator),
+            try emptyObjectValue(allocator),
+        });
     }
     if (methodIs(method, &.{ "zevm_setRpcUrl", "anvil_setRpcUrl" })) {
         return try arrayParams(allocator, &.{.{ .string = "https://example.invalid" }});
@@ -734,6 +724,21 @@ fn hashText(allocator: std.mem.Allocator, hash: [32]u8) ![]u8 {
     return std.fmt.allocPrint(allocator, "0x{s}", .{&hex});
 }
 
+fn rpcHashFromValue(value: std.json.Value) ![32]u8 {
+    const text = switch (value) {
+        .string => |s| s,
+        else => return error.InvalidHash,
+    };
+    if (text.len != 66 or text[0] != '0' or text[1] != 'x') return error.InvalidHash;
+    var bytes: [32]u8 = undefined;
+    _ = std.fmt.hexToBytes(&bytes, text[2..]) catch return error.InvalidHash;
+    return bytes;
+}
+
+fn emptyArrayValueForTest(allocator: std.mem.Allocator) std.json.Value {
+    return .{ .array = std.json.Array.init(allocator) };
+}
+
 fn bytes32Value() std.json.Value {
     return .{ .string = "0x0000000000000000000000000000000000000000000000000000000000000000" };
 }
@@ -761,13 +766,15 @@ test "upstream execution API methods are documented and routed" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
+    var upstream_methods = ContractMethodInventory.init(arena.allocator());
     var contract_methods = ContractMethodInventory.init(arena.allocator());
     var source_methods = ContractMethodInventory.init(arena.allocator());
+    try collectUpstreamExecutionApiMethodInventory(arena.allocator(), &upstream_methods);
     try collectContractMethodInventory(arena.allocator(), &contract_methods);
     try collectSourceMethodInventory(arena.allocator(), &source_methods);
 
-    try expectMethodsPresent(&contract_methods, "phase-1 JSON-RPC contract", &upstream_execution_api_methods);
-    try expectMethodsPresent(&source_methods, "dispatcher wiring", &upstream_execution_api_methods);
+    try expectInventoryContains(&contract_methods, "phase-1 JSON-RPC contract", &upstream_methods, "upstream execution API");
+    try expectInventoryContains(&source_methods, "dispatcher wiring", &upstream_methods, "upstream execution API");
 }
 
 test "canonical JSON-RPC methods never fall through routing" {
@@ -981,6 +988,192 @@ test "installed dispatch wiring reaches runtime-backed eth_feeHistory" {
     const reward = (try getObjectField(result, "reward")).array.items;
     try std.testing.expectEqual(@as(usize, 1), reward.len);
     try std.testing.expectEqual(@as(usize, 2), reward[0].array.items.len);
+}
+
+test "installed dispatch wiring tracks eth_newBlockFilter changes" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var create_response = try dispatchForTest(&rt, "eth_newBlockFilter", null);
+    defer create_response.deinit(std.testing.allocator);
+    try std.testing.expect(create_response.error_value == null);
+    const filter_id = create_response.result.?.string;
+
+    try rt.mineBlocks(1, 0);
+    const block = (try rt.blockchain.getBlockByNumber(1)).?;
+    const block_hash = try primitives.Hex.bytesToHex(std.testing.allocator, &block.hash);
+    defer std.testing.allocator.free(block_hash);
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .string = filter_id });
+
+        var response = try dispatchForTest(&rt, "eth_getFilterChanges", .{ .array = params });
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        const changes = response.result.?.array.items;
+        try std.testing.expectEqual(@as(usize, 1), changes.len);
+        try std.testing.expectEqualStrings(block_hash, changes[0].string);
+    }
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .string = filter_id });
+
+        var response = try dispatchForTest(&rt, "eth_getFilterChanges", .{ .array = params });
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expectEqual(@as(usize, 0), response.result.?.array.items.len);
+    }
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .string = filter_id });
+
+        var response = try dispatchForTest(&rt, "eth_uninstallFilter", .{ .array = params });
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expect(response.result.?.bool);
+    }
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .string = filter_id });
+
+        var response = try dispatchForTest(&rt, "eth_uninstallFilter", .{ .array = params });
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expect(!response.result.?.bool);
+    }
+}
+
+test "installed dispatch wiring tracks eth_newPendingTransactionFilter changes" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+    try rt.setAutomine(false);
+
+    var create_response = try dispatchForTest(&rt, "eth_newPendingTransactionFilter", null);
+    defer create_response.deinit(std.testing.allocator);
+    try std.testing.expect(create_response.error_value == null);
+    const filter_id = create_response.result.?.string;
+
+    var tx = std.json.ObjectMap.init(std.testing.allocator);
+    defer tx.deinit();
+    try tx.put("from", .{ .string = managedAddressText() });
+    try tx.put("to", validAddress());
+    try tx.put("gas", .{ .string = "0x5208" });
+    try tx.put("value", .{ .string = "0x1" });
+
+    var send_params = std.json.Array.init(std.testing.allocator);
+    defer send_params.deinit();
+    try send_params.append(.{ .object = tx });
+
+    var send_response = try dispatchForTest(&rt, "eth_sendTransaction", .{ .array = send_params });
+    defer send_response.deinit(std.testing.allocator);
+    try std.testing.expect(send_response.error_value == null);
+    const tx_hash = send_response.result.?.string;
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .string = filter_id });
+
+        var response = try dispatchForTest(&rt, "eth_getFilterChanges", .{ .array = params });
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        const changes = response.result.?.array.items;
+        try std.testing.expectEqual(@as(usize, 1), changes.len);
+        try std.testing.expectEqualStrings(tx_hash, changes[0].string);
+    }
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .string = filter_id });
+
+        var response = try dispatchForTest(&rt, "eth_getFilterChanges", .{ .array = params });
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expectEqual(@as(usize, 0), response.result.?.array.items.len);
+    }
+}
+
+test "installed dispatch wiring tracks eth_newFilter log changes" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    const target_text = "0x00000000000000000000000000000000000000aa";
+    const target = try parseTestAddress(target_text);
+    try rt.setCode(target, &[_]u8{ 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xa0, 0x00 });
+
+    var filter = std.json.ObjectMap.init(std.testing.allocator);
+    defer filter.deinit();
+    try filter.put("address", .{ .string = target_text });
+
+    var filter_params = std.json.Array.init(std.testing.allocator);
+    defer filter_params.deinit();
+    try filter_params.append(.{ .object = filter });
+
+    var create_response = try dispatchForTest(&rt, "eth_newFilter", .{ .array = filter_params });
+    defer create_response.deinit(std.testing.allocator);
+    try std.testing.expect(create_response.error_value == null);
+    const filter_id = create_response.result.?.string;
+
+    var tx = std.json.ObjectMap.init(std.testing.allocator);
+    defer tx.deinit();
+    try tx.put("from", .{ .string = managedAddressText() });
+    try tx.put("to", .{ .string = target_text });
+    try tx.put("gas", .{ .string = "0x100000" });
+    try tx.put("value", .{ .string = "0x0" });
+
+    var send_params = std.json.Array.init(std.testing.allocator);
+    defer send_params.deinit();
+    try send_params.append(.{ .object = tx });
+
+    var send_response = try dispatchForTest(&rt, "eth_sendTransaction", .{ .array = send_params });
+    defer send_response.deinit(std.testing.allocator);
+    try std.testing.expect(send_response.error_value == null);
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .string = filter_id });
+
+        var response = try dispatchForTest(&rt, "eth_getFilterChanges", .{ .array = params });
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        const changes = response.result.?.array.items;
+        try std.testing.expectEqual(@as(usize, 1), changes.len);
+        try std.testing.expectEqualStrings(target_text, (try getObjectField(changes[0], "address")).string);
+        try std.testing.expectEqualStrings("0x000000000000000000000000000000000000000000000000000000000000002a", (try getObjectField(changes[0], "data")).string);
+        try std.testing.expectEqual(@as(usize, 0), (try getObjectField(changes[0], "topics")).array.items.len);
+    }
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .string = filter_id });
+
+        var response = try dispatchForTest(&rt, "eth_getFilterChanges", .{ .array = params });
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expectEqual(@as(usize, 0), response.result.?.array.items.len);
+    }
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .string = filter_id });
+
+        var response = try dispatchForTest(&rt, "eth_getFilterLogs", .{ .array = params });
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expectEqual(@as(usize, 1), response.result.?.array.items.len);
+    }
 }
 
 test "installed dispatch wiring rejects params for no-param trusted methods" {
@@ -1422,6 +1615,47 @@ test "installed dispatch wiring stores block environment override aliases" {
     try std.testing.expectEqualStrings("0x1", blob_read_response.result.?.string);
 }
 
+test "installed dispatch wiring supports tracing and prevrandao compatibility helpers" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    var traces_response = try dispatchForTest(&rt, "anvil_enableTraces", null);
+    defer traces_response.deinit(std.testing.allocator);
+    try std.testing.expect(traces_response.error_value == null);
+    try std.testing.expect(traces_response.result.?.bool);
+
+    var logging_response = try dispatchBoolRequest(&handlers, "hardhat_setLoggingEnabled", false);
+    defer logging_response.deinit(std.testing.allocator);
+    try std.testing.expect(logging_response.error_value == null);
+    try std.testing.expect(logging_response.result.?.bool);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var compilation_params = std.json.Array.init(arena.allocator());
+    try compilation_params.append(.{ .string = "0.8.24" });
+    try compilation_params.append(try emptyObjectValue(arena.allocator()));
+    try compilation_params.append(try emptyObjectValue(arena.allocator()));
+    var compilation_request = try makeRequest("hardhat_addCompilationResult", .{ .array = compilation_params });
+    defer compilation_request.deinit(std.testing.allocator);
+    var compilation_response = try dispatcher.dispatch(std.testing.allocator, compilation_request, &handlers);
+    defer compilation_response.deinit(std.testing.allocator);
+    try std.testing.expect(compilation_response.error_value == null);
+    try std.testing.expect(compilation_response.result.?.bool);
+
+    var randao_response = try dispatchOneStringParam(
+        &handlers,
+        "hardhat_setPrevRandao",
+        "0x0000000000000000000000000000000000000000000000000000000000000042",
+    );
+    defer randao_response.deinit(std.testing.allocator);
+    try std.testing.expect(randao_response.error_value == null);
+    try std.testing.expect(randao_response.result.?.bool);
+    try std.testing.expectEqual(@as(u256, 0x42), rt.dev_runtime.config.prev_randao.?);
+}
+
 test "undocumented compatibility aliases return method not found" {
     var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();
@@ -1530,6 +1764,78 @@ test "installed dispatch wiring removes txpool transactions" {
     try std.testing.expect(drop_all_response.error_value == null);
     try std.testing.expectEqualStrings("0x2", drop_all_response.result.?.string);
     try std.testing.expectEqual(@as(usize, 0), rt.pool.items().len);
+}
+
+test "engine_getBlobsV1 returns blob sidecars from txpool" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    var sidecar: primitives.Blob.BlobSidecar = undefined;
+    @memset(sidecar.blob[0..], 0xab);
+    sidecar.commitment = [_]u8{0x11} ** 48;
+    sidecar.proof = [_]u8{0x22} ** 48;
+    const versioned_hash = primitives.Blob.commitmentToVersionedHash(sidecar.commitment).bytes;
+    const hash_hex = try primitives.Hex.bytesToHex(std.testing.allocator, &versioned_hash);
+    defer std.testing.allocator.free(hash_hex);
+    const proof_hex = try primitives.Hex.bytesToHex(std.testing.allocator, &sidecar.proof);
+    defer std.testing.allocator.free(proof_hex);
+
+    try rt.pool.setNonce(runtime_mod.DEFAULT_DEV_ACCOUNTS[0], 0);
+    try rt.pool.add(std.testing.allocator, .{
+        .sender = runtime_mod.DEFAULT_DEV_ACCOUNTS[0],
+        .nonce = 0,
+        .gas_limit = 21_000,
+        .max_fee_per_gas = runtime_mod.DEFAULT_GAS_PRICE,
+        .receipt_type = .eip4844,
+        .hash = [_]u8{0x44} ** 32,
+        .blob_versioned_hashes = &[_][32]u8{versioned_hash},
+        .blob_sidecars = &[_]primitives.Blob.BlobSidecar{sidecar},
+    });
+
+    var hashes = std.json.Array.init(std.testing.allocator);
+    defer hashes.deinit();
+    try hashes.append(.{ .string = hash_hex });
+    var params = std.json.Array.init(std.testing.allocator);
+    defer params.deinit();
+    try params.append(.{ .array = hashes });
+
+    var request = try makeRequest("engine_getBlobsV1", .{ .array = params });
+    defer request.deinit(std.testing.allocator);
+    var response = try dispatcher.dispatch(std.testing.allocator, request, &handlers);
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expect(response.error_value == null);
+    const result_items = response.result.?.array.items;
+    try std.testing.expectEqual(@as(usize, 1), result_items.len);
+    const blob_object = result_items[0].object;
+    try std.testing.expectEqualStrings(proof_hex, blob_object.get("proof").?.string);
+    try std.testing.expectEqual(@as(usize, 2 + primitives.Blob.BYTES_PER_BLOB * 2), blob_object.get("blob").?.string.len);
+}
+
+test "eth_getTransactionByHash returns pending txpool transaction" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    const hash = [_]u8{0xaa} ** 32;
+    const hash_hex = try primitives.Hex.bytesToHex(std.testing.allocator, &hash);
+    defer std.testing.allocator.free(hash_hex);
+    try addPooledTransaction(&rt, runtime_mod.DEFAULT_DEV_ACCOUNTS[0], hash);
+
+    var response = try dispatchOneStringParam(&handlers, "eth_getTransactionByHash", hash_hex);
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expect(response.error_value == null);
+    const tx = response.result.?.object;
+    try std.testing.expectEqualStrings(hash_hex, tx.get("hash").?.string);
+    try std.testing.expect(tx.get("blockHash").? == .null);
+    try std.testing.expect(tx.get("blockNumber").? == .null);
+    try std.testing.expect(tx.get("transactionIndex").? == .null);
 }
 
 test "installed dispatch wiring returns detailed mining summaries" {
@@ -2316,6 +2622,12 @@ test "engine lifecycle methods are routed and validate params" {
         try expectErrorCode(&rt, method, null, jsonrpc.envelope.ErrorCode.INVALID_PARAMS);
     }
 
+    var range_params = std.json.Array.init(std.testing.allocator);
+    defer range_params.deinit();
+    try range_params.append(.{ .string = "0x0" });
+    try range_params.append(.{ .string = "0x1" });
+    try expectErrorCode(&rt, "engine_getPayloadBodiesByRangeV1", .{ .array = range_params }, jsonrpc.envelope.ErrorCode.INVALID_PARAMS);
+
     var params = std.json.Array.init(std.testing.allocator);
     defer params.deinit();
     try params.append(.{ .string = "0x0000000000000001" });
@@ -2388,6 +2700,283 @@ test "engine forkchoice reports syncing for unknown head" {
     const payload_status = try getObjectField(response.result.?, "payloadStatus");
     try std.testing.expectEqualStrings("SYNCING", (try getObjectField(payload_status, "status")).string);
     try std.testing.expectEqual(.null, try getObjectField(payload_status, "latestValidHash"));
+}
+
+test "engine forkchoice reports invalid for known invalid head" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    try rt.mineBlocks(1, 1);
+    const genesis_block = (try rt.blockchain.getBlockByNumber(0)).?;
+    const block_1 = (try rt.blockchain.getBlockByNumber(1)).?;
+
+    var invalid_head = block_1;
+    invalid_head.header.state_root[31] ^= 0x01;
+    invalid_head.hash = try block_builder.computeHeaderHashWithRequestsHash(
+        std.testing.allocator,
+        &invalid_head.header,
+        null,
+    );
+
+    const imported = try rt.importEnginePayloadBlock(invalid_head, null);
+    try std.testing.expectEqual(runtime_mod.EnginePayloadImportStatus.invalid, imported.status);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const invalid_head_text = try hashText(allocator, invalid_head.hash);
+    const latest_valid_text = try hashText(allocator, genesis_block.hash);
+
+    var forkchoice = std.json.ObjectMap.init(allocator);
+    try forkchoice.put("headBlockHash", .{ .string = invalid_head_text });
+    try forkchoice.put("safeBlockHash", hash32Value());
+    try forkchoice.put("finalizedBlockHash", hash32Value());
+
+    var params = std.json.Array.init(allocator);
+    try params.append(.{ .object = forkchoice });
+    try params.append(.null);
+
+    var request = try makeRequest("engine_forkchoiceUpdatedV3", .{ .array = params });
+    defer request.deinit(std.testing.allocator);
+
+    var response = try dispatcher.dispatch(std.testing.allocator, request, &handlers);
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expect(response.error_value == null);
+    const payload_status = try getObjectField(response.result.?, "payloadStatus");
+    try std.testing.expectEqualStrings("INVALID", (try getObjectField(payload_status, "status")).string);
+    try std.testing.expectEqualStrings(latest_valid_text, (try getObjectField(payload_status, "latestValidHash")).string);
+}
+
+test "engine newPayload stores a locally built payload until forkchoice applies it" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const head = try rt.blockchain.getCanonicalHeadBlock();
+    const head_text = try hashText(allocator, head.hash);
+
+    var attrs = std.json.ObjectMap.init(allocator);
+    try attrs.put("timestamp", .{ .string = "0x1" });
+    try attrs.put("prevRandao", hash32Value());
+    try attrs.put("suggestedFeeRecipient", validAddress());
+    try attrs.put("withdrawals", emptyArrayValueForTest(allocator));
+    try attrs.put("parentBeaconBlockRoot", hash32Value());
+
+    var build_params = std.json.Array.init(allocator);
+    try build_params.append(.{ .string = head_text });
+    try build_params.append(.{ .object = attrs });
+    try build_params.append(.null);
+    try build_params.append(.{ .string = "0x" });
+
+    var build_request = try makeRequest("testing_buildBlockV1", .{ .array = build_params });
+    defer build_request.deinit(std.testing.allocator);
+    var build_response = try dispatcher.dispatch(std.testing.allocator, build_request, &handlers);
+    defer build_response.deinit(std.testing.allocator);
+    try std.testing.expect(build_response.error_value == null);
+
+    const payload = try getObjectField(build_response.result.?, "executionPayload");
+
+    const expected_blobs = std.json.Array.init(allocator);
+    var new_payload_params = std.json.Array.init(allocator);
+    try new_payload_params.append(payload);
+    try new_payload_params.append(.{ .array = expected_blobs });
+    try new_payload_params.append(hash32Value());
+
+    var new_payload_request = try makeRequest("engine_newPayloadV3", .{ .array = new_payload_params });
+    defer new_payload_request.deinit(std.testing.allocator);
+    var new_payload_response = try dispatcher.dispatch(std.testing.allocator, new_payload_request, &handlers);
+    defer new_payload_response.deinit(std.testing.allocator);
+
+    try std.testing.expect(new_payload_response.error_value == null);
+    try std.testing.expectEqualStrings("VALID", (try getObjectField(new_payload_response.result.?, "status")).string);
+    const imported_hash = try rpcHashFromValue(try getObjectField(payload, "blockHash"));
+    try std.testing.expectEqual(@as(u64, 0), rt.head_block_number);
+    try std.testing.expect(rt.blockchain.getBlockLocal(imported_hash) != null);
+
+    var forkchoice = std.json.ObjectMap.init(allocator);
+    try forkchoice.put("headBlockHash", .{ .string = try hashText(allocator, imported_hash) });
+    try forkchoice.put("safeBlockHash", hash32Value());
+    try forkchoice.put("finalizedBlockHash", hash32Value());
+
+    var forkchoice_params = std.json.Array.init(allocator);
+    try forkchoice_params.append(.{ .object = forkchoice });
+    try forkchoice_params.append(.null);
+
+    var forkchoice_request = try makeRequest("engine_forkchoiceUpdatedV3", .{ .array = forkchoice_params });
+    defer forkchoice_request.deinit(std.testing.allocator);
+    var forkchoice_response = try dispatcher.dispatch(std.testing.allocator, forkchoice_request, &handlers);
+    defer forkchoice_response.deinit(std.testing.allocator);
+
+    try std.testing.expect(forkchoice_response.error_value == null);
+    try std.testing.expectEqual(@as(u64, 1), rt.head_block_number);
+}
+
+test "engine forkchoice removes canonicalized payload transactions from txpool" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const recipient = runtime_mod.DEFAULT_DEV_ACCOUNTS[1];
+    const unsigned = primitives.Transaction.LegacyTransaction{
+        .nonce = 0,
+        .gas_price = runtime_mod.DEFAULT_GAS_PRICE,
+        .gas_limit = 21_000,
+        .to = recipient,
+        .value = 1,
+        .data = &.{},
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+    const signed = try tx_encoding.signLegacyTransaction(
+        std.testing.allocator,
+        unsigned,
+        genesis_mod.DEV_ACCOUNTS[0].private_key,
+        rt.chain_id,
+    );
+    const canonical_raw = try tx_encoding.encodeLegacyTransactionEnvelope(std.testing.allocator, signed);
+    defer std.testing.allocator.free(canonical_raw);
+    const tx_hash = tx_encoding.transactionHash(canonical_raw);
+
+    try rt.pool.setNonce(runtime_mod.DEFAULT_DEV_ACCOUNTS[0], 0);
+    try rt.pool.add(std.testing.allocator, .{
+        .sender = runtime_mod.DEFAULT_DEV_ACCOUNTS[0],
+        .nonce = signed.nonce,
+        .gas_limit = signed.gas_limit,
+        .max_fee_per_gas = signed.gas_price,
+        .max_priority_fee_per_gas = signed.gas_price,
+        .hash = tx_hash,
+        .to = signed.to,
+        .value = signed.value,
+        .input = signed.data,
+        .raw = canonical_raw,
+        .v = signed.v,
+        .r = signed.r,
+        .s = signed.s,
+    });
+
+    const head = try rt.blockchain.getCanonicalHeadBlock();
+    const head_text = try hashText(allocator, head.hash);
+
+    var attrs = std.json.ObjectMap.init(allocator);
+    try attrs.put("timestamp", .{ .string = "0x1" });
+    try attrs.put("prevRandao", hash32Value());
+    try attrs.put("suggestedFeeRecipient", validAddress());
+    try attrs.put("withdrawals", emptyArrayValueForTest(allocator));
+    try attrs.put("parentBeaconBlockRoot", hash32Value());
+
+    var build_params = std.json.Array.init(allocator);
+    try build_params.append(.{ .string = head_text });
+    try build_params.append(.{ .object = attrs });
+    try build_params.append(.null);
+    try build_params.append(.{ .string = "0x" });
+
+    var build_request = try makeRequest("testing_buildBlockV1", .{ .array = build_params });
+    defer build_request.deinit(std.testing.allocator);
+    var build_response = try dispatcher.dispatch(std.testing.allocator, build_request, &handlers);
+    defer build_response.deinit(std.testing.allocator);
+    try std.testing.expect(build_response.error_value == null);
+
+    const payload = try getObjectField(build_response.result.?, "executionPayload");
+    const imported_hash = try rpcHashFromValue(try getObjectField(payload, "blockHash"));
+
+    const expected_blobs = std.json.Array.init(allocator);
+    var new_payload_params = std.json.Array.init(allocator);
+    try new_payload_params.append(payload);
+    try new_payload_params.append(.{ .array = expected_blobs });
+    try new_payload_params.append(hash32Value());
+
+    var new_payload_request = try makeRequest("engine_newPayloadV3", .{ .array = new_payload_params });
+    defer new_payload_request.deinit(std.testing.allocator);
+    var new_payload_response = try dispatcher.dispatch(std.testing.allocator, new_payload_request, &handlers);
+    defer new_payload_response.deinit(std.testing.allocator);
+    try std.testing.expect(new_payload_response.error_value == null);
+    try std.testing.expectEqual(@as(usize, 1), rt.pool.items().len);
+
+    var forkchoice = std.json.ObjectMap.init(allocator);
+    try forkchoice.put("headBlockHash", .{ .string = try hashText(allocator, imported_hash) });
+    try forkchoice.put("safeBlockHash", hash32Value());
+    try forkchoice.put("finalizedBlockHash", hash32Value());
+
+    var forkchoice_params = std.json.Array.init(allocator);
+    try forkchoice_params.append(.{ .object = forkchoice });
+    try forkchoice_params.append(.null);
+
+    var forkchoice_request = try makeRequest("engine_forkchoiceUpdatedV3", .{ .array = forkchoice_params });
+    defer forkchoice_request.deinit(std.testing.allocator);
+    var forkchoice_response = try dispatcher.dispatch(std.testing.allocator, forkchoice_request, &handlers);
+    defer forkchoice_response.deinit(std.testing.allocator);
+    try std.testing.expect(forkchoice_response.error_value == null);
+    try std.testing.expectEqual(@as(usize, 0), rt.pool.items().len);
+}
+
+test "engine forkchoice payload attributes produce getPayload result" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const head = try rt.blockchain.getCanonicalHeadBlock();
+    const head_text = try hashText(allocator, head.hash);
+
+    var forkchoice = std.json.ObjectMap.init(allocator);
+    try forkchoice.put("headBlockHash", .{ .string = head_text });
+    try forkchoice.put("safeBlockHash", hash32Value());
+    try forkchoice.put("finalizedBlockHash", hash32Value());
+
+    var attrs = std.json.ObjectMap.init(allocator);
+    try attrs.put("timestamp", .{ .string = "0x1" });
+    try attrs.put("prevRandao", hash32Value());
+    try attrs.put("suggestedFeeRecipient", validAddress());
+    try attrs.put("withdrawals", emptyArrayValueForTest(allocator));
+    try attrs.put("parentBeaconBlockRoot", hash32Value());
+
+    var forkchoice_params = std.json.Array.init(allocator);
+    try forkchoice_params.append(.{ .object = forkchoice });
+    try forkchoice_params.append(.{ .object = attrs });
+
+    var forkchoice_request = try makeRequest("engine_forkchoiceUpdatedV3", .{ .array = forkchoice_params });
+    defer forkchoice_request.deinit(std.testing.allocator);
+    var forkchoice_response = try dispatcher.dispatch(std.testing.allocator, forkchoice_request, &handlers);
+    defer forkchoice_response.deinit(std.testing.allocator);
+    try std.testing.expect(forkchoice_response.error_value == null);
+
+    const payload_id = try getObjectField(forkchoice_response.result.?, "payloadId");
+    try std.testing.expect(payload_id != .null);
+
+    var get_payload_params = std.json.Array.init(allocator);
+    try get_payload_params.append(payload_id);
+
+    var get_payload_request = try makeRequest("engine_getPayloadV3", .{ .array = get_payload_params });
+    defer get_payload_request.deinit(std.testing.allocator);
+    var get_payload_response = try dispatcher.dispatch(std.testing.allocator, get_payload_request, &handlers);
+    defer get_payload_response.deinit(std.testing.allocator);
+
+    try std.testing.expect(get_payload_response.error_value == null);
+    const execution_payload = try getObjectField(get_payload_response.result.?, "executionPayload");
+    try std.testing.expectEqualStrings(head_text, (try getObjectField(execution_payload, "parentHash")).string);
+    _ = try getObjectField(get_payload_response.result.?, "blobsBundle");
 }
 
 test "installed dispatch wiring mines empty blocks through aliases" {

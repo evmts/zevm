@@ -26,11 +26,11 @@ In this PRD, phase-1 scope is declared in sections 3.1, 3.3, 3.4, and 3.5, with 
 
 - startup and configuration for trusted and light mode
 - HTTP JSON-RPC 2.0 transport
-- phase-1 trusted-mode JSON-RPC inventory includes standard reads (`eth_chainId`, `eth_blockNumber`, account/code/storage reads, pricing/fee reads including `eth_feeHistory`), simulation (`eth_call`, `eth_estimateGas`), submission (`eth_sendTransaction`, `eth_sendRawTransaction`), canonical block/receipt/log queries, and trusted controls under canonical `zevm_*` methods (mining, snapshot/revert, state mutation, impersonation, and time controls); canonical tuples/errors are under `Trusted-Mode Standard Methods` and `Trusted-Mode zevm_* Methods` in `docs/specs/json-rpc-contract.md`
+- phase-1 trusted-mode JSON-RPC inventory includes standard reads (`eth_chainId`, `eth_blockNumber`, account/code/storage/proof reads, pricing/fee reads including `eth_feeHistory`), execution simulation and testing (`eth_call`, `eth_estimateGas`, `eth_createAccessList`, `eth_simulateV1`, `testing_buildBlockV1`), submission (`eth_sendTransaction`, `eth_sendRawTransaction`), canonical block/receipt/log/access-list queries, debug/raw inspection, Engine API listener methods, txpool methods, compatibility utilities, and trusted controls under canonical `zevm_*` methods (mining, snapshot/revert, state mutation, impersonation, and time controls); canonical tuples/errors are under `Trusted-Mode Standard Methods` and `Trusted-Mode zevm_* Methods` in `docs/specs/json-rpc-contract.md`
 - phase-1 light-mode JSON-RPC inventory is exactly `zevm_lightSyncStatus`, `eth_chainId`, `eth_blockNumber`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, and `eth_getTransactionCount`; canonical tuples/errors are under `Light-Mode Methods` in `docs/specs/json-rpc-contract.md`
 - in this PRD, "proof-backed reads" means exactly `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, and `eth_getTransactionCount` in light mode; it does not include `eth_chainId`, `zevm_lightSyncStatus`, or `eth_blockNumber`
 - while light mode is not ready, proof-backed reads and `eth_blockNumber` are readiness-gated (`-32011`) as defined in sections 4.2 and 10
-- in phase 1, `eth_call` and `eth_estimateGas` are trusted-only and return `-32010` in light mode; `eth_call` remains a deferred light-mode proof-backed target, and light-mode unsupported reads also include `eth_feeHistory` plus canonical block/receipt/log query methods (all mode-unsupported as `-32010`, per section 10)
+- in phase 1, `eth_call`, `eth_estimateGas`, `eth_createAccessList`, `eth_simulateV1`, and `testing_buildBlockV1` are trusted-only and return `-32010` in light mode; `eth_call` remains a deferred light-mode proof-backed target, and light-mode unsupported reads also include `eth_feeHistory`, `eth_getProof`, `eth_getStorageValues`, plus canonical block/receipt/log query methods (all mode-unsupported as `-32010`, per section 10)
 - phase-1 sequencing is trusted-first: trusted mode is the primary runtime surface while light mode ships the limited phase-1 read subset and expands in later phases
 - phase-1 installation contract limited to source-build installation
 
@@ -599,7 +599,7 @@ Transport requirements:
 - JSON-RPC success and error envelopes: HTTP `200`
 - notification-only request/batch: HTTP `204`, empty body
 - batch responses preserve the input order of batch entries that include `id`
-- request bodies larger than `1,048,576` bytes: HTTP `413`, empty body
+- request bodies larger than `8,388,608` bytes: HTTP `413`, empty body
 - phase-1 transport limits are fixed: `8,192` byte HTTP header buffer, `64` active TCP connections, `15,000` ms read timeout, and `15,000` ms write timeout
 - slow clients must not block unrelated accepted clients; JSON-RPC handler dispatch remains serialized within one ZEVM process to avoid runtime-state races
 - production server lifecycle must expose a stop hook that stops accepting, shuts down active connection sockets, and waits for active handlers before listener deinit returns
@@ -636,8 +636,8 @@ Detailed RPC-level mining behavior is defined in `docs/specs/json-rpc-contract.m
 
 Phase-1 transaction request and submission contract:
 
-- accepted request-object fields are the `TransactionRequest` fields in `docs/specs/json-rpc-contract.md`
-- unsupported tx-request fields fail with `-32602`
+- simulation/testing request objects accept the `TransactionRequest` execution-apis compatibility fields in `docs/specs/json-rpc-contract.md`
+- submission/signing request objects accept only the legacy subset of `TransactionRequest`; unsupported tx-request fields fail with `-32602`
 - only legacy transaction type `0x0` is supported for submission in phase 1
 - typed EIP-2718 envelopes (`0x1`, `0x2`, `0x3`, or unknown types) are unsupported and fail with `-32602`
 
@@ -661,7 +661,7 @@ Implementation support context (non-normative): `docs/specs/internal/light-mode-
 - `lastCheckpoint` is runtime-required and non-null once the HTTP listener is active
 - `optimisticSlot`, `safeSlot`, and `finalizedSlot` in `zevm_lightSyncStatus` are required non-null `QuantityHex` values and satisfy `finalizedSlot <= safeSlot <= optimisticSlot`
 - `safeSlot` reports the consensus-backed safe execution head slot and makes the `safe` selector state observable/testable via `zevm_lightSyncStatus`
-- in phase 1, `eth_call` and `eth_estimateGas` are trusted-only and return `-32010` in light mode; `eth_call` remains a deferred light-mode proof-backed target, and light-mode unsupported reads also include `eth_feeHistory` plus canonical block/receipt/log query methods (all mode-unsupported as `-32010`)
+- in phase 1, `eth_call`, `eth_estimateGas`, `eth_createAccessList`, `eth_simulateV1`, and `testing_buildBlockV1` are trusted-only and return `-32010` in light mode; `eth_call` remains a deferred light-mode proof-backed target, and light-mode unsupported reads also include `eth_feeHistory`, `eth_getProof`, `eth_getStorageValues`, plus canonical block/receipt/log query methods (all mode-unsupported as `-32010`)
 
 ## 11. Compatibility Namespace Policy
 

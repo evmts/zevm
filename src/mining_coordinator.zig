@@ -45,6 +45,7 @@ pub const MiningBlockOptions = struct {
     block_hashes: []const [32]u8 = &.{},
     parent_hash: ?[32]u8 = null,
     dev_runtime: ?*dev_runtime.DevRuntime = null,
+    skip_invalid_transactions: bool = false,
 };
 
 pub fn resolveHardfork(block_number: u64, timestamp: u64) primitives.Hardfork {
@@ -130,10 +131,19 @@ pub fn nextExcessBlobGasForChild(
     child_block_number: u64,
     child_timestamp: u64,
 ) u64 {
-    const child_hardfork = resolveHardfork(child_block_number, child_timestamp);
+    return nextExcessBlobGasForChildWithConfig(MAINNET_CHAIN_CONFIG, parent_header, child_block_number, child_timestamp);
+}
+
+pub fn nextExcessBlobGasForChildWithConfig(
+    chain_config: ChainConfig,
+    parent_header: primitives.BlockHeader.BlockHeader,
+    child_block_number: u64,
+    child_timestamp: u64,
+) u64 {
+    const child_hardfork = resolveHardforkWithConfig(chain_config, child_block_number, child_timestamp);
     if (child_hardfork.isBefore(.CANCUN)) return 0;
 
-    const parent_hardfork = resolveHardfork(parent_header.number, parent_header.timestamp);
+    const parent_hardfork = resolveHardforkWithConfig(chain_config, parent_header.number, parent_header.timestamp);
     const parent_excess_blob_gas = if (parent_hardfork.isAtLeast(.CANCUN)) parent_header.excess_blob_gas orelse 0 else 0;
     const parent_blob_gas_used = if (parent_hardfork.isAtLeast(.CANCUN)) parent_header.blob_gas_used orelse 0 else 0;
 
@@ -323,6 +333,7 @@ pub const MiningCoordinator = struct {
                 .parent_hash = options.parent_hash,
                 .withdrawals = if (active_hardfork.isAtLeast(.SHANGHAI)) empty_withdrawals else null,
                 .parent_beacon_block_root = if (active_hardfork.isAtLeast(.CANCUN)) primitives.Hash.ZERO else null,
+                .skip_invalid_transactions = options.skip_invalid_transactions,
             },
         );
 

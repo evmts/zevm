@@ -9,6 +9,7 @@ pub const NodeDevConfig = struct {
     coinbase: primitives.Address.Address,
     next_block_base_fee_per_gas: ?u256,
     next_block_timestamp: ?u64,
+    prev_randao: ?u256,
     block_gas_limit: u64,
     blob_base_fee: ?u256,
 };
@@ -56,6 +57,7 @@ pub const DevRuntime = struct {
     pub fn clearNextBlockOverrides(self: *DevRuntime) void {
         self.config.next_block_base_fee_per_gas = null;
         self.config.next_block_timestamp = null;
+        self.config.prev_randao = null;
     }
 
     pub fn takeSnapshot(
@@ -122,6 +124,7 @@ fn defaultConfigWithBlockGasLimit(
         .coinbase = coinbase,
         .next_block_base_fee_per_gas = null,
         .next_block_timestamp = null,
+        .prev_randao = null,
         .block_gas_limit = block_gas_limit,
         .blob_base_fee = null,
     };
@@ -152,16 +155,19 @@ test "takeSnapshot clones node config" {
 
     runtime.config.block_gas_limit = 15_000_000;
     runtime.config.next_block_timestamp = 1234;
+    runtime.config.prev_randao = 5;
     runtime.config.blob_base_fee = 7;
     const snap_id = try runtime.takeSnapshot(allocator, &state, 0);
 
     runtime.config.block_gas_limit = 99_000_000;
     runtime.config.next_block_timestamp = 9999;
+    runtime.config.prev_randao = 6;
     runtime.config.blob_base_fee = 42;
 
     const entry = runtime.snapshots.get(snap_id).?;
     try std.testing.expectEqual(@as(u64, 15_000_000), entry.config.block_gas_limit);
     try std.testing.expectEqual(@as(u64, 1234), entry.config.next_block_timestamp.?);
+    try std.testing.expectEqual(@as(u256, 5), entry.config.prev_randao.?);
     try std.testing.expectEqual(@as(u256, 7), entry.config.blob_base_fee.?);
 }
 
@@ -194,12 +200,14 @@ test "revertSnapshot restores block number and config" {
     runtime.config.block_gas_limit = 15_000_000;
     runtime.config.next_block_base_fee_per_gas = 2;
     runtime.config.next_block_timestamp = 1234;
+    runtime.config.prev_randao = 5;
     runtime.config.blob_base_fee = 7;
     const snap_id = try runtime.takeSnapshot(allocator, &state, 5);
 
     runtime.config.block_gas_limit = 99_000_000;
     runtime.config.next_block_base_fee_per_gas = 3;
     runtime.config.next_block_timestamp = 9999;
+    runtime.config.prev_randao = 6;
     runtime.config.blob_base_fee = 42;
 
     const result = try runtime.revertSnapshot(allocator, &state, &bc, snap_id);
@@ -207,6 +215,7 @@ test "revertSnapshot restores block number and config" {
     try std.testing.expectEqual(@as(u64, 15_000_000), runtime.config.block_gas_limit);
     try std.testing.expectEqual(@as(u256, 2), runtime.config.next_block_base_fee_per_gas.?);
     try std.testing.expectEqual(@as(u64, 1234), runtime.config.next_block_timestamp.?);
+    try std.testing.expectEqual(@as(u256, 5), runtime.config.prev_randao.?);
     try std.testing.expectEqual(@as(u256, 7), runtime.config.blob_base_fee.?);
 }
 
@@ -217,6 +226,7 @@ test "clearNextBlockOverrides keeps persistent block environment overrides" {
 
     runtime.config.next_block_base_fee_per_gas = 2;
     runtime.config.next_block_timestamp = 1234;
+    runtime.config.prev_randao = 5;
     runtime.config.block_gas_limit = 15_000_000;
     runtime.config.blob_base_fee = 7;
 
@@ -224,6 +234,7 @@ test "clearNextBlockOverrides keeps persistent block environment overrides" {
 
     try std.testing.expect(runtime.config.next_block_base_fee_per_gas == null);
     try std.testing.expect(runtime.config.next_block_timestamp == null);
+    try std.testing.expect(runtime.config.prev_randao == null);
     try std.testing.expectEqual(@as(u64, 15_000_000), runtime.config.block_gas_limit);
     try std.testing.expectEqual(@as(u256, 7), runtime.config.blob_base_fee.?);
 }
@@ -239,6 +250,7 @@ test "resetConfig restores configured default block gas limit" {
     runtime.config.block_gas_limit = 21_000;
     runtime.config.next_block_base_fee_per_gas = 2;
     runtime.config.next_block_timestamp = 1234;
+    runtime.config.prev_randao = 5;
     runtime.config.blob_base_fee = 7;
 
     runtime.resetConfig(reset_coinbase);
@@ -247,6 +259,7 @@ test "resetConfig restores configured default block gas limit" {
     try std.testing.expectEqual(@as(u64, 12_345_678), runtime.config.block_gas_limit);
     try std.testing.expect(runtime.config.next_block_base_fee_per_gas == null);
     try std.testing.expect(runtime.config.next_block_timestamp == null);
+    try std.testing.expect(runtime.config.prev_randao == null);
     try std.testing.expect(runtime.config.blob_base_fee == null);
 }
 
