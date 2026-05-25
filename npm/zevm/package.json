@@ -73,8 +73,14 @@
     "native/zevm.node",
     "README.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node scripts/move-cjs.cjs",
+    "publish:all": "node scripts/publish-all.cjs",
+    "publish:all:dry": "node scripts/publish-all.cjs --dry-run",
+    "stage:artifacts": "node scripts/stage-artifacts.cjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "smoke:native": "node scripts/smoke.cjs ../../zig-out/npm/native/zevm.node"
   },
