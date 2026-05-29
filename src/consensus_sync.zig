@@ -490,7 +490,7 @@ fn currentUnixSeconds() u64 {
     return @intCast(now);
 }
 
-fn genericFromLightClientUpdate(
+pub fn genericFromLightClientUpdate(
     update: primitives.LightClientUpdate.LightClientUpdate,
 ) primitives.LightClientUpdate.GenericUpdate {
     return primitives.LightClientUpdate.GenericUpdate.from(
@@ -500,13 +500,13 @@ fn genericFromLightClientUpdate(
         update.signature_slot,
         update.next_sync_committee_pubkeys,
         update.next_sync_committee_aggregate_pubkey,
-        update.next_sync_committee_branch[0..],
+        update.nextSyncCommitteeBranch(),
         update.finalized_header,
-        update.finality_branch[0..],
+        update.finalityBranch(),
     );
 }
 
-fn genericFromFinalityUpdate(
+pub fn genericFromFinalityUpdate(
     update: primitives.LightClientUpdate.LightClientFinalityUpdate,
 ) primitives.LightClientUpdate.GenericUpdate {
     return primitives.LightClientUpdate.GenericUpdate.from(
@@ -518,7 +518,7 @@ fn genericFromFinalityUpdate(
         null,
         null,
         update.finalized_header,
-        update.finality_branch[0..],
+        update.finalityBranch(),
     );
 }
 

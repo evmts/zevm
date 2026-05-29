@@ -192,10 +192,12 @@ test "createGenesisBlock has non-zero hash" {
     try std.testing.expect(!primitives.Hash.isZero(&block.hash));
 }
 
-test "createGenesisBlock has non-zero timestamp" {
+test "createGenesisBlock has a deterministic fixed timestamp" {
+    // The devnet genesis timestamp is intentionally a fixed constant (not
+    // wall-clock) so the genesis block hash is reproducible across restarts.
     const allocator = std.testing.allocator;
     const block = try genesis.createGenesisBlock(allocator, genesis.DEVNET_CHAIN_ID);
-    try std.testing.expect(block.header.timestamp > 0);
+    try std.testing.expectEqual(genesis.DEFAULT_DEVNET_GENESIS_TIMESTAMP, block.header.timestamp);
 }
 
 test "createGenesisBlock has empty body" {
@@ -263,6 +265,38 @@ test "initGenesis stores genesis block in blockchain" {
     const head = chain.getHeadBlockNumber();
     try std.testing.expect(head != null);
     try std.testing.expectEqual(@as(u64, 0), head.?);
+}
+
+test "devnet genesis hash is deterministic across runs (fixed timestamp)" {
+    // Regression test: the devnet genesis header used to set
+    // .timestamp = std.time.timestamp() (wall-clock), making the genesis block
+    // hash depend on when the node started. It now uses the fixed constant
+    // DEFAULT_DEVNET_GENESIS_TIMESTAMP, so the genesis hash is reproducible.
+    const allocator = std.testing.allocator;
+
+    var db1 = try database.Database.init(allocator, null);
+    defer db1.deinit(allocator);
+    var chain1 = try blockchain_mod.Blockchain.init(allocator, null);
+    defer chain1.deinit();
+    const result1 = try genesis.initGenesis(allocator, &db1, &chain1, genesis.DEVNET_CHAIN_ID, null);
+
+    var db2 = try database.Database.init(allocator, null);
+    defer db2.deinit(allocator);
+    var chain2 = try blockchain_mod.Blockchain.init(allocator, null);
+    defer chain2.deinit();
+    const result2 = try genesis.initGenesis(allocator, &db2, &chain2, genesis.DEVNET_CHAIN_ID, null);
+
+    try std.testing.expect(primitives.Hash.equals(&result1.genesis_hash, &result2.genesis_hash));
+
+    const block1 = (try chain1.getBlockByNumber(0)).?;
+    const block2 = (try chain2.getBlockByNumber(0)).?;
+    try std.testing.expectEqual(genesis.DEFAULT_DEVNET_GENESIS_TIMESTAMP, block1.header.timestamp);
+    try std.testing.expectEqual(genesis.DEFAULT_DEVNET_GENESIS_TIMESTAMP, block2.header.timestamp);
+}
+
+test "devnetHeaderForTests uses the fixed deterministic genesis timestamp" {
+    const header = genesis.devnetHeaderForTests(primitives.Hash.ZERO);
+    try std.testing.expectEqual(genesis.DEFAULT_DEVNET_GENESIS_TIMESTAMP, header.timestamp);
 }
 
 test "initGenesis records genesis hash in canonical chain" {

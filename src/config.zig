@@ -488,16 +488,17 @@ fn resolveFork(
     file_fork: ?FileFork,
 ) LoadError!?ForkConfig {
     if (options.hasForkUnit()) {
-        if (options.fork_block_number != null and options.fork_url == null) {
-            return error.InvalidConfig;
-        }
-        if (options.fork_url) |url| {
+        // The CLI fork URL takes precedence; otherwise fall back to the file URL so
+        // that `--fork-block-number N` alone can re-pin a fork whose URL comes from
+        // the config file. Only error when no URL is available from either source.
+        const url = options.fork_url orelse if (file_fork) |fork| fork.url else null;
+        if (url) |fork_url| {
             return .{
-                .url = try allocator.dupe(u8, url),
+                .url = try allocator.dupe(u8, fork_url),
                 .block_number = options.fork_block_number,
             };
         }
-        return null;
+        return error.InvalidConfig;
     }
 
     if (file_fork) |fork| {

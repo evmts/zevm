@@ -360,6 +360,16 @@ export class StorageCache extends Cache {
 
   clearStorage(address: Address): void {
     const addressHex = bytesToUnprefixedHex(address.bytes);
+    // Record the pre-clear value of every currently-cached key so that a later
+    // revert() restores them. Without this, clearStorage is not checkpoint-aware
+    // and cleared slots are permanently lost on revert (e.g. SELFDESTRUCT
+    // rollback or any nested checkpoint that clears storage and then reverts).
+    const existing = this._lruCache?.get(addressHex) ?? this._orderedMapCache?.getElementByKey(addressHex);
+    if (existing) {
+      for (const keyHex of existing.keys()) {
+        this._saveCachePreState(addressHex, keyHex);
+      }
+    }
     if (this._lruCache) {
       this._lruCache.set(addressHex, new Map());
     } else {

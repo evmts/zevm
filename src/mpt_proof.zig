@@ -88,7 +88,7 @@ pub fn secureProof(
         proof_nodes.deinit(allocator);
     }
 
-    try collectProofNodes(allocator, arena_alloc, root, target_nibbles, 0, &proof_nodes);
+    try collectProofNodes(allocator, arena_alloc, root, target_nibbles, 0, &proof_nodes, true);
 
     return .{
         .root = root_hash,
@@ -196,9 +196,20 @@ fn collectProofNodes(
     target_nibbles: []const u8,
     level: usize,
     proof_nodes: *std.ArrayList([]u8),
+    is_root: bool,
 ) anyerror!void {
     const full = try fullNodeData(arena_allocator, node);
-    try proof_nodes.append(proof_allocator, try encodeData(proof_allocator, full));
+    const encoded = try encodeData(proof_allocator, full);
+
+    // Per EIP-1186, only hash-referenced nodes appear as standalone proof
+    // entries. A child whose RLP encoding is < 32 bytes is embedded inline in
+    // its parent (see nodeReferenceData) and must NOT be emitted separately.
+    // The root node is always emitted even when < 32 bytes.
+    if (is_root or encoded.len >= 32) {
+        try proof_nodes.append(proof_allocator, encoded);
+    } else {
+        proof_allocator.free(encoded);
+    }
 
     switch (node.*) {
         .empty => {},
@@ -212,6 +223,7 @@ fn collectProofNodes(
                 target_nibbles,
                 level + extension.path.len,
                 proof_nodes,
+                false,
             );
         },
         .branch => |branch| {
@@ -224,6 +236,7 @@ fn collectProofNodes(
                 target_nibbles,
                 level + 1,
                 proof_nodes,
+                false,
             );
         },
     }
@@ -451,4 +464,32 @@ test "secureProof root matches TrieHash root" {
     const expected = try primitives.TrieHash.secure_trie_root(allocator, &keys, &values);
     try std.testing.expectEqualSlices(u8, &expected, &proof.root);
     try std.testing.expect(proof.nodes.len > 0);
+}
+
+test "secureProof does not emit inline (sub-32-byte) children as standalone entries" {
+    const allocator = std.testing.allocator;
+    // 3 single-byte values keyed by keccak hashes produce a branch whose
+    // single-entry leaf children encode to well under 32 bytes. Those children
+    // are inlined in the branch RLP and must NOT also appear as standalone
+    // proof entries (EIP-1186: only hash-referenced nodes are emitted).
+    const keys = [_][]const u8{
+        "account-a",
+        "account-b",
+        "account-c",
+    };
+    const values = [_][]const u8{
+        "\x01",
+        "\x02",
+        "\x03",
+    };
+
+    var proof = try secureProof(allocator, &keys, &values, keys[1]);
+    defer proof.deinit(allocator);
+
+    // The root is always emitted (even if < 32 bytes). Every subsequent entry
+    // must be hash-referenced, i.e. its RLP encoding is at least 32 bytes.
+    try std.testing.expect(proof.nodes.len > 0);
+    for (proof.nodes[1..]) |node| {
+        try std.testing.expect(node.len >= 32);
+    }
 }

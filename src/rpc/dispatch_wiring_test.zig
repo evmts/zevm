@@ -3102,3 +3102,28 @@ test "installed dispatch wiring rejects non-hex and non-minimal quantities" {
         try expectInvalidParamsRpc(&handlers, "eth_getBalance", .{ .array = params });
     }
 }
+
+fn engineClientVersionValueRun(allocator: std.mem.Allocator) !void {
+    var value = try dispatch_wiring.engineClientVersionValue(allocator);
+    dispatch_wiring.deinitJsonValue(allocator, &value);
+}
+
+test "engineClientVersionValue does not double-free or leak on allocation failure" {
+    // Drives engineClientVersionValue under every possible allocation-failure point.
+    // A double-free of the inner object map (the prior dual-errdefer bug) would be
+    // detected by the checking allocator as an invalid free, and any leak on the
+    // error path would also fail this check.
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, engineClientVersionValueRun, .{});
+}
+
+test "engineClientVersionValue returns a single populated client object" {
+    var value = try dispatch_wiring.engineClientVersionValue(std.testing.allocator);
+    defer dispatch_wiring.deinitJsonValue(std.testing.allocator, &value);
+
+    try std.testing.expect(value == .array);
+    try std.testing.expectEqual(@as(usize, 1), value.array.items.len);
+    const obj = value.array.items[0];
+    try std.testing.expect(obj == .object);
+    try std.testing.expectEqualStrings("zevm", obj.object.get("name").?.string);
+    try std.testing.expectEqualStrings("ZE", obj.object.get("code").?.string);
+}

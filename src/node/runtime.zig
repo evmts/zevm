@@ -516,6 +516,7 @@ pub const NodeRuntime = struct {
     interval_thread: ?std.Thread,
     interval_stop_requested: std.atomic.Value(bool),
     light_sync_thread: ?std.Thread,
+    light_sync_stop_requested: std.atomic.Value(bool),
 
     pub fn init(allocator: std.mem.Allocator, config_opt: ?NodeConfig) !NodeRuntime {
         const config = config_opt orelse NodeConfig{};
@@ -760,6 +761,7 @@ pub const NodeRuntime = struct {
             .interval_thread = null,
             .interval_stop_requested = std.atomic.Value(bool).init(false),
             .light_sync_thread = null,
+            .light_sync_stop_requested = std.atomic.Value(bool).init(false),
         };
     }
 
@@ -875,12 +877,17 @@ pub const NodeRuntime = struct {
         if (self.mode != .light) return error.NotLightMode;
         if (self.light_sync_thread != null) return;
 
+        self.light_sync_stop_requested.store(false, .seq_cst);
         self.light_sync_thread = try std.Thread.spawn(.{}, lightSyncStartupLoop, .{self});
         log.info(.consensus_sync, "light_sync_background_started", .{});
     }
 
     fn stopLightSyncThread(self: *NodeRuntime) void {
         const thread = self.light_sync_thread orelse return;
+        // Request cancellation before joining so the background startup-sync loop
+        // short-circuits at the next step boundary instead of starting further
+        // blocking network work, mirroring stopIntervalMiningTimer's stop flag.
+        self.light_sync_stop_requested.store(true, .seq_cst);
         thread.join();
         self.light_sync_thread = null;
         log.info(.consensus_sync, "light_sync_background_stopped", .{});
@@ -904,6 +911,8 @@ pub const NodeRuntime = struct {
             checkpoint_source: CheckpointSource,
         };
 
+        if (self.light_sync_stop_requested.load(.seq_cst)) return error.Canceled;
+
         const startup_snapshot: StartupSnapshot = blk: {
             self.runtime_mutex.lock();
             defer self.runtime_mutex.unlock();
@@ -919,6 +928,11 @@ pub const NodeRuntime = struct {
         try engine.sync(self.allocator, startup_snapshot.startup_checkpoint, .{
             .source = startup_snapshot.checkpoint_source.name(),
         });
+
+        // Cancellation may have been requested while the blocking sync above ran;
+        // skip committing the result so deinit can join promptly.
+        if (self.light_sync_stop_requested.load(.seq_cst)) return error.Canceled;
+
         const safe_slot = engine.safeSlot();
         const head_block_number = engine.store.optimistic_header.execution.block_number;
 
@@ -1222,7 +1236,11 @@ pub const NodeRuntime = struct {
                 adapter.hostInterface(),
                 block_options,
             );
-            _ = &result;
+            // mineBlockWithOptions returns a caller-owned BlockResult; the
+            // coordinator keeps an independent clone in mined_blocks. persistMinedBlock
+            // and the receipt/log indexes copy what they retain, so this runtime owns
+            // the returned value and must free it to avoid leaking its receipts/logs.
+            defer result.deinit(self.allocator);
 
             const block_hash = try self.persistMinedBlock(block_ctx, block_excess_blob_gas, &result, ready);
 
@@ -3535,4 +3553,18 @@ fn stringifyJsonValue(allocator: std.mem.Allocator, value: std.json.Value) ![]u8
     defer writer.deinit();
     try std.json.Stringify.value(value, .{}, &writer.writer);
     return writer.toOwnedSlice();
+}
+
+test "light sync cancellation flag short-circuits startup sync before network work" {
+    var rt = try NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    // Newly initialized runtimes must not have cancellation latched on.
+    try std.testing.expect(!rt.light_sync_stop_requested.load(.seq_cst));
+
+    // Requesting a stop must cause the detached startup-sync routine to bail out
+    // immediately with error.Canceled, before performing any blocking network I/O,
+    // so deinit can join the light-sync thread promptly.
+    rt.light_sync_stop_requested.store(true, .seq_cst);
+    try std.testing.expectError(error.Canceled, rt.runLightStartupSyncDetached());
 }

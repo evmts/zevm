@@ -92,9 +92,15 @@ pub fn importChainBytes(
         stats.head_block_number = decoded.block.header.number;
         stats.head_hash = decoded.block.hash;
 
-        try blockchain.putBlock(decoded.block);
+        // Transfer ownership of the decoded body buffers to owned_block_bodies
+        // BEFORE inserting the block into the blockchain. putBlock stores the
+        // Block (and its slice fields) by value without deep-copying, so if the
+        // append failed after putBlock the errdefer would free buffers still
+        // referenced by the stored block (use-after-free). Appending first means
+        // that once the block is stored, its backing buffers are already owned.
         try owned_block_bodies.append(allocator, decoded.owned_body);
         owned = true;
+        try blockchain.putBlock(decoded.block);
         try blockchain.setCanonicalHead(decoded.block.hash);
 
         offset += decodedBlockLength(bytes[offset..]);

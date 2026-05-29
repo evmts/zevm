@@ -119,8 +119,26 @@ pub fn handleEthGetTransactionCount(
 ) !jsonrpc.eth.GetTransactionCount.Result {
     const selected = resolveStateReadBlockNumber(rt, params.block) catch return error.InvalidParams;
     const read_state = try rt.readStateAtBlock(selected);
-    const nonce = try read_state.getNonce(.{ .bytes = params.address.bytes });
+    const address = primitives.Address{ .bytes = params.address.bytes };
+    const nonce = try read_state.getNonce(address);
+    // For the "pending" tag, eth_getTransactionCount must return the next usable
+    // nonce, accounting for transactions already accepted into the mempool but not
+    // yet mined (Geth/Anvil semantics). Under manual/interval mining the pool
+    // persists between calls, so returning only the committed state nonce yields a
+    // stale value and causes nonce collisions. Consult the pool for the next
+    // consecutive pending nonce.
+    if (isPendingBlockTag(params.block.value)) {
+        const next = rt.pool.pendingNonce(address, nonce);
+        return .{ .value = try quantityHexU64(allocator, next) };
+    }
     return .{ .value = try quantityHexU64(allocator, nonce) };
+}
+
+fn isPendingBlockTag(value: std.json.Value) bool {
+    return switch (value) {
+        .string => |text| std.mem.eql(u8, text, "pending"),
+        else => false,
+    };
 }
 
 pub fn handleEthGetStorageValuesValue(

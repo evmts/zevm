@@ -281,7 +281,10 @@ pub const MiningCoordinator = struct {
         try self.pending_txs.append(allocator, tx);
         if (self.mode == .auto) {
             var adapter = host_adapter.HostAdapter{ .state = sm };
-            _ = try self.mineBlock(allocator, sm, adapter.hostInterface());
+            // mineBlock returns a caller-owned BlockResult (the coordinator keeps an
+            // independent clone in mined_blocks). Free the discarded value here.
+            var result = try self.mineBlock(allocator, sm, adapter.hostInterface());
+            result.deinit(allocator);
         }
     }
 
@@ -338,12 +341,27 @@ pub const MiningCoordinator = struct {
         );
 
         self.pending_txs.clearRetainingCapacity();
-        self.advanceFeeState(active_hardfork, block_base_fee, result.total_gas_used, options.blob_gas_used, block_ctx.block_gas_limit);
+        // Advance the blob-fee state using the block's ACTUAL blob gas
+        // (result.blob_gas_used), not the caller-supplied options.blob_gas_used
+        // (which defaults to 0 and is never populated on the production path).
+        // Using the real value keeps current_excess_blob_gas in agreement with
+        // calculateExcessBlobGasForFork(parent_excess, parent_blob_gas_used) so the
+        // EIP-4844/EIP-7691 blob base fee escalates when blocks contain blob txs.
+        self.advanceFeeState(active_hardfork, block_base_fee, result.total_gas_used, result.blob_gas_used, block_ctx.block_gas_limit);
         self.current_block_number += 1;
         self.current_timestamp = block_ctx.block_timestamp +| 1;
 
-        const result_copy = result;
-        try self.mined_blocks.append(allocator, result_copy);
+        // Store an independent deep clone in mined_blocks (owned and freed by the
+        // coordinator in deinit). The returned BlockResult is owned by the caller,
+        // who may safely `defer result.deinit(allocator)`. Without this clone the
+        // stored copy would alias the returned value's heap slices, causing a
+        // double-free if the caller deinits the value it owns.
+        const stored = try cloneBlockResult(allocator, result);
+        errdefer {
+            var stored_mut = stored;
+            stored_mut.deinit(allocator);
+        }
+        try self.mined_blocks.append(allocator, stored);
 
         return result;
     }
@@ -373,8 +391,11 @@ pub const MiningCoordinator = struct {
             if (i > 0 and interval > 0) {
                 self.current_timestamp += interval - 1;
             }
+            // mineBlockWithOptions returns a caller-owned BlockResult (the
+            // coordinator keeps its own independent clone in mined_blocks). Since
+            // this loop discards the value, free it to avoid leaking.
             var result = try self.mineBlockWithOptions(allocator, sm, host_iface, options);
-            _ = &result;
+            result.deinit(allocator);
         }
     }
 
@@ -424,6 +445,76 @@ pub const MiningCoordinator = struct {
 fn currentBlockBaseFee(current_base_fee_per_gas: ?u256, hardfork: primitives.Hardfork) u256 {
     if (hardfork.isBefore(.LONDON)) return 0;
     return current_base_fee_per_gas orelse INITIAL_BASE_FEE;
+}
+
+/// Deep-clone a single receipt, allocating independent copies of its logs (and
+/// each log's topics/data). Freed by `primitives.Receipt.Receipt.deinit`, which
+/// frees every log's topics+data and the logs slice. Mirrors the clone in
+/// receipt_index.zig; primitives.Receipt.Receipt.clone is unusable here because it
+/// references a nonexistent `from` field.
+fn cloneReceipt(
+    allocator: std.mem.Allocator,
+    receipt: primitives.Receipt.Receipt,
+) !primitives.Receipt.Receipt {
+    const logs = try allocator.alloc(primitives.EventLog.EventLog, receipt.logs.len);
+    var cloned_logs: usize = 0;
+    errdefer {
+        for (logs[0..cloned_logs]) |log| {
+            allocator.free(log.topics);
+            allocator.free(log.data);
+        }
+        allocator.free(logs);
+    }
+    for (receipt.logs, 0..) |log, i| {
+        const topics = try allocator.dupe([32]u8, log.topics);
+        errdefer allocator.free(topics);
+        const data = try allocator.dupe(u8, log.data);
+        logs[i] = .{
+            .address = log.address,
+            .topics = topics,
+            .data = data,
+            .block_number = log.block_number,
+            .transaction_hash = log.transaction_hash,
+            .transaction_index = log.transaction_index,
+            .log_index = log.log_index,
+            .removed = log.removed,
+        };
+        cloned_logs += 1;
+    }
+
+    var result = receipt;
+    result.logs = logs;
+    return result;
+}
+
+/// Deep-clone a BlockResult so the clone owns independent copies of its heap
+/// slices (`receipts`, including each receipt's logs, and `included_tx_indexes`).
+/// The returned clone must be freed with
+/// `block_builder.BlockResult.deinit(allocator)`. On error the caller owns nothing
+/// (any partially-cloned receipts are freed here).
+fn cloneBlockResult(
+    allocator: std.mem.Allocator,
+    source: block_builder.BlockResult,
+) !block_builder.BlockResult {
+    const receipts = try allocator.alloc(primitives.Receipt.Receipt, source.receipts.len);
+    var cloned: usize = 0;
+    errdefer {
+        for (receipts[0..cloned]) |receipt| {
+            receipt.deinit(allocator);
+        }
+        allocator.free(receipts);
+    }
+    for (source.receipts, 0..) |receipt, i| {
+        receipts[i] = try cloneReceipt(allocator, receipt);
+        cloned += 1;
+    }
+
+    const included_tx_indexes = try allocator.dupe(usize, source.included_tx_indexes);
+
+    var result = source;
+    result.receipts = receipts;
+    result.included_tx_indexes = included_tx_indexes;
+    return result;
 }
 
 fn blockBuilderFork(fork: primitives.Hardfork) block_builder.Hardfork {
@@ -567,11 +658,115 @@ test "MiningCoordinator mineBlock drains pending pool" {
     try std.testing.expectEqual(@as(usize, 1), mc.pending_txs.items.len);
 
     var result = try mc.mineBlock(std.testing.allocator, &sm, host);
-    _ = &result;
+    // mineBlock returns a caller-owned BlockResult; the coordinator keeps its own
+    // clone in mined_blocks, so the caller must free the returned value.
+    defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 0), mc.pending_txs.items.len);
     try std.testing.expectEqual(@as(usize, 1), mc.mined_blocks.items.len);
     try std.testing.expectEqual(@as(u64, 2), mc.current_block_number);
+}
+
+test "MiningCoordinator mineBlock returned result is independently owned (no double-free with mined_blocks)" {
+    // Regression test for the double-ownership bug: the returned BlockResult used
+    // to be a shallow copy aliasing the heap slices stored in mined_blocks, so a
+    // caller calling result.deinit() plus the coordinator's deinit double-freed the
+    // same receipts/included_tx_indexes. cloneBlockResult now stores an independent
+    // deep copy, so the caller owns the returned value. With the testing allocator a
+    // double-free or leak would fail the test.
+    var mc = MiningCoordinator.init();
+    defer mc.deinit(std.testing.allocator);
+    mc.setMode(.manual);
+
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    const host = adapter.hostInterface();
+
+    const sender = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
+    const recipient = primitives.Address{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 19 };
+
+    try sm.setBalance(sender, 1_000_000);
+    try sm.setNonce(sender, 0);
+
+    try mc.submitTx(std.testing.allocator, &sm, makeTestTx(sender, recipient, 0));
+
+    var result = try mc.mineBlock(std.testing.allocator, &sm, host);
+
+    // The mined block produced exactly one receipt, and the stored copy must not
+    // alias the returned value's heap allocation.
+    try std.testing.expectEqual(@as(usize, 1), mc.mined_blocks.items.len);
+    try std.testing.expectEqual(@as(usize, 1), result.receipts.len);
+    try std.testing.expect(result.receipts.ptr != mc.mined_blocks.items[0].receipts.ptr);
+    if (result.included_tx_indexes.len > 0 and mc.mined_blocks.items[0].included_tx_indexes.len > 0) {
+        try std.testing.expect(result.included_tx_indexes.ptr != mc.mined_blocks.items[0].included_tx_indexes.ptr);
+    }
+
+    // The caller owns the returned value and frees it; the coordinator independently
+    // frees its stored clone in deinit. Neither free touches the other's memory.
+    result.deinit(std.testing.allocator);
+}
+
+test "MiningCoordinator advances blob fee state from actual mined blob gas, ignoring options.blob_gas_used" {
+    // Regression test: mineBlockWithOptions used to feed options.blob_gas_used
+    // (a caller field that defaults to 0 and is never populated on the production
+    // path) into advanceFeeState instead of the block's actual result.blob_gas_used.
+    // Here we mine an empty block (real blob gas = 0) on a Cancun chain while
+    // passing a bogus nonzero options.blob_gas_used. With the bug the excess blob
+    // gas would escalate from the bogus value; with the fix it stays 0 because the
+    // block contains no blob gas.
+    var mc = MiningCoordinator.init();
+    defer mc.deinit(std.testing.allocator);
+    mc.setMode(.manual);
+
+    // Activate Cancun at the current block/timestamp.
+    mc.chain_config = .{
+        .homestead_block = 0,
+        .dao_block = 0,
+        .tangerine_whistle_block = 0,
+        .spurious_dragon_block = 0,
+        .byzantium_block = 0,
+        .constantinople_block = 0,
+        .petersburg_block = 0,
+        .istanbul_block = 0,
+        .muir_glacier_block = 0,
+        .berlin_block = 0,
+        .london_block = 0,
+        .arrow_glacier_block = 0,
+        .gray_glacier_block = 0,
+        .merge_block = 0,
+        .shanghai_timestamp = 0,
+        .cancun_timestamp = 0,
+        .prague_timestamp = std.math.maxInt(u64),
+        .osaka_timestamp = std.math.maxInt(u64),
+    };
+    mc.current_base_fee_per_gas = INITIAL_BASE_FEE;
+    mc.current_excess_blob_gas = 0;
+    mc.current_blob_gas_used = 0;
+
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    const host = adapter.hostInterface();
+
+    // Sanity check: we are on Cancun.
+    try std.testing.expectEqual(
+        primitives.Hardfork.CANCUN,
+        resolveHardforkWithConfig(mc.chain_config, mc.current_block_number, mc.current_timestamp),
+    );
+
+    var result = try mc.mineBlockWithOptions(std.testing.allocator, &sm, host, .{
+        // Bogus value that must be ignored; the empty block's real blob gas is 0.
+        .blob_gas_used = CANCUN_MAX_BLOB_GAS_PER_BLOCK,
+    });
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(u64, 0), result.blob_gas_used);
+    // Excess blob gas is derived from the block's actual (zero) blob gas, so it
+    // stays at 0 rather than escalating from the bogus option value.
+    try std.testing.expectEqual(@as(u64, 0), mc.current_excess_blob_gas);
 }
 
 test "MiningCoordinator mineBlocks handles timestamp intervals" {

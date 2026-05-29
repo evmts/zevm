@@ -190,6 +190,42 @@ test "deterministic root with multiple accounts inserted in different order" {
     try std.testing.expectEqualSlices(u8, &root1, &root2);
 }
 
+test "syncAccountToTrie includes storage root for contract with storage" {
+    var db = try database.Database.init(std.testing.allocator, null);
+    defer db.deinit(std.testing.allocator);
+
+    const addr = try primitives.Address.fromHex("0x5fbdb2315678afecb367f032d93f642f64180aa3");
+    try db.state.initAccount(addr, 0);
+    try db.state.setNonce(addr, 1);
+    // Write a non-empty storage slot: SSTORE slot 0 = 1.
+    try db.state.setStorage(addr, 0, 1);
+
+    try db.syncAccountToTrie(std.testing.allocator, addr);
+
+    const retrieved = (try db.accounts.get(std.testing.allocator, addr)).?;
+    // The flushed account must carry the real storage root, not EMPTY_TRIE_ROOT,
+    // otherwise the trie leaf and accounts.stateRoot() are consensus-invalid.
+    try std.testing.expect(!std.mem.eql(u8, &retrieved.storage_root, &primitives.State.EMPTY_TRIE_ROOT));
+
+    // An otherwise-identical account with no storage must encode EMPTY_TRIE_ROOT,
+    // proving the storage root actually depends on the storage contents.
+    var db_empty = try database.Database.init(std.testing.allocator, null);
+    defer db_empty.deinit(std.testing.allocator);
+    try db_empty.state.initAccount(addr, 0);
+    try db_empty.state.setNonce(addr, 1);
+    try db_empty.syncAccountToTrie(std.testing.allocator, addr);
+
+    const empty_account = (try db_empty.accounts.get(std.testing.allocator, addr)).?;
+    try std.testing.expectEqualSlices(u8, &primitives.State.EMPTY_TRIE_ROOT, &empty_account.storage_root);
+    try std.testing.expect(!std.mem.eql(u8, &retrieved.storage_root, &empty_account.storage_root));
+
+    // The resulting state roots must differ, since storage_root is part of the
+    // account RLP encoded into the accounts trie leaf.
+    const root_with_storage = db.accounts.stateRoot().?;
+    const root_without_storage = db_empty.accounts.stateRoot().?;
+    try std.testing.expect(!std.mem.eql(u8, &root_with_storage, &root_without_storage));
+}
+
 test "init accepts fork backend and preserves local writes" {
     var fork_backend = try state_manager.ForkBackend.init(std.testing.allocator, "latest", .{});
     defer fork_backend.deinit();

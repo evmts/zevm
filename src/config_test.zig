@@ -124,6 +124,35 @@ test "load merges trusted config file with CLI precedence" {
     try std.testing.expectEqual(@as(u64, 9_000_000), rt.dev_runtime.config.block_gas_limit);
 }
 
+test "load applies CLI fork block number override on top of config file fork url" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const config_path = try writeTmpFile(std.testing.allocator, &tmp_dir, "fork.json",
+        \\{
+        \\  "mode": {
+        \\    "trusted": {
+        \\      "fork": { "url": "https://config-rpc.example", "blockNumber": 7 }
+        \\    }
+        \\  }
+        \\}
+    );
+    defer std.testing.allocator.free(config_path);
+
+    var app_config = try config.load(std.testing.allocator, &[_][]const u8{
+        "--config",
+        config_path,
+        "--fork-block-number",
+        "123",
+    });
+    defer app_config.deinit(std.testing.allocator);
+
+    const trusted = try expectTrusted(app_config);
+    // The fork URL falls back to the config file while the CLI block number wins.
+    try std.testing.expectEqualStrings("https://config-rpc.example", trusted.fork.?.url);
+    try std.testing.expectEqual(@as(u64, 123), trusted.fork.?.block_number.?);
+}
+
 test "load rejects engine RPC in light mode" {
     try std.testing.expectError(error.InvalidConfig, config.load(std.testing.allocator, &[_][]const u8{
         "--mode",

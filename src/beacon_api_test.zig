@@ -1,6 +1,88 @@
 const std = @import("std");
 const beacon_api = @import("beacon_api.zig");
 
+/// Write a full LightClientHeader JSON object (beacon + execution + a
+/// 4-element execution_branch) to `json_writer`. Reused by the Electra/Deneb
+/// finality-update regression tests below so they only have to vary the
+/// surrounding finality_branch length.
+fn writeLightClientHeaderJson(json_writer: anytype) !void {
+    const beacon_root = beacon_api.bytesToHex(32, [_]u8{0x01} ** 32);
+    const execution_hash = beacon_api.bytesToHex(32, [_]u8{0x04} ** 32);
+    const execution_fee_recipient = beacon_api.bytesToHex(20, [_]u8{0x05} ** 20);
+    const execution_logs_bloom = beacon_api.bytesToHex(256, [_]u8{0x08} ** 256);
+    const execution_branch = beacon_api.bytesToHex(32, [_]u8{0x0d} ** 32);
+
+    try json_writer.writeAll("{\"beacon\":{\"slot\":\"8000000\",\"proposer_index\":\"123\",\"parent_root\":\"");
+    try json_writer.writeAll(beacon_root[0..]);
+    try json_writer.writeAll("\",\"state_root\":\"");
+    try json_writer.writeAll(beacon_root[0..]);
+    try json_writer.writeAll("\",\"body_root\":\"");
+    try json_writer.writeAll(beacon_root[0..]);
+    try json_writer.writeAll("\"},\"execution\":{\"parent_hash\":\"");
+    try json_writer.writeAll(execution_hash[0..]);
+    try json_writer.writeAll("\",\"fee_recipient\":\"");
+    try json_writer.writeAll(execution_fee_recipient[0..]);
+    try json_writer.writeAll("\",\"state_root\":\"");
+    try json_writer.writeAll(execution_hash[0..]);
+    try json_writer.writeAll("\",\"receipts_root\":\"");
+    try json_writer.writeAll(execution_hash[0..]);
+    try json_writer.writeAll("\",\"logs_bloom\":\"");
+    try json_writer.writeAll(execution_logs_bloom[0..]);
+    try json_writer.writeAll("\",\"prev_randao\":\"");
+    try json_writer.writeAll(execution_hash[0..]);
+    try json_writer.writeAll("\",\"block_number\":\"9000000\",\"gas_limit\":\"30000000\",\"gas_used\":\"12000000\",\"timestamp\":\"1700000000\",\"base_fee_per_gas\":\"1000000000\",\"block_hash\":\"");
+    try json_writer.writeAll(execution_hash[0..]);
+    try json_writer.writeAll("\",\"transactions_root\":\"");
+    try json_writer.writeAll(execution_hash[0..]);
+    try json_writer.writeAll("\",\"withdrawals_root\":\"");
+    try json_writer.writeAll(execution_hash[0..]);
+    try json_writer.writeAll("\",\"blob_gas_used\":\"0\",\"excess_blob_gas\":\"0\"},\"execution_branch\":[\"");
+    try json_writer.writeAll(execution_branch[0..]);
+    try json_writer.writeAll("\",\"");
+    try json_writer.writeAll(execution_branch[0..]);
+    try json_writer.writeAll("\",\"");
+    try json_writer.writeAll(execution_branch[0..]);
+    try json_writer.writeAll("\",\"");
+    try json_writer.writeAll(execution_branch[0..]);
+    try json_writer.writeAll("\"]}");
+}
+
+/// Write a finality_update JSON response (optionally versioned) whose
+/// finality_branch contains `finality_branch_len` 32-byte elements.
+fn writeFinalityUpdateJson(
+    json_writer: anytype,
+    version: ?[]const u8,
+    finality_branch_len: usize,
+) !void {
+    const finality_element = beacon_api.bytesToHex(32, [_]u8{0x77} ** 32);
+    const sync_committee_bits_hex = beacon_api.bytesToHex(64, [_]u8{0xaa} ** 64);
+    const sync_committee_signature_hex = beacon_api.bytesToHex(96, [_]u8{0xbb} ** 96);
+
+    try json_writer.writeAll("{");
+    if (version) |v| {
+        try json_writer.writeAll("\"version\":\"");
+        try json_writer.writeAll(v);
+        try json_writer.writeAll("\",");
+    }
+    try json_writer.writeAll("\"data\":{\"attested_header\":");
+    try writeLightClientHeaderJson(json_writer);
+    try json_writer.writeAll(",\"finalized_header\":");
+    try writeLightClientHeaderJson(json_writer);
+    try json_writer.writeAll(",\"finality_branch\":[");
+    var i: usize = 0;
+    while (i < finality_branch_len) : (i += 1) {
+        if (i != 0) try json_writer.writeAll(",");
+        try json_writer.writeAll("\"");
+        try json_writer.writeAll(finality_element[0..]);
+        try json_writer.writeAll("\"");
+    }
+    try json_writer.writeAll("],\"sync_aggregate\":{\"sync_committee_bits\":\"");
+    try json_writer.writeAll(sync_committee_bits_hex[0..]);
+    try json_writer.writeAll("\",\"sync_committee_signature\":\"");
+    try json_writer.writeAll(sync_committee_signature_hex[0..]);
+    try json_writer.writeAll("\"},\"signature_slot\":\"8000001\"}}");
+}
+
 test "hexToBytes parses 20/32/48/96 byte values" {
     const value_20 = [_]u8{0x11} ** 20;
     const value_20_hex = beacon_api.bytesToHex(20, value_20);
@@ -232,4 +314,69 @@ test "parse optimistic update json response" {
     try std.testing.expectEqual(@as(u64, 8_000_001), optimistic_update.signature_slot);
     try std.testing.expectEqualSlices(u8, &sync_committee_bits, &optimistic_update.sync_committee_bits);
     try std.testing.expectEqualSlices(u8, &sync_committee_signature, &optimistic_update.sync_committee_signature);
+}
+
+// Regression for finding #5: the light-client parsers previously hard-coded
+// pre-Electra branch lengths (parseBranch(6) for finality), so an Electra
+// finality_update with a 7-element finality_branch failed with
+// InvalidArrayLength. The Deneb case (6 elements) must still parse, and the
+// Electra case (7 elements, selected via the "version" field) must now parse.
+test "parseFinalityUpdate accepts Deneb (6) and Electra (7) finality branches" {
+    // Deneb: 6-element finality branch, no explicit version (defaults to deneb).
+    {
+        var json_builder = std.Io.Writer.Allocating.init(std.testing.allocator);
+        defer json_builder.deinit();
+        try writeFinalityUpdateJson(&json_builder.writer, null, 6);
+        const json_fixture = try json_builder.toOwnedSlice();
+        defer std.testing.allocator.free(json_fixture);
+
+        const finality_update = try beacon_api.parseFinalityUpdateResponse(std.testing.allocator, json_fixture);
+        try std.testing.expectEqual(@as(usize, 6), finality_update.finalityBranch().len);
+        try std.testing.expectEqual(@as(u64, 8_000_001), finality_update.signature_slot);
+    }
+
+    // Electra: 7-element finality branch, selected via the version field.
+    {
+        var json_builder = std.Io.Writer.Allocating.init(std.testing.allocator);
+        defer json_builder.deinit();
+        try writeFinalityUpdateJson(&json_builder.writer, "electra", 7);
+        const json_fixture = try json_builder.toOwnedSlice();
+        defer std.testing.allocator.free(json_fixture);
+
+        const finality_update = try beacon_api.parseFinalityUpdateResponse(std.testing.allocator, json_fixture);
+        try std.testing.expectEqual(@as(usize, 7), finality_update.finalityBranch().len);
+    }
+}
+
+// Regression for finding #5: a Deneb response carrying an Electra-sized
+// (7-element) finality branch, or vice versa, must be rejected so the wrong
+// gindex/depth is never used during verification.
+test "parseFinalityUpdate rejects branch length that mismatches the fork" {
+    // Deneb fork but Electra-sized (7) branch -> InvalidArrayLength.
+    {
+        var json_builder = std.Io.Writer.Allocating.init(std.testing.allocator);
+        defer json_builder.deinit();
+        try writeFinalityUpdateJson(&json_builder.writer, "deneb", 7);
+        const json_fixture = try json_builder.toOwnedSlice();
+        defer std.testing.allocator.free(json_fixture);
+
+        try std.testing.expectError(
+            error.InvalidArrayLength,
+            beacon_api.parseFinalityUpdateResponse(std.testing.allocator, json_fixture),
+        );
+    }
+
+    // Electra fork but pre-Electra-sized (6) branch -> InvalidArrayLength.
+    {
+        var json_builder = std.Io.Writer.Allocating.init(std.testing.allocator);
+        defer json_builder.deinit();
+        try writeFinalityUpdateJson(&json_builder.writer, "electra", 6);
+        const json_fixture = try json_builder.toOwnedSlice();
+        defer std.testing.allocator.free(json_fixture);
+
+        try std.testing.expectError(
+            error.InvalidArrayLength,
+            beacon_api.parseFinalityUpdateResponse(std.testing.allocator, json_fixture),
+        );
+    }
 }

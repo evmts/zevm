@@ -1949,19 +1949,19 @@ fn revertErrorMessage(allocator: std.mem.Allocator, output: []const u8) ![]u8 {
     return allocator.dupe(u8, "execution reverted");
 }
 
-fn decodeRevertReason(output: []const u8) ?[]const u8 {
+pub fn decodeRevertReason(output: []const u8) ?[]const u8 {
     const error_string_selector = [_]u8{ 0x08, 0xc3, 0x79, 0xa0 };
     if (output.len < 4 + 32 + 32) return null;
     if (!std.mem.eql(u8, output[0..4], &error_string_selector)) return null;
     const offset = readAbiWord(output, 4) orelse return null;
-    if (offset > std.math.maxInt(usize)) return null;
-    const len_pos = 4 + @as(usize, @intCast(offset));
+    const offset_usize = std.math.cast(usize, offset) orelse return null;
+    const len_pos = std.math.add(usize, 4, offset_usize) catch return null;
     const reason_len_u256 = readAbiWord(output, len_pos) orelse return null;
-    if (reason_len_u256 > std.math.maxInt(usize)) return null;
-    const reason_len: usize = @intCast(reason_len_u256);
-    const reason_start = len_pos + 32;
-    if (reason_start + reason_len > output.len) return null;
-    return output[reason_start .. reason_start + reason_len];
+    const reason_len = std.math.cast(usize, reason_len_u256) orelse return null;
+    const reason_start = std.math.add(usize, len_pos, 32) catch return null;
+    const reason_end = std.math.add(usize, reason_start, reason_len) catch return null;
+    if (reason_end > output.len) return null;
+    return output[reason_start..reason_end];
 }
 
 fn readAbiWord(output: []const u8, start: usize) ?u256 {

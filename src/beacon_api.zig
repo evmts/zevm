@@ -535,11 +535,18 @@ fn parseBootstrap(
 ) !primitives.LightClientUpdate.LightClientBootstrap {
     const current_sync_committee = try getObjectField(value, "current_sync_committee");
 
-    return primitives.LightClientUpdate.LightClientBootstrap.from(
+    var branch_buffer: [6][32]u8 = undefined;
+    const current_sync_committee_branch = try parseBranchSlice(
+        branch_buffer[0..],
+        syncCommitteeBranchLen(fork),
+        try getObjectField(value, "current_sync_committee_branch"),
+    );
+
+    return primitives.LightClientUpdate.LightClientBootstrap.fromBranch(
         try parseLightClientHeader(try getObjectField(value, "header"), fork),
         try parseSyncCommitteePubkeys(try getObjectField(current_sync_committee, "pubkeys")),
         try hexToBytes(48, try getStringField(current_sync_committee, "aggregate_pubkey")),
-        try parseBranch(5, try getObjectField(value, "current_sync_committee_branch")),
+        current_sync_committee_branch,
     );
 }
 
@@ -550,13 +557,27 @@ fn parseUpdate(
     const sync_aggregate = try parseSyncAggregate(try getObjectField(value, "sync_aggregate"));
     const next_sync_committee = try getObjectField(value, "next_sync_committee");
 
-    return primitives.LightClientUpdate.LightClientUpdate.from(
+    var next_branch_buffer: [6][32]u8 = undefined;
+    const next_sync_committee_branch = try parseBranchSlice(
+        next_branch_buffer[0..],
+        syncCommitteeBranchLen(fork),
+        try getObjectField(value, "next_sync_committee_branch"),
+    );
+
+    var finality_branch_buffer: [7][32]u8 = undefined;
+    const finality_branch = try parseBranchSlice(
+        finality_branch_buffer[0..],
+        finalityBranchLen(fork),
+        try getObjectField(value, "finality_branch"),
+    );
+
+    return primitives.LightClientUpdate.LightClientUpdate.fromBranches(
         try parseLightClientHeader(try getObjectField(value, "attested_header"), fork),
         try parseSyncCommitteePubkeys(try getObjectField(next_sync_committee, "pubkeys")),
         try hexToBytes(48, try getStringField(next_sync_committee, "aggregate_pubkey")),
-        try parseBranch(5, try getObjectField(value, "next_sync_committee_branch")),
+        next_sync_committee_branch,
         try parseLightClientHeader(try getObjectField(value, "finalized_header"), fork),
-        try parseBranch(6, try getObjectField(value, "finality_branch")),
+        finality_branch,
         sync_aggregate.sync_committee_bits,
         sync_aggregate.sync_committee_signature,
         try parseU64(try getStringField(value, "signature_slot")),
@@ -569,10 +590,17 @@ fn parseFinalityUpdate(
 ) !primitives.LightClientUpdate.LightClientFinalityUpdate {
     const sync_aggregate = try parseSyncAggregate(try getObjectField(value, "sync_aggregate"));
 
-    return primitives.LightClientUpdate.LightClientFinalityUpdate.from(
+    var finality_branch_buffer: [7][32]u8 = undefined;
+    const finality_branch = try parseBranchSlice(
+        finality_branch_buffer[0..],
+        finalityBranchLen(fork),
+        try getObjectField(value, "finality_branch"),
+    );
+
+    return primitives.LightClientUpdate.LightClientFinalityUpdate.fromBranch(
         try parseLightClientHeader(try getObjectField(value, "attested_header"), fork),
         try parseLightClientHeader(try getObjectField(value, "finalized_header"), fork),
-        try parseBranch(6, try getObjectField(value, "finality_branch")),
+        finality_branch,
         sync_aggregate.sync_committee_bits,
         sync_aggregate.sync_committee_signature,
         try parseU64(try getStringField(value, "signature_slot")),
@@ -692,6 +720,42 @@ fn parseBranch(comptime N: usize, value: std.json.Value) ![N][32]u8 {
         out[index] = try hexToBytes(32, try expectString(item));
     }
     return out;
+}
+
+/// Parse a Merkle branch of `expected_len` elements into the caller-provided
+/// `buffer` and return the populated prefix slice. The expected length depends
+/// on the consensus fork (pre-Electra branches are one element shorter than
+/// their Electra equivalents), so callers select `expected_len` accordingly.
+/// `buffer` must be at least `expected_len` elements long; ownership of the
+/// buffer stays with the caller.
+fn parseBranchSlice(
+    buffer: [][32]u8,
+    expected_len: usize,
+    value: std.json.Value,
+) ![]const [32]u8 {
+    const branch_items = try expectArray(value);
+    if (branch_items.len != expected_len) {
+        return error.InvalidArrayLength;
+    }
+    std.debug.assert(buffer.len >= expected_len);
+
+    for (branch_items, 0..) |item, index| {
+        buffer[index] = try hexToBytes(32, try expectString(item));
+    }
+    return buffer[0..expected_len];
+}
+
+/// Expected element count for a sync-committee Merkle branch
+/// (current_sync_committee_branch / next_sync_committee_branch). Electra adds
+/// one extra level to the generalized index, so the branch grows from 5 to 6.
+fn syncCommitteeBranchLen(fork: primitives.LightClientHeader.Fork) usize {
+    return if (fork.isElectraOrLater()) 6 else 5;
+}
+
+/// Expected element count for a finality Merkle branch (finality_branch).
+/// Electra grows the branch from 6 to 7 elements.
+fn finalityBranchLen(fork: primitives.LightClientHeader.Fork) usize {
+    return if (fork.isElectraOrLater()) 7 else 6;
 }
 
 fn parseSyncAggregate(value: std.json.Value) !primitives.SyncAggregate.SyncAggregate {

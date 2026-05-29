@@ -163,6 +163,29 @@ fn transactionGasFloorForFork(data: []const u8, hardfork: guillotine_mini.Hardfo
     return std.math.add(u64, INTRINSIC_GAS, data_floor) catch return TxError.IntrinsicGasExceedsLimit;
 }
 
+/// Compute the final gas billed for a transaction per EIP-7623.
+///
+/// The refund cap is derived from the non-floored gas used
+/// (`intrinsic + execution gas consumed`); the capped refund is subtracted
+/// from that non-floored value; and only THEN is the calldata floor
+/// (`gas_floor`) applied as a hard lower bound. Applying the floor before the
+/// refund would both inflate the refund cap and let the billed gas drop below
+/// the mandated floor, undercharging the sender and corrupting the base-fee
+/// burn, coinbase tip, and cumulative gas used (a Prague+ consensus divergence).
+pub fn effectiveGasUsed(
+    gas_used_without_floor: u64,
+    gas_floor: u64,
+    refund_counter: u64,
+    hardfork: guillotine_mini.Hardfork,
+) u64 {
+    const max_refund = if (hardfork.isAtLeast(.LONDON))
+        gas_used_without_floor / 5
+    else
+        gas_used_without_floor / 2;
+    const refund = @min(refund_counter, max_refund);
+    return @max(gas_used_without_floor - refund, gas_floor);
+}
+
 /// Resolve the EVM hardfork from an explicit chain schedule.
 pub fn resolveHardforkWithConfig(config: hardfork_schedule.ChainConfig, block_ctx: guillotine_mini.BlockContext) guillotine_mini.Hardfork {
     return hardfork_schedule.resolveHardforkWithConfig(config, block_ctx.block_number, block_ctx.block_timestamp);
@@ -537,14 +560,14 @@ pub fn processTransactionWithOptions(
     evm_checkpoint_open = false;
 
     const gas_consumed = if (result.gas_left > execution_gas) 0 else execution_gas - result.gas_left;
-    const total_gas_used = @max(intrinsic + gas_consumed, gas_floor);
-    const max_refund = if (hardfork.isAtLeast(.LONDON))
-        total_gas_used / 5
-    else
-        total_gas_used / 2;
+    // EIP-7623: the refund cap is computed on the non-floored gas
+    // (intrinsic + execution gas), the refund is subtracted from that
+    // non-floored value, and only THEN is the calldata floor applied as a
+    // hard lower bound. Applying the floor first would both inflate the
+    // refund cap and allow the final gas used to drop below the floor.
+    const gas_used_without_floor = intrinsic + gas_consumed;
     const refund_counter = std.math.add(u64, result.refund_counter, authorization_refund) catch std.math.maxInt(u64);
-    const refund = @min(refund_counter, max_refund);
-    const effective_gas_used = total_gas_used - refund;
+    const effective_gas_used = effectiveGasUsed(gas_used_without_floor, gas_floor, refund_counter, hardfork);
     const effective_gas_used_u256: u256 = @as(u256, effective_gas_used);
 
     const charged_gas_wei = std.math.mul(u256, effective_gas_price, effective_gas_used_u256) catch return TxError.StateError;

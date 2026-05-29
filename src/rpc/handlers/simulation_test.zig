@@ -24,6 +24,47 @@ test "simulation exposes mode unsupported error tuple" {
     try std.testing.expectEqualStrings("mode-unsupported", simulation.MODE_UNSUPPORTED_MESSAGE);
 }
 
+test "decodeRevertReason rejects overflowing attacker-controlled offset without panicking" {
+    const selector = [_]u8{ 0x08, 0xc3, 0x79, 0xa0 };
+
+    // offset word set to maxInt(u64): on a 64-bit target this previously passed the
+    // `offset > maxInt(usize)` guard and overflowed `4 + offset`.
+    var output: [4 + 32 + 32]u8 = undefined;
+    @memcpy(output[0..4], &selector);
+    @memset(output[4..], 0);
+    // big-endian offset word lives at output[4..36]; set the low 8 bytes to 0xff..ff.
+    @memset(output[28..36], 0xff);
+    @memset(output[36..68], 0);
+    try std.testing.expect(simulation.decodeRevertReason(&output) == null);
+
+    // offset word set to full maxInt(u256): must also be rejected via std.math.cast.
+    @memset(output[4..36], 0xff);
+    try std.testing.expect(simulation.decodeRevertReason(&output) == null);
+
+    // length word set to maxInt(u64) with a valid offset: reason_start + reason_len overflows.
+    @memset(output[4..36], 0);
+    output[35] = 0x20; // offset = 32 -> length word at output[36..68]
+    @memset(output[36..68], 0);
+    @memset(output[60..68], 0xff);
+    try std.testing.expect(simulation.decodeRevertReason(&output) == null);
+}
+
+test "decodeRevertReason decodes a well-formed Error(string) payload" {
+    // selector + offset(0x20) + length(5) + "hello" padded to 32 bytes
+    const reason = "hello";
+    var output: [4 + 32 + 32 + 32]u8 = undefined;
+    @memset(&output, 0);
+    output[0] = 0x08;
+    output[1] = 0xc3;
+    output[2] = 0x79;
+    output[3] = 0xa0;
+    output[35] = 0x20; // offset = 32
+    output[67] = reason.len; // length = 5
+    @memcpy(output[68 .. 68 + reason.len], reason);
+    const decoded = simulation.decodeRevertReason(&output) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings(reason, decoded);
+}
+
 test "eth_call returns output without mutating state" {
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();

@@ -192,3 +192,56 @@ test "slotTimestamp calculates slot time from genesis" {
     try std.testing.expectEqual(@as(u64, 1_000), engine.slotTimestamp(0));
     try std.testing.expectEqual(@as(u64, 1_000 + 5 * 12), engine.slotTimestamp(5));
 }
+
+// Regression for finding #2: the generic-update conversion previously sliced
+// the oversized fixed branch arrays with `[0..]`, producing branches of the
+// array's capacity (7 for finality, 6 for next-committee) rather than the real
+// element count tracked separately. That length mismatch caused
+// isValidMerkleBranch to reject every finality / next-committee proof. The
+// conversion must now use the real-length accessors.
+test "genericFromFinalityUpdate preserves the real finality branch length" {
+    const header = std.mem.zeroes(primitives.LightClientHeader.LightClientHeader);
+    // Pre-Electra (Deneb) finality branch has 6 elements; the backing array is
+    // 7 elements, so the bug would have surfaced a length-7 branch.
+    const finality_branch = [_][32]u8{[_]u8{0xab} ** 32} ** 6;
+
+    const finality_update = try primitives.LightClientUpdate.LightClientFinalityUpdate.fromBranch(
+        header,
+        header,
+        finality_branch[0..],
+        [_]u8{0xaa} ** 64,
+        [_]u8{0xbb} ** 96,
+        8_000_001,
+    );
+
+    const generic = consensus_sync.genericFromFinalityUpdate(finality_update);
+    try std.testing.expect(generic.finality_branch != null);
+    try std.testing.expectEqual(@as(usize, 6), generic.finality_branch.?.len);
+}
+
+test "genericFromLightClientUpdate preserves real branch lengths" {
+    const header = std.mem.zeroes(primitives.LightClientHeader.LightClientHeader);
+    const pubkeys = [_][48]u8{[_]u8{0} ** 48} ** 512;
+    // Pre-Electra: next-committee branch has 5 elements (backing array is 6),
+    // finality branch has 6 elements (backing array is 7).
+    const next_branch = [_][32]u8{[_]u8{0xcd} ** 32} ** 5;
+    const finality_branch = [_][32]u8{[_]u8{0xab} ** 32} ** 6;
+
+    const update = try primitives.LightClientUpdate.LightClientUpdate.fromBranches(
+        header,
+        pubkeys,
+        [_]u8{0} ** 48,
+        next_branch[0..],
+        header,
+        finality_branch[0..],
+        [_]u8{0xaa} ** 64,
+        [_]u8{0xbb} ** 96,
+        8_000_001,
+    );
+
+    const generic = consensus_sync.genericFromLightClientUpdate(update);
+    try std.testing.expect(generic.next_sync_committee_branch != null);
+    try std.testing.expectEqual(@as(usize, 5), generic.next_sync_committee_branch.?.len);
+    try std.testing.expect(generic.finality_branch != null);
+    try std.testing.expectEqual(@as(usize, 6), generic.finality_branch.?.len);
+}

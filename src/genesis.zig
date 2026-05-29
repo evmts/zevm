@@ -10,6 +10,12 @@ pub const DEVNET_CHAIN_ID: u64 = CHAIN_ID;
 pub const DEV_BALANCE: u256 = 10_000 * 1_000_000_000_000_000_000;
 pub const DEFAULT_GAS_LIMIT: u64 = 30_000_000;
 pub const DEFAULT_BASE_FEE: u256 = 1_000_000_000;
+/// Fixed devnet genesis timestamp. Using a constant (rather than wall-clock
+/// std.time.timestamp()) keeps the genesis block hash deterministic across
+/// restarts, so anything that pins to the genesis hash (peer comparison,
+/// persisted-DB validation, snapshots) stays stable. Mirrors the mainnet
+/// genesis header which also uses a fixed timestamp of 0.
+pub const DEFAULT_DEVNET_GENESIS_TIMESTAMP: u64 = 0;
 pub const NUM_ACCOUNTS: usize = 10;
 pub const MNEMONIC = "test test test test test test test test test test test junk";
 pub const DERIVATION_PATH = "m/44'/60'/0'/0/";
@@ -189,7 +195,7 @@ pub fn createGenesisBlockWithProfile(
             .number = 0,
             .gas_limit = DEFAULT_GAS_LIMIT,
             .base_fee_per_gas = DEFAULT_BASE_FEE,
-            .timestamp = @intCast(std.time.timestamp()),
+            .timestamp = DEFAULT_DEVNET_GENESIS_TIMESTAMP,
             .beneficiary = DEV_ACCOUNTS[0].address,
             .state_root = state_root,
             .difficulty = 0,
@@ -580,7 +586,7 @@ pub fn devnetHeaderForTests(state_root: primitives.Hash.Hash) primitives.BlockHe
         .number = 0,
         .gas_limit = DEFAULT_GAS_LIMIT,
         .base_fee_per_gas = DEFAULT_BASE_FEE,
-        .timestamp = @intCast(std.time.timestamp()),
+        .timestamp = DEFAULT_DEVNET_GENESIS_TIMESTAMP,
         .beneficiary = DEV_ACCOUNTS[0].address,
         .state_root = state_root,
         .difficulty = 0,

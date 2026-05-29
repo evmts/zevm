@@ -171,6 +171,61 @@ test "eth_getTransactionCount returns 0 for fresh account" {
     try expectQuantityStr(result.value, "0x0");
 }
 
+test "eth_getTransactionCount pending tag includes consecutive pool transactions" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    const sender = runtime.DEFAULT_DEV_ACCOUNTS[0];
+    // committed state nonce is 0; pool has two consecutive pending txs (nonces 0, 1)
+    // plus a non-consecutive queued tx (nonce 3) which must NOT advance the count.
+    try rt.pool.setNonce(.{ .bytes = sender.bytes }, 0);
+    try rt.pool.add(std.testing.allocator, .{
+        .sender = .{ .bytes = sender.bytes },
+        .nonce = 0,
+        .gas_limit = 21_000,
+        .max_fee_per_gas = 1_000_000_000,
+        .hash = [_]u8{0x11} ** 32,
+    });
+    try rt.pool.add(std.testing.allocator, .{
+        .sender = .{ .bytes = sender.bytes },
+        .nonce = 1,
+        .gas_limit = 21_000,
+        .max_fee_per_gas = 1_000_000_000,
+        .hash = [_]u8{0x22} ** 32,
+    });
+    try rt.pool.add(std.testing.allocator, .{
+        .sender = .{ .bytes = sender.bytes },
+        .nonce = 3,
+        .gas_limit = 21_000,
+        .max_fee_per_gas = 1_000_000_000,
+        .hash = [_]u8{0x33} ** 32,
+    });
+
+    // "pending" must reflect the next usable nonce after the two consecutive txs.
+    const pending = try eth_read.handleEthGetTransactionCount(
+        arena.allocator(),
+        &rt,
+        .{
+            .address = .{ .bytes = sender.bytes },
+            .block = makeBlockSpec("pending"),
+        },
+    );
+    try expectQuantityStr(pending.value, "0x2");
+
+    // "latest" must still return only the committed state nonce.
+    const latest = try eth_read.handleEthGetTransactionCount(
+        arena.allocator(),
+        &rt,
+        .{
+            .address = .{ .bytes = sender.bytes },
+            .block = makeBlockSpec("latest"),
+        },
+    );
+    try expectQuantityStr(latest.value, "0x0");
+}
+
 // --- AC: eth_coinbase returns coinbase address ---
 
 test "eth_coinbase returns default coinbase" {

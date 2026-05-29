@@ -712,3 +712,49 @@ test "sequential transactions increment nonce" {
     try std.testing.expectEqual(@as(u64, 2), try sm.getNonce(sender));
     try std.testing.expectEqual(@as(u256, 300), try sm.getBalance(recipient));
 }
+
+test "EIP-7623: refund cap and floor applied in correct order" {
+    // Regression test for the EIP-7623 ordering bug: the refund cap must be
+    // derived from the non-floored gas, the refund subtracted from it, and the
+    // calldata floor applied as a hard lower bound LAST.
+    //
+    // Worked example (Prague, large zero-byte calldata so the floor dominates):
+    //   gas_used_without_floor = intrinsic + gas_consumed = 100_000
+    //   gas_floor              = 200_000
+    //   refund_counter         = 50_000
+    // Correct (London+): max_refund = 100_000/5 = 20_000;
+    //   after refund = 100_000 - 20_000 = 80_000;
+    //   effective = max(80_000, 200_000) = 200_000.
+    // The buggy implementation floored first (200_000), capped the refund on the
+    // floored value (200_000/5 = 40_000), and subtracted after flooring, yielding
+    // 160_000 — below the mandated floor and undercharging the sender.
+    try std.testing.expectEqual(
+        @as(u64, 200_000),
+        tx_processor.effectiveGasUsed(100_000, 200_000, 50_000, .PRAGUE),
+    );
+
+    // When the non-floored gas dominates, the floor is inert and the capped
+    // refund reduces the bill normally.
+    //   max_refund = 1_000_000/5 = 200_000; refund = min(50_000, 200_000) = 50_000;
+    //   effective = max(1_000_000 - 50_000, 21_000) = 950_000.
+    try std.testing.expectEqual(
+        @as(u64, 950_000),
+        tx_processor.effectiveGasUsed(1_000_000, 21_000, 50_000, .LONDON),
+    );
+
+    // The refund itself is capped at gas_used_without_floor/5 (London+).
+    //   max_refund = 100_000/5 = 20_000; refund = min(50_000, 20_000) = 20_000;
+    //   effective = max(100_000 - 20_000, 0) = 80_000.
+    try std.testing.expectEqual(
+        @as(u64, 80_000),
+        tx_processor.effectiveGasUsed(100_000, 0, 50_000, .LONDON),
+    );
+
+    // Pre-London uses a 1/2 refund cap.
+    //   max_refund = 100_000/2 = 50_000; refund = min(50_000, 50_000) = 50_000;
+    //   effective = max(100_000 - 50_000, 0) = 50_000.
+    try std.testing.expectEqual(
+        @as(u64, 50_000),
+        tx_processor.effectiveGasUsed(100_000, 0, 50_000, .ISTANBUL),
+    );
+}

@@ -45,6 +45,14 @@ fn putOwnedJson(
     key: []const u8,
     value: std.json.Value,
 ) !void {
+    // putOwnedJson takes ownership of `value`: on success it is stored in `obj`, and
+    // on any failure it is freed here. This errdefer must be registered BEFORE the
+    // `dupe(key)` below, otherwise a failure of that dupe would return before `value`
+    // is protected and leak the caller-allocated value.
+    errdefer {
+        var orphaned = value;
+        deinitJsonValue(allocator, &orphaned);
+    }
     const owned_key = try allocator.dupe(u8, key);
     errdefer allocator.free(owned_key);
     try obj.put(owned_key, value);
@@ -897,12 +905,16 @@ fn engineCapabilitiesValue(allocator: std.mem.Allocator) !std.json.Value {
     return .{ .array = array };
 }
 
-fn engineClientVersionValue(allocator: std.mem.Allocator) !std.json.Value {
+pub fn engineClientVersionValue(allocator: std.mem.Allocator) !std.json.Value {
     var obj = std.json.ObjectMap.init(allocator);
-    errdefer {
+    // `moved` guards a single ownership transfer of `obj` into `array`. Once the
+    // append succeeds, `array` owns `obj` and only the array errdefer (which itself
+    // frees every appended item) is responsible for cleanup.
+    var moved = false;
+    errdefer if (!moved) {
         var value = std.json.Value{ .object = obj };
         deinitJsonValue(allocator, &value);
-    }
+    };
     try putOwnedJson(&obj, allocator, "code", .{ .string = try allocator.dupe(u8, "ZE") });
     try putOwnedJson(&obj, allocator, "name", .{ .string = try allocator.dupe(u8, "zevm") });
     try putOwnedJson(&obj, allocator, "version", .{ .string = try allocator.dupe(u8, "v0.1.0") });
@@ -910,11 +922,13 @@ fn engineClientVersionValue(allocator: std.mem.Allocator) !std.json.Value {
 
     var array = std.json.Array.init(allocator);
     errdefer {
-        var item = std.json.Value{ .object = obj };
-        deinitJsonValue(allocator, &item);
+        for (array.items) |*item| {
+            deinitJsonValue(allocator, item);
+        }
         array.deinit();
     }
     try array.append(.{ .object = obj });
+    moved = true;
     return .{ .array = array };
 }
 
@@ -4378,7 +4392,7 @@ fn currentBlobBaseFee(rt: *const runtime_mod.NodeRuntime) u256 {
     return rt.dev_runtime.config.blob_base_fee orelse rt.blob_base_fee;
 }
 
-fn deinitJsonValue(allocator: std.mem.Allocator, value: *std.json.Value) void {
+pub fn deinitJsonValue(allocator: std.mem.Allocator, value: *std.json.Value) void {
     switch (value.*) {
         .string => |text| allocator.free(text),
         .number_string => |text| allocator.free(text),
