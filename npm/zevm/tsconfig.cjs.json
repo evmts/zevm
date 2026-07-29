@@ -5,6 +5,9 @@
     "declarationMap": false,
     "module": "CommonJS",
     "moduleResolution": "Node",
+    // TypeScript 6 deprecates moduleResolution=node10, but this config intentionally
+    // emits CommonJS for the dist-cjs build, which still requires node10 resolution.
+    "ignoreDeprecations": "6.0",
     "outDir": "dist-cjs"
   },
   "include": [
