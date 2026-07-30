@@ -8,13 +8,12 @@ const packageRoot = path.resolve(scriptDir, "..");
 const repoRoot = path.resolve(packageRoot, "../..");
 const platformsRoot = path.resolve(packageRoot, "../platforms");
 const zigOutNpm = path.resolve(repoRoot, "zig-out/npm");
+const rootLicense = path.resolve(repoRoot, "LICENSE");
 const includeLocalNative = process.argv.includes("--include-local-native");
 
 const platformPackages = new Map([
   ["darwin-arm64", "@evmts/zevm-darwin-arm64"],
   ["darwin-x64", "@evmts/zevm-darwin-x64"],
-  ["freebsd-arm64", "@evmts/zevm-freebsd-arm64"],
-  ["freebsd-x64", "@evmts/zevm-freebsd-x64"],
   ["linux-arm64-gnu", "@evmts/zevm-linux-arm64-gnu"],
   ["linux-arm64-musl", "@evmts/zevm-linux-arm64-musl"],
   ["linux-x64-gnu", "@evmts/zevm-linux-x64-gnu"],
@@ -33,6 +32,11 @@ function copyIfPresent(source, destination) {
   return true;
 }
 
+if (!fs.existsSync(rootLicense)) {
+  throw new Error(`missing repository license: ${rootLicense}`);
+}
+fs.copyFileSync(rootLicense, path.resolve(packageRoot, "LICENSE"));
+
 const localNativeDestination = path.resolve(packageRoot, "native/zevm.node");
 if (includeLocalNative) {
   const localNativeSource = path.resolve(zigOutNpm, "native/zevm.node");
@@ -46,6 +50,10 @@ if (includeLocalNative) {
 }
 
 for (const [platformName, packageName] of platformPackages) {
+  fs.copyFileSync(
+    rootLicense,
+    path.resolve(platformsRoot, platformName, "LICENSE"),
+  );
   const source = path.resolve(zigOutNpm, "prebuilds", platformName, "zevm.node");
   const destination = path.resolve(platformsRoot, platformName, "zevm.node");
   if (copyIfPresent(source, destination)) {

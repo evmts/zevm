@@ -1,0 +1,87 @@
+---
+title: ZEVM
+description: A Zig Ethereum client with a writable trusted dev node and a proof-backed light client.
+---
+
+# ZEVM
+
+ZEVM is an Ethereum client written in Zig. It runs in exactly two modes:
+
+- **Trusted mode** — a writable local development node. Deterministic dev accounts, mining
+  controls, transaction submission, state snapshots, and direct state mutation over JSON-RPC.
+  Forking a remote chain is trusted-mode *configuration*, not a third mode.
+- **Light mode** — a read-only client whose answers are anchored to consensus. Balances, nonces,
+  code, and storage are served from `eth_getProof` responses verified against a beacon-chain
+  header the client synced itself.
+
+Both modes speak HTTP JSON-RPC on `127.0.0.1:8545` by default. The same engine is also shipped as
+a C static/shared library and as a Node.js N-API addon, so you can embed the light client without
+running a server at all.
+
+## Why it exists
+
+Existing dev nodes ask you to trust them. Existing light clients are hard to embed. ZEVM is one
+codebase that covers both ends:
+
+- **A dev node you can script.** `zevm_*` methods (with `anvil_*` and `evm_*` aliases) let a test
+  suite set balances, mint ERC-20 balances, impersonate accounts, jump time, mine on demand, and
+  snapshot/revert — the surface a forked-mainnet test needs.
+- **Reads you don't have to trust.** In light mode ZEVM syncs the beacon chain from a checkpoint,
+  then verifies every execution-layer read against a Merkle proof rooted in the verified header.
+  A lying RPC provider gets rejected rather than believed.
+- **Embeddable, not just runnable.** [`zevm.h`](/reference/c-abi) is a small caller-owned-buffer C
+  ABI for hosts like Swift or Rust; [`@evmts/zevm`](/reference/node-api) is the same thing for
+  Node.js, with prebuilt binaries for macOS, Linux (glibc and musl), and Windows.
+- **Thin by design.** ZEVM does not re-implement the EVM. Execution primitives come from
+  [voltaire](https://github.com/evmts/voltaire), the interpreter from
+  [guillotine-mini](https://github.com/evmts/guillotine-mini). ZEVM owns the product shell: CLI,
+  config, modes, transport, dispatch, and checkpoint wiring. See
+  [Architecture & Upstream Ownership](/concepts/architecture-and-upstream-ownership).
+
+## Install
+
+```bash
+npm install @evmts/zevm@beta
+```
+
+Or build the binary from source — see [Installation](/quickstart/installation) and
+[Building From Source](/guides/building-from-source).
+
+## Start a dev node
+
+```bash
+zevm --mode trusted --host 127.0.0.1 --port 8545
+```
+
+```bash
+curl -s http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}'
+```
+
+```json
+{"jsonrpc":"2.0","id":1,"result":"0x7a69"}
+```
+
+`0x7a69` is 31337, the default dev chain id.
+
+## Where to go next
+
+| If you want to… | Read |
+| --- | --- |
+| Get a node running locally | [Installation](/quickstart/installation) |
+| Fork mainnet for tests | [Forked Dev Node](/quickstart/forked-dev-node) |
+| Run a verifying light client | [Run Light Mode](/quickstart/run-light-mode) |
+| Drive it from a test suite | [Testing Contracts Against ZEVM](/guides/contract-testing) |
+| Embed it in Node.js | [Embedding The Light Client In Node.js](/guides/node-light-client) |
+| Embed it in C/Swift/Rust | [Embedding The C ABI](/guides/embedding-c-abi) |
+| Know every flag | [CLI Reference](/reference/cli) |
+| Know every RPC method | [JSON-RPC Overview](/reference/json-rpc/overview) |
+| Understand how this fits tevm | [Ecosystem](/ecosystem) |
+
+## Status
+
+ZEVM is pre-1.0. The first real release is `0.1.0-beta.1`; the public API and native ABI are
+usable, but cross-platform packaging still wants consumer feedback. Phase-1 scope means HTTP
+JSON-RPC only — no built-in TLS and no JSON-RPC authentication. Keep `--host 127.0.0.1` unless you
+have put a reverse proxy in front of it.

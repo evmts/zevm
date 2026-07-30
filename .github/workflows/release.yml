@@ -1,0 +1,250 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  ZIG_VERSION: "0.15.2"
+  RUST_VERSION: "1.89.0"
+  TEST_NODE_VERSION: "22.22.0"
+  PUBLISH_NODE_VERSION: "24.11.1"
+  PUBLISH_NPM_VERSION: "11.6.2"
+  BUN_VERSION: "1.3.14"
+
+jobs:
+  verify:
+    name: Verify Release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Require a commit merged to main
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.89.0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.TEST_NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: npm/zevm/package-lock.json
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y perl
+
+      - name: Install npm dependencies
+        run: npm --prefix npm/zevm ci --ignore-scripts
+
+      - name: Verify release versions and tag
+        run: npm --prefix npm/zevm run verify:release -- "$GITHUB_REF_NAME"
+
+      - name: Fetch and verify Zig dependencies
+        run: |
+          zig build --fetch
+          zig build dependency-preflight -- --zig-version "$ZIG_VERSION"
+
+      - name: Build
+        run: zig build --summary all
+
+      - name: Test
+        run: zig build test --summary all
+
+      - name: Run release qualification
+        run: |
+          zig build qualification-check -- --require-covered
+          zig build verify --summary all
+
+      - name: Verify native interfaces
+        run: |
+          zig build c-smoke
+          zig build npm-smoke
+
+      - name: Build TypeScript package
+        run: |
+          npm --prefix npm/zevm run typecheck
+          npm --prefix npm/zevm run build
+
+      - name: Verify clean generated state
+        run: git diff --exit-code -- .
+
+  native:
+    name: Native ${{ matrix.platform }}
+    needs: verify
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            runner: macos-15
+            zig-target: aarch64-macos
+            rust-target: aarch64-apple-darwin
+            smoke: true
+          - platform: darwin-x64
+            runner: macos-15-intel
+            zig-target: x86_64-macos
+            rust-target: x86_64-apple-darwin
+            smoke: true
+          - platform: linux-arm64-gnu
+            runner: ubuntu-24.04-arm
+            zig-target: aarch64-linux-gnu
+            rust-target: aarch64-unknown-linux-gnu
+            smoke: true
+          - platform: linux-arm64-musl
+            runner: ubuntu-24.04-arm
+            zig-target: aarch64-linux-musl
+            rust-target: aarch64-unknown-linux-musl
+            smoke: false
+          - platform: linux-x64-gnu
+            runner: ubuntu-24.04
+            zig-target: x86_64-linux-gnu
+            rust-target: x86_64-unknown-linux-gnu
+            smoke: true
+          - platform: linux-x64-musl
+            runner: ubuntu-24.04
+            zig-target: x86_64-linux-musl
+            rust-target: x86_64-unknown-linux-musl
+            smoke: false
+          - platform: win32-arm64-msvc
+            runner: windows-11-arm
+            zig-target: aarch64-windows-msvc
+            rust-target: aarch64-pc-windows-msvc
+            smoke: true
+          - platform: win32-ia32-msvc
+            runner: windows-2025
+            zig-target: x86-windows-msvc
+            rust-target: i686-pc-windows-msvc
+            smoke: false
+          - platform: win32-x64-msvc
+            runner: windows-2025
+            zig-target: x86_64-windows-msvc
+            rust-target: x86_64-pc-windows-msvc
+            smoke: true
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.89.0
+        with:
+          targets: ${{ matrix.rust-target }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.TEST_NODE_VERSION }}
+
+      - name: Install musl build tools
+        if: endsWith(matrix.platform, '-musl')
+        shell: bash
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Fetch Zig dependencies
+        shell: bash
+        run: zig build --fetch
+
+      - name: Build native addon
+        shell: bash
+        run: >-
+          zig build npm-platform-artifacts
+          -Dtarget=${{ matrix.zig-target }}
+          -Doptimize=ReleaseSafe
+          --summary all
+
+      - name: Smoke test native addon
+        if: matrix.smoke
+        shell: bash
+        run: node npm/zevm/scripts/smoke.cjs "zig-out/npm/prebuilds/${{ matrix.platform }}/zevm.node"
+
+      - name: Verify native artifact
+        shell: bash
+        run: test -s "zig-out/npm/prebuilds/${{ matrix.platform }}/zevm.node"
+
+      - name: Upload native artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}
+          path: zig-out/npm/prebuilds/${{ matrix.platform }}/zevm.node
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish npm Packages
+    needs:
+      - verify
+      - native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.PUBLISH_NODE_VERSION }}
+
+      - name: Pin publishing npm
+        run: npm install --global "npm@${PUBLISH_NPM_VERSION}"
+
+      - name: Install package dependencies
+        run: npm --prefix npm/zevm ci --ignore-scripts
+
+      - name: Download native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: zig-out/npm/prebuilds
+
+      - name: Verify release payload
+        run: |
+          test "$(find zig-out/npm/prebuilds -name zevm.node -type f | wc -l)" -eq 9
+          npm --prefix npm/zevm run verify:release -- "$GITHUB_REF_NAME"
+          npm --prefix npm/zevm run build
+
+      - name: Publish platform packages and main package
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "${NPM_TOKEN:-}" ]; then
+            npm config set //registry.npmjs.org/:_authToken "$NPM_TOKEN"
+          fi
+          npm --prefix npm/zevm run publish:all

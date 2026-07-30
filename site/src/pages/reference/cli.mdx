@@ -1,0 +1,155 @@
+---
+title: CLI Reference
+description: Every zevm command-line flag, its type, its default, and which mode accepts it.
+---
+
+# CLI Reference
+
+```bash
+zevm [flags]
+```
+
+Flags are parsed by `src/cli.zig` and resolved into an `AppConfig` by `src/config.zig`. Resolution
+order is **CLI flag → config file value → built-in default**. An unknown flag, a flag missing its
+value, or an unparseable value is a startup error, logged as `config_load_failed` with
+`failureClass=cli` and a non-zero exit — ZEVM never silently ignores a flag.
+
+Running with a trusted-only flag while `--mode light` is selected (or vice versa) is also a
+startup error rather than a warning.
+
+## Global
+
+| Flag | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `--config <path>` | path | none | JSON config file. See [Configuration Overview](/reference/configuration/overview). |
+| `--mode <trusted\|light>` | enum | `trusted` | Runtime mode. See [Runtime Modes](/concepts/runtime-modes). |
+| `--host <host>` | string | `127.0.0.1` | JSON-RPC listen host. |
+| `--port <u16>` | integer | `8545` | JSON-RPC listen port. |
+| `--engine-host <host>` | string | same as `--host` | Engine API listen host. Only set if you pass an engine flag. |
+| `--engine-port <u16>` | integer | `8551` | Engine API listen port. |
+
+Binding `--host` to anything other than `127.0.0.1` exposes an unauthenticated, plaintext JSON-RPC
+endpoint. Phase 1 ships no TLS and no auth.
+
+## Trusted mode
+
+Accepted only when the resolved mode is `trusted`.
+
+| Flag | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `--chain-id <u64>` | integer | `31337` | Reported by `eth_chainId`. |
+| `--coinbase-index <u8>` | integer | `0` | Index into the 10 dev accounts used as block coinbase. Must be `< 10`. |
+| `--initial-balance <u256>` | integer (wei) | `10000000000000000000000` (10,000 ETH) | Genesis balance for each dev account. |
+| `--gas-price <u256>` | integer (wei) | `2000000000` (2 gwei) | Reported by `eth_gasPrice`. |
+| `--base-fee <u256>` | integer (wei) | `1000000000` (1 gwei) | Genesis base fee. |
+| `--blob-base-fee <u256>` | integer (wei) | `1` | Reported by `eth_blobBaseFee`. |
+| `--max-priority-fee-per-gas <u256>` | integer (wei) | `1000000000` (1 gwei) | Reported by `eth_maxPriorityFeePerGas`. |
+| `--block-gas-limit <u64>` | integer | `30000000` | Per-block gas limit. |
+| `--mining <auto\|manual\|interval>` | enum | `auto` | `auto` mines one block per transaction; `manual` mines only on `zevm_mine`/`evm_mine`; `interval` mines on a timer. |
+| `--block-time <seconds>` | integer | none | Required with `--mining interval`; rejected as an incomplete unit on its own. |
+| `--fork-url <url>` | string | none | Upstream JSON-RPC to fork from. Turns the dev node into a forked node. |
+| `--fork-block-number <u64>` | integer | latest | Fork pin. Requires `--fork-url`. |
+| `--genesis <path>` | path | none | Genesis allocation JSON to seed accounts. |
+| `--chain-rlp <path>` | path | none | RLP chain file to import at startup. |
+
+`--mining`/`--block-time` and `--fork-url`/`--fork-block-number` are each validated as a unit: a
+partial pairing is a config error, not a best-effort guess.
+
+## Light mode
+
+Accepted only when the resolved mode is `light`.
+
+| Flag | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `--network <mainnet\|sepolia\|holesky>` | enum | `mainnet` | Selects the consensus network preset. |
+| `--consensus-rpc-url <url>` | string | **required** | Beacon-chain HTTP API. Startup fails without it. |
+| `--execution-rpc-url <url>` | string | none | Execution JSON-RPC used as the untrusted proof source. |
+| `--checkpoint <0x…32 bytes>` | hex | from checkpoint store / release defaults | Trusted beacon checkpoint root to bootstrap from. |
+| `--checkpoint-dir <path>` | path | `.zevm/checkpoints/<network>` | Where synced checkpoints are cached. `<network>` is substituted. |
+| `--max-checkpoint-age-seconds <u64>` | integer | `1209600` (14 days) | Age at which a checkpoint is considered stale. |
+| `--strict-checkpoint-age[=true\|false]` | bool | `false` | When true, a stale checkpoint is fatal instead of a warning. |
+
+The execution-layer answer is only trusted after its `eth_getProof` result verifies against the
+state root of a beacon-verified header. See
+[Verified Light-Mode Reads](/reference/json-rpc/verified-light-mode-reads).
+
+## Examples
+
+Default dev node:
+
+```bash
+zevm --mode trusted
+```
+
+Manual mining, custom chain id, one dev account as coinbase:
+
+```bash
+zevm --mode trusted \
+  --chain-id 1337 \
+  --mining manual \
+  --coinbase-index 1 \
+  --block-gas-limit 60000000
+```
+
+Two-second blocks:
+
+```bash
+zevm --mode trusted --mining interval --block-time 2
+```
+
+Forked mainnet pinned to a block:
+
+```bash
+zevm --mode trusted \
+  --fork-url https://eth-mainnet.example/v2/KEY \
+  --fork-block-number 21000000
+```
+
+Verifying light client on Sepolia:
+
+```bash
+zevm --mode light \
+  --network sepolia \
+  --consensus-rpc-url https://beacon-sepolia.example \
+  --execution-rpc-url https://eth-sepolia.example/v2/KEY \
+  --checkpoint-dir ./.zevm/checkpoints/sepolia \
+  --strict-checkpoint-age
+```
+
+Running from a source checkout without installing, passing flags through `zig build run`:
+
+```bash
+zig build run -- --mode trusted --host 127.0.0.1 --port 8545
+```
+
+## Dev accounts
+
+Trusted mode funds ten deterministic accounts with `--initial-balance` each. They are the
+well-known Hardhat/Anvil test accounts, so existing test fixtures keep working:
+
+| Index | Address |
+| --- | --- |
+| 0 | `0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266` |
+| 1 | `0x70997970c51812dc3a010c7d01b50e0d17dc79c8` |
+| 2 | `0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc` |
+| 3 | `0x90f79bf6eb2c4f870365e785982e1f101e93b906` |
+| 4 | `0x15d34aaf54267db7d7c367839aaf71a00a2c6a65` |
+| 5 | `0x9965507d1a55bcc2695c58ba16fb37d819b0a4dc` |
+| 6 | `0x976ea74026e726554db657fa54763abd0c3a0aa9` |
+| 7 | `0x14dc79964da2c08b23698b3d3cc7ca32193d9955` |
+| 8 | `0x23618e81e3f5cdf7f54c3d65f7fbc0abf5b21e8f` |
+| 9 | `0xa0ee7a142d267c1f36714e4a8f75612f20a79720` |
+
+These keys are public. Never fund them on a real network. Details:
+[Managed Dev Wallet](/reference/json-rpc/managed-dev-wallet).
+
+## Exit behaviour
+
+Startup failures are emitted as a single JSON log line on stderr before exit, for example:
+
+```json
+{"timestamp":1785372071,"level":"error","scope":"startup","message":"config load failed failureClass=cli error=InvalidConfig","event":"config_load_failed","failureClass":"cli","error":"InvalidConfig"}
+```
+
+`failureClass` distinguishes `cli` (bad flag), `io` (unreadable config file), and `validation`
+(structurally valid but semantically rejected config).

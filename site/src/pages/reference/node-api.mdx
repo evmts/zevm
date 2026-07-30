@@ -1,0 +1,133 @@
+---
+title: Node.js API
+description: The @evmts/zevm package - LightClient, native loading, and the utility subpath exports.
+---
+
+# Node.js API
+
+```bash
+npm install @evmts/zevm@beta
+```
+
+The package is ESM-first (`"type": "module"`) and requires Node `>=22`. The root entry point is
+ESM only; every utility subpath additionally ships a CommonJS build.
+
+## Native addon loading
+
+The root export loads a prebuilt N-API addon at import time. Resolution order, implemented in
+`npm/zevm/src/index.ts`:
+
+1. `process.env.ZEVM_NATIVE_PATH`, if set — `require()`d directly. Use this to point at a locally
+   built `zig-out/npm/native/zevm.node`.
+2. The optional platform package for the current `platform-arch` (on Linux, the libc flavour is
+   detected from `process.report.getReport().header.glibcVersionRuntime`; absent ⇒ `musl`).
+3. `<package>/native/zevm.node`, if present.
+
+If none resolve, import throws:
+
+```text
+No ZEVM native addon found for <key>. Supported prebuilds: darwin-arm64, darwin-x64,
+linux-arm64-gnu, linux-arm64-musl, linux-x64-gnu, linux-x64-musl, win32-arm64-msvc,
+win32-ia32-msvc, win32-x64-msvc
+```
+
+The platform packages are `optionalDependencies`, so an install on an unsupported platform
+succeeds and only fails at import. See [Building From Source](/guides/building-from-source) for
+producing your own addon.
+
+## Constants
+
+```ts
+import {
+  ZEVM_NETWORK_MAINNET, // 0
+  ZEVM_NETWORK_SEPOLIA, // 1
+  ZEVM_NETWORK_HOLESKY, // 2
+  ZEVM_STATUS_NOT_SYNCED, // 0
+  ZEVM_STATUS_SYNCING, // 1
+  ZEVM_STATUS_SYNCED, // 2
+} from "@evmts/zevm";
+```
+
+`ZevmNetwork` and `ZevmStatus` are the corresponding union types.
+
+## Module functions
+
+```ts
+import { abiVersion, version, errorMessage, networkName } from "@evmts/zevm";
+
+abiVersion(); // number  - C ABI version of the loaded library (currently 1)
+version(); // string  - ZEVM package version string
+errorMessage(2); // string  - human-readable name for a ZEVM_ERR_* code
+networkName(0); // string | null - "mainnet" | "sepolia" | "holesky" | null
+```
+
+## `class LightClient`
+
+A handle onto the native light client. Every instance owns native resources; call `close()` when
+you are finished. Calls on one instance are **not** internally synchronized — serialize them, or
+use one instance per thread.
+
+```ts
+new LightClient(network: ZevmNetwork, beaconRpcUrl: string, executionRpcUrl: string)
+```
+
+| Method | Returns | Description |
+| --- | --- | --- |
+| `syncStep()` | `number` | Advances consensus sync by one step; returns a `ZEVM_*` status/return code. Call in a loop until `status()` is `ZEVM_STATUS_SYNCED`. |
+| `status()` | `ZevmStatus` | Current sync status. |
+| `lastError()` | `string` | Last error message recorded on this handle. Valid until the next call on the handle. |
+| `getBalance(address, blockNumber = 0)` | `string` | Proof-verified balance, as a decimal/hex string produced by the native layer. |
+| `getTransactionCount(address, blockNumber = 0)` | `bigint` | Proof-verified nonce. |
+| `getCode(address, blockNumber = 0)` | `Buffer` | Proof-verified account code. |
+| `getStorage(address, slot, blockNumber = 0)` | `string` | Proof-verified storage value at `slot`. |
+| `close()` | `void` | Shuts down the native handle. Idempotent. |
+
+`blockNumber` accepts `number | bigint`. Any read after `close()` throws
+`Error: ZEVM light client is closed`. Reads before the client is synced surface as the
+`ZEVM_ERR_NOT_SYNCED` condition rather than a stale answer.
+
+A complete runnable program is in
+[Embedding The Light Client In Node.js](/guides/node-light-client).
+
+## Utility subpath exports
+
+These are pure TypeScript and do **not** touch the native addon — importing them on an
+unsupported platform is fine. Each has both ESM and CJS builds.
+
+| Subpath | Contents |
+| --- | --- |
+| `@evmts/zevm/rlp` | Standalone RLP `encode` / `decode` (with a streaming overload), `RlpInput`, `RlpDecoded`. |
+| `@evmts/zevm/util` | Bytes/hex/address/bigint helpers and the `PrefixedHexString`, `BytesLike`, `AddressLike` type family. |
+| `@evmts/zevm/receipt` | `TxReceipt`, `StoredTxReceipt`, `Bloom`, `encodeReceipt`. |
+| `@evmts/zevm/receipt-manager` | `MapDb` / `createMapDb` receipt-metadata storage. |
+| `@evmts/zevm/txpool` | Transaction-pool types and implementation, including `ImpersonatedTx`. |
+| `@evmts/zevm/statemanager` | Caching state-manager types (`CacheType`, `CachesStateManagerOpts`, …). |
+| `@evmts/zevm/tx` | Re-exports `@ethereumjs/tx` plus `ImpersonatedTx`, `ImpersonatedTxData`, and ZEVM error classes. |
+| `@evmts/zevm/evm` | Re-exports `@ethereumjs/evm`. |
+| `@evmts/zevm/common` | Re-exports `@ethereumjs/common`. |
+| `@evmts/zevm/trie` | Re-exports `@ethereumjs/trie`. |
+| `@evmts/zevm/evm-error` | `EVMErrorMessage`, `EVMErrorType`, `EVMError`. |
+
+Example:
+
+```ts
+import { encode, decode } from "@evmts/zevm/rlp";
+
+const encoded = encode(["0x01", "0x02"]);
+console.log(Buffer.from(encoded).toString("hex"));
+
+const decoded = decode(encoded);
+console.log(decoded);
+```
+
+CommonJS works for the subpaths:
+
+```js
+const { encode } = require("@evmts/zevm/rlp");
+```
+
+## Talking to a running node instead
+
+The npm package embeds the *light client*. To drive a trusted dev node from Node.js, start the
+`zevm` binary and speak JSON-RPC to it with any client (`viem`, `ethers`, plain `fetch`) — see
+[Testing Contracts Against ZEVM](/guides/contract-testing).

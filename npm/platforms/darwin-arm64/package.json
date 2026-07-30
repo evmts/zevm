@@ -1,13 +1,21 @@
 {
   "name": "@evmts/zevm-darwin-arm64",
-  "version": "0.0.0",
+  "version": "0.1.0-beta.1",
   "description": "ZEVM native Node-API addon for macOS arm64.",
   "license": "MIT",
+  "homepage": "https://zevm.tevm.sh",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/evmts/zevm.git",
+    "directory": "npm/platforms/darwin-arm64"
+  },
   "os": ["darwin"],
   "cpu": ["arm64"],
   "main": "./zevm.node",
-  "files": ["zevm.node", "README.md"],
+  "files": ["zevm.node", "LICENSE", "README.md"],
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "provenance": true,
+    "registry": "https://registry.npmjs.org"
   }
 }

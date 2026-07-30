@@ -1,0 +1,125 @@
+---
+title: Installation
+description: Build ZEVM from source and run it locally.
+---
+
+# Installation
+
+ZEVM can be built from source or from release artifact jobs. Source builds use Zig package-manager pins in `build.zig.zon`.
+
+## Prerequisites
+
+- Zig `0.15.2` or newer (`minimum_zig_version` in `build.zig.zon`)
+- Rust/Cargo for Voltaire's Rust crypto archive
+- Git
+- Node `22` or newer for TypeScript/N-API package checks
+
+## Clone And Fetch Dependencies
+
+Clone ZEVM and let Zig fetch pinned package dependencies:
+
+```bash
+mkdir -p ~/code/zevm-workspace
+cd ~/code/zevm-workspace
+
+git clone git@github.com:evmts/zevm.git zevm
+cd zevm
+zig build --fetch
+```
+
+If you use HTTPS, replace the clone URLs accordingly.
+
+For canonical release-metadata reproducibility, use [Release Metadata Runbook](/reference/release-metadata-runbook).
+That runbook is the authoritative phase-1 flow for selecting `releaseIdentifier`, validating `release-tuple.json` and `light-default-checkpoints.json`, handling metadata-invalid identifiers, and recording operator provenance.
+Its default artifact output path (`.ops/release-metadata/$RELEASE_IDENTIFIER/`) is reused by [Run Light Mode](/quickstart/run-light-mode) when selecting startup checkpoints from release metadata defaults.
+
+## Optional: Pin Build Inputs From Release Tuple
+
+If you want a pinned source build without running the full runbook automation:
+
+1. Open the selected release on [ZEVM release metadata](https://github.com/evmts/zevm/releases) and fetch both `release-tuple.json` and `light-default-checkpoints.json` for the same `releaseIdentifier`.
+2. Check out `zevm` to the pinned `zevmGitRevision`; `voltaireGitRevision` and `guillotineMiniGitRevision` are materialized through `build.zig.zon` URL pins.
+3. Confirm local Zig matches tuple `zigVersion` with `zig version`.
+4. Run `zig build dependency-preflight -- --voltaire-revision "$VOLTAIRE_REVISION" --guillotine-mini-revision "$GUILLOTINE_MINI_REVISION" --zig-version "$PINNED_ZIG_VERSION"`.
+5. Keep `light-default-checkpoints.json` available for [Run Light Mode](/quickstart/run-light-mode#2-choose-startup-checkpoint-input) checkpoint selection.
+
+For canonical public reproducibility claims, do not stop at tuple pinning alone; complete the full [Release Metadata Runbook](/reference/release-metadata-runbook).
+
+## Build ZEVM
+
+From the `zevm` repository root:
+
+```bash
+zig build --fetch
+zig build
+```
+
+The executable is installed to:
+
+```text
+./zig-out/bin/zevm
+```
+
+## Run ZEVM
+
+Run the installed binary directly:
+
+```bash
+./zig-out/bin/zevm
+```
+
+Or run through Zig's `run` step and pass runtime flags after `--`:
+
+```bash
+zig build run -- --mode trusted --host 127.0.0.1 --port 8545
+```
+
+## Run Tests
+
+```bash
+npm --prefix npm/zevm install --ignore-scripts
+zig build test
+zig build c-smoke
+zig build npm-smoke
+npm --prefix npm/zevm run typecheck
+```
+
+## Build Release Artifacts
+
+Build release-style artifacts for the selected target:
+
+```bash
+zig build release-binaries -Doptimize=ReleaseSafe
+zig build c-ffi -Doptimize=ReleaseSafe
+zig build npm-platform-artifacts -Doptimize=ReleaseSafe
+```
+
+Outputs:
+
+```text
+zig-out/dist/<target>/bin/zevm
+zig-out/lib/libzevm.a
+zig-out/lib/libzevm.*
+zig-out/include/zevm.h
+zig-out/npm/prebuilds/<platform>/zevm.node
+```
+
+Multi-platform releases should run those commands in an OS/architecture matrix. Voltaire's Rust crypto archive is target-specific, so do not assume one host can produce every supported target without the matching Rust target and C toolchain.
+
+## Setup Notes
+
+- In this docs site, **phase 1** means the current public ZEVM contract: two runtime modes (`trusted`, `light`) and HTTP JSON-RPC only (no built-in TLS/auth).
+- `build.zig.zon` must use immutable URL/hash dependency pins, not sibling path dependencies.
+- Align `zevm`, `voltaire`, and `guillotine-mini` revisions through release tuple metadata before making reproducibility claims.
+- For canonical release-metadata reproducibility, follow [Release Metadata Runbook](/reference/release-metadata-runbook) end-to-end.
+- If the selected `releaseIdentifier` does not publish valid `release-tuple.json` and `light-default-checkpoints.json`, treat it as an unpublished source-build boundary in this workflow.
+- Phase-1 limitation: ZEVM does not expose `releaseIdentifier` via runtime JSON-RPC or CLI; keep operator provenance records for release/build identity.
+- ZEVM phase 1 serves JSON-RPC over plain HTTP only and does not provide built-in TLS or JSON-RPC authentication.
+- Default RPC listener is `127.0.0.1:8545`; binding `--host` beyond localhost exposes RPC to reachable networks.
+- Keep `--host 127.0.0.1` unless remote access is required; if remote access is required, restrict ingress and place TLS/auth in front of ZEVM (reverse proxy or gateway).
+
+## Next Steps
+
+- [Run Trusted Mode](/quickstart/run-trusted-mode)
+- [Forked Dev Node](/quickstart/forked-dev-node)
+- [Run Light Mode](/quickstart/run-light-mode)

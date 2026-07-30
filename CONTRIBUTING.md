@@ -5,17 +5,18 @@ ZEVM uses docs-first changes and pinned Zig package-manager dependencies.
 ## Prerequisites
 
 - Zig `0.15.2`
-- Rust/Cargo
-- Node `22` or newer for npm package checks
-- Bun for Hive and release audit tooling
+- Rust/Cargo `1.89.0` (pinned by `rust-toolchain.toml`)
+- Node `22.22.0` or newer for npm package checks (pinned by `.node-version`)
+- Bun `1.3.14` for Hive and release audit tooling
 - `jj` for local version-control work in this repository
 
 ## Setup
 
 ```bash
+git submodule update --init --depth 1 lib/execution-apis
 zig build --fetch
 zig build dependency-preflight -- --zig-version 0.15.2
-npm --prefix npm/zevm install --ignore-scripts
+npm --prefix npm/zevm ci --ignore-scripts
 zig build
 ```
 
@@ -50,6 +51,15 @@ zig build npm-platform-artifacts -Doptimize=ReleaseSafe
 ```
 
 The C ABI contract lives in `include/zevm.h`. The TypeScript package in `npm/zevm` must call ZEVM through that header and the N-API addon in `npm/zevm/native`.
+
+## Publishing
+
+Do not publish from a workstation. Update the matching versions in
+`build.zig.zon`, `src/c_bindings.zig`, `npm/zevm/package.json`, its lockfile, and
+every supported `npm/platforms/*/package.json`. After the release commit reaches
+`main`, publish a GitHub Release tagged `v<package-version>`. The release
+workflow verifies the tag and versions, reruns the build and tests, builds all
+native packages, and publishes to npm with provenance.
 
 ## Docs-First Rule
 

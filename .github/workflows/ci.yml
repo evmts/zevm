@@ -23,6 +23,9 @@ concurrency:
 
 env:
   ZIG_VERSION: "0.15.2"
+  RUST_VERSION: "1.89.0"
+  NODE_VERSION: "22.22.0"
+  BUN_VERSION: "1.3.14"
 
 jobs:
   fast:
@@ -44,14 +47,22 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.89.0
 
       - name: Install native build dependencies
-        run: sudo apt-get update && sudo apt-get install -y cargo perl rustc
+        run: sudo apt-get update && sudo apt-get install -y perl
 
       - name: Install npm package dependencies
         working-directory: zevm
-        run: npm --prefix npm/zevm install --ignore-scripts
+        run: npm --prefix npm/zevm ci --ignore-scripts
 
       - name: Fetch Zig package dependencies
         working-directory: zevm
@@ -127,8 +138,16 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
 
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.89.0
+
       - name: Install native build dependencies
-        run: sudo apt-get update && sudo apt-get install -y cargo perl rustc
+        run: sudo apt-get update && sudo apt-get install -y perl
 
       - name: Fetch Zig package dependencies
         working-directory: zevm
@@ -160,6 +179,8 @@ jobs:
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -254,10 +275,12 @@ jobs:
         working-directory: zevm
         run: |
           ARTIFACT_DIR=.ops/release-metadata/"$RELEASE_IDENTIFIER"
-          echo "zevm_revision=$(jq -r '.zevmGitRevision' "$ARTIFACT_DIR/release-tuple.json")" >> "$GITHUB_OUTPUT"
-          echo "voltaire_revision=$(jq -r '.voltaireGitRevision' "$ARTIFACT_DIR/release-tuple.json")" >> "$GITHUB_OUTPUT"
-          echo "guillotine_mini_revision=$(jq -r '.guillotineMiniGitRevision' "$ARTIFACT_DIR/release-tuple.json")" >> "$GITHUB_OUTPUT"
-          echo "zig_version=$(jq -r '.zigVersion' "$ARTIFACT_DIR/release-tuple.json")" >> "$GITHUB_OUTPUT"
+          {
+            echo "zevm_revision=$(jq -r '.zevmGitRevision' "$ARTIFACT_DIR/release-tuple.json")"
+            echo "voltaire_revision=$(jq -r '.voltaireGitRevision' "$ARTIFACT_DIR/release-tuple.json")"
+            echo "guillotine_mini_revision=$(jq -r '.guillotineMiniGitRevision' "$ARTIFACT_DIR/release-tuple.json")"
+            echo "zig_version=$(jq -r '.zigVersion' "$ARTIFACT_DIR/release-tuple.json")"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Set up tuple Zig
         uses: mlugg/setup-zig@v2
@@ -266,6 +289,8 @@ jobs:
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -273,7 +298,10 @@ jobs:
           go-version: "1.24.x"
 
       - name: Install native build dependencies
-        run: sudo apt-get update && sudo apt-get install -y cargo perl rustc
+        run: sudo apt-get update && sudo apt-get install -y perl
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.89.0
 
       - name: Verify materialized release tuple
         working-directory: zevm

@@ -1,0 +1,227 @@
+---
+title: Embedding The Light Client In Node.js
+description: Sync and query the ZEVM light client from Node.js with @evmts/zevm.
+---
+
+# Embedding The Light Client In Node.js
+
+`@evmts/zevm` ships the light client as a native N-API addon. There is no server and no subprocess
+— the client runs in your process and verifies every read against a beacon header it synced
+itself.
+
+## Prerequisites
+
+- Node.js `>=22`
+- A beacon-chain (consensus-layer) HTTP API URL
+- An execution-layer JSON-RPC URL, used as the *untrusted* proof source
+
+```bash
+npm install @evmts/zevm@beta
+```
+
+## A complete program
+
+`light.mjs`:
+
+```js
+import {
+  LightClient,
+  ZEVM_NETWORK_MAINNET,
+  ZEVM_STATUS_SYNCED,
+  abiVersion,
+  version,
+  networkName,
+  errorMessage,
+} from "@evmts/zevm";
+
+const BEACON_RPC_URL = process.env.BEACON_RPC_URL;
+const EXECUTION_RPC_URL = process.env.EXECUTION_RPC_URL;
+
+if (!BEACON_RPC_URL || !EXECUTION_RPC_URL) {
+  console.error("set BEACON_RPC_URL and EXECUTION_RPC_URL");
+  process.exit(2);
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+console.log(
+  `zevm ${version()} (abi ${abiVersion()}) on ${networkName(ZEVM_NETWORK_MAINNET)}`,
+);
+
+const client = new LightClient(
+  ZEVM_NETWORK_MAINNET,
+  BEACON_RPC_URL,
+  EXECUTION_RPC_URL,
+);
+
+try {
+  // syncStep() blocks the calling thread on HTTP. Yield between attempts so
+  // the event loop is not starved, and give up rather than spinning forever.
+  for (let attempt = 0; attempt < 120; attempt++) {
+    if (client.status() === ZEVM_STATUS_SYNCED) break;
+
+    const code = client.syncStep();
+    if (code !== 0) {
+      console.warn(`sync step: ${errorMessage(code)} - ${client.lastError()}`);
+    }
+    await sleep(1000);
+  }
+
+  if (client.status() !== ZEVM_STATUS_SYNCED) {
+    throw new Error(`client never synced: ${client.lastError()}`);
+  }
+
+  const vitalik = "0xd8da6bf26964af9d7eed9e03e53415d37aa96045";
+  const usdc = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48";
+
+  console.log("balance:", client.getBalance(vitalik));
+  console.log("nonce:  ", client.getTransactionCount(vitalik));
+
+  const code = client.getCode(usdc);
+  console.log("usdc code bytes:", code.length);
+
+  console.log("usdc slot 0:", client.getStorage(usdc, "0x0"));
+} finally {
+  client.close();
+}
+```
+
+Run it:
+
+```bash
+BEACON_RPC_URL=https://beacon.example \
+EXECUTION_RPC_URL=https://eth-mainnet.example/v2/KEY \
+node light.mjs
+```
+
+## Keeping a client alive in a service
+
+`syncStep()` is synchronous and blocking, so a long-lived service should not call it on the main
+thread. Push it into a worker and forward answers back:
+
+`light-worker.mjs`:
+
+```js
+import { parentPort, workerData } from "node:worker_threads";
+import { LightClient, ZEVM_STATUS_SYNCED } from "@evmts/zevm";
+
+const client = new LightClient(
+  workerData.network,
+  workerData.beaconRpcUrl,
+  workerData.executionRpcUrl,
+);
+
+let running = true;
+
+function pump() {
+  if (!running) return;
+  client.syncStep();
+  parentPort.postMessage({ type: "status", status: client.status() });
+  setTimeout(pump, client.status() === ZEVM_STATUS_SYNCED ? 12_000 : 1_000);
+}
+
+parentPort.on("message", (message) => {
+  if (message.type === "shutdown") {
+    running = false;
+    client.close();
+    parentPort.close();
+    return;
+  }
+
+  if (message.type === "getBalance") {
+    try {
+      parentPort.postMessage({
+        type: "balance",
+        id: message.id,
+        address: message.address,
+        balance: client.getBalance(message.address),
+      });
+    } catch (error) {
+      parentPort.postMessage({
+        type: "error",
+        id: message.id,
+        message: error.message,
+        lastError: client.lastError(),
+      });
+    }
+  }
+});
+
+pump();
+```
+
+`service.mjs`:
+
+```js
+import { Worker } from "node:worker_threads";
+import { ZEVM_NETWORK_MAINNET, ZEVM_STATUS_SYNCED } from "@evmts/zevm";
+
+const worker = new Worker(new URL("./light-worker.mjs", import.meta.url), {
+  workerData: {
+    network: ZEVM_NETWORK_MAINNET,
+    beaconRpcUrl: process.env.BEACON_RPC_URL,
+    executionRpcUrl: process.env.EXECUTION_RPC_URL,
+  },
+});
+
+let synced = false;
+let nextId = 0;
+const pending = new Map();
+
+worker.on("message", (message) => {
+  if (message.type === "status") {
+    synced = message.status === ZEVM_STATUS_SYNCED;
+    return;
+  }
+
+  const resolvers = pending.get(message.id);
+  if (!resolvers) return;
+  pending.delete(message.id);
+
+  if (message.type === "error") resolvers.reject(new Error(message.message));
+  else resolvers.resolve(message.balance);
+});
+
+export function isSynced() {
+  return synced;
+}
+
+export function getBalance(address) {
+  const id = nextId++;
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+    worker.postMessage({ type: "getBalance", id, address });
+  });
+}
+
+export function shutdown() {
+  worker.postMessage({ type: "shutdown" });
+}
+```
+
+One `LightClient` per worker: calls on a single handle are not internally synchronized, so never
+share a handle across threads.
+
+## Using a locally built addon
+
+Point `ZEVM_NATIVE_PATH` at your own build to bypass platform-package resolution entirely:
+
+```bash
+zig build npm-platform-artifacts -Doptimize=ReleaseSafe
+ZEVM_NATIVE_PATH="$PWD/zig-out/npm/native/zevm.node" node light.mjs
+```
+
+## Failure modes worth handling
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `No ZEVM native addon found for <key>` at import | No prebuild for this platform/libc | Check the supported list in [Node.js API](/reference/node-api); build locally and set `ZEVM_NATIVE_PATH`. |
+| `Error: ZEVM light client is closed` | Read after `close()` | Guard reads, or create a fresh client. |
+| Reads fail while `status()` is not `SYNCED` | The client refuses unverified answers | Keep calling `syncStep()`; check `lastError()`. |
+| A read for an older block fails | Only the verified optimistic/finalized header is servable | Pass `0` for the latest verified head. |
+
+## Not what you wanted?
+
+If you need a *writable* dev node rather than verified mainnet reads, run the `zevm` binary in
+trusted mode and talk JSON-RPC to it — see
+[Testing Contracts Against ZEVM](/guides/contract-testing).

@@ -21,7 +21,7 @@ const primitives = @import("primitives");
 const consensus_sync = @import("consensus_sync.zig");
 const light_proof = @import("light_proof.zig");
 
-const ZEVM_VERSION: [:0]const u8 = "0.0.0";
+const ZEVM_VERSION: [:0]const u8 = "0.1.0-beta.1";
 const ZEVM_ABI_VERSION: u32 = 1;
 
 const ZEVM_OK: c_int = 0;

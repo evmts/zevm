@@ -1,0 +1,264 @@
+---
+title: Testing Contracts Against ZEVM
+description: Drive a ZEVM trusted dev node from a test suite - snapshots, impersonation, time travel, and forked mainnet.
+---
+
+# Testing Contracts Against ZEVM
+
+A ZEVM trusted node is a writable dev chain that speaks the dev-control surface test suites
+already expect (`zevm_*` canonical, with `anvil_*`/`hardhat_*`/`evm_*` aliases). This guide runs a
+complete suite against one.
+
+## 1. Start the node
+
+Manual mining gives a test suite deterministic block boundaries — nothing is mined until you ask:
+
+```bash
+zevm --mode trusted --mining manual --host 127.0.0.1 --port 8545
+```
+
+Verify it is up:
+
+```bash
+curl -s http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}'
+```
+
+```json
+{"jsonrpc":"2.0","id":1,"result":"0x7a69"}
+```
+
+Ten dev accounts are funded at genesis; account 0 is
+`0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266`, the standard Hardhat account. Full table:
+[CLI Reference](/reference/cli#dev-accounts).
+
+## 2. A minimal JSON-RPC helper
+
+Nothing here needs a library. `rpc.mjs`:
+
+```js
+const ENDPOINT = process.env.ZEVM_RPC_URL ?? "http://127.0.0.1:8545";
+
+let nextId = 1;
+
+export async function rpc(method, params = []) {
+  const response = await fetch(ENDPOINT, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: nextId++, method, params }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`${method}: HTTP ${response.status}`);
+  }
+
+  const body = await response.json();
+  if (body.error) {
+    throw new Error(`${method}: ${body.error.code} ${body.error.message}`);
+  }
+  return body.result;
+}
+```
+
+## 3. Snapshot and revert between tests
+
+`zevm_snapshot` captures the local chain, state and journal, receipt and log indexes, the pending
+tx pool, mining and block-environment overrides, impersonation state, and time controls.
+`zevm_revert` restores all of it and returns `false` for an unknown id.
+
+`test/setup.mjs`:
+
+```js
+import { after, afterEach, beforeEach } from "node:test";
+import { rpc } from "../rpc.mjs";
+
+let snapshotId;
+
+beforeEach(async () => {
+  snapshotId = await rpc("zevm_snapshot");
+});
+
+afterEach(async () => {
+  const reverted = await rpc("zevm_revert", [snapshotId]);
+  if (reverted !== true) {
+    throw new Error(`revert to ${snapshotId} failed - test isolation is broken`);
+  }
+});
+
+after(async () => {
+  // Nothing to tear down: the node is external and stateless between runs.
+});
+```
+
+Snapshots do **not** capture light-mode consensus state and never mutate the remote fork source.
+
+## 4. A complete test
+
+`test/vault.test.mjs` deploys nothing and instead exercises the dev-control surface directly, so
+it runs against a bare node:
+
+```js
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { rpc } from "../rpc.mjs";
+import "./setup.mjs";
+
+const ALICE = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266";
+const BOB = "0x70997970c51812dc3a010c7d01b50e0d17dc79c8";
+const WHALE = "0x00000000000000000000000000000000000f00d5";
+
+test("setBalance rewrites an account balance", async () => {
+  await rpc("zevm_setBalance", [WHALE, "0x21e19e0c9bab2400000"]); // 10,000 ETH
+
+  const balance = await rpc("eth_getBalance", [WHALE, "latest"]);
+  assert.equal(BigInt(balance), 10_000n * 10n ** 18n);
+});
+
+test("an impersonated account can send a transaction", async () => {
+  await rpc("zevm_setBalance", [WHALE, "0x21e19e0c9bab2400000"]);
+  await rpc("zevm_impersonateAccount", [WHALE]);
+
+  const txHash = await rpc("eth_sendTransaction", [
+    {
+      from: WHALE,
+      to: BOB,
+      value: "0xde0b6b3a7640000", // 1 ETH
+    },
+  ]);
+
+  // Manual mining: the transaction sits in the pool until we mine.
+  const pendingBefore = await rpc("txpool_status");
+  assert.equal(BigInt(pendingBefore.pending), 1n);
+
+  await rpc("zevm_mine", [1]);
+
+  const receipt = await rpc("eth_getTransactionReceipt", [txHash]);
+  assert.equal(receipt.status, "0x1");
+  assert.equal(receipt.from.toLowerCase(), WHALE);
+
+  await rpc("zevm_stopImpersonatingAccount", [WHALE]);
+});
+
+test("setCode installs bytecode that eth_call executes", async () => {
+  // PUSH1 0x2a PUSH1 0x00 MSTORE PUSH1 0x20 PUSH1 0x00 RETURN  =>  returns 42
+  const ANSWER = "0x602a60005260206000f3";
+  const CONTRACT = "0x00000000000000000000000000000000c0de0001";
+
+  await rpc("zevm_setCode", [CONTRACT, ANSWER]);
+
+  const result = await rpc("eth_call", [{ to: CONTRACT, data: "0x" }, "latest"]);
+  assert.equal(BigInt(result), 42n);
+});
+
+test("storage writes are visible to eth_getStorageAt", async () => {
+  const CONTRACT = "0x00000000000000000000000000000000c0de0002";
+  const VALUE = "0x" + (7n).toString(16).padStart(64, "0");
+
+  await rpc("zevm_setStorageAt", [CONTRACT, "0x0", VALUE]);
+
+  const stored = await rpc("eth_getStorageAt", [CONTRACT, "0x0", "latest"]);
+  assert.equal(BigInt(stored), 7n);
+});
+
+test("time travel moves the next block timestamp forward", async () => {
+  const before = await rpc("eth_getBlockByNumber", ["latest", false]);
+
+  await rpc("zevm_increaseTime", ["0x15180"]); // +1 day
+  await rpc("zevm_mine", [1]);
+
+  const after = await rpc("eth_getBlockByNumber", ["latest", false]);
+  assert.ok(BigInt(after.timestamp) - BigInt(before.timestamp) >= 86_400n);
+});
+
+test("snapshot isolation actually isolates", async () => {
+  // ALICE was never touched by the tests above, thanks to afterEach revert.
+  const balance = await rpc("eth_getBalance", [ALICE, "latest"]);
+  assert.equal(BigInt(balance), 10_000n * 10n ** 18n);
+});
+```
+
+Run it:
+
+```bash
+node --test test/
+```
+
+## 5. Testing against forked mainnet
+
+Point the node at an upstream RPC and pin the block so results are reproducible:
+
+```bash
+zevm --mode trusted \
+  --mining manual \
+  --fork-url https://eth-mainnet.example/v2/KEY \
+  --fork-block-number 21000000
+```
+
+Now `zevm_dealErc20` gives any address a token balance without hunting for a whale:
+
+```js
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { rpc } from "../rpc.mjs";
+import "./setup.mjs";
+
+const USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48";
+const ME = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266";
+const SPENDER = "0x70997970c51812dc3a010c7d01b50e0d17dc79c8";
+
+// balanceOf(address)
+function balanceOfCalldata(address) {
+  return "0x70a08231" + address.slice(2).toLowerCase().padStart(64, "0");
+}
+
+test("dealErc20 mints a USDC balance on the fork", async () => {
+  await rpc("zevm_dealErc20", [USDC, ME, "0x3b9aca00"]); // 1000 USDC (6 decimals)
+
+  const result = await rpc("eth_call", [
+    { to: USDC, data: balanceOfCalldata(ME) },
+    "latest",
+  ]);
+  assert.equal(BigInt(result), 1_000_000_000n);
+});
+
+test("setErc20Allowance grants an approval without a transaction", async () => {
+  await rpc("zevm_setErc20Allowance", [USDC, ME, SPENDER, "0x3b9aca00"]);
+
+  // allowance(address,address)
+  const data =
+    "0xdd62ed3e" +
+    ME.slice(2).toLowerCase().padStart(64, "0") +
+    SPENDER.slice(2).toLowerCase().padStart(64, "0");
+
+  const result = await rpc("eth_call", [{ to: USDC, data }, "latest"]);
+  assert.equal(BigInt(result), 1_000_000_000n);
+});
+```
+
+`zevm_reset` re-forks at a new block mid-suite when you need a different pin, and
+`zevm_setRpcUrl` swaps the fork source. See
+[Forked Dev Node](/quickstart/forked-dev-node) and
+[State, Fork & Snapshots](/concepts/state-fork-and-snapshots).
+
+## 6. Mining strategy per suite shape
+
+| Suite shape | Flag | Behaviour |
+| --- | --- | --- |
+| Unit-style, deterministic block boundaries | `--mining manual` | Blocks only on `zevm_mine` / `evm_mine`. |
+| Integration-style, "just work" | `--mining auto` (default) | One block per submitted transaction. |
+| Time-dependent protocols | `--mining interval --block-time 2` | A block every 2 seconds. |
+
+You can also switch at runtime with `zevm_setAutomine` and `zevm_setIntervalMining`.
+
+## Common errors
+
+| Error | Meaning |
+| --- | --- |
+| `-32602` | Malformed address, quantity, bytes, selector, tuple length, or object field. |
+| `-32010` | You called a trusted-mode dev control while running in light mode. |
+| `zevm_revert` → `false` | Unknown snapshot id — usually a snapshot already consumed by an earlier revert. |
+
+The full method-by-method contract is in
+[Dev Controls](/reference/json-rpc/dev-controls) and
+[Method Support By Mode](/concepts/method-support-by-mode).

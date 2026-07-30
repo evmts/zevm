@@ -1,0 +1,177 @@
+---
+title: Building From Source
+description: Toolchain requirements, every build step, platform support, and what each artifact is for.
+---
+
+# Building From Source
+
+ZEVM is a Zig project with a Rust component (voltaire's crypto archive) and a Node.js packaging
+layer. All three toolchains are needed for a full build; a plain `zig build` of the binary needs
+Zig and Rust only.
+
+## Toolchain
+
+| Tool | Pinned version | Where the pin lives |
+| --- | --- | --- |
+| Zig | `0.15.2` | `minimum_zig_version` in `build.zig.zon` |
+| Rust | `1.89.0` | `rust-toolchain.toml` (`profile = "minimal"`) |
+| Node.js | `22.22.0` | `.node-version` (the npm package declares `engines.node >= 22`) |
+
+Release publishing runs on Node.js `24.11.1` with npm `11.6.2` for npm trusted publishing; that is
+a CI concern, not a requirement for building locally.
+
+Verify your toolchain:
+
+```bash
+zig version    # 0.15.2
+rustc --version # rustc 1.89.0 (29483883e 2025-08-04)
+node -v        # v22.22.0 or newer
+```
+
+## Clone and fetch
+
+```bash
+git clone https://github.com/evmts/zevm.git
+cd zevm
+git submodule update --init --depth 1 lib/execution-apis
+zig build --fetch
+```
+
+`build.zig.zon` pins voltaire and guillotine-mini by immutable URL and hash. `zig build --fetch`
+populates the Zig package cache; there are no sibling path dependencies to set up.
+
+Optionally assert the pinned tuple before building:
+
+```bash
+zig build dependency-preflight -- --zig-version 0.15.2
+```
+
+## Build the binary
+
+```bash
+zig build
+```
+
+The executable lands at `./zig-out/bin/zevm`. Run it:
+
+```bash
+./zig-out/bin/zevm --mode trusted
+```
+
+Or go through Zig, passing runtime flags after `--`:
+
+```bash
+zig build run -- --mode trusted --host 127.0.0.1 --port 8545
+```
+
+## Run the tests
+
+```bash
+npm --prefix npm/zevm ci --ignore-scripts
+zig build test
+zig build verify-fast
+zig build c-smoke
+zig build npm-smoke
+npm --prefix npm/zevm run typecheck
+```
+
+`--ignore-scripts` matters: the npm package's install scripts expect prebuilt native artifacts
+that a source checkout has not produced yet.
+
+## Release-style artifacts
+
+Three separate build steps produce the three distribution shapes.
+
+```bash
+zig build release-binaries -Doptimize=ReleaseSafe
+zig build c-ffi -Doptimize=ReleaseSafe
+zig build npm-platform-artifacts -Doptimize=ReleaseSafe
+```
+
+| Step | Outputs | Consumed by |
+| --- | --- | --- |
+| `release-binaries` | `zig-out/dist/<target>/bin/zevm` | Operators running the client. |
+| `c-ffi` | `zig-out/include/zevm.h`, `zig-out/lib/libzevm.a`, `zig-out/lib/libzevm.{dylib,so,dll}` | [C ABI](/reference/c-abi) embedders. |
+| `npm-platform-artifacts` | `zig-out/npm/prebuilds/<platform>/zevm.node`, `zig-out/npm/native/zevm.node` | The `@evmts/zevm-*` platform packages. |
+
+A real `c-ffi` run on macOS arm64 (Zig 0.15.2, Rust 1.89.0) produces:
+
+```text
+zig-out/include:
+-rw-r--r--  1 williamcory  staff     5871 zevm.h
+
+zig-out/lib:
+-rw-r--r--  1 williamcory  staff 18658108 libzevm.a
+-rwxr-xr-x  1 williamcory  staff  1443904 libzevm.dylib
+```
+
+## Platform support
+
+Native prebuilds are published for these targets:
+
+| Platform | npm platform package |
+| --- | --- |
+| macOS arm64 | `@evmts/zevm-darwin-arm64` |
+| macOS x64 | `@evmts/zevm-darwin-x64` |
+| Linux arm64 (glibc) | `@evmts/zevm-linux-arm64-gnu` |
+| Linux arm64 (musl) | `@evmts/zevm-linux-arm64-musl` |
+| Linux x64 (glibc) | `@evmts/zevm-linux-x64-gnu` |
+| Linux x64 (musl) | `@evmts/zevm-linux-x64-musl` |
+| Windows arm64 | `@evmts/zevm-win32-arm64-msvc` |
+| Windows ia32 | `@evmts/zevm-win32-ia32-msvc` |
+| Windows x64 | `@evmts/zevm-win32-x64-msvc` |
+
+`npm/platforms/` additionally contains `freebsd-arm64` and `freebsd-x64` scaffolding, but those
+are **not** wired into `@evmts/zevm`'s `optionalDependencies` and are not resolved at runtime —
+treat FreeBSD as a source-build target.
+
+**Cross-compilation caveat.** Voltaire's Rust crypto archive is target-specific. One host cannot
+produce every supported target without the matching Rust target and C toolchain installed, so
+multi-platform releases run these steps in an OS/architecture matrix rather than cross-compiling
+from a single machine.
+
+## Using a local build from Node.js
+
+Skip platform-package resolution entirely:
+
+```bash
+zig build npm-platform-artifacts -Doptimize=ReleaseSafe
+export ZEVM_NATIVE_PATH="$PWD/zig-out/npm/native/zevm.node"
+node -e 'import("@evmts/zevm").then(m => console.log(m.version(), m.abiVersion()))'
+```
+
+Or run the package's own smoke test against it:
+
+```bash
+npm --prefix npm/zevm run smoke:native
+```
+
+## Building the npm package
+
+```bash
+npm --prefix npm/zevm ci --ignore-scripts
+npm --prefix npm/zevm run build     # tsc ESM + tsc CJS + move-cjs
+npm --prefix npm/zevm run typecheck
+```
+
+The build runs `tsc` twice (`tsconfig.json` for ESM, `tsconfig.cjs.json` for CJS) and then
+`scripts/move-cjs.cjs` renames the CJS output to `.cjs` so the subpath `require` conditions
+resolve.
+
+## Do not publish by hand
+
+Publishing is CI-only. A GitHub Release whose tag exactly matches `v<package-version>` runs the
+full build and tests, builds every supported native package, and publishes the platform packages
+before `@evmts/zevm` with npm provenance. Maintainers must not run `npm publish` locally — a
+hand-published version breaks provenance and the platform-package ordering. See
+[CI & Release Gates](/reference/ci-and-release-gates).
+
+## Docs
+
+The documentation site in `site/` is a [vocs](https://vocs.dev) app:
+
+```bash
+npm --prefix site install
+npm --prefix site run dev     # local preview
+npm --prefix site run build   # static output in site/dist
+```
