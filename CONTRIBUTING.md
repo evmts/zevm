@@ -7,7 +7,7 @@ ZEVM uses docs-first changes and pinned Zig package-manager dependencies.
 - Zig `0.15.2`
 - Rust/Cargo `1.89.0` (pinned by `rust-toolchain.toml`)
 - Node `22.22.0` or newer for npm package checks (pinned by `.node-version`)
-- Bun `1.4.0` for Hive and release audit tooling
+- Bun `1.3.14` for Hive and release audit tooling
 - `jj` for local version-control work in this repository
 
 ## Setup
