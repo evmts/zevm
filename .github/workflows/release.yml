@@ -70,6 +70,11 @@ jobs:
       - name: Test
         run: zig build test --summary all
 
+      - name: Run release qualification
+        run: |
+          zig build qualification-check -- --require-covered
+          zig build verify --summary all
+
       - name: Verify native interfaces
         run: |
           zig build c-smoke
