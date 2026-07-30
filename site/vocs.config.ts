@@ -6,6 +6,12 @@ export default defineConfig({
     'ZEVM is a Zig Ethereum client with a writable trusted dev node and a proof-backed light client, distributed as a binary, a C ABI, and a Node.js addon.',
   baseUrl: 'https://zevm.tevm.sh',
   rootDir: '.',
+  // Shared tevm.sh family identity — matches contract.tevm.sh / bundler.tevm.sh.
+  logoUrl: { light: '/tevm-logo-light.png', dark: '/tevm-logo-dark.png' },
+  iconUrl: '/favicon.svg',
+  // Same accent the sibling family sites render with.
+  accentColor: '#0085FF',
+  colorScheme: 'light dark',
   editLink: {
     pattern: 'https://github.com/evmts/zevm/edit/main/site/src/pages/:path',
     text: 'Edit on GitHub',
@@ -20,6 +26,24 @@ export default defineConfig({
     {
       text: 'npm',
       link: 'https://www.npmjs.com/package/@evmts/zevm',
+    },
+    {
+      text: 'tevm family',
+      items: [
+        { text: 'tevm.sh', link: 'https://tevm.sh' },
+        { text: 'contract', link: 'https://contract.tevm.sh' },
+        { text: 'bundler', link: 'https://bundler.tevm.sh' },
+        { text: 'cli', link: 'https://cli.tevm.sh' },
+        { text: 'test', link: 'https://test.tevm.sh' },
+        { text: 'logger', link: 'https://logger.tevm.sh' },
+        { text: 'ethers', link: 'https://ethers.tevm.sh' },
+        { text: 'mud', link: 'https://mud.tevm.sh' },
+        { text: 'examples', link: 'https://examples.tevm.sh' },
+        { text: 'voltaire', link: 'https://voltaire.tevm.sh' },
+        { text: 'guillotine', link: 'https://guillotine.tevm.sh' },
+        { text: 'mini', link: 'https://mini.tevm.sh' },
+        { text: 'zevm', link: 'https://zevm.tevm.sh' },
+      ],
     },
   ],
   sidebar: [

@@ -3,7 +3,11 @@ title: ZEVM
 description: A Zig Ethereum client with a writable trusted dev node and a proof-backed light client.
 ---
 
-# ZEVM
+import { Hero } from '../../components/Hero'
+import { PlatformPicker } from '../../components/PlatformPicker'
+import { FamilyNav } from '../../components/FamilyNav'
+
+<Hero />
 
 ZEVM is an Ethereum client written in Zig. It runs in exactly two modes:
 
@@ -47,6 +51,8 @@ npm install @evmts/zevm@beta
 Or build the binary from source — see [Installation](/quickstart/installation) and
 [Building From Source](/guides/building-from-source).
 
+<PlatformPicker />
+
 ## Start a dev node
 
 ```bash
@@ -85,3 +91,5 @@ ZEVM is pre-1.0. The first real release is `0.1.0-beta.1`; the public API and na
 usable, but cross-platform packaging still wants consumer feedback. Phase-1 scope means HTTP
 JSON-RPC only — no built-in TLS and no JSON-RPC authentication. Keep `--host 127.0.0.1` unless you
 have put a reverse proxy in front of it.
+
+<FamilyNav />

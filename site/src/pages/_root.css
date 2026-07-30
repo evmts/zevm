@@ -1,0 +1,343 @@
+/*
+ * Shared tevm.sh family theme tokens.
+ *
+ * Matched against the live sibling sites (contract.tevm.sh, bundler.tevm.sh),
+ * which render with --vocs-color-accent:#0085FF and the Geist / Geist Mono
+ * type stack. Keep this file in sync with the family rather than diverging.
+ */
+
+:root {
+  --tevm-accent: #0085ff;
+  --tevm-accent-hover: #339dff;
+  --tevm-zig: #f7a41d;
+
+  /*
+   * Vocs derives --vocs-font-sans / --vocs-font-mono from these, and sets
+   * `color-scheme` on [data-vocs-theme], so light-dark() below resolves
+   * correctly for BOTH the system preference and the explicit theme toggle.
+   */
+  --vocs-font-family: 'Geist', ui-sans-serif, system-ui, sans-serif;
+  --vocs-font-family-mono: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --tevm-font-sans: var(--vocs-font-sans, var(--vocs-font-family));
+  --tevm-font-mono: var(--vocs-font-mono, var(--vocs-font-family-mono));
+
+  --tevm-surface: light-dark(#ffffff, #17181c);
+  --tevm-surface-2: light-dark(#f7f8fa, #1e2027);
+  --tevm-border: light-dark(#e2e6ec, #2c2f38);
+  --tevm-text: light-dark(#1b1b1f, #f2f3f5);
+  --tevm-text-dim: light-dark(#5c6370, #9aa1ad);
+  --tevm-hero-glow: light-dark(rgba(0, 133, 255, 0.1), rgba(0, 133, 255, 0.16));
+  --tevm-ok: light-dark(#0f9d58, #3ecf8e);
+  --tevm-danger: light-dark(#d93025, #ff6b6b);
+}
+
+/* ---------------------------------------------------------------- hero --- */
+
+.tevm-hero {
+  border: 1px solid var(--tevm-border);
+  border-radius: 14px;
+  background:
+    radial-gradient(120% 130% at 0% 0%, var(--tevm-hero-glow), transparent 62%),
+    var(--tevm-surface-2);
+  padding: 32px 28px;
+  margin: 0 0 40px;
+}
+
+.tevm-hero__eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--tevm-font-mono);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--tevm-text-dim);
+  margin: 0 0 14px;
+}
+
+.tevm-hero__eyebrow::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tevm-zig);
+}
+
+.tevm-hero__title {
+  font-size: clamp(30px, 5vw, 44px);
+  line-height: 1.1;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0 0 12px;
+  color: var(--tevm-text);
+}
+
+.tevm-hero__tagline {
+  font-size: 17px;
+  line-height: 1.55;
+  color: var(--tevm-text-dim);
+  max-width: 62ch;
+  margin: 0 0 22px;
+}
+
+.tevm-hero__install {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  border: 1px solid var(--tevm-border);
+  border-radius: 8px;
+  background: var(--tevm-surface);
+  overflow: hidden;
+  max-width: 420px;
+}
+
+.tevm-hero__install code {
+  flex: 1;
+  font-family: var(--tevm-font-mono);
+  font-size: 14px;
+  padding: 11px 14px;
+  color: var(--tevm-text);
+  white-space: nowrap;
+  overflow-x: auto;
+  background: none;
+  border: none;
+}
+
+.tevm-copy {
+  border: none;
+  border-left: 1px solid var(--tevm-border);
+  background: var(--tevm-surface-2);
+  color: var(--tevm-text-dim);
+  font-family: var(--tevm-font-mono);
+  font-size: 12px;
+  padding: 0 14px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.tevm-copy:hover {
+  color: var(--tevm-accent);
+  background: var(--tevm-surface);
+}
+
+.tevm-hero__ctas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.tevm-hero__cta {
+  display: inline-block;
+  padding: 9px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  text-decoration: none;
+  border: 1px solid var(--tevm-border);
+  color: var(--tevm-text);
+}
+
+.tevm-hero__cta--primary {
+  background: var(--tevm-accent);
+  border-color: var(--tevm-accent);
+  color: #fff;
+}
+
+.tevm-hero__cta--primary:hover {
+  background: var(--tevm-accent-hover);
+  border-color: var(--tevm-accent-hover);
+}
+
+.tevm-hero__cta:hover {
+  border-color: var(--tevm-accent);
+}
+
+/* ------------------------------------------------------- platform picker --- */
+
+.zevm-platform {
+  border: 1px solid var(--tevm-border);
+  border-radius: 12px;
+  background: var(--tevm-surface-2);
+  padding: 20px;
+  margin: 28px 0;
+}
+
+.zevm-platform__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  margin-bottom: 18px;
+}
+
+.zevm-platform__group {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.zevm-platform__label {
+  font-family: var(--tevm-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--tevm-text-dim);
+}
+
+.zevm-platform__options {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.zevm-chip {
+  font-family: var(--tevm-font-mono);
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--tevm-border);
+  background: var(--tevm-surface);
+  color: var(--tevm-text-dim);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.zevm-chip:hover:not(:disabled) {
+  border-color: var(--tevm-accent);
+  color: var(--tevm-text);
+}
+
+.zevm-chip[aria-pressed='true'] {
+  background: var(--tevm-accent);
+  border-color: var(--tevm-accent);
+  color: #fff;
+}
+
+.zevm-chip:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  text-decoration: line-through;
+}
+
+.zevm-platform__result {
+  border-top: 1px solid var(--tevm-border);
+  padding-top: 16px;
+}
+
+.zevm-platform__pkg {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.zevm-platform__pkg code {
+  font-family: var(--tevm-font-mono);
+  font-size: 14px;
+  color: var(--tevm-text);
+  background: var(--tevm-surface);
+  border: 1px solid var(--tevm-border);
+  border-radius: 6px;
+  padding: 4px 10px;
+}
+
+.zevm-badge {
+  font-family: var(--tevm-font-mono);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--tevm-border);
+  color: var(--tevm-text-dim);
+}
+
+.zevm-badge--ok {
+  color: var(--tevm-ok);
+  border-color: currentColor;
+}
+
+.zevm-badge--none {
+  color: var(--tevm-danger);
+  border-color: currentColor;
+}
+
+.zevm-platform__note {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--tevm-text-dim);
+  margin: 10px 0 0;
+}
+
+.zevm-platform__note a {
+  color: var(--tevm-accent);
+}
+
+/* Keep inline code in the note tight so the sentence reads as one line. */
+.zevm-platform__note code {
+  font-family: var(--tevm-font-mono);
+  font-size: 0.92em;
+  padding: 0 2px;
+  margin: 0;
+  background: none;
+  border: none;
+  color: var(--tevm-text);
+  word-spacing: normal;
+}
+
+/* ------------------------------------------------------------ family nav --- */
+
+.tevm-family {
+  border-top: 1px solid var(--tevm-border);
+  margin-top: 48px;
+  padding-top: 22px;
+}
+
+.tevm-family__title {
+  font-family: var(--tevm-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--tevm-text-dim);
+  margin: 0 0 14px;
+}
+
+.tevm-family__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 8px;
+}
+
+.tevm-family__item {
+  display: block;
+  border: 1px solid var(--tevm-border);
+  border-radius: 8px;
+  background: var(--tevm-surface-2);
+  padding: 10px 12px;
+  text-decoration: none;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.tevm-family__item:hover {
+  border-color: var(--tevm-accent);
+  background: var(--tevm-surface);
+}
+
+.tevm-family__item[aria-current='page'] {
+  border-color: var(--tevm-accent);
+}
+
+.tevm-family__name {
+  display: block;
+  font-family: var(--tevm-font-mono);
+  font-size: 13px;
+  color: var(--tevm-accent);
+}
+
+.tevm-family__desc {
+  display: block;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--tevm-text-dim);
+  margin-top: 2px;
+}
