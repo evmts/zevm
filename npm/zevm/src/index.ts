@@ -44,8 +44,6 @@ const require = createRequire(import.meta.url);
 const platformPackages: Record<string, readonly string[]> = {
   "darwin-arm64": ["@evmts/zevm-darwin-arm64"],
   "darwin-x64": ["@evmts/zevm-darwin-x64"],
-  "freebsd-arm64": ["@evmts/zevm-freebsd-arm64"],
-  "freebsd-x64": ["@evmts/zevm-freebsd-x64"],
   "linux-arm64-gnu": ["@evmts/zevm-linux-arm64-gnu"],
   "linux-arm64-musl": ["@evmts/zevm-linux-arm64-musl"],
   "linux-x64-gnu": ["@evmts/zevm-linux-x64-gnu"],

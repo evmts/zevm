@@ -275,8 +275,8 @@ pub fn build(b: *std.Build) void {
 
     const npm_native_path = b.getInstallPath(.{ .custom = "npm/native" }, "zevm.node");
     const npm_smoke_cmd = b.addSystemCommand(&.{ "node", "npm/zevm/scripts/smoke.cjs", npm_native_path });
+    npm_smoke_cmd.step.dependOn(&npm_native.step);
     const npm_smoke_step = b.step("npm-smoke", "Run a Node-API addon smoke test");
-    npm_smoke_step.dependOn(&npm_native.step);
     npm_smoke_step.dependOn(&npm_smoke_cmd.step);
 
     const release_name = releaseTargetName(b, target);

@@ -1,8 +1,28 @@
 {
   "name": "@evmts/zevm",
-  "version": "0.0.0",
-  "description": "TypeScript bindings for the ZEVM light-client C ABI.",
+  "version": "0.1.0-beta.1",
+  "description": "TypeScript bindings and native Node.js addon for the ZEVM Ethereum client.",
   "license": "MIT",
+  "author": "evmts",
+  "homepage": "https://zevm.tevm.sh",
+  "bugs": {
+    "url": "https://github.com/evmts/zevm/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/evmts/zevm.git",
+    "directory": "npm/zevm"
+  },
+  "keywords": [
+    "ethereum",
+    "evm",
+    "light-client",
+    "node-api",
+    "zig"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -71,10 +91,13 @@
   "files": [
     "dist",
     "native/zevm.node",
+    "LICENSE",
     "README.md"
   ],
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "provenance": true,
+    "registry": "https://registry.npmjs.org"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node scripts/move-cjs.cjs",
@@ -82,7 +105,8 @@
     "publish:all:dry": "node scripts/publish-all.cjs --dry-run",
     "stage:artifacts": "node scripts/stage-artifacts.cjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "smoke:native": "node scripts/smoke.cjs ../../zig-out/npm/native/zevm.node"
+    "smoke:native": "node scripts/smoke.cjs ../../zig-out/npm/native/zevm.node",
+    "verify:release": "node scripts/verify-release.cjs"
   },
   "dependencies": {
     "@ethereumjs/common": "^10.1.1",
@@ -93,17 +117,15 @@
     "@noble/hashes": "^2.2.0"
   },
   "optionalDependencies": {
-    "@evmts/zevm-darwin-arm64": "0.0.0",
-    "@evmts/zevm-darwin-x64": "0.0.0",
-    "@evmts/zevm-freebsd-arm64": "0.0.0",
-    "@evmts/zevm-freebsd-x64": "0.0.0",
-    "@evmts/zevm-linux-arm64-gnu": "0.0.0",
-    "@evmts/zevm-linux-arm64-musl": "0.0.0",
-    "@evmts/zevm-linux-x64-gnu": "0.0.0",
-    "@evmts/zevm-linux-x64-musl": "0.0.0",
-    "@evmts/zevm-win32-arm64-msvc": "0.0.0",
-    "@evmts/zevm-win32-ia32-msvc": "0.0.0",
-    "@evmts/zevm-win32-x64-msvc": "0.0.0"
+    "@evmts/zevm-darwin-arm64": "0.1.0-beta.1",
+    "@evmts/zevm-darwin-x64": "0.1.0-beta.1",
+    "@evmts/zevm-linux-arm64-gnu": "0.1.0-beta.1",
+    "@evmts/zevm-linux-arm64-musl": "0.1.0-beta.1",
+    "@evmts/zevm-linux-x64-gnu": "0.1.0-beta.1",
+    "@evmts/zevm-linux-x64-musl": "0.1.0-beta.1",
+    "@evmts/zevm-win32-arm64-msvc": "0.1.0-beta.1",
+    "@evmts/zevm-win32-ia32-msvc": "0.1.0-beta.1",
+    "@evmts/zevm-win32-x64-msvc": "0.1.0-beta.1"
   },
   "devDependencies": {
     "@types/debug": "^4.1.13",

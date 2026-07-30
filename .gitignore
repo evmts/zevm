@@ -94,6 +94,8 @@ _
 .direnv
 
 *.node
+/npm/zevm/LICENSE
+/npm/platforms/*/LICENSE
 
 ./debug/
 **/*.pdb
