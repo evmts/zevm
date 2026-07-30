@@ -1,0 +1,87 @@
+---
+title: Ecosystem
+description: How ZEVM relates to tevm, guillotine, guillotine-mini, and voltaire.
+---
+
+# Ecosystem
+
+ZEVM is one layer of a stack that spans Zig, Rust, and TypeScript. This page is the map: what each
+project owns, which way the dependencies point, and where to file an issue.
+
+## The layers
+
+| Project | Language | Owns |
+| --- | --- | --- |
+| [voltaire](https://github.com/evmts/voltaire) | Zig (+ Rust crypto) | Ethereum primitives: addresses, RLP, JSON-RPC types, state manager, journal and snapshot foundations, fork backend, blockchain data structures, cryptography. |
+| [guillotine-mini](https://github.com/evmts/guillotine-mini) | Zig | The EVM interpreter, execution-host integration, tracing substrate. Spec-focused and small. |
+| [guillotine](https://github.com/evmts/guillotine) | Zig | The larger EVM effort that guillotine-mini distills. |
+| **zevm** (this project) | Zig | The client shell: CLI and config, runtime-mode selection, lifecycle, HTTP JSON-RPC transport and dispatch, mode gating, checkpoint wiring, light-client consensus sync and proof verification, the C ABI, and the npm distribution. |
+| [tevm](https://github.com/evmts/tevm-monorepo) | TypeScript | The JavaScript-facing Ethereum tooling. Consumes ZEVM. |
+
+## Which way dependencies point
+
+```text
+tevm  (TypeScript)
+  └── @evmts/zevm  (npm: ESM/CJS bindings + native addon)
+        └── zevm  (Zig client)
+              ├── guillotine-mini   (EVM interpreter)
+              │     └── voltaire    (primitives, state, fork backend)
+              └── voltaire
+```
+
+Nothing points back up. ZEVM never re-specifies EVM or state-transition semantics — if the
+interpreter is wrong, that is a guillotine-mini bug; if a primitive or the state journal is wrong,
+that is a voltaire bug. ZEVM owns *integration* behaviour at the product boundary. The precise
+split is written down in
+[Architecture & Upstream Ownership](/concepts/architecture-and-upstream-ownership).
+
+## How ZEVM reaches upstream
+
+`build.zig.zon` pins voltaire and guillotine-mini by immutable URL + hash — not by sibling path
+dependency, even in local development. A release records the exact triple it was built from:
+
+```bash
+zig build dependency-preflight -- \
+  --voltaire-revision "$VOLTAIRE_REVISION" \
+  --guillotine-mini-revision "$GUILLOTINE_MINI_REVISION" \
+  --zig-version 0.15.2
+```
+
+Those revisions are published alongside each release as `release-tuple.json`. Do not make a
+reproducibility claim from a source checkout that has not run the
+[Release Metadata Runbook](/reference/release-metadata-runbook).
+
+## How tevm reaches ZEVM
+
+tevm consumes ZEVM two ways, and they have different pinning stories:
+
+- **As a pnpm workspace member.** The tevm monorepo may resolve `@evmts/zevm` from a local
+  `../zevm/npm/zevm` checkout during development.
+- **By commit SHA in CI.** tevm's `.github/actions/setup` pins ZEVM by commit SHA. There is a
+  comment there explaining the pin — read it before you change anything about the ZEVM build
+  outputs, output paths, or platform package names, because tevm's CI is downstream of all three.
+
+Because of that pin, a ZEVM change that renames an artifact path or drops a platform target is a
+breaking change for tevm even if `@evmts/zevm`'s semver does not move.
+
+## Choosing the right entry point
+
+| You are… | Use |
+| --- | --- |
+| Writing TypeScript app or test code | tevm |
+| Wanting verified mainnet reads inside a Node process | [`@evmts/zevm`](/reference/node-api) |
+| Wanting a scriptable local dev chain | the `zevm` binary in [trusted mode](/quickstart/run-trusted-mode) |
+| Embedding a light client in Swift/Rust/C++ | the [C ABI](/reference/c-abi) |
+| Writing a Zig program that needs an EVM | guillotine-mini directly, not ZEVM |
+| Writing a Zig program that needs Ethereum primitives | voltaire directly |
+
+## Where to file an issue
+
+| Symptom | Repo |
+| --- | --- |
+| Wrong opcode result, wrong gas, tracing gap | guillotine-mini |
+| Wrong RLP/address/hashing, state-journal or fork-backend defect | voltaire |
+| Wrong JSON-RPC shape, mode gating, CLI/config, checkpoint handling, packaging | zevm |
+| TypeScript API ergonomics, bundling, framework integration | tevm |
+
+If you are unsure, file against zevm — triage will route it up or down the stack.

@@ -1,0 +1,200 @@
+---
+title: Embedding The C ABI
+description: A complete C program that syncs the ZEVM light client and reads verified state.
+---
+
+# Embedding The C ABI
+
+This guide builds the ZEVM static library, compiles a C program against it, and reads a
+proof-verified balance. Everything here is complete and runnable — no elisions.
+
+## 1. Build the library and header
+
+From a ZEVM checkout (see [Building From Source](/guides/building-from-source) for prerequisites):
+
+```bash
+zig build c-ffi -Doptimize=ReleaseSafe
+```
+
+That produces:
+
+```text
+zig-out/include/zevm.h
+zig-out/lib/libzevm.a
+zig-out/lib/libzevm.dylib   # .so on Linux, .dll on Windows
+```
+
+## 2. Write the program
+
+`light.c`:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include "zevm.h"
+
+static const char *ADDRESS = "0xd8da6bf26964af9d7eed9e03e53415d37aa96045";
+
+int main(int argc, char **argv) {
+    if (argc != 3) {
+        fprintf(stderr, "usage: %s <beacon-rpc-url> <execution-rpc-url>\n", argv[0]);
+        return 2;
+    }
+
+    if (zevm_abi_version() != ZEVM_ABI_VERSION) {
+        fprintf(stderr, "ABI mismatch: header %u, library %u\n",
+                (unsigned)ZEVM_ABI_VERSION, zevm_abi_version());
+        return 1;
+    }
+    printf("zevm %s (abi %u), network %s\n",
+           zevm_version(), zevm_abi_version(),
+           zevm_light_network_name(ZEVM_NETWORK_MAINNET));
+
+    ZevmHandle *handle = zevm_light_init(ZEVM_NETWORK_MAINNET, argv[1], argv[2]);
+    if (handle == NULL) {
+        fprintf(stderr, "zevm_light_init failed\n");
+        return 1;
+    }
+
+    /* Drive the consensus sync until the client has a verified header.
+       This blocks on HTTP; in a real app run it on a background thread. */
+    for (int attempt = 0; attempt < 120; attempt++) {
+        if (zevm_light_status(handle) == ZEVM_STATUS_SYNCED) break;
+
+        int rc = zevm_light_sync_step(handle);
+        if (rc != ZEVM_OK) {
+            fprintf(stderr, "sync_step: %s (%s)\n",
+                    zevm_error_message(rc), zevm_light_last_error(handle));
+            sleep(1);
+        }
+    }
+
+    if (zevm_light_status(handle) != ZEVM_STATUS_SYNCED) {
+        fprintf(stderr, "client did not reach ZEVM_STATUS_SYNCED\n");
+        zevm_light_shutdown(handle);
+        return 1;
+    }
+
+    /* Balance: 80 bytes is always sufficient per the header contract. */
+    char balance[80];
+    size_t balance_len = sizeof(balance);
+    int rc = zevm_light_get_balance(handle, ADDRESS, 0, balance, &balance_len);
+    if (rc != ZEVM_OK) {
+        fprintf(stderr, "get_balance: %s (%s)\n",
+                zevm_error_message(rc), zevm_light_last_error(handle));
+        zevm_light_shutdown(handle);
+        return 1;
+    }
+    printf("balance(%s) = %s\n", ADDRESS, balance);
+
+    uint64_t nonce = 0;
+    rc = zevm_light_get_transaction_count(handle, ADDRESS, 0, &nonce);
+    if (rc == ZEVM_OK) {
+        printf("nonce(%s) = %llu\n", ADDRESS, (unsigned long long)nonce);
+    }
+
+    /* Storage: 67 bytes is always sufficient (0x + 64 hex digits + NUL). */
+    char slot_value[67];
+    size_t slot_len = sizeof(slot_value);
+    rc = zevm_light_get_storage(
+        handle,
+        "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", /* USDC */
+        "0x0",
+        0,
+        slot_value,
+        &slot_len);
+    if (rc == ZEVM_OK) {
+        printf("storage slot 0 = %s\n", slot_value);
+    }
+
+    zevm_light_shutdown(handle);
+    return 0;
+}
+```
+
+## 3. Handle a growing buffer
+
+Code length is unbounded, so `zevm_light_get_code` is the one call where you should expect
+`ZEVM_ERR_BUFFER_TOO_SMALL` and retry with the size it reports:
+
+```c
+static int read_code(ZevmHandle *handle, const char *address,
+                     uint8_t **out_buf, size_t *out_len) {
+    size_t capacity = 4096;
+    uint8_t *buf = malloc(capacity);
+    if (buf == NULL) return ZEVM_ERR_INTERNAL;
+
+    size_t len = capacity;
+    int rc = zevm_light_get_code(handle, address, 0, buf, &len);
+
+    if (rc == ZEVM_ERR_BUFFER_TOO_SMALL) {
+        uint8_t *grown = realloc(buf, len);
+        if (grown == NULL) { free(buf); return ZEVM_ERR_INTERNAL; }
+        buf = grown;
+        capacity = len;
+        rc = zevm_light_get_code(handle, address, 0, buf, &len);
+    }
+
+    if (rc != ZEVM_OK) { free(buf); return rc; }
+
+    *out_buf = buf;
+    *out_len = len;
+    return ZEVM_OK;
+}
+```
+
+## 4. Compile and link
+
+macOS / Linux, static link:
+
+```bash
+cc light.c \
+  -I zig-out/include \
+  zig-out/lib/libzevm.a \
+  -o light
+```
+
+Dynamic link instead:
+
+```bash
+cc light.c -I zig-out/include -L zig-out/lib -lzevm -o light
+```
+
+On Linux add `-Wl,-rpath,$PWD/zig-out/lib` (macOS: `-Wl,-rpath,@loader_path/zig-out/lib`) if you
+link dynamically and want to run from the build directory.
+
+## 5. Run it
+
+```bash
+./light https://beacon.example https://eth-mainnet.example/v2/KEY
+```
+
+Expected shape of the output:
+
+```text
+zevm 0.1.0-beta.1 (abi 1), network mainnet
+balance(0xd8da6bf26964af9d7eed9e03e53415d37aa96045) = 0x...
+nonce(0xd8da6bf26964af9d7eed9e03e53415d37aa96045) = 1234
+storage slot 0 = 0x0000...
+```
+
+## Calling from other languages
+
+The ABI is plain C with no callbacks and no library-owned allocations to free, which makes it
+straightforward to bind:
+
+- **Swift** — add `zig-out/include` as a system library target's header search path and link
+  `libzevm.a`. This is the ABI's original consumer, hence the caller-owned-buffer design.
+- **Rust** — `bindgen` over `zevm.h`, `println!("cargo:rustc-link-lib=static=zevm")` and
+  `cargo:rustc-link-search=native=…/zig-out/lib` from `build.rs`.
+- **Python** — `ctypes.CDLL("zig-out/lib/libzevm.dylib")` with `ctypes.create_string_buffer(80)`
+  for the balance output and `ctypes.c_size_t` for `out_len`.
+- **Node.js** — don't bind it yourself; use the shipped N-API addon,
+  [`@evmts/zevm`](/reference/node-api).
+
+Whatever the host, the three rules from the [C ABI reference](/reference/c-abi) still apply:
+serialize calls per handle, pass capacity in `*out_len`, and copy `zevm_light_last_error` before
+the next call.

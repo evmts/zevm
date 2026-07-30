@@ -1,0 +1,139 @@
+---
+title: C ABI
+description: zevm.h - the caller-owned-buffer C interface to the ZEVM light client.
+---
+
+# C ABI
+
+`zevm.h` exposes a minimal, read-only adapter around the consensus-layer sync engine and the
+`eth_getProof`-based execution verifier. It is intended for embedding in non-Zig hosts (Swift,
+Rust, C++, …). The header is generated into `zig-out/include/zevm.h`; the source of truth is
+`include/zevm.h` and `src/c_bindings.zig`.
+
+```bash
+zig build c-ffi -Doptimize=ReleaseSafe
+# zig-out/include/zevm.h
+# zig-out/lib/libzevm.a
+# zig-out/lib/libzevm.{dylib,so,dll}
+```
+
+## Contract rules
+
+- **Threading.** Calls on the same `ZevmHandle*` are not synchronized internally — the caller must
+  serialize them. Different handles may be used concurrently from different threads.
+- **Memory.** Output buffers are caller-owned. For `*_len` parameters the caller passes the buffer
+  capacity in bytes and the function writes the number of bytes used. If the buffer is too small
+  the call returns `ZEVM_ERR_BUFFER_TOO_SMALL` and `*out_len` is set to the required size.
+- **Error strings.** The pointer from `zevm_light_last_error` is owned by the handle and is valid
+  only until the next call on that handle. Copy it if you need to keep it.
+- **Blocking I/O.** `zevm_light_sync_step` performs synchronous HTTP requests. Never call it on a
+  UI thread.
+
+## Versioning
+
+```c
+#define ZEVM_ABI_VERSION 1
+uint32_t zevm_abi_version(void);
+const char* zevm_version(void);
+```
+
+Check `zevm_abi_version() == ZEVM_ABI_VERSION` at startup. The macro is what your build compiled
+against; the function is what the loaded library implements. A mismatch means a breaking ABI
+change and you should refuse to proceed.
+
+## Constants
+
+Networks:
+
+| Macro | Value |
+| --- | --- |
+| `ZEVM_NETWORK_MAINNET` | 0 |
+| `ZEVM_NETWORK_SEPOLIA` | 1 |
+| `ZEVM_NETWORK_HOLESKY` | 2 |
+
+Return codes:
+
+| Macro | Value | Meaning |
+| --- | --- | --- |
+| `ZEVM_OK` | 0 | Success. |
+| `ZEVM_ERR_INVALID_ARG` | 1 | Malformed address, slot, network, or NULL handle. |
+| `ZEVM_ERR_NOT_SYNCED` | 2 | No verified header yet; keep calling `zevm_light_sync_step`. |
+| `ZEVM_ERR_BUFFER_TOO_SMALL` | 3 | `*out_len` now holds the required capacity. |
+| `ZEVM_ERR_NETWORK` | 4 | Beacon or execution RPC transport failure. |
+| `ZEVM_ERR_PROOF` | 5 | Proof did not verify against the verified state root. |
+| `ZEVM_ERR_BLOCK_UNAVAILABLE` | 6 | Requested block is not the verified optimistic/finalized header. |
+| `ZEVM_ERR_INTERNAL` | 7 | Unexpected internal failure. |
+
+Sync status (returned by `zevm_light_status`, which never errors):
+
+| Macro | Value |
+| --- | --- |
+| `ZEVM_STATUS_NOT_SYNCED` | 0 |
+| `ZEVM_STATUS_SYNCING` | 1 |
+| `ZEVM_STATUS_SYNCED` | 2 |
+
+## Functions
+
+```c
+const char* zevm_error_message(int code);
+const char* zevm_light_network_name(int network); /* NULL for unknown */
+```
+
+### Lifecycle
+
+```c
+ZevmHandle* zevm_light_init(
+    int network,
+    const char* beacon_rpc_url,
+    const char* execution_rpc_url);
+
+void zevm_light_shutdown(ZevmHandle* handle); /* NULL-safe */
+```
+
+`zevm_light_init` returns `NULL` on allocation failure or an invalid network selector.
+
+### Sync
+
+```c
+int zevm_light_sync_step(ZevmHandle* handle);
+int zevm_light_status(ZevmHandle* handle);
+const char* zevm_light_last_error(ZevmHandle* handle);
+```
+
+The first `zevm_light_sync_step` performs the bootstrap from the network's default checkpoint plus
+an initial finality/optimistic update. Subsequent calls run the engine's `advance` step.
+
+### Verified reads
+
+```c
+int zevm_light_get_balance(ZevmHandle* handle, const char* address_hex,
+                           uint64_t block_number, char* out_hex, size_t* out_len);
+
+int zevm_light_get_transaction_count(ZevmHandle* handle, const char* address_hex,
+                                     uint64_t block_number, uint64_t* out_count);
+
+int zevm_light_get_code(ZevmHandle* handle, const char* address_hex,
+                        uint64_t block_number, uint8_t* out_buf, size_t* out_len);
+
+int zevm_light_get_storage(ZevmHandle* handle, const char* address_hex,
+                           const char* slot_hex, uint64_t block_number,
+                           char* out_hex, size_t* out_len);
+```
+
+Shared parameter semantics:
+
+- `address_hex` — NUL-terminated, `0x`-prefixed, 20-byte address.
+- `slot_hex` — NUL-terminated, `0x`-prefixed slot key of any width.
+- `block_number` — pass `0` for the latest verified head. Any other value must match the currently
+  verified optimistic or finalized header; otherwise the call returns
+  `ZEVM_ERR_BLOCK_UNAVAILABLE`. This is deliberate: the client will not serve a block it has not
+  verified.
+- Balance output is a `0x`-prefixed lowercase hex string with no leading zero padding; **80 bytes
+  is always sufficient**.
+- Storage output is a `0x`-prefixed 64-hex-digit string zero-padded to 32 bytes; **67 bytes is
+  always sufficient**.
+- `out_len` is in/out for every buffer parameter, and the written length **includes the NUL
+  terminator** for string outputs.
+
+A complete compiling and linking example is in
+[Embedding The C ABI](/guides/embedding-c-abi).

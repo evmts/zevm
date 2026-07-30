@@ -1,0 +1,109 @@
+---
+title: CI And Release Gates
+description: Maintainer map from local verification commands to GitHub Actions release gates.
+---
+
+# CI And Release Gates
+
+This page maps the local release-readiness commands to the root GitHub Actions workflow.
+
+## Local Gate Commands
+
+Run these from the `zevm/` checkout:
+
+```bash
+zig build --fetch
+zig build
+zig build dependency-preflight -- --zig-version 0.15.2
+zig build verify-fast
+zig build c-smoke
+zig build npm-smoke
+zig build release-binaries -Doptimize=ReleaseSafe
+zig build npm-platform-artifacts -Doptimize=ReleaseSafe
+npm --prefix npm/zevm install --ignore-scripts
+npm --prefix npm/zevm run typecheck
+npm --prefix npm/zevm run build
+zig build qualification-check
+zig build qualification-check -- --require-covered
+zig build verify
+```
+
+`zig build dependency-preflight` validates that `build.zig.zon` uses immutable URL/hash pins for `voltaire` and `guillotine-mini`, rejects legacy sibling path dependencies, reports the pinned revisions, and can validate expected dependency revisions with `--voltaire-revision` and `--guillotine-mini-revision`. `zig build test` also runs the test-graph checker, which fails if any `src/**/*_test.zig` file is not reachable from `src/root.zig`. `zig build verify-fast` runs that default unit/integration test graph. `zig build c-smoke` validates the public C ABI header/library contract. `zig build npm-smoke` validates the local N-API addon through Node. `zig build release-binaries` and `zig build npm-platform-artifacts` build artifacts for the selected target; multi-platform release jobs run them in an OS/architecture matrix. `zig build qualification-check` validates the release qualification map schema and covered-row evidence references, but it does not execute the referenced behavioral tests by itself. `zig build verify` runs `verify-fast` and the active official external suite slices encoded in `tools/external_verify.zig`.
+
+## Smithers Workflow Tooling
+
+The local Smithers workflow workspace is managed separately from the Zig release gates:
+
+```bash
+cd workflow
+bun install --frozen-lockfile
+bun run start
+```
+
+The workflow runner uses the package-managed Smithers CLI from `workflow/node_modules/.bin/smithers`, stores its local database under `workflow/`, and resumes the latest run when `workflow/zevm-build.db` exists. Run `bun run start` only when a maintainer wants the agent workflow to execute; it is not part of the Zig release gate.
+
+## Pull Request And Main Branch Gates
+
+The root `CI` workflow runs these checks for pull requests and pushes to `main`:
+
+- check out `zevm`
+- install Zig `0.15.2`
+- install Rust/Cargo, Node, and Perl for Voltaire's Rust crypto archive and npm checks
+- run `zig build --fetch`
+- run `zig build dependency-preflight -- --zig-version "$ZIG_VERSION"`
+- run `zig build`
+- run `zig build verify-fast`
+- run `zig build c-smoke`
+- run `zig build npm-smoke`
+- run `zig build release-binaries -Doptimize=ReleaseSafe`
+- run `zig build npm-platform-artifacts -Doptimize=ReleaseSafe`
+- run `npm --prefix npm/zevm run typecheck`
+- run `npm --prefix npm/zevm run build`
+- run `zig build qualification-check`
+- generate release metadata smoke artifacts with a commit-based release identifier
+- fail if tracked files are dirtied by the gate
+
+## Release And Scheduled Gates
+
+Tag pushes, manual dispatches, and the weekly scheduled workflow run the official external verification job:
+
+```bash
+zig build qualification-check -- --require-covered
+zig build verify
+```
+
+This is the required CI path for release-candidate confidence. It currently verifies the active official suite coverage encoded in `tools/external_verify.zig`; it is not a claim that every Hive simulator or every Ethereum fixture directory is already fully active.
+
+Those same tag, manual, and scheduled workflows also run the Hive RPC compat smoke job described below.
+
+## Hive RPC Compat Smoke
+
+For the CI-friendly Hive lifecycle smoke, run:
+
+```bash
+bun tools/hive_rpc_compat_smoke.ts
+```
+
+The script builds a local `zevm/hive-client:local` image from this checkout, lets Zig fetch package-manager dependencies inside that build, builds the Hive runner, and runs ZEVM through the full `ethereum/rpc-compat` transcript set by default. Set `ZEVM_HIVE_RPC_COMPAT_PATTERN` only when intentionally narrowing a local debug run. The client wrapper provides the Hive-required HTTP JSON-RPC port `8545`, translates Hive fork-schedule environment variables into ZEVM trusted-mode config, forwards mounted Hive `genesis.json` and `chain.rlp` into ZEVM startup when present, and exposes ZEVM's native Engine API listener on `8551`.
+
+CI runs this same command in the `Hive RPC Compat Smoke` job for tag pushes, manual dispatches, and the weekly scheduled workflow.
+
+The RPC compatibility run exercises every `ethereum/rpc-compat` transcript selected by the pinned execution-apis revision. This is narrower than full Hive release readiness: GraphQL, Engine API conformance, sync, devp2p discovery edge cases, and the larger execution-spec consensus fixtures are separate simulators and must be reported independently. Phase-1 `chain.rlp` handling remains query-oriented for imported history, while the Engine listener covers local payload build jobs, strict `newPayload` import for known local parents, `getPayload` by payload id, payload-body lookup, and null blob sidecar lookup for unavailable blobs.
+
+## Published Release Asset Gate
+
+When a GitHub release is published, CI validates the release metadata publication contract:
+
+- exactly one `release-tuple.json` asset exists
+- exactly one `light-default-checkpoints.json` asset exists
+- both assets have the expected schema version and field set
+- both assets use the published release tag as `releaseIdentifier`
+- `release-tuple.json.zevmGitRevision` equals the checked-out release tag commit
+- tuple dependency revisions are 40-hex commit identifiers
+- `build.zig.zon` pins Voltaire and Guillotine Mini archive URLs at the exact tuple revisions
+- Zig is installed at the exact tuple `zigVersion`
+- `zig build verify` and `zig build qualification-check -- --require-covered` pass against the materialized tuple
+- `bun tools/hive_rpc_compat_smoke.ts` passes against the materialized tuple
+- default light-mode checkpoints are 32-byte `0x` hashes for `mainnet`, `sepolia`, and `holesky`
+
+If any item fails, the release metadata is invalid for canonical reproducibility claims.

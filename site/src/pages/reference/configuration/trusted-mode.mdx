@@ -1,0 +1,184 @@
+---
+title: Trusted-Mode Configuration
+description: Trusted-mode defaults, CLI/config fields, mining and fork options, and validation.
+---
+
+# Trusted-Mode Configuration
+
+Trusted mode is the default runtime. It provides local execution and local mutation with optional fork backing.
+
+> Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).
+>
+> This page is an operational summary. For product-contract disputes, follow those normative sources.
+
+## Runtime Defaults
+
+| Field | Default |
+| --- | --- |
+| `chainId` | `31337` (`0x7a69`) |
+| managed accounts | 10 deterministic dev accounts |
+| `coinbaseIndex` | `0` |
+| `initialBalance` | `10000000000000000000000` wei |
+| `gasPrice` | `2000000000` |
+| `baseFee` | `1000000000` |
+| `blobBaseFee` | `1` |
+| `maxPriorityFeePerGas` | `1000000000` |
+| `blockGasLimit` | `30000000` |
+| mining mode | `auto` |
+
+## CLI And Config Field Map
+
+| CLI flag | Config field | Type | Default |
+| --- | --- | --- | --- |
+| `--chain-id` | `mode.trusted.chainId` | `u64` | `31337` |
+| `--coinbase-index` | `mode.trusted.coinbaseIndex` | integer `0..9` | `0` |
+| `--initial-balance` | `mode.trusted.initialBalance` | decimal wei string | `10000000000000000000000` |
+| `--gas-price` | `mode.trusted.gasPrice` | decimal wei string | `2000000000` |
+| `--base-fee` | `mode.trusted.baseFee` | decimal wei string | `1000000000` |
+| `--blob-base-fee` | `mode.trusted.blobBaseFee` | decimal wei string | `1` |
+| `--max-priority-fee-per-gas` | `mode.trusted.maxPriorityFeePerGas` | decimal wei string | `1000000000` |
+| `--block-gas-limit` | `mode.trusted.blockGasLimit` | `u64` | `30000000` |
+| `--mining` | `mode.trusted.mining.type` | `auto`, `manual`, `interval` | `auto` |
+| `--block-time` | `mode.trusted.mining.blockTime` | seconds (`u64`) | none |
+| `--fork-url` | `mode.trusted.fork.url` | execution RPC URL | none |
+| `--fork-block-number` | `mode.trusted.fork.blockNumber` | `u64` | none (when omitted with `--fork-url`, follow upstream head) |
+| `--genesis` | `mode.trusted.genesis` | genesis JSON path | none |
+| `--chain-rlp` | `mode.trusted.chainRlp` | concatenated RLP block stream path | none |
+
+Fork block-number representation bridge: startup CLI/config values are decimal `u64`, while JSON-RPC `zevm_reset` uses `QuantityHex` for `forkConfig.blockNumber` (example: `22000000` -> `"0x14fb180"`).
+
+## Mining Shapes
+
+`mode.trusted.mining` accepts:
+
+```json
+{ "type": "auto" }
+```
+
+```json
+{ "type": "manual" }
+```
+
+```json
+{ "type": "interval", "blockTime": 12 }
+```
+
+## Fork Shapes
+
+`mode.trusted.fork` accepts:
+
+```json
+null
+```
+
+```json
+{ "url": "https://rpc.example" }
+```
+
+```json
+{ "url": "https://rpc.example", "blockNumber": 22000000 }
+```
+
+When `fork.url` is set and `fork.blockNumber` is omitted, ZEVM follows the upstream head by default.
+
+## Genesis Allocation
+
+`mode.trusted.genesis` accepts a path to a genesis JSON file:
+
+```json
+{ "genesis": "/path/to/genesis.json" }
+```
+
+ZEVM reads the file at startup and imports the top-level `alloc` object. Account entries support `balance` or legacy `wei`, and optional `nonce`, `code`, and `storage` fields. Supplying a genesis file replaces default dev-account pre-funding; the deterministic managed accounts still exist for signing and `eth_accounts`.
+
+## Chain RLP Import
+
+`mode.trusted.chainRlp` accepts a path to a concatenated RLP block stream:
+
+```json
+{ "chainRlp": "/path/to/chain.rlp" }
+```
+
+ZEVM imports the stream after genesis initialization as query-only block history and advances the canonical head to the last imported block. Imported block bodies retain raw transaction envelopes for block transaction arrays and transaction-by-block/index lookups.
+
+`chainRlp` does not execute imported transactions, validate post-state roots, materialize account/storage state, or populate receipt/log indexes in phase 1. State-backed reads, simulation/testing methods, receipts, and logs continue to use the local runtime state created from genesis plus subsequent local transactions. The startup log emits `chain_rlp_query_only_imported` with `state_materialized=false`, `receipts_indexed=false`, and `logs_indexed=false` whenever this path is used.
+
+## Engine API Listener
+
+Trusted mode can expose a second plain-HTTP Engine API listener with top-level `engineRpc` or CLI `--engine-host` / `--engine-port`:
+
+```json
+{ "engineRpc": { "host": "127.0.0.1", "port": 8551 } }
+```
+
+The implemented Engine surface covers capability exchange, transition configuration exchange, forkchoice updates that validate referenced hashes against ZEVM's local block history, payload attribute build jobs, strict local payload import for known canonical parents, getPayload lookup for known payload ids, payload body lookup against local blocks, and blob lookup nulls for unavailable sidecars. It does not make ZEVM a full consensus-client-facing execution engine yet; remote P2P sync and blob sidecar retention remain out of scope.
+
+Implemented Engine listener methods:
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `engine_exchangeCapabilities` | `[capabilities]` where `capabilities` is an array of strings | array of implemented Engine method names |
+| `engine_exchangeTransitionConfigurationV1` | `[config]` where `config` is an object | echo of the supplied transition config |
+| `engine_getClientVersionV1` | `[clientVersion]` | single-element ZEVM client version array |
+| `engine_forkchoiceUpdatedV1` / `engine_forkchoiceUpdatedV2` / `engine_forkchoiceUpdatedV3` / `engine_forkchoiceUpdatedV4` | `[forkchoiceState]`, `[forkchoiceState, null]`, or `[forkchoiceState, payloadAttributes]` | `{ payloadStatus, payloadId }`; `payloadId` is non-null when payload attributes are accepted |
+| `engine_newPayloadV1` / `engine_newPayloadV2` / `engine_newPayloadV3` / `engine_newPayloadV4` / `engine_newPayloadV5` | version-specific payload validation params | `PayloadStatusV1`; locally valid payloads with known canonical parents import as `VALID`, unknown parents return `SYNCING`, invalid payloads return `INVALID` or `INVALID_BLOCK_HASH` |
+| `engine_getPayloadV1` / `engine_getPayloadV2` / `engine_getPayloadV3` / `engine_getPayloadV4` / `engine_getPayloadV5` / `engine_getPayloadV6` | `[payloadId]` | payload envelope when known; `-38001` for unknown payload id |
+| `engine_getPayloadBodiesByHashV1` / `engine_getPayloadBodiesByHashV2` / `engine_getPayloadBodiesByRangeV1` / `engine_getPayloadBodiesByRangeV2` | hash/range body lookup params | payload body array with `null` for unknown local blocks; V2 includes `blockAccessList: null` |
+| `engine_getBlobsV1` / `engine_getBlobsV2` / `engine_getBlobsV3` | `[versionedHashes]` | blob array with `null` for unknown hashes |
+
+`forkchoiceState` must include `headBlockHash`, `safeBlockHash`, and `finalizedBlockHash` as `Hash32` strings. `safeBlockHash` and `finalizedBlockHash` may be zero hashes.
+
+## Validation Rules
+
+- `--block-time` is required when `--mining interval`
+- `--block-time` is invalid for `auto` and `manual`
+- `--fork-block-number` is invalid without `--fork-url`
+- `--fork-url` without `--fork-block-number` is valid and follows upstream head
+- `--genesis` is trusted-mode only and must point to a readable genesis file
+- `--chain-rlp` is trusted-mode only, query-only in phase 1, and the stream must link to the configured genesis/imported parent chain
+- `--engine-host`, `--engine-port`, and top-level `engineRpc` are trusted-mode only
+- trusted-only flags are invalid in light mode
+- `coinbaseIndex` must be within `0..9`
+
+## Example: Trusted Mode With Interval Mining And Fork
+
+```json
+{
+  "rpc": { "host": "127.0.0.1", "port": 8545 },
+  "mode": {
+    "trusted": {
+      "chainId": 31337,
+      "coinbaseIndex": 0,
+      "initialBalance": "10000000000000000000000",
+      "gasPrice": "2000000000",
+      "baseFee": "1000000000",
+      "blobBaseFee": "1",
+      "maxPriorityFeePerGas": "1000000000",
+      "blockGasLimit": 30000000,
+      "mining": { "type": "interval", "blockTime": 12 },
+      "fork": { "url": "https://rpc.example", "blockNumber": 22000000 },
+      "genesis": "./genesis.json",
+      "chainRlp": "./chain.rlp"
+    }
+  }
+}
+```
+
+## Example: CLI Startup
+
+```bash
+zevm \
+  --mode trusted \
+  --chain-id 31337 \
+  --mining interval \
+  --block-time 12 \
+  --fork-url https://rpc.example \
+  --fork-block-number 22000000 \
+  --genesis ./genesis.json \
+  --chain-rlp ./chain.rlp
+```
+
+## Related Pages
+
+- [Configuration Overview](/reference/configuration/overview)
+- [Light-Mode Configuration](/reference/configuration/light-mode)
