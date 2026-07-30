@@ -15,6 +15,7 @@ env:
   TEST_NODE_VERSION: "22.22.0"
   PUBLISH_NODE_VERSION: "24.11.1"
   PUBLISH_NPM_VERSION: "11.6.2"
+  BUN_VERSION: "1.4.0"
 
 jobs:
   verify:
@@ -49,6 +50,11 @@ jobs:
           node-version: ${{ env.TEST_NODE_VERSION }}
           cache: npm
           cache-dependency-path: npm/zevm/package-lock.json
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
 
       - name: Install native build dependencies
         run: sudo apt-get update && sudo apt-get install -y perl
