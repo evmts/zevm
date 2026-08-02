@@ -5,14 +5,14 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { mdxPlugin, runWorkflow } from "smithers-orchestrator";
+import { mdxPlugin, runWorkflow } from "smthrs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const ROOT_DIR = resolve(__dirname, "..");
 const WORKFLOW_ENTRY = resolve(ROOT_DIR, "docs/workflows/docs.tsx");
 const NODE_MODULES = resolve(__dirname, "node_modules");
-const smithersRequire = createRequire(import.meta.resolve("smithers-orchestrator"));
+const smithersRequire = createRequire(import.meta.resolve("smthrs"));
 const { Effect } = smithersRequire("effect");
 
 const args = new Set(process.argv.slice(2));

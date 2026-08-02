@@ -1,4 +1,4 @@
-import { createSmithers } from "smithers-orchestrator";
+import { createSmithers } from "smthrs";
 import { ralphOutputSchemas } from "super-ralph";
 
 const runtime = (createSmithers as (schemas: Record<string, unknown>, options: Record<string, unknown>) => any)(ralphOutputSchemas, {
