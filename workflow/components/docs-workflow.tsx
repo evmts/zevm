@@ -1,10 +1,10 @@
-/** @jsxImportSource smithers-orchestrator */
+/** @jsxImportSource smthrs */
 import {
   CodexAgent,
   Loop,
   Sequence,
   createSmithers,
-} from "smithers-orchestrator";
+} from "smthrs";
 import { z } from "zod";
 import ImplementationPrompt from "../prompts/ImplementationPrompt.mdx";
 import ColdReviewPrompt from "../prompts/ColdReviewPrompt.mdx";

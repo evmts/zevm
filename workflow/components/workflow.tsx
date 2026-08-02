@@ -8,7 +8,7 @@ import {
   AmpAgent,
   CodexAgent,
   KimiAgent,
-} from "smithers-orchestrator";
+} from "smthrs";
 import { focusTestSuites } from "./focusTestSuites";
 import { focusDirs } from "./focusDirs";
 import { readFileSync } from "node:fs";
