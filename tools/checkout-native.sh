@@ -10,7 +10,7 @@ for dependency in voltaire guillotine-mini; do
     git -C "$destination" remote add origin "https://github.com/evmts/$dependency.git"
     git -C "$destination" fetch --depth 1 origin "$revision"
     git -C "$destination" checkout --detach FETCH_HEAD
+    git -C "$destination" submodule update --init --recursive
   fi
   test "$(git -C "$destination" rev-parse HEAD)" = "$revision"
-  git -C "$destination" submodule update --init --recursive
 done
