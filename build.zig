@@ -442,6 +442,8 @@ fn rustTargetTriple(target: std.Build.ResolvedTarget) []const u8 {
 }
 
 fn usesExplicitRustTarget(target: std.Build.ResolvedTarget) bool {
+    // Match Voltaire even when Zig and rustup choose different Windows host ABIs.
+    if (target.result.os.tag == .windows) return true;
     if (target.result.cpu.arch == .wasm32 or target.result.cpu.arch == .wasm64) return true;
     if (target.result.os.tag != builtin.target.os.tag) return true;
     if (target.result.cpu.arch != builtin.target.cpu.arch) return true;
