@@ -1,8 +1,0 @@
-export * from "@ethereumjs/evm";
-export {
-  EOFContainer as Eof,
-  EVMError as EvmError,
-  type EVMResult as EvmResult,
-  type EVMRunCallOpts as EvmRunCallOpts,
-  Message as EthjsMessage,
-} from "@ethereumjs/evm";

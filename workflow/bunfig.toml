@@ -1,4 +1,0 @@
-preload = ["./preload.ts"]
-
-[install]
-linker = "hoisted"

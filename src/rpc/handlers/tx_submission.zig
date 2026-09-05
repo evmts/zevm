@@ -8,6 +8,7 @@ const tx_processor = @import("../../tx_processor.zig");
 const mining = @import("../../mining.zig");
 const log = @import("../../log.zig");
 const rpc_parse = @import("../parse.zig");
+const simulation = @import("simulation.zig");
 
 pub const TxSubmissionError = error{
     InvalidHexData,
@@ -218,7 +219,7 @@ pub fn handleSendTransaction(
         return TxSubmissionError.InitcodeTooLarge;
     }
     const intrinsic = computeLegacyIntrinsicGas(tx.to == null, tx.data, hardfork);
-    tx.gas_limit = request.gas orelse intrinsic;
+    tx.gas_limit = request.gas orelse try estimateRequestGas(allocator, rt, params.transaction.value);
     if (intrinsic > tx.gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
     if (tx.gas_limit > rt.dev_runtime.config.block_gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
 
@@ -298,7 +299,7 @@ pub fn handleSignTransaction(
         return TxSubmissionError.InitcodeTooLarge;
     }
     const intrinsic = computeLegacyIntrinsicGas(tx.to == null, tx.data, hardfork);
-    tx.gas_limit = request.gas orelse intrinsic;
+    tx.gas_limit = request.gas orelse try estimateRequestGas(allocator, rt, params.transaction.value);
     if (intrinsic > tx.gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
 
     const signed = tx_encoding.signLegacyTransaction(allocator, tx, private_key, rt.chain_id) catch return TxSubmissionError.SigningFailed;
@@ -525,4 +526,18 @@ fn miningConfigName(config: mining.MiningConfig) []const u8 {
 
 fn automine(rt: *runtime.NodeRuntime) !void {
     try rt.mineBlocks(1, 0);
+}
+
+// An omitted gas limit must cover execution and code deposit, not just intrinsic
+// transaction cost. Reuse the native simulator so calls and submissions agree.
+fn estimateRequestGas(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime, transaction: std.json.Value) TxSubmissionError!u64 {
+    var items = std.json.Array.init(allocator);
+    defer items.deinit();
+    try items.append(transaction);
+    const estimated = simulation.handleEthEstimateGas(allocator, rt, .{ .array = items }) catch |err| switch (err) {
+        error.OutOfMemory => return TxSubmissionError.OutOfMemory,
+        else => return TxSubmissionError.IntrinsicGasExceedsLimit,
+    };
+    defer allocator.free(estimated.string);
+    return rpc_parse.parseQuantityValue(u64, estimated) catch TxSubmissionError.StateError;
 }

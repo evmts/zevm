@@ -277,7 +277,7 @@ Then run the release reproducibility gate from the materialized ZEVM checkout:
 ```bash
 zig build verify
 zig build qualification-check -- --require-covered
-bun tools/hive_rpc_compat_smoke.ts
+bun tools/hive_rpc_compat_smoke.js
 ```
 
 If checkout, `zig version`, dependency preflight, build, qualification command, or Hive smoke fails, the tuple is not valid reproducibility evidence for canonical release claims.

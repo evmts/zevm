@@ -30,6 +30,20 @@ extern "C" {
 
 typedef struct ZevmHandle ZevmHandle;
 
+/* In-memory execution node backed by Voltaire and Guillotine Mini. Each handle
+ * owns independent state. Serialize calls on a handle, including destruction.
+ * config_json is a JSON object with optional chain_id (u64); NULL uses defaults.
+ * rpc executes a request or batch exactly once. The returned UTF-8 buffer is
+ * owned by the caller and must be released with zevm_node_free_response.
+ * Notifications return NULL with length zero and ZEVM_OK. RPC errors are JSON
+ * responses; nonzero return codes indicate an ABI failure. */
+typedef struct ZevmNode ZevmNode;
+ZevmNode* zevm_node_create(const char* config_json);
+void zevm_node_destroy(ZevmNode* node);
+int zevm_node_rpc(ZevmNode* node, const char* request, size_t request_len,
+                  unsigned char** response, size_t* response_len);
+void zevm_node_free_response(unsigned char* response, size_t response_len);
+
 /* ABI version for this header/library contract. Increment on breaking changes. */
 #define ZEVM_ABI_VERSION 1
 

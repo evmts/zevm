@@ -54,9 +54,21 @@ zig build test
 zig build verify-fast
 zig build c-smoke
 zig build npm-smoke
-npm --prefix npm/zevm run typecheck
+node --check npm/zevm/src/index.js
 ```
 
 Behavior changes are docs-first: update `docs/specs/prd.md` and `docs/specs/json-rpc-contract.md` before landing code that changes startup, runtime modes, JSON-RPC behavior, release metadata, the C ABI, or npm distribution. The full process is in [docs/specs/docs-first-process.md](./docs/specs/docs-first-process.md).
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for the local workflow, release gates, C ABI, and npm package notes.
+
+## Native package release
+
+The next execution-node package version is `0.1.0`. Release builders must stage
+all platform addons advertised in `npm/zevm/package.json`, then run
+`node npm/zevm/scripts/publish-all.cjs --dry-run` before the same command without
+`--dry-run`. Publication fails before uploading anything if a platform is missing.
+`zig build npm-platform-artifacts -Doptimize=ReleaseSafe -Dtarget=<zig-triple>`
+builds one selected platform; it is not a cross-platform release matrix.
+
+CI obtains the native sibling sources from `native-dependencies.json` using
+`bash tools/checkout-native.sh`. Existing local checkouts are never reset.

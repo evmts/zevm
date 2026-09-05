@@ -4,7 +4,7 @@ const builtin = @import("builtin");
 const Dependency = struct {
     name: []const u8,
     repo: []const u8,
-    legacy_path: []const u8,
+    local_path: []const u8,
     expected_revision: ?[]const u8 = null,
 };
 
@@ -45,13 +45,13 @@ fn run(allocator: std.mem.Allocator, options: Options) !void {
         .{
             .name = "voltaire",
             .repo = "voltaire",
-            .legacy_path = "../voltaire",
+            .local_path = "../voltaire",
             .expected_revision = options.voltaire_revision,
         },
         .{
             .name = "guillotine-mini",
             .repo = "guillotine-mini",
-            .legacy_path = "../guillotine-mini",
+            .local_path = "../guillotine-mini",
             .expected_revision = options.guillotine_mini_revision,
         },
     };
@@ -93,8 +93,8 @@ fn parseArgs(args: []const []const u8) !Options {
             index += 1;
             if (index >= args.len) return error.MissingArgumentValue;
         } else if (std.mem.eql(u8, arg, "--allow-dirty")) {
-            // Accepted for compatibility with older release scripts. Dirty
-            // sibling worktrees are no longer part of the package-manager flow.
+            // Accepted for compatibility with older release scripts. Sibling
+            // source edits are intentional in the local development flow.
         } else {
             return error.UnknownArgument;
         }
@@ -107,12 +107,18 @@ fn checkDependency(
     manifest: []const u8,
     dependency: Dependency,
 ) !void {
-    if (containsLegacyPathDependency(manifest, dependency.legacy_path)) {
-        std.debug.print(
-            "dependency-preflight: {s} still uses legacy path dependency path={s}\n",
-            .{ dependency.name, dependency.legacy_path },
-        );
-        return error.LegacyPathDependency;
+    if (containsLocalPathDependency(manifest, dependency.local_path)) {
+        const build_path = try std.fs.path.join(allocator, &.{ dependency.local_path, "build.zig" });
+        defer allocator.free(build_path);
+        try std.fs.cwd().access(build_path, .{});
+        if (dependency.expected_revision) |expected| {
+            const child = try std.process.Child.run(.{ .allocator = allocator, .argv = &.{ "git", "-C", dependency.local_path, "rev-parse", "HEAD" } });
+            defer allocator.free(child.stdout);
+            defer allocator.free(child.stderr);
+            if (child.term != .Exited or child.term.Exited != 0 or !std.mem.eql(u8, std.mem.trim(u8, child.stdout, "\r\n"), expected)) return error.DependencyRevisionMismatch;
+        }
+        std.debug.print("dependency-preflight: {s} local={s}\n", .{ dependency.name, dependency.local_path });
+        return;
     }
 
     const revision = try archiveRevision(allocator, manifest, dependency.repo);
@@ -136,8 +142,8 @@ fn checkDependency(
     );
 }
 
-fn containsLegacyPathDependency(manifest: []const u8, legacy_path: []const u8) bool {
-    return std.mem.indexOf(u8, manifest, legacy_path) != null;
+fn containsLocalPathDependency(manifest: []const u8, local_path: []const u8) bool {
+    return std.mem.indexOf(u8, manifest, local_path) != null;
 }
 
 fn archiveRevision(
@@ -216,7 +222,7 @@ test "parseArgs captures expected revisions and zig version" {
     try std.testing.expectEqualStrings("0.15.2", options.zig_version.?);
 }
 
-test "manifest scanners reject paths and extract url pins" {
+test "manifest scanners distinguish local paths and archive pins" {
     const manifest =
         \\.{
         \\  .dependencies = .{
@@ -228,7 +234,7 @@ test "manifest scanners reject paths and extract url pins" {
         \\}
     ;
 
-    try std.testing.expect(!containsLegacyPathDependency(manifest, "../voltaire"));
+    try std.testing.expect(!containsLocalPathDependency(manifest, "../voltaire"));
 
     const revision = try archiveRevision(std.testing.allocator, manifest, "voltaire");
     defer std.testing.allocator.free(revision);
@@ -244,4 +250,9 @@ test "isGitRevision validates lowercase full object ids" {
     try std.testing.expect(!isGitRevision("111111111111111111111111111111111111111"));
     try std.testing.expect(!isGitRevision("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
     try std.testing.expect(!isGitRevision("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"));
+}
+
+test "local dependencies use the maintained sibling checkouts" {
+    try std.testing.expect(containsLocalPathDependency(".path = \"../voltaire\"", "../voltaire"));
+    try checkDependency(std.testing.allocator, ".path = \"../voltaire\"", .{ .name = "voltaire", .repo = "voltaire", .local_path = "../voltaire" });
 }

@@ -735,7 +735,9 @@ fn timevalFromMillis(milliseconds: u32) std.posix.timeval {
     };
 }
 
-fn handlePost(
+/// Dispatch a JSON-RPC request or batch without opening an HTTP listener.
+/// The caller owns the returned buffer; notifications return null.
+pub fn handlePost(
     allocator: std.mem.Allocator,
     body: []const u8,
     handlers: *const dispatcher.HandlerRegistry,

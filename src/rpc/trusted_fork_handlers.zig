@@ -28,7 +28,7 @@ pub fn handleZevmSetRpcUrl(
     return .{ .bool = true };
 }
 
-fn parseResetMode(params: ?std.json.Value) ?runtime.ResetForkMode {
+pub fn parseResetMode(params: ?std.json.Value) ?runtime.ResetForkMode {
     if (params == null) return .keep_current;
     const items = getParamsArray(params) orelse return null;
 
@@ -38,6 +38,26 @@ fn parseResetMode(params: ?std.json.Value) ?runtime.ResetForkMode {
     return switch (items[0]) {
         .null => .disable,
         .object => |obj| blk: {
+            // Anvil/viem reset wraps the upstream in `forking` and uses numeric
+            // block heights. Preserve ZEVM's direct {url, blockNumber} form too.
+            if (obj.get("forking")) |forking| {
+                if (obj.count() != 1 or forking != .object) return null;
+                const config = forking.object;
+                const url_value = config.get("jsonRpcUrl") orelse return null;
+                if (url_value != .string) return null;
+                var block_number: ?u64 = null;
+                if (config.get("blockNumber")) |value| {
+                    block_number = switch (value) {
+                        .integer => |number| std.math.cast(u64, number) orelse return null,
+                        else => parseQuantityHexU64(value) orelse return null,
+                    };
+                }
+                var keys = config.iterator();
+                while (keys.next()) |entry| {
+                    if (!std.mem.eql(u8, entry.key_ptr.*, "jsonRpcUrl") and !std.mem.eql(u8, entry.key_ptr.*, "blockNumber")) return null;
+                }
+                break :blk .{ .replace = .{ .url = url_value.string, .block_number = block_number } };
+            }
             const url = switch (obj.get("url") orelse return null) {
                 .string => |value| value,
                 else => return null,
@@ -205,4 +225,19 @@ test "handleZevmSetRpcUrl fails when forking is disabled" {
         error.ForkNotEnabled,
         handleZevmSetRpcUrl(std.testing.allocator, &rt, .{ .array = args }),
     );
+}
+
+test "reset accepts Anvil fork config with numeric or quantity heights" {
+    const allocator = std.testing.allocator;
+    for ([_][]const u8{ "1", "\"0x1\"" }) |number| {
+        const text = try std.fmt.allocPrint(allocator, "[{{\"forking\":{{\"jsonRpcUrl\":\"http://localhost:8545\",\"blockNumber\":{s}}}}}]", .{number});
+        defer allocator.free(text);
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, text, .{});
+        defer parsed.deinit();
+        const mode = parseResetMode(parsed.value).?;
+        try std.testing.expectEqual(@as(?u64, 1), mode.replace.block_number);
+    }
+    const invalid = try std.json.parseFromSlice(std.json.Value, allocator, "[{\"forking\":{\"jsonRpcUrl\":\"http://localhost:8545\",\"blockNumber\":-1}}]", .{});
+    defer invalid.deinit();
+    try std.testing.expect(parseResetMode(invalid.value) == null);
 }

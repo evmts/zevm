@@ -36,6 +36,10 @@ jobs:
           path: zevm
           submodules: recursive
 
+      - name: Checkout pinned native dependencies
+        working-directory: zevm
+        run: bash tools/checkout-native.sh
+
       - name: Set up Zig
         uses: mlugg/setup-zig@v2
         with:
@@ -88,7 +92,7 @@ jobs:
       - name: TypeScript package checks
         working-directory: zevm
         run: |
-          npm --prefix npm/zevm run typecheck
+          node --check npm/zevm/src/index.js
           npm --prefix npm/zevm run build
 
       - name: Qualification map structural check
@@ -121,6 +125,10 @@ jobs:
         with:
           path: zevm
           submodules: recursive
+
+      - name: Checkout pinned native dependencies
+        working-directory: zevm
+        run: bash tools/checkout-native.sh
 
       - name: Set up Zig
         uses: mlugg/setup-zig@v2
@@ -158,6 +166,10 @@ jobs:
           path: zevm
           submodules: recursive
 
+      - name: Checkout pinned native dependencies
+        working-directory: zevm
+        run: bash tools/checkout-native.sh
+
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
 
@@ -168,7 +180,7 @@ jobs:
 
       - name: Hive rpc-compat smoke
         working-directory: zevm
-        run: bun tools/hive_rpc_compat_smoke.ts
+        run: bun tools/hive_rpc_compat_smoke.js
 
       - name: Dirty worktree preflight
         working-directory: zevm
@@ -189,6 +201,10 @@ jobs:
           ref: ${{ github.event.release.tag_name }}
           path: zevm
           submodules: recursive
+
+      - name: Checkout pinned native dependencies
+        working-directory: zevm
+        run: bash tools/checkout-native.sh
 
       - name: Download required release metadata assets
         working-directory: zevm
@@ -290,7 +306,7 @@ jobs:
 
       - name: Hive rpc-compat smoke against materialized tuple
         working-directory: zevm
-        run: bun tools/hive_rpc_compat_smoke.ts
+        run: bun tools/hive_rpc_compat_smoke.js
 
       - name: Dirty worktree preflight
         working-directory: zevm

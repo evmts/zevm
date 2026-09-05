@@ -10,6 +10,7 @@
 #define ZEVM_MAX_SAFE_JS_INTEGER 9007199254740991.0
 
 typedef struct {
+  uint32_t kind;
   ZevmHandle* handle;
 } ZevmNativeHandle;
 
@@ -111,7 +112,7 @@ static bool get_handle(napi_env env, napi_value value, ZevmNativeHandle** out) {
   void* raw = NULL;
   napi_status status = napi_get_value_external(env, value, &raw);
   ZevmNativeHandle* wrapper = (ZevmNativeHandle*)raw;
-  if (status != napi_ok || wrapper == NULL || wrapper->handle == NULL) {
+  if (status != napi_ok || wrapper == NULL || wrapper->kind != 1 || wrapper->handle == NULL) {
     napi_throw_type_error(env, "ZEVM_INVALID_ARG", "expected a ZEVM light client handle");
     return false;
   }
@@ -199,6 +200,7 @@ static napi_value light_init(napi_env env, napi_callback_info info) {
     napi_throw_error(env, "ZEVM_OOM", "allocation failed");
     return js_undefined(env);
   }
+  wrapper->kind = 1;
   wrapper->handle = handle;
 
   napi_value result;
@@ -407,8 +409,97 @@ static napi_value light_get_storage(napi_env env, napi_callback_info info) {
   return result;
 }
 
+typedef struct { uint32_t kind; ZevmNode* node; } ZevmExecutionHandle;
+
+static void finalize_node(napi_env env, void* data, void* hint) {
+  (void)env; (void)hint;
+  ZevmExecutionHandle* wrapper = data;
+  if (wrapper != NULL) { zevm_node_destroy(wrapper->node); free(wrapper); }
+}
+
+static ZevmExecutionHandle* execution_handle(napi_env env, napi_value value) {
+  ZevmExecutionHandle* wrapper = NULL;
+  if (napi_get_value_external(env, value, (void**)&wrapper) != napi_ok || wrapper == NULL || wrapper->kind != 2) {
+    napi_throw_type_error(env, "ZEVM_INVALID_ARG", "expected a node handle");
+    return NULL;
+  }
+  return wrapper;
+}
+
+static napi_value node_create(napi_env env, napi_callback_info info) {
+  napi_value argv[1];
+  if (!get_args(env, info, 1, argv)) return js_undefined(env);
+  char* config = NULL;
+  if (!get_string(env, argv[0], &config)) return js_undefined(env);
+  ZevmNode* node = zevm_node_create(config);
+  free(config);
+  if (node == NULL) {
+    napi_throw_error(env, "ZEVM_INIT_FAILED", "invalid node configuration or native initialization failed");
+    return js_undefined(env);
+  }
+  ZevmExecutionHandle* wrapper = malloc(sizeof(*wrapper));
+  if (wrapper == NULL) {
+    zevm_node_destroy(node);
+    napi_throw_error(env, "ZEVM_OOM", "allocation failed");
+    return js_undefined(env);
+  }
+  wrapper->kind = 2;
+  wrapper->node = node;
+  napi_value result;
+  napi_status status = napi_create_external(env, wrapper, finalize_node, NULL, &result);
+  if (status != napi_ok) {
+    finalize_node(env, wrapper, NULL);
+    throw_status(env, status, "napi_create_external");
+    return js_undefined(env);
+  }
+  return result;
+}
+
+static napi_value node_destroy(napi_env env, napi_callback_info info) {
+  napi_value argv[1];
+  if (!get_args(env, info, 1, argv)) return js_undefined(env);
+  ZevmExecutionHandle* wrapper = execution_handle(env, argv[0]);
+  if (wrapper != NULL) { zevm_node_destroy(wrapper->node); wrapper->node = NULL; }
+  return js_undefined(env);
+}
+
+static napi_value node_rpc(napi_env env, napi_callback_info info) {
+  napi_value argv[2];
+  if (!get_args(env, info, 2, argv)) return js_undefined(env);
+  ZevmExecutionHandle* wrapper = execution_handle(env, argv[0]);
+  if (wrapper == NULL) return js_undefined(env);
+  if (wrapper->node == NULL) {
+    napi_throw_error(env, "ZEVM_CLOSED", "node is closed");
+    return js_undefined(env);
+  }
+  char* request = NULL;
+  if (!get_string(env, argv[1], &request)) return js_undefined(env);
+  unsigned char* response = NULL;
+  size_t response_len = 0;
+  size_t request_len = 0;
+  napi_get_value_string_utf8(env, argv[1], NULL, 0, &request_len);
+  int code = zevm_node_rpc(wrapper->node, request, request_len, &response, &response_len);
+  free(request);
+  if (code != ZEVM_OK) {
+    napi_throw_error(env, "ZEVM_RPC_FAILED", zevm_error_message(code));
+    return js_undefined(env);
+  }
+  napi_value result;
+  napi_status status = response == NULL ? napi_get_null(env, &result)
+      : napi_create_string_utf8(env, (const char*)response, response_len, &result);
+  zevm_node_free_response(response, response_len);
+  if (status != napi_ok) {
+    throw_status(env, status, "node response");
+    return js_undefined(env);
+  }
+  return result;
+}
+
 NAPI_MODULE_EXPORT napi_value napi_register_module_v1(napi_env env, napi_value exports) {
   napi_property_descriptor descriptors[] = {
+    {"nodeCreate", NULL, node_create, NULL, NULL, NULL, napi_default, NULL},
+    {"nodeDestroy", NULL, node_destroy, NULL, NULL, NULL, napi_default, NULL},
+    {"nodeRpc", NULL, node_rpc, NULL, NULL, NULL, napi_default, NULL},
     {"abiVersion", NULL, abi_version, NULL, NULL, NULL, napi_default, NULL},
     {"version", NULL, version, NULL, NULL, NULL, napi_default, NULL},
     {"errorMessage", NULL, error_message, NULL, NULL, NULL, napi_default, NULL},

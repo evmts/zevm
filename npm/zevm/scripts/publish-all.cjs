@@ -41,7 +41,7 @@ for (const entry of fs.readdirSync(platformsRoot, { withFileTypes: true })) {
   if (fs.existsSync(nativeAddon)) {
     packageDirs.push(packageDir);
   } else {
-    console.warn(`skip ${readPackageName(packageDir)}; no zevm.node staged`);
+    throw new Error(`Cannot publish: ${readPackageName(packageDir)} has no zevm.node staged`);
   }
 }
 packageDirs.push(packageRoot);

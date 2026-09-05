@@ -1,6 +1,6 @@
 # Contributing
 
-ZEVM uses docs-first changes and pinned Zig package-manager dependencies.
+ZEVM uses docs-first changes and the maintained sibling Zig sources.
 
 ## Prerequisites
 
@@ -19,7 +19,7 @@ npm --prefix npm/zevm install --ignore-scripts
 zig build
 ```
 
-Do not edit `build.zig.zon` back to sibling `../voltaire` or `../guillotine-mini` paths. Dependency pins must be immutable archive URLs plus Zig package hashes.
+Keep `../voltaire` and `../guillotine-mini` beside this checkout. Native builds use those sources directly.
 
 ## Local Gates
 
@@ -28,7 +28,7 @@ zig build test
 zig build verify-fast
 zig build c-smoke
 zig build npm-smoke
-npm --prefix npm/zevm run typecheck
+node --check npm/zevm/src/index.js
 ```
 
 Before a release candidate, run:
@@ -36,7 +36,7 @@ Before a release candidate, run:
 ```bash
 zig build qualification-check -- --require-covered
 zig build verify
-bun tools/hive_rpc_compat_smoke.ts
+bun tools/hive_rpc_compat_smoke.js
 ```
 
 ## Release Artifacts
@@ -49,7 +49,7 @@ zig build c-ffi -Doptimize=ReleaseSafe
 zig build npm-platform-artifacts -Doptimize=ReleaseSafe
 ```
 
-The C ABI contract lives in `include/zevm.h`. The TypeScript package in `npm/zevm` must call ZEVM through that header and the N-API addon in `npm/zevm/native`.
+The C ABI contract lives in `include/zevm.h`. The JavaScript loader in `npm/zevm` must call ZEVM through that header and the N-API addon in `npm/zevm/native`.
 
 ## Docs-First Rule
 

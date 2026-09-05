@@ -1,14 +1,23 @@
 # @evmts/zevm
 
-TypeScript bindings for ZEVM's C ABI.
+JavaScript bindings for ZEVM's native C ABI. The Node-API addon is implemented in C; execution is implemented in Zig using the sibling Voltaire and Guillotine Mini sources. No JavaScript EVM is bundled.
 
-Native addons are distributed as optional platform packages. Local development builds can be produced from the repository root:
-
-```bash
-npm --prefix npm/zevm install --ignore-scripts
-zig build npm-native
-npm --prefix npm/zevm run typecheck
-node npm/zevm/scripts/smoke.cjs zig-out/npm/native/zevm.node
+```sh
+cd ~/zevm
+zig build npm-smoke -Doptimize=ReleaseSafe
+cp zig-out/npm/native/zevm.node npm/zevm/native/zevm.node
 ```
 
-The package exposes a light-client wrapper around the public `include/zevm.h` API. Calls on one `LightClient` instance must be serialized by the caller. Set `ZEVM_NATIVE_PATH=/absolute/path/to/zevm.node` to load a locally built addon instead of an optional platform package.
+```js
+import { NativeNode } from '@evmts/zevm'
+const node = new NativeNode({ chain_id: 31337 })
+try {
+  console.log(node.rpc('{"jsonrpc":"2.0","id":1,"method":"eth_chainId"}'))
+} finally {
+  node.close()
+}
+```
+
+`rpc` accepts raw JSON and returns response JSON, or `null` for a notification. Calls are synchronous. Serialize access to each node. `close` is idempotent and subsequent RPC calls fail; garbage collection is a final fallback for releasing handles. Use TEVM's event-emitting wrapper for asynchronous serialized requests and lifecycle events.
+
+The loader prefers an explicitly configured `ZEVM_NATIVE_PATH`, then the locally built addon, then a platform package. It rejects addons without execution bindings. The existing `LightClient` wrapper remains available independently.

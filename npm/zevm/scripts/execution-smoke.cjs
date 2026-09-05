@@ -1,0 +1,61 @@
+const assert = require('node:assert/strict');
+const native = require(require('node:path').resolve(process.argv[2]));
+const node = native.nodeCreate('{"chain_id":31337}');
+const other = native.nodeCreate('{}');
+const address = '0x0000000000000000000000000000000000000123';
+const rpc = (method, params = [], handle = node) => JSON.parse(native.nodeRpc(handle, JSON.stringify({ jsonrpc: '2.0', id: 1, method, params })));
+try {
+  assert.equal(rpc('eth_chainId').result, '0x7a69');
+  assert.equal(rpc('anvil_reset', [{forking:{jsonRpcUrl:'http://127.0.0.1:1',blockNumber:1}}], other).error, undefined);
+  assert.equal(rpc('anvil_reset', [null], other).error, undefined);
+  for (const value of ['0x9', '0x' + '0'.repeat(63) + '9']) {
+    assert.equal(rpc('anvil_setStorageAt', [address, '0x0', value]).error, undefined);
+    assert.equal(rpc('eth_getStorageAt', [address, '0x0', 'latest']).result, '0x' + '0'.repeat(63) + '9');
+  }
+  assert.equal(rpc('anvil_setStorageAt', [address, '0x0', '-0x1']).error.code, -32602);
+  assert.equal(JSON.parse(native.nodeRpc(node, '{"jsonrpc":"2.0","id":1,"method":"evm_mine"}')).error, undefined);
+  for (const interval of [0, '0x0']) assert.equal(rpc('evm_setIntervalMining', [interval]).error, undefined);
+  for (const interval of [-1, 1.5, '0x00']) assert.equal(rpc('evm_setIntervalMining', [interval]).error.code, -32602);
+  assert.equal(rpc('evm_setAutomine', [true]).error, undefined);
+  const [from] = rpc('eth_accounts').result;
+  assert.equal(rpc('eth_call', [{from, data:'0x602a60005260206000f3'}, 'latest']).result, '0x' + '0'.repeat(62) + '2a');
+  const deployment = rpc('eth_sendTransaction', [{from, data: '0x600a600c600039600a6000f3602a60005260206000f3'}]);
+  assert.equal(deployment.error, undefined);
+  const receipt = rpc('eth_getTransactionReceipt', [deployment.result]).result;
+  assert.equal(receipt.status, '0x1');
+  assert.equal(rpc('eth_call', [{to: receipt.contractAddress}, 'latest']).result, '0x' + '0'.repeat(62) + '2a');
+  assert.equal(rpc('anvil_setBalance', [address, '0x2a']).error, undefined);
+  assert.equal(rpc('eth_getBalance', [address, 'latest']).result, '0x2a');
+  assert.equal(rpc('eth_getBalance', [address, 'latest'], other).result, '0x0');
+  assert.equal(rpc('anvil_setCode', [address, '0x602a60005260206000f3']).error, undefined);
+  assert.equal(rpc('eth_call', [{ to: address }, 'latest']).result, '0x' + '0'.repeat(62) + '2a');
+  assert.deepEqual(rpc('missing_method'), { jsonrpc: '2.0', id: 1, error: { code: -32601, message: 'Method not found' } });
+  assert.equal(JSON.parse(native.nodeRpc(node, '{')).error.code, -32700);
+  assert.equal(native.nodeRpc(node, JSON.stringify({ jsonrpc: '2.0', method: 'anvil_setBalance', params: [address, '0x3'] })), null);
+  assert.equal(rpc('eth_getBalance', [address, 'latest']).result, '0x3');
+  const trace = rpc('debug_traceCall', [{to:address}, 'latest', {enableMemory:true}]);
+  assert.equal(trace.error, undefined);
+  assert.equal(trace.result.failed, false);
+  assert.equal(trace.result.returnValue, '0x' + '0'.repeat(62) + '2a');
+  assert.deepEqual(trace.result.structLogs[0].stack, []);
+  assert.deepEqual(trace.result.structLogs[1].stack, ['0'.repeat(62) + '2a']);
+  assert.equal(trace.result.structLogs[0].op, 'PUSH1');
+  assert.equal(rpc('debug_traceCall', [{to:address}, 'latest', {tracer:'callTracer'}]).error.code, -32602);
+  rpc('anvil_setCode', [address, '0x63deadbeef6000526004601cfd']);
+  const failed = rpc('debug_traceCall', [{to:address}, 'latest', {}]).result;
+  assert.equal(failed.failed, true);
+  assert.equal(failed.returnValue, '0xdeadbeef');
+  rpc('anvil_setCode', [address, '0x5b600056']);
+  const exhausted = rpc('eth_call', [{to:address,gas:'0x5300'}, 'latest']);
+  assert.deepEqual(exhausted.error, {code:-32000,message:'out of gas'});
+  const snapshot = rpc('evm_snapshot').result;
+  rpc('anvil_setBalance', [address, '0x9']);
+  assert.equal(rpc('evm_revert', [snapshot]).result, true);
+  assert.equal(rpc('eth_getBalance', [address, 'latest']).result, '0x3');
+} finally {
+  native.nodeDestroy(node);
+  native.nodeDestroy(other);
+}
+assert.throws(() => native.nodeRpc(node, '{}'), /closed/);
+native.nodeDestroy(node);
+console.log('native execution smoke passed');

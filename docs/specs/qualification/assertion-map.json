@@ -188,7 +188,7 @@
       "surfaceSection": "PRD 3.5",
       "surfaceCategory": "method",
       "assertionType": "default-graph-test",
-      "assertionIdentifier": "tools/hive_rpc_compat_smoke.ts",
+      "assertionIdentifier": "tools/hive_rpc_compat_smoke.js",
       "expectedContractOutcome": "Hive rpc-compat lifecycle coverage either passes in the release gate or has explicit phase-1 exclusions.",
       "coverageStatus": "covered"
     }

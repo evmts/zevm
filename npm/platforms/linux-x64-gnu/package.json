@@ -1,13 +1,22 @@
 {
   "name": "@evmts/zevm-linux-x64-gnu",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "ZEVM native Node-API addon for Linux x64 glibc.",
   "license": "MIT",
-  "os": ["linux"],
-  "cpu": ["x64"],
-  "libc": ["glibc"],
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "libc": [
+    "glibc"
+  ],
   "main": "./zevm.node",
-  "files": ["zevm.node", "README.md"],
+  "files": [
+    "zevm.node",
+    "README.md"
+  ],
   "publishConfig": {
     "access": "public"
   }

@@ -21,7 +21,7 @@ zig build npm-smoke
 zig build release-binaries -Doptimize=ReleaseSafe
 zig build npm-platform-artifacts -Doptimize=ReleaseSafe
 npm --prefix npm/zevm install --ignore-scripts
-npm --prefix npm/zevm run typecheck
+node --check npm/zevm/src/index.js
 npm --prefix npm/zevm run build
 zig build qualification-check
 zig build qualification-check -- --require-covered
@@ -57,7 +57,7 @@ The root `CI` workflow runs these checks for pull requests and pushes to `main`:
 - run `zig build npm-smoke`
 - run `zig build release-binaries -Doptimize=ReleaseSafe`
 - run `zig build npm-platform-artifacts -Doptimize=ReleaseSafe`
-- run `npm --prefix npm/zevm run typecheck`
+- run `node --check npm/zevm/src/index.js`
 - run `npm --prefix npm/zevm run build`
 - run `zig build qualification-check`
 - generate release metadata smoke artifacts with a commit-based release identifier
@@ -81,7 +81,7 @@ Those same tag, manual, and scheduled workflows also run the Hive RPC compat smo
 For the CI-friendly Hive lifecycle smoke, run:
 
 ```bash
-bun tools/hive_rpc_compat_smoke.ts
+bun tools/hive_rpc_compat_smoke.js
 ```
 
 The script builds a local `zevm/hive-client:local` image from this checkout, lets Zig fetch package-manager dependencies inside that build, builds the Hive runner, and runs ZEVM through the full `ethereum/rpc-compat` transcript set by default. Set `ZEVM_HIVE_RPC_COMPAT_PATTERN` only when intentionally narrowing a local debug run. The client wrapper provides the Hive-required HTTP JSON-RPC port `8545`, translates Hive fork-schedule environment variables into ZEVM trusted-mode config, forwards mounted Hive `genesis.json` and `chain.rlp` into ZEVM startup when present, and exposes ZEVM's native Engine API listener on `8551`.
@@ -103,7 +103,7 @@ When a GitHub release is published, CI validates the release metadata publicatio
 - `build.zig.zon` pins Voltaire and Guillotine Mini archive URLs at the exact tuple revisions
 - Zig is installed at the exact tuple `zigVersion`
 - `zig build verify` and `zig build qualification-check -- --require-covered` pass against the materialized tuple
-- `bun tools/hive_rpc_compat_smoke.ts` passes against the materialized tuple
+- `bun tools/hive_rpc_compat_smoke.js` passes against the materialized tuple
 - default light-mode checkpoints are 32-byte `0x` hashes for `mainnet`, `sepolia`, and `holesky`
 
 If any item fails, the release metadata is invalid for canonical reproducibility claims.

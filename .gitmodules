@@ -25,9 +25,3 @@
 [submodule "foundry"]
 	path = lib/foundry
 	url = https://github.com/foundry-rs/foundry.git
-[submodule "hardhat"]
-	path = lib/hardhat
-	url = https://github.com/NomicFoundation/hardhat.git
-[submodule "edr"]
-	path = lib/edr
-	url = https://github.com/NomicFoundation/edr.git

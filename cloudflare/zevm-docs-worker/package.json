@@ -6,14 +6,12 @@
     "build:docs": "npm --prefix ../../docs run build && rm -rf public && mkdir -p public && cp -R ../../docs/dist/. public/",
     "deploy": "npm run build:docs && alchemy deploy",
     "destroy": "alchemy destroy",
-    "dev": "alchemy dev",
-    "typecheck": "tsc --noEmit"
+    "dev": "alchemy dev"
   },
   "dependencies": {
     "alchemy": "^0.93.6"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260430.0",
-    "typescript": "^5.9.3"
+    "@cloudflare/workers-types": "^4.20260430.0"
   }
 }

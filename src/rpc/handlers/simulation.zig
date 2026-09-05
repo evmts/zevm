@@ -87,6 +87,7 @@ const ParsedCreateAccessListParams = struct {
 };
 
 const ExecutionResult = struct {
+    success: bool = true,
     output: []u8,
     gas_used: u64,
 
@@ -96,6 +97,8 @@ const ExecutionResult = struct {
 };
 
 const ExecuteOptions = struct {
+    tracer: ?*guillotine_mini.trace.Tracer = null,
+    allow_failure: bool = false,
     persist_state: bool = false,
     increment_nonce: bool = false,
 };
@@ -251,6 +254,114 @@ pub fn handleEthCall(
     defer result.deinit(allocator);
 
     return hexBytes(allocator, result.output);
+}
+
+/// Native opcode tracing. Unsupported tracer programs/options fail explicitly.
+pub fn handleDebugTraceCall(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime, params: ?std.json.Value) !std.json.Value {
+    const items = try paramsArrayItems(params);
+    if (items.len < 2 or items.len > 3) return error.InvalidParams;
+    var tx = try parseTransactionRequest(allocator, items[0]);
+    defer tx.deinit(allocator);
+    const selected = try resolveTrustedBlockSelector(rt, items[1]);
+    try ensureCurrentStateSelector(rt, selected);
+    var hashes: [256][32]u8 = undefined;
+    const ctx = try blockContext(rt, selected, &hashes);
+    var tracer = guillotine_mini.trace.Tracer.init(allocator);
+    defer tracer.deinit();
+    tracer.max_entries = 100_000;
+    if (items.len == 3) {
+        if (items[2] != .object) return error.InvalidParams;
+        var options = items[2].object.iterator();
+        while (options.next()) |entry| {
+            if (entry.value_ptr.* != .bool) return error.InvalidParams;
+            const enabled = entry.value_ptr.bool;
+            const key = entry.key_ptr.*;
+            if (std.mem.eql(u8, key, "disableStack")) tracer.config.disable_stack = enabled else if (std.mem.eql(u8, key, "enableMemory")) tracer.config.enable_memory = enabled else if (std.mem.eql(u8, key, "enableReturnData")) tracer.config.enable_return_data = enabled else if (std.mem.eql(u8, key, "disableStorage") and enabled) tracer.config.disable_storage = true else return error.InvalidParams;
+        }
+    }
+    tracer.enable();
+    var result = try executeOnceWithOptions(allocator, rt, tx, ctx, gasLimit(tx, ctx), .{ .tracer = &tracer, .allow_failure = true });
+    defer result.deinit(allocator);
+    const payload = TraceResponse{ .tracer = &tracer, .result = result };
+    const json = try std.json.Stringify.valueAlloc(allocator, payload, .{});
+    defer allocator.free(json);
+    // Keep numeric token ownership in the returned Value. Zig 0.15 parses
+    // numbers into scalars without freeing their token allocation otherwise.
+    // ResponseEnvelope frees number_string and serializes it as a JSON number.
+    return std.json.parseFromSliceLeaky(std.json.Value, allocator, json, .{ .allocate = .alloc_always, .parse_numbers = false });
+}
+
+const TraceResponse = struct {
+    tracer: *const guillotine_mini.trace.Tracer,
+    result: ExecutionResult,
+    pub fn jsonStringify(self: @This(), writer: anytype) !void {
+        try writer.beginObject();
+        try writer.objectField("gas");
+        try writer.write(self.result.gas_used);
+        try writer.objectField("failed");
+        try writer.write(!self.result.success);
+        try writer.objectField("returnValue");
+        try writeTraceData(writer, self.result.output);
+        try writer.objectField("truncated");
+        try writer.write(self.tracer.entries.items.len >= self.tracer.max_entries);
+        try writer.objectField("structLogs");
+        try writer.beginArray();
+        for (self.tracer.entries.items) |entry| {
+            try writer.beginObject();
+            try writer.objectField("pc");
+            try writer.write(entry.pc);
+            try writer.objectField("op");
+            try writer.write(entry.opName);
+            try writer.objectField("gas");
+            try writer.write(entry.gas);
+            try writer.objectField("gasCost");
+            try writer.write(entry.gasCost);
+            try writer.objectField("depth");
+            try writer.write(entry.depth);
+            if (!self.tracer.config.disable_stack) {
+                try writer.objectField("stack");
+                try writer.beginArray();
+                for (entry.stack) |word| {
+                    var bytes: [64]u8 = undefined;
+                    try writer.write(std.fmt.bufPrint(&bytes, "{x:0>64}", .{word}) catch unreachable);
+                }
+                try writer.endArray();
+            }
+            if (entry.memory) |memory| {
+                try writer.objectField("memory");
+                try writer.beginArray();
+                var offset: usize = 0;
+                while (offset < memory.len) : (offset += 32) {
+                    var word = [_]u8{0} ** 32;
+                    const size = @min(32, memory.len - offset);
+                    @memcpy(word[0..size], memory[offset..][0..size]);
+                    var text: [64]u8 = undefined;
+                    writeHexLower(&text, &word);
+                    try writer.write(&text);
+                }
+                try writer.endArray();
+            }
+            if (entry.returnData) |data| {
+                try writer.objectField("returnData");
+                try writeTraceData(writer, data);
+            }
+            if (entry.error_msg) |message| {
+                try writer.objectField("error");
+                try writer.write(message);
+            }
+            try writer.endObject();
+        }
+        try writer.endArray();
+        try writer.endObject();
+    }
+};
+
+fn writeTraceData(writer: *std.json.Stringify, bytes: []const u8) std.json.Stringify.Error!void {
+    try writer.beginWriteRaw();
+    try writer.writer.writeAll("\"0x");
+    for (bytes) |byte| try writer.writer.print("{x:0>2}", .{byte});
+    try writer.writer.writeByte('"');
+    writer.endWriteRaw();
 }
 
 pub fn handleEthEstimateGas(
@@ -1660,6 +1771,7 @@ fn executeOnceWithOptions(
     options: ExecuteOptions,
 ) !ExecutionResult {
     clearLastExecutionErrorData();
+    last_simulation_rpc_error = null;
     const intrinsic = intrinsicGas(rt, tx, block_ctx);
     if (intrinsic > gas_limit or gas_limit > block_ctx.block_gas_limit) return error.ExecutionFailed;
     const execution_gas = gas_limit - intrinsic;
@@ -1698,11 +1810,12 @@ fn executeOnceWithOptions(
         else => return error.ExecutionFailed,
     };
     defer evm.deinit();
+    if (options.tracer) |tracer| evm.setTracer(tracer);
 
     var result: ExecutionResult = if (tx.to) |to|
-        try executeCall(allocator, &evm, &adapter, caller, to, tx, execution_gas, intrinsic)
+        try executeCall(allocator, &evm, &adapter, caller, to, tx, execution_gas, intrinsic, options.allow_failure)
     else blk: {
-        break :blk try executeCreate(allocator, &evm, &adapter, tx, execution_gas, intrinsic);
+        break :blk try executeCreate(allocator, &evm, &adapter, tx, execution_gas, intrinsic, options.allow_failure);
     };
     errdefer result.deinit(allocator);
 
@@ -1724,6 +1837,7 @@ fn executeCall(
     tx: TransactionRequest,
     execution_gas: u64,
     intrinsic: u64,
+    allow_failure: bool,
 ) !ExecutionResult {
     const EvmPtr = @TypeOf(evm);
     const EvmType = std.meta.Child(EvmPtr);
@@ -1739,13 +1853,17 @@ fn executeCall(
     defer owned.deinit(allocator);
 
     if (adapter.takeHostError() != null) return error.ExecutionFailed;
-    if (!owned.success) {
+    if (!owned.success and !allow_failure) {
+        if (owned.error_info) |info| {
+            if (std.mem.eql(u8, info, "OutOfGas")) setSimulationRpcErrorStatic(-32000, "out of gas");
+        }
         recordExecutionErrorData(owned.output);
         return error.ExecutionFailed;
     }
 
     const gas_consumed = if (owned.gas_left > execution_gas) 0 else execution_gas - owned.gas_left;
     return .{
+        .success = owned.success,
         .output = try allocator.dupe(u8, owned.output),
         .gas_used = intrinsic + gas_consumed,
     };
@@ -1758,19 +1876,23 @@ fn executeCreate(
     tx: TransactionRequest,
     execution_gas: u64,
     intrinsic: u64,
+    allow_failure: bool,
 ) !ExecutionResult {
     try evm.initTransactionState(null);
 
     const result = evm.inner_create(tx.value, tx.data, execution_gas, null) catch return error.ExecutionFailed;
     if (adapter.takeHostError() != null) return error.ExecutionFailed;
-    if (!result.success) {
+    if (!result.success and !allow_failure) {
         recordExecutionErrorData(result.output);
         return error.ExecutionFailed;
     }
 
     const gas_consumed = if (result.gas_left > execution_gas) 0 else execution_gas - result.gas_left;
     return .{
-        .output = try allocator.dupe(u8, result.output),
+        .success = result.success,
+        // CREATE opcode return data is empty on success. eth_call creation
+        // must return the constructor output, which is the installed code.
+        .output = try allocator.dupe(u8, if (result.success) try adapter.getCode(result.address) else result.output),
         .gas_used = intrinsic + gas_consumed,
     };
 }

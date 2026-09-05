@@ -53,6 +53,7 @@ pub fn dispatch(allocator: std.mem.Allocator, request: jsonrpc.envelope.RequestE
             return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.BUILD_BLOCK_FAILED, "Block building failed");
         },
         error.ExecutionFailed => {
+            if (simulation.takeLastSimulationRpcError()) |rpc_error| return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, rpc_error.code, rpc_error.message);
             var response = jsonrpc.envelope.ResponseEnvelope.makeError(request.id, 3, "execution reverted");
             if (simulation.takeLastExecutionErrorData()) |data| {
                 response.error_value.?.data = .{ .string = data };
@@ -132,6 +133,7 @@ fn validateParamsForMethod(allocator: std.mem.Allocator, method_name: []const u8
         return;
     } else |_| {}
 
+    if (std.mem.eql(u8, method_name, "debug_traceCall")) return;
     if (isEngineNamespaceMethod(method_name)) {
         return;
     }
@@ -297,38 +299,8 @@ fn isLocallyHandledMethod(method_name: []const u8) bool {
 }
 
 fn validateResetParams(params: ?std.json.Value) !void {
-    if (params == null) return;
-    const value = params.?;
-    const items = switch (value) {
-        .array => |array| array.items,
-        else => return error.InvalidParams,
-    };
-
-    if (items.len == 0) return;
-    if (items.len != 1) return error.InvalidParams;
-
-    switch (items[0]) {
-        .null => return,
-        .object => |obj| {
-            var has_url = false;
-            var it = obj.iterator();
-            while (it.next()) |entry| {
-                if (std.mem.eql(u8, entry.key_ptr.*, "url")) {
-                    has_url = true;
-                    if (entry.value_ptr.* != .string) return error.InvalidParams;
-                    continue;
-                }
-                if (std.mem.eql(u8, entry.key_ptr.*, "blockNumber")) {
-                    if (!isHexQuantity(entry.value_ptr.*)) return error.InvalidParams;
-                    continue;
-                }
-                return error.InvalidParams;
-            }
-            if (!has_url) return error.InvalidParams;
-            return;
-        },
-        else => return error.InvalidParams,
-    }
+    // Validation and execution must accept the same native/Anvil wire forms.
+    if (@import("trusted_fork_handlers.zig").parseResetMode(params) == null) return error.InvalidParams;
 }
 
 fn validateSetRpcUrlParams(params: ?std.json.Value) !void {

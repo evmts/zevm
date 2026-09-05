@@ -158,7 +158,7 @@ test "eth_call create succeeds without persisting nonce or code" {
     const result = try simulation.handleEthCall(std.testing.allocator, &rt, parsed.value);
     defer std.testing.allocator.free(result.string);
 
-    try std.testing.expectEqualStrings("0x", result.string);
+    try std.testing.expectEqualStrings(EXPECTED_32_BYTE_42, result.string);
     try std.testing.expectEqual(@as(u64, 7), try rt.getNonce(sender));
     try std.testing.expectEqual(@as(usize, 0), (try rt.getCode(created)).len);
 }

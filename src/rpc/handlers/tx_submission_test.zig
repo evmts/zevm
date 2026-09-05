@@ -463,8 +463,10 @@ test "eth_sendTransaction uses runtime hardfork policy for intrinsic gas" {
     defer rt.deinit();
     try rt.setMiningConfig(.manual);
 
-    const initcode_bytes = [_]u8{0x11} ** 33;
-    const initcode_hex = "0x111111111111111111111111111111111111111111111111111111111111111111";
+    // STOP followed by padding is valid initcode, so estimation reaches the
+    // intrinsic floor and still distinguishes pre-Shanghai initcode pricing.
+    const initcode_bytes = [_]u8{0x00} ** 33;
+    const initcode_hex = "0x000000000000000000000000000000000000000000000000000000000000000000";
     try std.testing.expectEqual(@as(usize, initcode_bytes.len), (initcode_hex.len - 2) / 2);
 
     var obj = std.json.ObjectMap.init(std.testing.allocator);

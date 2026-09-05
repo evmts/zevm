@@ -2416,6 +2416,7 @@ pub const NodeRuntime = struct {
         self.state = new_state;
         self.fork_backend = new_backend;
         self.fork_config = new_fork_config;
+        self.enableSynchronousForkReads();
         if (new_fork_config != null and self.fork_rpc_resolver == null) {
             self.fork_rpc_resolver = .{
                 .context = null,
@@ -2442,6 +2443,22 @@ pub const NodeRuntime = struct {
             self.fork_config = current;
             self.state.clearForkCache();
         }
+    }
+
+    /// Attach only after NodeRuntime reaches its final address; this callback
+    /// allows state reads inside RPC handlers and the interpreter to complete.
+    pub fn enableSynchronousForkReads(self: *NodeRuntime) void {
+        if (self.fork_backend) |backend| {
+            if (backend.sync_resolver == null) backend.sync_resolver = .{
+                .context = self,
+                .resolve = resolvePendingForkReads,
+            };
+        }
+    }
+
+    fn resolvePendingForkReads(context: ?*anyopaque) !void {
+        const self: *NodeRuntime = @ptrCast(@alignCast(context.?));
+        try self.serviceForkRequests();
     }
 
     fn serviceForkRequests(self: *NodeRuntime) !void {

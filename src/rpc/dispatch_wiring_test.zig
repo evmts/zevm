@@ -475,7 +475,7 @@ fn contractProbeParams(allocator: std.mem.Allocator, method: []const u8) !?std.j
     if (std.mem.eql(u8, method, "web3_sha3")) {
         return try arrayParams(allocator, &.{.{ .string = "0x" }});
     }
-    if (std.mem.eql(u8, method, "eth_call")) {
+    if (methodIs(method, &.{ "eth_call", "debug_traceCall" })) {
         return try arrayParams(allocator, &.{ try transactionRequestValue(allocator), .{ .string = "latest" } });
     }
     if (std.mem.eql(u8, method, "eth_estimateGas")) {

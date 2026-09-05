@@ -695,11 +695,14 @@ These methods are trusted-mode only. In light mode, well-formed requests return 
 
 | Method | Exact params | Exact result | Errors |
 | --- | --- | --- | --- |
+| `debug_traceCall` | `[transaction, blockSelector, options?]` | `{gas, failed, returnValue, structLogs, truncated}` with native pre-op stack and optional memory/return data | `-32602` for malformed or unsupported options |
 | `debug_getBadBlocks` | `[]` or omitted | bad-block array; phase-1 trusted mode returns `[]` | `-32602` for non-empty params |
 | `debug_getRawBlock` | `[blockNumber]` | raw RLP block `HexData` or `null` | `-32602` for malformed block number |
 | `debug_getRawHeader` | `[blockNumber]` | raw RLP header `HexData` or `null` | `-32602` for malformed block number |
 | `debug_getRawReceipts` | `[blockNumber]` | array of raw receipt `HexData` values or `null` when block is unknown | `-32602` for malformed block number |
 | `debug_getRawTransaction` | `[transactionHash]` | raw transaction `HexData` or `null` | `-32602` for malformed transaction hash |
+
+Trace options are boolean `disableStack`, `enableMemory`, `enableReturnData`, and `disableStorage: true`. Custom tracer programs and storage capture are unsupported. Capture stops at 100,000 entries and sets `truncated`; execution still completes. Only the current local state is traceable. Trace failures preserve EVM return data and never commit state.
 
 ### 8.7 Engine API listener methods
 

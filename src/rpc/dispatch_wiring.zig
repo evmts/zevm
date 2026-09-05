@@ -26,6 +26,7 @@ const txpool_handlers = @import("handlers/txpool.zig");
 const dev_erc20_handlers = @import("handlers/dev_erc20.zig");
 
 pub fn install(registry: *dispatcher_mod.HandlerRegistry, rt: *runtime_mod.NodeRuntime) void {
+    rt.enableSynchronousForkReads();
     registry.context = rt;
     registry.on_method_with_context = dispatchMethod;
     registry.mode_name = runtimeModeName;
@@ -408,6 +409,9 @@ fn dispatchMethod(
             &ctx,
             try parseGetLogsParams(params),
         );
+    }
+    if (std.mem.eql(u8, method_name, "debug_traceCall")) {
+        return simulation.handleDebugTraceCall(allocator, rt, params);
     }
     if (std.mem.eql(u8, method_name, "debug_getRawBlock")) {
         return debug_raw_handlers.handleGetRawBlock(allocator, rt, params);
@@ -804,6 +808,7 @@ fn isKnownEngineMethod(method_name: []const u8) bool {
 }
 
 fn isKnownDebugMethod(method_name: []const u8) bool {
+    if (std.mem.eql(u8, method_name, "debug_traceCall")) return true;
     _ = jsonrpc.debug.DebugMethod.fromMethodName(method_name) catch return false;
     return true;
 }
@@ -1093,6 +1098,11 @@ fn validateEngineMethodParams(method_name: []const u8, params: ?std.json.Value) 
 }
 
 fn validateDebugMethodParams(method_name: []const u8, params: ?std.json.Value) !void {
+    if (std.mem.eql(u8, method_name, "debug_traceCall")) {
+        const items = try paramsArrayItems(params);
+        if (items.len < 2 or items.len > 3 or items[0] != .object) return error.InvalidParams;
+        return;
+    }
     if (std.mem.eql(u8, method_name, "debug_getBadBlocks")) {
         try validateNoParams(params);
         return;
@@ -3109,7 +3119,7 @@ fn parseSetStorageArgs(params: ?std.json.Value) !StorageSetArgs {
     return .{
         .address = try parseAddressJson(items[0]),
         .slot = try parseStorageSlotJson(items[1]),
-        .value = try parseU256Json(items[2]),
+        .value = try parseStorageSlotJson(items[2]),
     };
 }
 
@@ -3161,6 +3171,7 @@ fn parseSingleQuantityU256Arg(params: ?std.json.Value) !u256 {
 }
 
 fn parseMineArgs(params: ?std.json.Value) !MineArgs {
+    if (params == null) return .{ .count = 1, .interval_seconds = null };
     const items = try paramsArrayItems(params);
     if (items.len > 2) return error.InvalidParams;
     if (items.len == 0) {
@@ -3215,7 +3226,12 @@ fn parseSetAutomineArgs(params: ?std.json.Value) !bool {
 fn parseSetIntervalMiningArgs(params: ?std.json.Value) !u64 {
     const items = try paramsArrayItems(params);
     if (items.len != 1) return error.InvalidParams;
-    return parseQuantityU64Json(items[0]);
+    // Development-node APIs accept seconds as a JSON integer (viem/Anvil)
+    // as well as a canonical hexadecimal quantity.
+    return switch (items[0]) {
+        .integer => |seconds| std.math.cast(u64, seconds) orelse error.InvalidParams,
+        else => parseQuantityU64Json(items[0]),
+    };
 }
 
 fn parseTimeControlQuantity(params: ?std.json.Value) !u64 {

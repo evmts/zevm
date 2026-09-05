@@ -37,7 +37,7 @@ pub fn build(b: *std.Build) void {
     linkRustSupport(exe, target);
     b.installArtifact(exe);
 
-    const launch_policy_preflight_cmd = b.addSystemCommand(&[_][]const u8{ "bun", "tools/macos_launch_policy_preflight.ts" });
+    const launch_policy_preflight_cmd = b.addSystemCommand(&[_][]const u8{ "bun", "tools/macos_launch_policy_preflight.js" });
     launch_policy_preflight_cmd.setName("launch-policy-preflight");
     const launch_policy_preflight_step = b.step("launch-policy-preflight", "Check that locally built executables can launch on this host");
     launch_policy_preflight_step.dependOn(&launch_policy_preflight_cmd.step);
@@ -277,7 +277,11 @@ pub fn build(b: *std.Build) void {
     const npm_smoke_cmd = b.addSystemCommand(&.{ "node", "npm/zevm/scripts/smoke.cjs", npm_native_path });
     const npm_smoke_step = b.step("npm-smoke", "Run a Node-API addon smoke test");
     npm_smoke_step.dependOn(&npm_native.step);
+    npm_smoke_cmd.step.dependOn(&npm_native.step);
     npm_smoke_step.dependOn(&npm_smoke_cmd.step);
+    const execution_smoke = b.addSystemCommand(&.{ "node", "npm/zevm/scripts/execution-smoke.cjs", npm_native_path });
+    execution_smoke.step.dependOn(&npm_native.step);
+    npm_smoke_step.dependOn(&execution_smoke.step);
 
     const release_name = releaseTargetName(b, target);
     const release_binaries_step = b.step("release-binaries", "Build the selected target's ReleaseSafe ZEVM CLI under zig-out/dist/<target>/bin");
@@ -323,17 +327,16 @@ fn createModuleSet(
     const precompiles_mod = voltaire.module("precompiles");
     const jsonrpc_mod = voltaire.module("jsonrpc");
 
-    const guillotine_mini_dep = b.dependency("guillotine-mini", .{
-        .target = target,
-        .optimize = optimize,
-    });
+    // Import the maintained interpreter sources using the same Voltaire modules
+    // as ZEVM. Evaluating its standalone build would instantiate a second graph
+    // with paths relative to its checkout (which may be a symlink).
 
     const gm_build_options = b.addOptions();
     gm_build_options.addOption(usize, "vector_length", 16);
     const gm_build_options_mod = gm_build_options.createModule();
 
     const guillotine_mini_mod = b.addModule(b.fmt("guillotine_mini_for_{s}", .{zevm_module_name}), .{
-        .root_source_file = guillotine_mini_dep.path("src/root.zig"),
+        .root_source_file = b.path("../guillotine-mini/src/root.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -530,6 +533,11 @@ fn createCBindingsModule(
         .imports = &.{
             .{ .name = "primitives", .module = modules.primitives_mod },
             .{ .name = "crypto", .module = modules.crypto_mod },
+            .{ .name = "state-manager", .module = modules.state_manager_mod },
+            .{ .name = "blockchain", .module = modules.blockchain_mod },
+            .{ .name = "precompiles", .module = modules.precompiles_mod },
+            .{ .name = "guillotine_mini", .module = modules.guillotine_mini_mod },
+            .{ .name = "jsonrpc", .module = modules.jsonrpc_mod },
         },
     });
 }
