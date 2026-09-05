@@ -619,7 +619,7 @@ fn blockResponseValue(
     try putJson(&obj, allocator, "transactions", try blockTransactionsValue(allocator, resp.transactions));
     try putJson(&obj, allocator, "uncles", try hashArrayValue(allocator, resp.uncleHashes));
     try putJson(&obj, allocator, "difficulty", try quantityValue(allocator, resp.difficulty));
-    if (resp.totalDifficulty) |td| try putJson(&obj, allocator, "totalDifficulty", try quantityValue(allocator, td));
+    try putJson(&obj, allocator, "totalDifficulty", try quantityValue(allocator, resp.totalDifficulty orelse 0));
     if (resp.baseFeePerGas) |bfpg| try putJson(&obj, allocator, "baseFeePerGas", try quantityValue(allocator, bfpg));
     if (resp.withdrawalsRoot) |wr| {
         try putJson(&obj, allocator, "withdrawalsRoot", try hashValue(allocator, wr));
@@ -913,8 +913,8 @@ fn internalBlockToRpc(
         .size = try quantityFromU64(allocator, resp.size),
         .transactions = txs,
         .uncles = &.{},
-        .difficulty = if (resp.difficulty > 0) try quantityFromU256(allocator, resp.difficulty) else null,
-        .totalDifficulty = if (resp.totalDifficulty) |td| try quantityFromU256(allocator, td) else null,
+        .difficulty = try quantityFromU256(allocator, resp.difficulty),
+        .totalDifficulty = try quantityFromU256(allocator, resp.totalDifficulty orelse 0),
         .baseFeePerGas = if (resp.baseFeePerGas) |bfpg| try quantityFromU256(allocator, bfpg) else null,
         .withdrawalsRoot = if (resp.withdrawalsRoot) |wr| hashToRpc(wr) else null,
         .blobGasUsed = if (resp.blobGasUsed) |bgu| try quantityFromU64(allocator, bgu) else null,

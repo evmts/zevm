@@ -146,6 +146,63 @@ test "handleGetBlockByNumber: returns genesis at earliest" {
     );
 }
 
+test "block responses: required difficulty quantities survive JSON serialization" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var state = try setupCtx(allocator);
+    defer state.deinit(allocator);
+    var ctx = state.getCtx();
+
+    // Cover genesis, a post-merge zero-difficulty block, and stored PoW totals.
+    for (0..3) |number| {
+        if (number > 0) {
+            const parent = try state.bc.getCanonicalHeadBlock();
+            var header = primitives.BlockHeader.BlockHeader{
+                .parent_hash = parent.hash,
+                .number = number,
+                .timestamp = number * 12,
+                .gas_limit = 30_000_000,
+                .difficulty = if (number == 2) 42 else 0,
+            };
+            const body = primitives.BlockBody.init();
+            var block = try primitives.Block.from(&header, &body, allocator);
+            if (number == 2) block.total_difficulty = 84;
+            try state.bc.putBlock(block);
+            try state.bc.setCanonicalHead(block.hash);
+        }
+        const block = try state.bc.getCanonicalHeadBlock();
+        const expected_difficulty = try std.fmt.allocPrint(scratch, "0x{x}", .{block.header.difficulty});
+        const expected_total = try std.fmt.allocPrint(scratch, "0x{x}", .{block.total_difficulty orelse 0});
+        const number_params = jsonrpc.eth.GetBlockByNumber.Params{
+            .block = makeBlockSpec(try std.fmt.allocPrint(scratch, "0x{x}", .{number})),
+            .hydrated_transactions = false,
+        };
+        const hash_params = jsonrpc.eth.GetBlockByHash.Params{
+            .block_hash = .{ .bytes = block.hash },
+            .hydrated_transactions = false,
+        };
+        const by_number = try block_query_handlers.handleGetBlockByNumber(scratch, &ctx, number_params);
+        const by_hash = try block_query_handlers.handleGetBlockByHash(scratch, &ctx, hash_params);
+        const wires = [_][]const u8{
+            try std.json.Stringify.valueAlloc(scratch, by_number.block.?, .{}),
+            try std.json.Stringify.valueAlloc(scratch, by_hash.block.?, .{}),
+            try std.json.Stringify.valueAlloc(scratch, try block_query_handlers.handleGetBlockByNumberValue(scratch, &ctx, number_params), .{}),
+            try std.json.Stringify.valueAlloc(scratch, try block_query_handlers.handleGetBlockByHashValue(scratch, &ctx, hash_params), .{}),
+        };
+        for (wires) |wire| {
+            const parsed = try std.json.parseFromSlice(std.json.Value, scratch, wire, .{});
+            const difficulty = parsed.value.object.get("difficulty") orelse return error.MissingDifficulty;
+            const total = parsed.value.object.get("totalDifficulty") orelse return error.MissingTotalDifficulty;
+            try std.testing.expect(difficulty == .string);
+            try std.testing.expect(total == .string);
+            try std.testing.expectEqualStrings(expected_difficulty, difficulty.string);
+            try std.testing.expectEqualStrings(expected_total, total.string);
+        }
+    }
+}
+
 test "handleGetBlockByNumber: returns block at latest" {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
