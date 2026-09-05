@@ -445,7 +445,7 @@ fn usesExplicitRustTarget(target: std.Build.ResolvedTarget) bool {
     if (target.result.cpu.arch == .wasm32 or target.result.cpu.arch == .wasm64) return true;
     if (target.result.os.tag != builtin.target.os.tag) return true;
     if (target.result.cpu.arch != builtin.target.cpu.arch) return true;
-    if (target.result.os.tag == .linux and target.result.abi != builtin.target.abi) return true;
+    if (target.result.abi != builtin.target.abi) return true;
     return false;
 }
 
