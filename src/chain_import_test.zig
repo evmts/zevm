@@ -45,6 +45,53 @@ test "decodeNextBlock decodes block header and empty body" {
     try std.testing.expectEqual(block_rlp.len, decoded.block.size);
 }
 
+test "decodeNextBlock owns ommer extra data" {
+    var header = primitives.BlockHeader.BlockHeader{
+        .parent_hash = primitives.Hash.ZERO,
+        .ommers_hash = primitives.BlockHeader.EMPTY_OMMERS_HASH,
+        .beneficiary = try primitives.Address.fromHex("0x00000000000000000000000000000000000000aa"),
+        .state_root = primitives.State.EMPTY_TRIE_ROOT,
+        .transactions_root = primitives.BlockHeader.EMPTY_TRANSACTIONS_ROOT,
+        .receipts_root = primitives.BlockHeader.EMPTY_RECEIPTS_ROOT,
+        .logs_bloom = [_]u8{0} ** primitives.BlockHeader.BLOOM_SIZE,
+        .difficulty = 0,
+        .number = 1,
+        .gas_limit = 1_000_000,
+        .gas_used = 0,
+        .timestamp = 42,
+        .extra_data = "chain",
+        .mix_hash = primitives.Hash.ZERO,
+        .nonce = [_]u8{0} ** primitives.BlockHeader.NONCE_SIZE,
+        .base_fee_per_gas = 7,
+    };
+    _ = &header;
+
+    const header_rlp = try primitives.BlockHeader.rlpEncode(&header, std.testing.allocator);
+    defer std.testing.allocator.free(header_rlp);
+
+    const ommers_rlp = try encodeListFromEncoded(std.testing.allocator, &.{header_rlp});
+    defer std.testing.allocator.free(ommers_rlp);
+
+    const block_rlp = try encodeListFromEncoded(std.testing.allocator, &.{
+        header_rlp,
+        &[_]u8{0xc0},
+        ommers_rlp,
+    });
+    defer std.testing.allocator.free(block_rlp);
+
+    var decoded = try chain_import.decodeNextBlock(std.testing.allocator, block_rlp);
+    defer decoded.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(u64, 1), decoded.block.header.number);
+    try std.testing.expectEqual(@as(u64, 42), decoded.block.header.timestamp);
+    try std.testing.expectEqual(@as(u256, 7), decoded.block.header.base_fee_per_gas.?);
+    try std.testing.expectEqualSlices(u8, "chain", decoded.block.header.extra_data);
+    try std.testing.expectEqual(@as(usize, 0), decoded.block.body.transactions.len);
+    try std.testing.expectEqual(block_rlp.len, decoded.block.size);
+    try std.testing.expectEqual(@as(usize, 1), decoded.block.body.ommers.len);
+    try std.testing.expectEqualSlices(u8, "chain", decoded.block.body.ommers[0].extra_data);
+}
+
 test "decodeNextBlock accepts fixture chain stream first block" {
     const bytes = try std.fs.cwd().readFileAlloc(std.testing.allocator, "lib/execution-apis/tests/chain.rlp", 1024 * 1024);
     defer std.testing.allocator.free(bytes);

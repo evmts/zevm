@@ -307,8 +307,7 @@ fn decodeOmmers(
         if (ommer_span.kind != .list) return error.InvalidChainRlp;
         const header_bytes = block_bytes[ommer_span.start..ommer_span.end];
         const header = try primitives.BlockHeader.rlpDecode(allocator, header_bytes);
-        const extra_data = try decodeHeaderExtraData(allocator, header_bytes);
-        errdefer if (extra_data) |bytes| allocator.free(bytes);
+        // Transfer Voltaire's owned extra_data allocation to the imported body.
         ommers[index] = .{
             .parent_hash = header.parent_hash,
             .ommers_hash = header.ommers_hash,
@@ -322,7 +321,7 @@ fn decodeOmmers(
             .gas_limit = header.gas_limit,
             .gas_used = header.gas_used,
             .timestamp = header.timestamp,
-            .extra_data = extra_data orelse &.{},
+            .extra_data = header.extra_data,
             .mix_hash = header.mix_hash,
             .nonce = header.nonce,
         };

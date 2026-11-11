@@ -248,11 +248,14 @@ Fee-model and tx-type constraints:
 
 Submission contract:
 
-- only legacy transaction type `0x0` is supported in phase 1
+- structured submission/signing supports legacy transaction type `0x0`
 - `eth_sendTransaction` produces legacy `0x0` transactions
-- `eth_sendRawTransaction` accepts only legacy raw transactions
-- typed EIP-2718 envelopes (`0x1`, `0x2`, `0x3`, or unknown type byte) are unsupported and fail with `-32602`
+- `eth_sendRawTransaction` accepts legacy plus EIP-2930 (`0x1`) from Berlin, EIP-1559 (`0x2`) from London, EIP-4844 (`0x3`) from Cancun, and EIP-7702 (`0x4`) from Prague
+- unknown or not-yet-active typed envelopes fail with `-32602`
 - transaction admission computes intrinsic gas and EIP-3860 initcode limits from the runtime-owned hardfork policy configured at trusted startup
+- from Osaka, `eth_sendTransaction`, `eth_sendRawTransaction`, and `eth_signTransaction` reject a declared gas limit above 16,777,216 with code `-32000` and message `transaction gas limit exceeds Osaka cap (16777216)`; exactly 16,777,216 is permitted subject to other validation
+- rejection leaves sender nonce, balances and the transaction pool unchanged; the same cap applies to included transactions during block execution
+- `eth_simulateV1` with `validation: true` enforces this cap with the same error; non-validating simulations and `eth_call` retain their simulation block gas bound
 
 ### 7.3 StateOverrideSet
 
@@ -621,8 +624,8 @@ Simulation semantics:
 
 | Method | Exact params | Exact result | Errors |
 | --- | --- | --- | --- |
-| `eth_sendTransaction` | `[tx]` (`TransactionRequest`) | `Hash32` | `-32602` malformed request/unsupported fields; `-32603` runtime rejection |
-| `eth_sendRawTransaction` | `[rawTx]` | `Hash32` | `-32602` malformed hex/decode/unsupported tx type; `-32603` runtime rejection |
+| `eth_sendTransaction` | `[tx]` (`TransactionRequest`) | `Hash32` | `-32602` malformed request/unsupported fields; `-32000` Osaka transaction gas cap; `-32603` other runtime rejection |
+| `eth_sendRawTransaction` | `[rawTx]` | `Hash32` | `-32602` malformed hex/decode/unsupported tx type; `-32000` Osaka transaction gas cap; `-32603` other runtime rejection |
 | `eth_submitWork` | `[nonce, powHash, digest]` | `false` because ZEVM does not accept PoW work submissions | `-32602` malformed nonce/hash/digest |
 | `eth_submitHashrate` | `[hashrate, id]` | `true` after validating the report shape | `-32602` malformed quantity or id hash |
 

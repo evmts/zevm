@@ -10,6 +10,9 @@ const txpool_handlers = @import("txpool.zig");
 const tx_encoding = @import("../../transaction_encoding.zig");
 const tx_processor = @import("../../tx_processor.zig");
 const jsonrpc = @import("jsonrpc");
+const dispatcher = @import("../dispatcher.zig");
+const dispatch_wiring = @import("../dispatch_wiring.zig");
+const server = @import("../server.zig");
 
 fn makeRuntime() !runtime.NodeRuntime {
     return runtime.NodeRuntime.init(std.testing.allocator, null);
@@ -979,4 +982,65 @@ test "eth_sendTransaction rejects chainId field" {
     };
     const result = tx_submission.handleSendTransaction(std.testing.allocator, &rt, params);
     try std.testing.expectError(tx_submission.TxSubmissionError.UnsupportedTxType, result);
+}
+
+test "EIP-7825 submission and signing return exact JSON error without changing state" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, .{ .hardfork_config = .{ .osaka_timestamp = 0 } });
+    defer rt.deinit();
+    try rt.setMiningConfig(.manual);
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+    const sender = runtime.DEFAULT_DEV_ACCOUNTS[0];
+    const before_balance = try rt.state.getBalance(sender);
+    const before_nonce = try rt.state.getNonce(sender);
+    const encoded = try signTestLegacyTx(std.testing.allocator, before_nonce, runtime.DEFAULT_GAS_PRICE, 16_777_217, runtime.DEFAULT_DEV_ACCOUNTS[1], 1, runtime.DEFAULT_CHAIN_ID, genesis.DEV_ACCOUNTS[0].private_key);
+    defer std.testing.allocator.free(encoded);
+    const raw_hex = try bytesToHexAlloc(std.testing.allocator, encoded);
+    defer std.testing.allocator.free(raw_hex);
+    const from_hex = primitives.Address.toHex(sender);
+    const to_hex = primitives.Address.toHex(runtime.DEFAULT_DEV_ACCOUNTS[1]);
+    const object_params = try std.fmt.allocPrint(std.testing.allocator, "[{{\"from\":\"{s}\",\"to\":\"{s}\",\"gas\":\"0x1000001\"}}]", .{ from_hex, to_hex });
+    defer std.testing.allocator.free(object_params);
+    const raw_params = try std.fmt.allocPrint(std.testing.allocator, "[\"{s}\"]", .{raw_hex});
+    defer std.testing.allocator.free(raw_params);
+    for ([_][]const u8{ "eth_sendTransaction", "eth_signTransaction", "eth_sendRawTransaction" }) |method| {
+        const params = if (std.mem.eql(u8, method, "eth_sendRawTransaction")) raw_params else object_params;
+        const request = try std.fmt.allocPrint(std.testing.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":7825,\"method\":\"{s}\",\"params\":{s}}}", .{ method, params });
+        defer std.testing.allocator.free(request);
+        var response = try server.handleHttpRequestForTest(std.testing.allocator, .POST, request, &handlers);
+        defer response.deinit(std.testing.allocator);
+        const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, response.body.?, .{});
+        defer parsed.deinit();
+        try std.testing.expectEqualStrings("2.0", parsed.value.object.get("jsonrpc").?.string);
+        try std.testing.expectEqual(@as(i64, 7825), parsed.value.object.get("id").?.integer);
+        const rpc_error = parsed.value.object.get("error").?.object;
+        try std.testing.expectEqual(@as(i64, -32000), rpc_error.get("code").?.integer);
+        try std.testing.expectEqualStrings("transaction gas limit exceeds Osaka cap (16777216)", rpc_error.get("message").?.string);
+        try std.testing.expectEqual(@as(usize, 2), rpc_error.count());
+        try std.testing.expectEqual(@as(usize, 0), rt.pool.items().len);
+        try std.testing.expectEqual(before_nonce, try rt.state.getNonce(sender));
+        try std.testing.expectEqual(before_balance, try rt.state.getBalance(sender));
+    }
+}
+
+test "EIP-7825 raw admission follows pending timestamp and permits exact cap" {
+    for ([_]struct { timestamp: u64, gas_limit: u64 }{
+        .{ .timestamp = 99, .gas_limit = 16_777_217 },
+        .{ .timestamp = 100, .gas_limit = 16_777_216 },
+    }) |case| {
+        var rt = try runtime.NodeRuntime.init(std.testing.allocator, .{ .hardfork_config = .{ .prague_timestamp = 0, .osaka_timestamp = 100 } });
+        defer rt.deinit();
+        try rt.setMiningConfig(.manual);
+        rt.setNextBlockTimestamp(case.timestamp);
+        const sender = runtime.DEFAULT_DEV_ACCOUNTS[0];
+        const before_balance = try rt.state.getBalance(sender);
+        const encoded = try signTestLegacyTx(std.testing.allocator, 0, runtime.DEFAULT_GAS_PRICE, case.gas_limit, runtime.DEFAULT_DEV_ACCOUNTS[1], 1, runtime.DEFAULT_CHAIN_ID, genesis.DEV_ACCOUNTS[0].private_key);
+        defer std.testing.allocator.free(encoded);
+        const hex = try bytesToHexAlloc(std.testing.allocator, encoded);
+        defer std.testing.allocator.free(hex);
+        _ = try tx_submission.handleSendRawTransaction(std.testing.allocator, &rt, makeRawTxParams(hex));
+        try std.testing.expectEqual(@as(usize, 1), rt.pool.items().len);
+        try std.testing.expectEqual(@as(u64, 0), try rt.state.getNonce(sender));
+        try std.testing.expectEqual(before_balance, try rt.state.getBalance(sender));
+    }
 }

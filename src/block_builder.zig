@@ -156,6 +156,19 @@ pub fn buildBlockWithOptions(
     const effective_block_ctx = blockContextWithEnvironmentOverrides(options.dev_runtime, block_ctx);
     const effective_fork = effectiveBlockBuilderFork(options, effective_block_ctx);
 
+    // Validate included transactions before packing: an oversized transaction
+    // must invalidate a supplied block even when it would not fit remaining gas.
+    if (!options.skip_invalid_transactions) {
+        const execution_fork = if (options.hardfork_config) |config|
+            tx_processor.resolveHardforkWithConfig(config, effective_block_ctx)
+        else
+            tx_processor.resolveHardfork(effective_block_ctx);
+        for (transactions) |item| {
+            tx_processor.validateTransactionGasLimit(item.tx.gas_limit, execution_fork) catch
+                return error.InvalidIncludedTransaction;
+        }
+    }
+
     try sm.checkpoint();
     var block_committed = false;
     errdefer if (!block_committed) sm.revert();
@@ -233,6 +246,7 @@ pub fn buildBlockWithOptions(
             tx_processor.TxError.SenderNotEOA,
             tx_processor.TxError.UnsupportedTransactionType,
             tx_processor.TxError.IntrinsicGasExceedsLimit,
+            tx_processor.TxError.TransactionGasLimitExceeded,
             tx_processor.TxError.InsufficientBalance,
             tx_processor.TxError.GasPriceBelowBaseFee,
             tx_processor.TxError.TipExceedsFeeCap,

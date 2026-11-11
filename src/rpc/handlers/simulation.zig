@@ -1400,6 +1400,7 @@ fn processSimulatedTransaction(
         .skip_sender_eoa_check = true,
         .skip_nonce_validation = true,
         .skip_fee_validation = !options.validation,
+        .skip_transaction_gas_limit_validation = !options.validation,
         .skip_fee_balance_check = !options.validation,
         .skip_nonce_state_increment = false,
         .capture_output = output,
@@ -1415,6 +1416,10 @@ fn processSimulatedTransaction(
     ) catch |err| switch (err) {
         error.IntrinsicGasExceedsLimit => {
             setSimulationRpcErrorStatic(-38013, "intrinsic gas too low");
+            return error.SimulationRpcError;
+        },
+        error.TransactionGasLimitExceeded => {
+            setSimulationRpcErrorStatic(-32000, "transaction gas limit exceeds Osaka cap (16777216)");
             return error.SimulationRpcError;
         },
         error.BlockGasLimitExceeded => {

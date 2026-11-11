@@ -758,3 +758,96 @@ test "EIP-7623: refund cap and floor applied in correct order" {
         tx_processor.effectiveGasUsed(100_000, 0, 50_000, .ISTANBUL),
     );
 }
+
+test "EIP-7825 rejects every envelope above Osaka cap without state changes" {
+    const sender = primitives.Address.fromU256(0x100);
+    const recipient = primitives.Address.fromU256(0x200);
+    for ([_]primitives.Receipt.TransactionType{ .legacy, .eip2930, .eip1559, .eip4844, .eip7702 }) |receipt_type| {
+        var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+        defer sm.deinit();
+        var adapter = host_adapter.HostAdapter{ .state = &sm };
+        try sm.setBalance(sender, 1_000_000_000);
+        const result = tx_processor.processTransactionWithOptions(
+            std.testing.allocator,
+            &sm,
+            adapter.hostInterface(),
+            sender,
+            makeLegacyTx(.{ .to = recipient, .value = 1, .data = &.{}, .gas_limit = 16_777_217, .gas_price = 1, .nonce = 0 }),
+            defaultBlockContext(),
+            .{ .hardfork_override = .OSAKA, .receipt_type = receipt_type },
+        );
+        // Release an unexpected success so the regression reports the missing
+        // validation independently of an allocation leak.
+        if (result) |value| {
+            var receipt = value;
+            receipt.deinit(std.testing.allocator);
+        } else |_| {}
+        try std.testing.expectError(error.TransactionGasLimitExceeded, result);
+        try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(sender));
+        try std.testing.expectEqual(@as(u256, 1_000_000_000), try sm.getBalance(sender));
+        try std.testing.expectEqual(@as(u256, 0), try sm.getBalance(recipient));
+    }
+}
+
+test "EIP-7825 accepts exact cap and preserves Prague gas limits" {
+    for ([_]guillotine_mini.Hardfork{ .PRAGUE, .OSAKA }) |fork| {
+        for ([_]u64{ 16_777_215, 16_777_216, 16_777_217 }) |gas_limit| {
+            if (fork == .OSAKA and gas_limit > 16_777_216) continue;
+            var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+            defer sm.deinit();
+            var adapter = host_adapter.HostAdapter{ .state = &sm };
+            const sender = primitives.Address.fromU256(0x100);
+            const recipient = primitives.Address.fromU256(0x200);
+            try sm.setBalance(sender, 1_000_000_000);
+            var receipt = try tx_processor.processTransactionWithOptions(
+                std.testing.allocator,
+                &sm,
+                adapter.hostInterface(),
+                sender,
+                makeLegacyTx(.{ .to = recipient, .value = 1, .data = &.{}, .gas_limit = gas_limit, .gas_price = 1, .nonce = 0 }),
+                defaultBlockContext(),
+                .{ .hardfork_override = fork },
+            );
+            defer receipt.deinit(std.testing.allocator);
+            try std.testing.expect(receipt.status.?.success);
+            try std.testing.expectEqual(@as(u256, 21_000), receipt.gas_used);
+            try std.testing.expectEqual(@as(u256, 1), try sm.getBalance(recipient));
+        }
+    }
+}
+
+test "EIP-7825 non-validating simulation bypass retains the block gas bound" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    const sender = primitives.Address.fromU256(0x100);
+    const recipient = primitives.Address.fromU256(0x200);
+    try sm.setBalance(sender, 1_000_000_000);
+    const tx = makeLegacyTx(.{ .to = recipient, .value = 1, .data = &.{}, .gas_limit = 16_777_217, .gas_price = 1, .nonce = 0 });
+    const options = tx_processor.ProcessTransactionOptions{ .hardfork_override = .OSAKA, .skip_transaction_gas_limit_validation = true };
+    var context = defaultBlockContext();
+    context.block_gas_limit = 16_777_216;
+    try std.testing.expectError(error.BlockGasLimitExceeded, tx_processor.processTransactionWithOptions(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        sender,
+        tx,
+        context,
+        options,
+    ));
+    context.block_gas_limit = 30_000_000;
+    var receipt = try tx_processor.processTransactionWithOptions(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        sender,
+        tx,
+        context,
+        options,
+    );
+    defer receipt.deinit(std.testing.allocator);
+    try std.testing.expect(receipt.status.?.success);
+    try std.testing.expectEqual(@as(u256, 21_000), receipt.gas_used);
+    try std.testing.expectEqual(@as(u256, 1), try sm.getBalance(recipient));
+}

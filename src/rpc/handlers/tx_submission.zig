@@ -19,6 +19,8 @@ pub const TxSubmissionError = error{
     NonceMismatch,
     InsufficientBalance,
     IntrinsicGasExceedsLimit,
+    /// EIP-7825: declared transaction gas exceeds the Osaka cap.
+    TransactionGasLimitExceeded,
     GasPriceBelowMinimum,
     InitcodeTooLarge,
     PoolInsertFailed,
@@ -82,6 +84,7 @@ pub fn handleSendRawTransaction(
     if (tx.nonce < current_nonce) return TxSubmissionError.NonceMismatch;
 
     const intrinsic = computeEnvelopeIntrinsicGas(decoded, is_create, hardfork) catch return TxSubmissionError.IntrinsicGasExceedsLimit;
+    try tx_processor.validateTransactionGasLimit(tx.gas_limit, hardfork);
     if (intrinsic > tx.gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
     if (tx.gas_limit > rt.dev_runtime.config.block_gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
 
@@ -220,6 +223,7 @@ pub fn handleSendTransaction(
     }
     const intrinsic = computeLegacyIntrinsicGas(tx.to == null, tx.data, hardfork);
     tx.gas_limit = request.gas orelse try estimateRequestGas(allocator, rt, params.transaction.value);
+    try tx_processor.validateTransactionGasLimit(tx.gas_limit, hardfork);
     if (intrinsic > tx.gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
     if (tx.gas_limit > rt.dev_runtime.config.block_gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
 
@@ -300,6 +304,7 @@ pub fn handleSignTransaction(
     }
     const intrinsic = computeLegacyIntrinsicGas(tx.to == null, tx.data, hardfork);
     tx.gas_limit = request.gas orelse try estimateRequestGas(allocator, rt, params.transaction.value);
+    try tx_processor.validateTransactionGasLimit(tx.gas_limit, hardfork);
     if (intrinsic > tx.gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
 
     const signed = tx_encoding.signLegacyTransaction(allocator, tx, private_key, rt.chain_id) catch return TxSubmissionError.SigningFailed;

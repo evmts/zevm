@@ -325,6 +325,7 @@ Trusted-mode validation:
 - `--fork-block-number` is invalid without `--fork-url`
 - when `--fork-url` is provided and `--fork-block-number` is omitted, startup forking uses unpinned upstream-head (`latest`) semantics
 - `--genesis`, `--chain-rlp`, `--engine-host`, and `--engine-port` are trusted-mode only
+- RLP chain import preserves header and ommer `extraData` bytes. Imported bodies own the decoded ommer data and release it during body cleanup.
 - Engine API is disabled unless `--engine-host`, `--engine-port`, or top-level config `engineRpc` is supplied
 - trusted-only flags are invalid in light mode
 - trusted startup fork block numbers use decimal `u64` in CLI/config (`--fork-block-number`, `mode.trusted.fork.blockNumber`)
@@ -634,11 +635,17 @@ Detailed RPC-level mining behavior is defined in `docs/specs/json-rpc-contract.m
 
 ## 9. Fee Model And Transaction Types
 
+From Osaka, EIP-7825 limits each transaction's declared gas limit to 16,777,216,
+independent of the block gas limit. Transaction admission and included-block
+execution reject larger limits before changing state. Historical forks retain
+their existing block-gas bound. Non-validating simulations may exceed this
+transaction cap within their simulation block gas limit.
+
 Phase-1 transaction request and submission contract:
 
 - simulation/testing request objects accept the `TransactionRequest` execution-apis compatibility fields in `docs/specs/json-rpc-contract.md`
 - submission/signing request objects accept only the legacy subset of `TransactionRequest`; unsupported tx-request fields fail with `-32602`
-- only legacy transaction type `0x0` is supported for submission in phase 1
+- structured submission/signing produces legacy transactions; raw submission also supports types `0x1` through `0x4` when their respective forks are active, as specified in the JSON-RPC contract
 - typed EIP-2718 envelopes (`0x1`, `0x2`, `0x3`, or unknown types) are unsupported and fail with `-32602`
 
 ## 10. Light-Mode Checkpoint And History Semantics

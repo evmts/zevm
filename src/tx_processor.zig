@@ -20,6 +20,9 @@ const REFUND_AUTH_PER_EXISTING_ACCOUNT_GAS: u64 = 12_500;
 const EOA_DELEGATION_MARKER = [_]u8{ 0xef, 0x01, 0x00 };
 const EOA_DELEGATED_CODE_LENGTH: usize = EOA_DELEGATION_MARKER.len + 20;
 
+/// EIP-7825 maximum declared transaction gas limit, enforced from Osaka.
+pub const MAX_TRANSACTION_GAS_LIMIT: u64 = primitives.GasConstants.TxGasLimitOsaka;
+
 pub const ExecutionTx = struct {
     caller: primitives.Address,
     tx: primitives.Transaction.LegacyTransaction,
@@ -49,6 +52,9 @@ pub const ProcessTransactionOptions = struct {
     skip_sender_eoa_check: bool = false,
     skip_nonce_validation: bool = false,
     skip_fee_validation: bool = false,
+    /// Only non-validating simulations may bypass the Osaka transaction cap.
+    /// Block execution and transaction admission must enforce it.
+    skip_transaction_gas_limit_validation: bool = false,
     skip_fee_balance_check: bool = false,
     skip_nonce_state_increment: bool = false,
     capture_output: ?*[]u8 = null,
@@ -66,6 +72,8 @@ pub const TxError = error{
     SenderNotEOA,
     UnsupportedTransactionType,
     BlockGasLimitExceeded,
+    /// Declared gas exceeds EIP-7825's 2^24 limit on Osaka or later.
+    TransactionGasLimitExceeded,
     IntrinsicGasExceedsLimit,
     GasPriceBelowBaseFee,
     TipExceedsFeeCap,
@@ -119,6 +127,15 @@ fn executePrecompileOverrideOwned(
         .gas_left = gas_left,
         .output = precompile_result.output,
     }).toOwnedResult(allocator) catch return TxError.OutOfMemory;
+}
+
+/// Validate EIP-7825's declared gas limit independently of the block gas limit.
+/// Historical forks have no separate per-transaction cap. This check performs
+/// no allocation or state access and is shared with RPC transaction admission.
+pub fn validateTransactionGasLimit(gas_limit: u64, hardfork: guillotine_mini.Hardfork) error{TransactionGasLimitExceeded}!void {
+    if (hardfork.isAtLeast(.OSAKA) and gas_limit > MAX_TRANSACTION_GAS_LIMIT) {
+        return error.TransactionGasLimitExceeded;
+    }
 }
 
 /// Calculates the intrinsic gas cost for a transaction.
@@ -337,6 +354,7 @@ pub fn processTransactionWithOptions(
     if (adapter) |a| a.clearHostError();
 
     const hardfork = options.hardfork_override orelse resolveHardfork(block_ctx);
+    if (!options.skip_transaction_gas_limit_validation) try validateTransactionGasLimit(tx.gas_limit, hardfork);
     var ecrecover_context = StandardPrecompileContext{
         .address = primitives.Address.fromU256(1),
         .fork = hardfork,

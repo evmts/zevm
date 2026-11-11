@@ -49,6 +49,9 @@ pub fn dispatch(allocator: std.mem.Allocator, request: jsonrpc.envelope.RequestE
         error.InvalidParams => {
             return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.INVALID_PARAMS, "Invalid params");
         },
+        error.TransactionGasLimitExceeded => {
+            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, -32000, "transaction gas limit exceeds Osaka cap (16777216)");
+        },
         error.BuildBlockFailed => {
             return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.BUILD_BLOCK_FAILED, "Block building failed");
         },

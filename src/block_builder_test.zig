@@ -646,3 +646,30 @@ test "requests hash skips empty request types" {
     try std.testing.expectEqualSlices(u8, &hash_a, &hash_b);
     try std.testing.expect(!std.mem.eql(u8, &hash_a, &hash_c));
 }
+
+test "EIP-7825 invalidates an included transaction even when it cannot fit the block" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    const sender = primitives.Address.fromU256(0x100);
+    const recipient = primitives.Address.fromU256(0x200);
+    try sm.setBalance(sender, 1_000_000_000);
+    const transactions = [_]tx_processor.ExecutionTx{.{
+        .caller = sender,
+        .tx = makeLegacyTx(.{ .to = recipient, .value = 1, .data = &.{}, .gas_limit = 16_777_217, .gas_price = 1, .nonce = 0 }),
+    }};
+    for ([_]u64{ 21_000, 30_000_000 }) |block_gas_limit| {
+        var context = blockContextWithGasLimit(block_gas_limit);
+        context.block_timestamp = 1_764_798_551;
+        try std.testing.expectError(error.InvalidIncludedTransaction, block_builder.buildBlock(
+            std.testing.allocator,
+            &sm,
+            adapter.hostInterface(),
+            &transactions,
+            context,
+        ));
+        try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(sender));
+        try std.testing.expectEqual(@as(u256, 1_000_000_000), try sm.getBalance(sender));
+        try std.testing.expectEqual(@as(u256, 0), try sm.getBalance(recipient));
+    }
+}

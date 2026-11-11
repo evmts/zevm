@@ -61,6 +61,15 @@ export default defineConfig({
           ],
         },
         {
+          label: "Library Reference",
+          items: [
+            { label: "C ABI", slug: "reference/library/c-abi" },
+            { label: "Database", slug: "reference/library/database" },
+            { label: "Execution Library", slug: "reference/library/execution-library" },
+            { label: "Genesis And Chain Import", slug: "reference/library/genesis-and-chain-import" },
+          ],
+        },
+        {
           label: "JSON-RPC Reference",
           items: [
             { label: "Overview", slug: "reference/json-rpc/overview" },
