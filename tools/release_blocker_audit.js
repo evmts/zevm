@@ -12,7 +12,7 @@ const allowedArgs = new Set([
     "--help",
 ]);
 function usage() {
-    process.stdout.write(`usage: tools/release_blocker_audit.ts [options]
+    process.stdout.write(`usage: tools/release_blocker_audit.js [options]
 
 Static release-blocker audit that does not execute ZEVM build artifacts unless
 --include-launch-preflight is supplied.
@@ -149,7 +149,7 @@ async function checkExternalSuiteEvidence() {
             fail(`tools/external_verify.zig is missing external verification scope: ${scope}`);
         }
     }
-    const hiveSmoke = await Bun.file("tools/hive_rpc_compat_smoke.ts").text();
+    const hiveSmoke = await Bun.file("tools/hive_rpc_compat_smoke.js").text();
     const requiredHiveEvidence = [
         "defaultPattern",
         "ZEVM_HIVE_RPC_COMPAT_PATTERN",
@@ -157,10 +157,10 @@ async function checkExternalSuiteEvidence() {
     ];
     for (const evidence of requiredHiveEvidence) {
         if (!hiveSmoke.includes(evidence)) {
-            fail(`tools/hive_rpc_compat_smoke.ts is missing Hive smoke evidence: ${evidence}`);
+            fail(`tools/hive_rpc_compat_smoke.js is missing Hive smoke evidence: ${evidence}`);
         }
     }
-    process.stdout.write("release-blocker-audit: external suite scope is source-encoded in tools/external_verify.zig and tools/hive_rpc_compat_smoke.ts\n");
+    process.stdout.write("release-blocker-audit: external suite scope is source-encoded in tools/external_verify.zig and tools/hive_rpc_compat_smoke.js\n");
 }
 function checkMarkers() {
     if (!Bun.which("rg")) {
@@ -173,9 +173,9 @@ function checkMarkers() {
         "-n",
         "-i",
         "-g",
-        "!tools/release_blocker_audit.ts",
+        "!tools/release_blocker_audit.js",
         "-g",
-        "!tools/macos_launch_policy_preflight.ts",
+        "!tools/macos_launch_policy_preflight.js",
         "-g",
         "!**/package-lock.json",
         markerPattern,
@@ -198,7 +198,7 @@ function checkMarkers() {
 function checkLaunchPreflight() {
     if (!includeLaunchPreflight)
         return;
-    const result = run(["bun", "tools/macos_launch_policy_preflight.ts"]);
+    const result = run(["bun", "tools/macos_launch_policy_preflight.js"]);
     process.stdout.write(result.stdout);
     process.stderr.write(result.stderr);
     if (result.exitCode !== 0)

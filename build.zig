@@ -37,10 +37,12 @@ pub fn build(b: *std.Build) void {
     linkRustSupport(exe, target);
     b.installArtifact(exe);
 
-    const launch_policy_preflight_cmd = b.addSystemCommand(&[_][]const u8{ "bun", "tools/macos_launch_policy_preflight.js" });
-    launch_policy_preflight_cmd.setName("launch-policy-preflight");
     const launch_policy_preflight_step = b.step("launch-policy-preflight", "Check that locally built executables can launch on this host");
-    launch_policy_preflight_step.dependOn(&launch_policy_preflight_cmd.step);
+    if (builtin.os.tag == .macos) {
+        const launch_policy_preflight_cmd = b.addSystemCommand(&.{ "bun", "tools/macos_launch_policy_preflight.js" });
+        launch_policy_preflight_cmd.setName("launch-policy-preflight");
+        launch_policy_preflight_step.dependOn(&launch_policy_preflight_cmd.step);
+    }
 
     const release_metadata_exe = b.addExecutable(.{
         .name = "release-metadata",
@@ -53,7 +55,7 @@ pub fn build(b: *std.Build) void {
 
     const release_metadata_step = b.step("release-metadata", "Generate release metadata artifacts");
     const release_metadata_cmd = b.addRunArtifact(release_metadata_exe);
-    release_metadata_cmd.step.dependOn(&launch_policy_preflight_cmd.step);
+    release_metadata_cmd.step.dependOn(launch_policy_preflight_step);
     if (b.args) |args| {
         release_metadata_cmd.addArgs(args);
     }
@@ -70,7 +72,7 @@ pub fn build(b: *std.Build) void {
 
     const qualification_check_step = b.step("qualification-check", "Validate release qualification assertion map");
     const qualification_check_cmd = b.addRunArtifact(qualification_check_exe);
-    qualification_check_cmd.step.dependOn(&launch_policy_preflight_cmd.step);
+    qualification_check_cmd.step.dependOn(launch_policy_preflight_step);
     qualification_check_cmd.addArg("--map");
     qualification_check_cmd.addFileArg(b.path("docs/specs/qualification/assertion-map.json"));
     if (b.args) |args| {
@@ -98,7 +100,7 @@ pub fn build(b: *std.Build) void {
 
     const dependency_preflight_step = b.step("dependency-preflight", "Validate package dependency pins and optional expected revisions");
     const dependency_preflight_cmd = b.addRunArtifact(dependency_preflight_exe);
-    dependency_preflight_cmd.step.dependOn(&launch_policy_preflight_cmd.step);
+    dependency_preflight_cmd.step.dependOn(launch_policy_preflight_step);
     if (b.args) |args| {
         dependency_preflight_cmd.addArgs(args);
     }
@@ -106,7 +108,7 @@ pub fn build(b: *std.Build) void {
 
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
-    run_cmd.step.dependOn(&launch_policy_preflight_cmd.step);
+    run_cmd.step.dependOn(launch_policy_preflight_step);
     run_step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
@@ -120,7 +122,7 @@ pub fn build(b: *std.Build) void {
     mod_tests.step.dependOn(&modules.voltaire_rust_crypto.step);
     linkRustSupport(mod_tests, target);
     const run_mod_tests = b.addRunArtifact(mod_tests);
-    run_mod_tests.step.dependOn(&launch_policy_preflight_cmd.step);
+    run_mod_tests.step.dependOn(launch_policy_preflight_step);
 
     const qualification_check_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -130,7 +132,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_qualification_check_tests = b.addRunArtifact(qualification_check_tests);
-    run_qualification_check_tests.step.dependOn(&launch_policy_preflight_cmd.step);
+    run_qualification_check_tests.step.dependOn(launch_policy_preflight_step);
     const dependency_preflight_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tools/dependency_preflight.zig"),
@@ -139,15 +141,15 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_dependency_preflight_tests = b.addRunArtifact(dependency_preflight_tests);
-    run_dependency_preflight_tests.step.dependOn(&launch_policy_preflight_cmd.step);
+    run_dependency_preflight_tests.step.dependOn(launch_policy_preflight_step);
     const run_test_graph_check = b.addRunArtifact(test_graph_check_exe);
-    run_test_graph_check.step.dependOn(&launch_policy_preflight_cmd.step);
+    run_test_graph_check.step.dependOn(launch_policy_preflight_step);
 
     const startup_smoke_step = b.step("startup-smoke", "Run executable startup failure smoke tests");
     const startup_smoke_files = b.addWriteFiles();
 
     const missing_config_smoke = b.addRunArtifact(exe);
-    missing_config_smoke.step.dependOn(&launch_policy_preflight_cmd.step);
+    missing_config_smoke.step.dependOn(launch_policy_preflight_step);
     missing_config_smoke.addArgs(&.{ "--config", ".zig-cache/startup-smoke/missing.json" });
     missing_config_smoke.expectExitCode(1);
     missing_config_smoke.addCheck(.{ .expect_stderr_match = "\"scope\":\"startup\"" });
@@ -157,7 +159,7 @@ pub fn build(b: *std.Build) void {
 
     const malformed_config = startup_smoke_files.add("malformed-config.json", "{");
     const malformed_config_smoke = b.addRunArtifact(exe);
-    malformed_config_smoke.step.dependOn(&launch_policy_preflight_cmd.step);
+    malformed_config_smoke.step.dependOn(launch_policy_preflight_step);
     malformed_config_smoke.addArg("--config");
     malformed_config_smoke.addFileArg(malformed_config);
     malformed_config_smoke.expectExitCode(1);
@@ -170,7 +172,7 @@ pub fn build(b: *std.Build) void {
         \\{ "unknown": true }
     );
     const schema_config_smoke = b.addRunArtifact(exe);
-    schema_config_smoke.step.dependOn(&launch_policy_preflight_cmd.step);
+    schema_config_smoke.step.dependOn(launch_policy_preflight_step);
     schema_config_smoke.addArg("--config");
     schema_config_smoke.addFileArg(schema_config);
     schema_config_smoke.expectExitCode(1);
@@ -204,7 +206,7 @@ pub fn build(b: *std.Build) void {
     external_verify_exe.step.dependOn(&modules.voltaire_rust_crypto.step);
     linkRustSupport(external_verify_exe, target);
     const run_external_verify = b.addRunArtifact(external_verify_exe);
-    run_external_verify.step.dependOn(&launch_policy_preflight_cmd.step);
+    run_external_verify.step.dependOn(launch_policy_preflight_step);
     run_external_verify.addDirectoryArg(b.path("."));
     run_external_verify.addArtifactArg(exe);
     if (b.args) |args| {
@@ -259,7 +261,7 @@ pub fn build(b: *std.Build) void {
     c_smoke_exe.step.dependOn(&modules.voltaire_rust_crypto.step);
 
     const run_c_smoke = b.addRunArtifact(c_smoke_exe);
-    run_c_smoke.step.dependOn(&launch_policy_preflight_cmd.step);
+    run_c_smoke.step.dependOn(launch_policy_preflight_step);
     run_c_smoke.expectExitCode(0);
     run_c_smoke.addCheck(.{ .expect_stdout_match = "ok" });
 

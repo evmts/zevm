@@ -9,7 +9,7 @@ ARG TARGETARCH
 ARG ZIG_VERSION
 ARG ZEVM_DOCKER_OPTIMIZE
 
-RUN apk add --no-cache bash build-base ca-certificates cargo curl git linux-headers perl rust xz
+RUN apk add --no-cache bash build-base ca-certificates cargo curl git jq linux-headers perl rust xz
 RUN set -eu; \
     case "$TARGETARCH" in \
       amd64) zig_arch=x86_64 ;; \
@@ -23,6 +23,9 @@ RUN set -eu; \
     zig version
 
 WORKDIR /src/zevm
+COPY native-dependencies.json ./
+COPY tools/checkout-native.sh ./tools/
+RUN bash tools/checkout-native.sh
 COPY build.zig build.zig.zon LICENSE README.md ./
 COPY include ./include
 COPY npm ./npm

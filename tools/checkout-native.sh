@@ -13,8 +13,6 @@ for dependency in voltaire guillotine-mini; do
     if [ "$dependency" = voltaire ]; then
       # Build inputs only; the optional skills submodule requires SSH credentials.
       git -C "$destination" submodule update --init --recursive -- packages/voltaire-zig/lib/libwally-core vendor/execution-apis
-    else
-      git -C "$destination" submodule update --init --recursive
     fi
   fi
   test "$(git -C "$destination" rev-parse HEAD)" = "$revision"
