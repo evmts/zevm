@@ -9,9 +9,9 @@
     "dev": "alchemy dev"
   },
   "dependencies": {
-    "alchemy": "^0.93.6"
+    "alchemy": "^0.94.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260430.0"
+    "@cloudflare/workers-types": "^5.20261122.2"
   }
 }

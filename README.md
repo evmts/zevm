@@ -38,6 +38,7 @@ For pinned release tuples, mode-specific startup, and runtime configuration, sta
 ## Documentation
 
 The public docs are authored under [docs/](./docs/), with Astro/Starlight site sources mirrored under [docs/src/content/docs/](./docs/src/content/docs/).
+To build the site locally, use Node.js 22.23.4 or later and run `npm ci` followed by `npm run build` from `docs/`.
 
 Canonical contract sources:
 
@@ -60,6 +61,8 @@ node --check npm/zevm/src/index.js
 Behavior changes are docs-first: update `docs/specs/prd.md` and `docs/specs/json-rpc-contract.md` before landing code that changes startup, runtime modes, JSON-RPC behavior, release metadata, the C ABI, or npm distribution. The full process is in [docs/specs/docs-first-process.md](./docs/specs/docs-first-process.md).
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for the local workflow, release gates, C ABI, and npm package notes.
+
+See the [submodule update policy](./docs/reference/submodule-update-policy.md) for the fixture inputs required by `zig build verify` and the status of the archived Execution Spec Tests repository.
 
 ## Native package release
 

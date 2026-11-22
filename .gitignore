@@ -18,8 +18,9 @@ effect-repo/
 worktrees/
 .worktrees/
 
-# Local Smithers state
-/smithers.db*
+# Local SQLite state
+smithers.db*
+zevm-docs.db*
 
 macos
 

@@ -9,10 +9,10 @@
     "check": "astro check"
   },
   "dependencies": {
-    "@astrojs/starlight": "^0.36.0",
-    "astro": "^5.15.6"
+    "@astrojs/starlight": "^0.43.1",
+    "astro": "^7.4.13"
   },
   "devDependencies": {
-    "@astrojs/check": "^0.9.4"
+    "@astrojs/check": "^0.9.12"
   }
 }
