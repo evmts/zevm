@@ -38,6 +38,7 @@ It defines:
 | light mode + `mainnet` | fixed mapping | `0x1` |
 | light mode + `sepolia` | fixed mapping | `0xaa36a7` |
 | light mode + `holesky` | fixed mapping | `0x4268` |
+| light mode + `hoodi` | fixed mapping | `0x88bb0` |
 
 ## 3. Transport
 
@@ -518,7 +519,7 @@ Field rules:
 
 - `ready`: boolean; true only when proof-backed reads are available
 - `status`: `syncing`, `synced`, or `error`
-- `network`: `mainnet`, `sepolia`, or `holesky`
+- `network`: `mainnet`, `sepolia`, `holesky`, or `hoodi`
 - `checkpointSource`: startup checkpoint-selection source and stable for process lifetime:
   - `explicit`: selected from user-provided checkpoint input (CLI `--checkpoint` or config `mode.light.checkpoint`)
   - `persisted`: selected from `${resolvedCheckpointDir}/checkpoint` (section 5.3)

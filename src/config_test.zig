@@ -1,4 +1,5 @@
 const std = @import("std");
+const cli = @import("cli.zig");
 const config = @import("config.zig");
 const hardfork_schedule = @import("hardfork_schedule.zig");
 const mining = @import("mining.zig");
@@ -419,7 +420,6 @@ test "load selects persisted checkpoint when explicit inputs are absent" {
     try std.testing.expectEqual(config.CheckpointSource.persisted, light.checkpoint_source);
     try std.testing.expectEqual(@as(u8, 0xaa), light.checkpoint[0]);
 }
-
 test "load applies mainnet BPO default for chain 1, empty default for dev, custom schedule, and empty disable" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -530,4 +530,45 @@ test "load rejects malformed, unordered, invalid, and pre-Osaka blobSchedule con
         defer std.testing.allocator.free(path);
         try std.testing.expectError(error.InvalidConfig, config.load(std.testing.allocator, &[_][]const u8{ "--config", path }));
     }
+}
+
+test "load parses hoodi light network from CLI and uses its baked checkpoint" {
+    const light_default_checkpoints = @import("light_default_checkpoints.zig");
+    var app_config = try config.load(std.testing.allocator, &[_][]const u8{
+        "--mode",
+        "light",
+        "--network",
+        "hoodi",
+        "--consensus-rpc-url",
+        "https://beacon.example",
+    });
+    defer app_config.deinit(std.testing.allocator);
+
+    const light = try expectLight(app_config);
+    try std.testing.expectEqual(config.Network.hoodi, light.network);
+    try std.testing.expect(std.mem.endsWith(u8, light.checkpoint_dir, ".zevm/checkpoints/hoodi"));
+    if (light.checkpoint_source == .default) {
+        var expected: [32]u8 = undefined;
+        _ = try std.fmt.hexToBytes(&expected, light_default_checkpoints.hoodi_hex);
+        try std.testing.expectEqualSlices(u8, expected[0..], light.checkpoint[0..]);
+    }
+
+    const node_config = light.toNodeConfig();
+    try std.testing.expectEqual(node_runtime.LightNetwork.hoodi, node_config.light.network);
+    try std.testing.expectEqual(@as(u64, 560048), node_config.light.network.networkConfig("").chain_id);
+}
+
+test "LightNetwork names round-trip and map to distinct chain ids" {
+    inline for (std.meta.fields(node_runtime.LightNetwork)) |field| {
+        const network: node_runtime.LightNetwork = @enumFromInt(field.value);
+        try std.testing.expectEqualStrings(field.name, network.name());
+        try std.testing.expectEqual(network, try node_runtime.LightNetwork.fromString(field.name));
+        const cli_network = cli.networkFromString(field.name) orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqualStrings(field.name, cli.networkName(cli_network));
+    }
+    try std.testing.expectError(error.InvalidLightNetwork, node_runtime.LightNetwork.fromString("goerli"));
+    try std.testing.expectEqual(@as(u64, 1), node_runtime.LightNetwork.mainnet.networkConfig("").chain_id);
+    try std.testing.expectEqual(@as(u64, 11155111), node_runtime.LightNetwork.sepolia.networkConfig("").chain_id);
+    try std.testing.expectEqual(@as(u64, 17000), node_runtime.LightNetwork.holesky.networkConfig("").chain_id);
+    try std.testing.expectEqual(@as(u64, 560048), node_runtime.LightNetwork.hoodi.networkConfig("").chain_id);
 }

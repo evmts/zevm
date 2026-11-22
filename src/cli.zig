@@ -9,6 +9,7 @@ pub const Network = enum {
     mainnet,
     sepolia,
     holesky,
+    hoodi,
 };
 
 pub const MiningType = enum {
@@ -176,6 +177,7 @@ pub fn networkFromString(value: []const u8) ?Network {
     if (std.mem.eql(u8, value, "mainnet")) return .mainnet;
     if (std.mem.eql(u8, value, "sepolia")) return .sepolia;
     if (std.mem.eql(u8, value, "holesky")) return .holesky;
+    if (std.mem.eql(u8, value, "hoodi")) return .hoodi;
     return null;
 }
 
@@ -184,6 +186,7 @@ pub fn networkName(network: Network) []const u8 {
         .mainnet => "mainnet",
         .sepolia => "sepolia",
         .holesky => "holesky",
+        .hoodi => "hoodi",
     };
 }
 

@@ -245,3 +245,40 @@ test "genericFromLightClientUpdate preserves real branch lengths" {
     try std.testing.expect(generic.finality_branch != null);
     try std.testing.expectEqual(@as(usize, 6), generic.finality_branch.?.len);
 }
+
+test "NetworkConfig.hoodi has expected genesis, fork, and checkpoint values" {
+    const light_default_checkpoints = @import("light_default_checkpoints.zig");
+    const config = consensus_sync.NetworkConfig.hoodi("https://example.com");
+
+    try std.testing.expectEqual(@as(u64, 560048), config.chain_id);
+    try std.testing.expectEqual(@as(u64, 1742213400), config.genesis_time);
+    try std.testing.expectEqualSlices(
+        u8,
+        parseHex32("212f13fc4df078b6cb7db228f1c8307566dcecf900867401a92023d7ba99cb5f")[0..],
+        config.genesis_validators_root[0..],
+    );
+    try std.testing.expectEqualSlices(
+        u8,
+        parseHex32(light_default_checkpoints.hoodi_hex)[0..],
+        config.default_checkpoint[0..],
+    );
+    try std.testing.expectEqualStrings("https://example.com", config.consensus_rpc);
+    try std.testing.expectEqual([4]u8{ 0x10, 0x00, 0x09, 0x10 }, config.fork_config.genesis.fork_version);
+    try std.testing.expectEqual([4]u8{ 0x50, 0x00, 0x09, 0x10 }, config.fork_config.forkVersionForEpoch(0));
+    try std.testing.expectEqual([4]u8{ 0x50, 0x00, 0x09, 0x10 }, config.fork_config.forkVersionForEpoch(2047));
+    try std.testing.expectEqual([4]u8{ 0x60, 0x00, 0x09, 0x10 }, config.fork_config.forkVersionForEpoch(2048));
+}
+
+test "baked default checkpoints are distinct per network" {
+    const light_default_checkpoints = @import("light_default_checkpoints.zig");
+    const roots = [_][]const u8{
+        light_default_checkpoints.mainnet_hex,
+        light_default_checkpoints.sepolia_hex,
+        light_default_checkpoints.holesky_hex,
+        light_default_checkpoints.hoodi_hex,
+    };
+    for (roots, 0..) |a, i| {
+        try std.testing.expectEqual(@as(usize, 64), a.len);
+        for (roots[i + 1 ..]) |b| try std.testing.expect(!std.mem.eql(u8, a, b));
+    }
+}

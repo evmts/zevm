@@ -93,11 +93,13 @@ pub const LightNetwork = enum {
     mainnet,
     sepolia,
     holesky,
+    hoodi,
 
     pub fn fromString(value: []const u8) !LightNetwork {
         if (std.mem.eql(u8, value, "mainnet")) return .mainnet;
         if (std.mem.eql(u8, value, "sepolia")) return .sepolia;
         if (std.mem.eql(u8, value, "holesky")) return .holesky;
+        if (std.mem.eql(u8, value, "hoodi")) return .hoodi;
         return error.InvalidLightNetwork;
     }
 
@@ -106,6 +108,7 @@ pub const LightNetwork = enum {
             .mainnet => "mainnet",
             .sepolia => "sepolia",
             .holesky => "holesky",
+            .hoodi => "hoodi",
         };
     }
 
@@ -114,6 +117,7 @@ pub const LightNetwork = enum {
             .mainnet => consensus_sync.NetworkConfig.mainnet(consensus_rpc_url),
             .sepolia => consensus_sync.NetworkConfig.sepolia(consensus_rpc_url),
             .holesky => consensus_sync.NetworkConfig.holesky(consensus_rpc_url),
+            .hoodi => consensus_sync.NetworkConfig.hoodi(consensus_rpc_url),
         };
     }
 };

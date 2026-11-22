@@ -56,6 +56,32 @@ pub const NetworkConfig = struct {
             .strict_checkpoint_age = false,
         };
     }
+
+    pub fn hoodi(rpc_url: []const u8) NetworkConfig {
+        return .{
+            .chain_id = 560048,
+            .genesis_time = 1742213400,
+            .genesis_validators_root = parseHex32("212f13fc4df078b6cb7db228f1c8307566dcecf900867401a92023d7ba99cb5f"),
+            .fork_config = hoodi_fork_config,
+            .default_checkpoint = parseHex32(light_default_checkpoints.hoodi_hex),
+            .consensus_rpc = rpc_url,
+            .max_checkpoint_age = DEFAULT_MAX_CHECKPOINT_AGE_SECONDS,
+            .strict_checkpoint_age = false,
+        };
+    }
+};
+
+/// Hoodi beacon fork schedule (eth-clients/hoodi config.yaml, confirmed against
+/// /eth/v1/config/fork_schedule on checkpoint-sync.hoodi.ethpandaops.io).
+/// Voltaire's ForkConfig has no hoodi() preset and no Fulu field yet, so the
+/// schedule lives here and ends at Electra like the other presets.
+pub const hoodi_fork_config = primitives.ForkConfig.ForkConfig{
+    .genesis = .{ .epoch = 0, .fork_version = .{ 0x10, 0x00, 0x09, 0x10 } },
+    .altair = .{ .epoch = 0, .fork_version = .{ 0x20, 0x00, 0x09, 0x10 } },
+    .bellatrix = .{ .epoch = 0, .fork_version = .{ 0x30, 0x00, 0x09, 0x10 } },
+    .capella = .{ .epoch = 0, .fork_version = .{ 0x40, 0x00, 0x09, 0x10 } },
+    .deneb = .{ .epoch = 0, .fork_version = .{ 0x50, 0x00, 0x09, 0x10 } },
+    .electra = .{ .epoch = 2048, .fork_version = .{ 0x60, 0x00, 0x09, 0x10 } },
 };
 
 pub const SyncStatus = enum { syncing, synced, err };

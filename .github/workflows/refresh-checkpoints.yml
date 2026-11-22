@@ -1,0 +1,68 @@
+name: Refresh Light Checkpoints
+
+# Light-mode default checkpoints must stay inside the 14-day default
+# maxCheckpointAgeSeconds window. GitHub cron has no "every 14 days", so run on
+# the 1st and 15th of each month (gap <= 16 days; the runtime only warns on a
+# stale baked default unless strictCheckpointAge is set).
+on:
+  schedule:
+    - cron: "23 6 1,15 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: refresh-light-checkpoints
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: Refresh baked finalized checkpoints
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout ZEVM
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Self-test refresh script
+        run: node tools/refresh_light_checkpoints.js --self-test
+
+      - name: Fetch fresh finalized checkpoints
+        run: node tools/refresh_light_checkpoints.js --write
+
+      - name: Verify freshness
+        run: node tools/refresh_light_checkpoints.js --check
+
+      - name: Show diff
+        run: git diff --stat -- src/light_default_checkpoints.zig && git diff -- src/light_default_checkpoints.zig
+
+      # PRs opened with the default GITHUB_TOKEN do not trigger other
+      # workflows; set CHECKPOINT_PR_TOKEN (fine-grained PAT, contents + pull
+      # requests write) so CI runs on the refresh PR.
+      - name: Open pull request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.CHECKPOINT_PR_TOKEN || github.token }}
+          branch: automation/refresh-light-checkpoints
+          delete-branch: true
+          add-paths: src/light_default_checkpoints.zig
+          commit-message: "chore(light): refresh baked default checkpoints"
+          title: "chore(light): refresh baked default checkpoints"
+          body: |
+            Automated refresh of `src/light_default_checkpoints.zig` by
+            `tools/refresh_light_checkpoints.js --write`.
+
+            Each root is the finalized beacon block root reported by public
+            Checkpointz servers after checking `genesis_validators_root`. The
+            slot, epoch, fetch time, and source endpoint are recorded above
+            each constant. `holesky` stays frozen for backwards compatibility.
+
+            The release `light-default-checkpoints.json` asset picks these
+            values up automatically through `src/release_metadata.zig`.

@@ -169,6 +169,7 @@ fn lightNetworkToRuntime(network: Network) node_runtime.LightNetwork {
         .mainnet => .mainnet,
         .sepolia => .sepolia,
         .holesky => .holesky,
+        .hoodi => .hoodi,
     };
 }
 
@@ -614,6 +615,7 @@ fn defaultCheckpoint(network: Network) [32]u8 {
         .mainnet => consensus_sync.NetworkConfig.mainnet("").default_checkpoint,
         .sepolia => consensus_sync.NetworkConfig.sepolia("").default_checkpoint,
         .holesky => consensus_sync.NetworkConfig.holesky("").default_checkpoint,
+        .hoodi => consensus_sync.NetworkConfig.hoodi("").default_checkpoint,
     };
 }
 

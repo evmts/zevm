@@ -235,10 +235,12 @@ Supported networks and fixed chain IDs:
 - `mainnet` -> `0x1`
 - `sepolia` -> `0xaa36a7` (11155111)
 - `holesky` -> `0x4268` (17000)
+- `hoodi` -> `0x88bb0` (560048)
 
 Light network-set governance:
 
-- phase-1 light-network set is closed and exact: `mainnet`, `sepolia`, `holesky`
+- phase-1 light-network set is closed and exact: `mainnet`, `sepolia`, `holesky`, `hoodi`
+- `holesky` is retained for backwards compatibility only; its baked default checkpoint is frozen because the network's public beacon endpoints are retired. `hoodi` is the maintained Ethereum testnet replacement
 - any other `network` value is invalid startup input and must fail before opening the HTTP listener
 - each supported light network must have all normative network-specific mappings required by this PRD: fixed chain ID mapping (this section), startup handshake `genesis_validators_root` mapping (section 5), and baked-default checkpoint eligibility in startup checkpoint precedence (section 5)
 - adding, removing, or renaming a supported light network is a normative contract change and requires synchronized updates to this PRD and to JSON-RPC network-enum surfaces in `docs/specs/json-rpc-contract.md`
@@ -335,7 +337,7 @@ Trusted-mode validation:
 
 | Flag | Type | Default |
 | --- | --- | --- |
-| `--network` | `mainnet`, `sepolia`, `holesky` | `mainnet` |
+| `--network` | `mainnet`, `sepolia`, `holesky`, `hoodi` | `mainnet` |
 | `--consensus-rpc-url` | Beacon API URL | required |
 | `--execution-rpc-url` | Execution JSON-RPC URL with `eth_getProof`/`eth_getCode` | `--consensus-rpc-url` |
 | `--checkpoint` | `0x`-prefixed 32-byte hash | none |
@@ -352,7 +354,7 @@ Light-mode startup naming/path bridge:
 
 Light-mode validation:
 
-- `--network`/`mode.light.network` must be one of `mainnet`, `sepolia`, or `holesky`
+- `--network`/`mode.light.network` must be one of `mainnet`, `sepolia`, `holesky`, or `hoodi`
 - `--consensus-rpc-url` is required in light mode
 - `--consensus-rpc-url` must serve the same network selected by `--network`
 - `--strict-checkpoint-age` CLI semantics are presence-based: present means `true`, omitted means `false`, and explicit assignment forms (for example `--strict-checkpoint-age=false`) are invalid
@@ -370,6 +372,7 @@ Light-mode startup consensus-network handshake (before listener):
    - `mainnet` -> `0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95`
    - `sepolia` -> `0xd8ea171f3c94aea21ebc42a1ed61052acf3f9209c00e4efbaaddac09ed9b8078`
    - `holesky` -> `0x9143aa7c615a7f7115e2b6aac319c03529df8242ae705fba9df39b79c59fa8b1`
+   - `hoodi` -> `0x212f13fc4df078b6cb7db228f1c8307566dcecf900867401a92023d7ba99cb5f`
 5. any handshake failure (request failure, non-`200`, malformed payload, missing/invalid root, root mismatch) is startup failure before opening the HTTP listener
 
 ### 5.4 Config file schema
@@ -535,7 +538,7 @@ Checkpoint staleness policy in light mode:
 - derivation steps are exact:
   1. call `GET <consensusRpcUrl>/eth/v1/beacon/genesis`, require HTTP `200`, parse `data.genesis_time` as decimal unsigned integer `genesisTimeSeconds`
   2. call `GET <consensusRpcUrl>/eth/v1/beacon/headers/{selectedCheckpointHash}`, require HTTP `200`, parse `data.root` as `Hash32` and require it to equal `selectedCheckpointHash`, then parse `data.header.message.slot` as decimal unsigned integer `checkpointSlot`
-  3. use `SECONDS_PER_SLOT = 12` for phase-1 supported light networks (`mainnet`, `sepolia`, `holesky`) and compute `checkpointTimeSeconds = genesisTimeSeconds + (checkpointSlot * SECONDS_PER_SLOT)` with integer arithmetic
+  3. use `SECONDS_PER_SLOT = 12` for phase-1 supported light networks (`mainnet`, `sepolia`, `holesky`, `hoodi`) and compute `checkpointTimeSeconds = genesisTimeSeconds + (checkpointSlot * SECONDS_PER_SLOT)` with integer arithmetic
   4. use computed `checkpointTimeSeconds` as integer Unix seconds in age evaluation
 - any request failure, non-`200`, missing/malformed required field, checkpoint-root mismatch, or arithmetic overflow in this derivation is inability to resolve `checkpointTimeSeconds` and is startup failure before opening the HTTP listener
 - `age == maxCheckpointAgeSeconds` is valid
