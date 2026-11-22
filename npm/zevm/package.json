@@ -3,6 +3,28 @@
   "version": "0.1.0",
   "description": "Native ZEVM execution and light-client bindings",
   "license": "MIT",
+  "author": "evmts",
+  "homepage": "https://zevm.sh/docs",
+  "bugs": {
+    "url": "https://github.com/evmts/zevm/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/evmts/zevm.git",
+    "directory": "npm/zevm"
+  },
+  "keywords": [
+    "ethereum",
+    "evm",
+    "json-rpc",
+    "light-client",
+    "node-api",
+    "tevm",
+    "zig"
+  ],
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "type": "module",
   "main": "./src/index.js",
   "module": "./src/index.js",
@@ -13,17 +35,20 @@
   "files": [
     "src/index.js",
     "native/zevm.node",
+    "LICENSE",
     "README.md"
   ],
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
   },
   "scripts": {
     "build": "node --check src/index.js",
     "publish:all": "node scripts/publish-all.cjs",
     "publish:all:dry": "node scripts/publish-all.cjs --dry-run",
     "stage:artifacts": "node scripts/stage-artifacts.cjs",
-    "smoke:native": "node scripts/smoke.cjs ../../zig-out/npm/native/zevm.node"
+    "smoke:native": "node scripts/smoke.cjs ../../zig-out/npm/native/zevm.node",
+    "verify:release": "node scripts/verify-release.cjs"
   },
   "dependencies": {},
   "optionalDependencies": {

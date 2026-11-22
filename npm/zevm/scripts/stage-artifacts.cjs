@@ -33,6 +33,13 @@ function copyIfPresent(source, destination) {
   return true;
 }
 
+// npm always packs a package-root LICENSE; give every published package the repository's.
+const rootLicense = path.resolve(repoRoot, "LICENSE");
+fs.copyFileSync(rootLicense, path.resolve(packageRoot, "LICENSE"));
+for (const platformName of platformPackages.keys()) {
+  fs.copyFileSync(rootLicense, path.resolve(platformsRoot, platformName, "LICENSE"));
+}
+
 const localNativeDestination = path.resolve(packageRoot, "native/zevm.node");
 if (includeLocalNative) {
   const localNativeSource = path.resolve(zigOutNpm, "native/zevm.node");

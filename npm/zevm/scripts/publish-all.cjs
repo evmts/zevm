@@ -26,9 +26,18 @@ function readPackageName(packageDir) {
   return packageJson.name;
 }
 
+run(process.execPath, [path.resolve(scriptDir, "verify-release.cjs")], repoRoot);
 run(process.execPath, [path.resolve(scriptDir, "stage-artifacts.cjs")], repoRoot);
 
+const { version } = JSON.parse(fs.readFileSync(path.resolve(packageRoot, "package.json"), "utf8"));
+// A prerelease such as 0.2.0-beta.1 must not move the `latest` dist-tag.
+const prerelease = version.split("-", 2)[1];
+const distTag = prerelease ? prerelease.split(".", 1)[0] : "latest";
+// npm provenance needs a CI OIDC token; attest whenever the publish runs in GitHub Actions.
+const provenance = process.env.GITHUB_ACTIONS === "true";
+
 const packageDirs = [];
+const missing = [];
 for (const entry of fs.readdirSync(platformsRoot, { withFileTypes: true })) {
   if (!entry.isDirectory()) continue;
   const packageDir = path.resolve(platformsRoot, entry.name);
@@ -41,13 +50,21 @@ for (const entry of fs.readdirSync(platformsRoot, { withFileTypes: true })) {
   if (fs.existsSync(nativeAddon)) {
     packageDirs.push(packageDir);
   } else {
-    throw new Error(`Cannot publish: ${readPackageName(packageDir)} has no zevm.node staged`);
+    missing.push(readPackageName(packageDir));
   }
+}
+if (missing.length > 0) {
+  throw new Error(
+    `Cannot publish: no zevm.node staged for ${missing.join(", ")}. ` +
+      "Build each target with `zig build npm-platform-artifacts -Doptimize=ReleaseSafe -Dtarget=<triple>` " +
+      "into zig-out/npm/prebuilds/<platform>/zevm.node first.",
+  );
 }
 packageDirs.push(packageRoot);
 
 for (const packageDir of packageDirs) {
-  const args = ["publish", "--access", "public"];
+  const args = ["publish", "--access", "public", "--tag", distTag];
+  if (provenance) args.push("--provenance");
   if (dryRun) args.push("--dry-run");
   console.log(`\n> npm ${args.join(" ")} (${path.relative(repoRoot, packageDir)})`);
   run("npm", args, packageDir);

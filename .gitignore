@@ -181,7 +181,6 @@ diff-trace.log
 
 # Coordination docs
 coordinate.md
-.docs-workflow-runs/
 
 # Apple Instruments profiling results
 *_profile.trace/
@@ -245,9 +244,6 @@ tevm-monorepo/
 # Playwright MCP (testing artifacts)
 .playwright-mcp/
 
-# Reference code (now tracked as submodules)
-workflow/.db-backups/
-workflow/*.db-shm
-workflow/*.db-wal
-workflow/*.db
-workflow/*.bak
+# npm release staging copies the root LICENSE into each published package
+npm/zevm/LICENSE
+npm/platforms/*/LICENSE

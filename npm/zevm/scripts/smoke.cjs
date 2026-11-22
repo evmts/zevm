@@ -15,6 +15,10 @@ if (native.abiVersion() !== 1) {
 if (typeof native.version() !== "string" || native.version().length === 0) {
   throw new Error("empty ZEVM version");
 }
+const packageVersion = require("../package.json").version;
+if (native.version() !== packageVersion) {
+  throw new Error(`addon reports version ${native.version()}, package is ${packageVersion}`);
+}
 if (native.networkName(0) !== "mainnet") {
   throw new Error("unexpected mainnet name");
 }
