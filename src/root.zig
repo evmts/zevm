@@ -57,6 +57,7 @@ test {
     _ = @import("checkpoint_test.zig");
     _ = @import("chain_import_test.zig");
     _ = @import("console_log.zig");
+    _ = @import("console_log_fuzz_test.zig");
     _ = @import("mpt_proof.zig");
     _ = @import("mining_test.zig");
     _ = @import("cli_test.zig");

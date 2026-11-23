@@ -6,7 +6,6 @@ const runtime = @import("../../node/runtime.zig");
 const blob_fee = @import("../../blob_fee.zig");
 const block_builder = @import("../../block_builder.zig");
 const host_adapter = @import("../../host_adapter.zig");
-const console_log = @import("../../console_log.zig");
 const tx_encoding = @import("../../transaction_encoding.zig");
 const tx_processor = @import("../../tx_processor.zig");
 const precompile_compat = @import("../../precompile_compat.zig");
@@ -1895,11 +1894,8 @@ fn executeCall(
     var owned = evm.call(call_params).toOwnedResult(allocator) catch return error.OutOfMemory;
     defer owned.deinit(allocator);
 
-    // The EVM consults precompile overrides only for nested calls, so a
-    // top-level call straight to the console address is recorded here.
-    if (to.equals(console_log.ADDRESS) and owned.success) {
-        if (adapter.console_logs) |buffer| buffer.record(tx.data);
-    }
+    // The console precompile override records calldata for nested calls and for
+    // a top-level call straight to the console address, so nothing is recorded here.
 
     if (adapter.takeHostError() != null) return error.ExecutionFailed;
     if (!owned.success and !allow_failure) {

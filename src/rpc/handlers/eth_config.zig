@@ -228,9 +228,10 @@ fn blobScheduleValue(allocator: std.mem.Allocator, schedule: hardfork_schedule.B
         var value = std.json.Value{ .object = obj };
         deinitValue(allocator, &value);
     }
-    try putOwned(&obj, allocator, "baseFeeUpdateFraction", .{ .integer = @intCast(schedule.base_fee_update_fraction) });
-    try putOwned(&obj, allocator, "max", .{ .integer = @intCast(schedule.max) });
-    try putOwned(&obj, allocator, "target", .{ .integer = @intCast(schedule.target) });
+    // A schedule value above maxInt(i64) has no `std.json` integer form.
+    try putOwned(&obj, allocator, "baseFeeUpdateFraction", .{ .integer = std.math.cast(i64, schedule.base_fee_update_fraction) orelse return error.InvalidForkConfig });
+    try putOwned(&obj, allocator, "max", .{ .integer = std.math.cast(i64, schedule.max) orelse return error.InvalidForkConfig });
+    try putOwned(&obj, allocator, "target", .{ .integer = std.math.cast(i64, schedule.target) orelse return error.InvalidForkConfig });
     return .{ .object = obj };
 }
 
