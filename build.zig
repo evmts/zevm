@@ -11,6 +11,8 @@ const ModuleSet = struct {
     jsonrpc_mod: *std.Build.Module,
     guillotine_mini_mod: *std.Build.Module,
     zevm_mod: *std.Build.Module,
+    c_kzg_include_path: std.Build.LazyPath,
+    blst_include_path: std.Build.LazyPath,
 };
 
 pub fn build(b: *std.Build) void {
@@ -365,8 +367,10 @@ fn createModuleSet(
         },
     });
 
-    zevm_mod.addIncludePath(voltaire.path("packages/voltaire-zig/lib/c-kzg-4844/src"));
-    zevm_mod.addIncludePath(voltaire.path("packages/voltaire-zig/lib/c-kzg-4844/blst/bindings"));
+    const c_kzg_include_path = voltaire.path("packages/voltaire-zig/lib/c-kzg-4844/src");
+    const blst_include_path = voltaire.path("packages/voltaire-zig/lib/c-kzg-4844/blst/bindings");
+    zevm_mod.addIncludePath(c_kzg_include_path);
+    zevm_mod.addIncludePath(blst_include_path);
 
     return .{
         .voltaire_rust_crypto = voltaire_rust_crypto,
@@ -378,6 +382,8 @@ fn createModuleSet(
         .jsonrpc_mod = jsonrpc_mod,
         .guillotine_mini_mod = guillotine_mini_mod,
         .zevm_mod = zevm_mod,
+        .c_kzg_include_path = c_kzg_include_path,
+        .blst_include_path = blst_include_path,
     };
 }
 
@@ -533,7 +539,7 @@ fn createCBindingsModule(
     optimize: std.builtin.OptimizeMode,
     modules: ModuleSet,
 ) *std.Build.Module {
-    return b.createModule(.{
+    const c_bindings_mod = b.createModule(.{
         .root_source_file = b.path("src/c_bindings.zig"),
         .target = target,
         .optimize = optimize,
@@ -547,6 +553,9 @@ fn createCBindingsModule(
             .{ .name = "jsonrpc", .module = modules.jsonrpc_mod },
         },
     });
+    c_bindings_mod.addIncludePath(modules.c_kzg_include_path);
+    c_bindings_mod.addIncludePath(modules.blst_include_path);
+    return c_bindings_mod;
 }
 
 fn addCAbiLibrary(

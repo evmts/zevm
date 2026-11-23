@@ -851,3 +851,113 @@ test "EIP-7825 non-validating simulation bypass retains the block gas bound" {
     try std.testing.expectEqual(@as(u256, 21_000), receipt.gas_used);
     try std.testing.expectEqual(@as(u256, 1), try sm.getBalance(recipient));
 }
+
+test "EIP-7939 CLZ opcode executes across zevm -> guillotine-mini on Osaka and rejects on Prague" {
+    // Bytecode: PUSH1 0x00, CLZ (0x1e), PUSH1 0x00, MSTORE, PUSH1 0x20, PUSH1 0x00, RETURN
+    const code = [_]u8{ 0x60, 0x00, 0x1e, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+    const sender = primitives.Address.fromU256(0x101);
+    const target = primitives.Address.fromU256(0x201);
+
+    // Osaka: succeeds and returns 256 (0x100)
+    {
+        var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+        defer sm.deinit();
+        var adapter = host_adapter.HostAdapter{ .state = &sm };
+        try sm.setBalance(sender, 1_000_000_000);
+        try sm.setCode(target, &code);
+        var out: []u8 = &.{};
+        defer std.testing.allocator.free(out);
+        var receipt = try tx_processor.processTransactionWithOptions(
+            std.testing.allocator,
+            &sm,
+            adapter.hostInterface(),
+            sender,
+            makeLegacyTx(.{ .to = target, .value = 0, .data = &.{}, .gas_limit = 100_000, .gas_price = 1, .nonce = 0 }),
+            defaultBlockContext(),
+            .{ .hardfork_override = .OSAKA, .capture_output = &out },
+        );
+        defer receipt.deinit(std.testing.allocator);
+        try std.testing.expect(receipt.status.?.success);
+        try std.testing.expectEqual(@as(usize, 32), out.len);
+        try std.testing.expectEqual(@as(u256, 256), std.mem.readInt(u256, out[0..32], .big));
+    }
+
+    // Prague: CLZ (0x1e) is an invalid opcode
+    {
+        var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+        defer sm.deinit();
+        var adapter = host_adapter.HostAdapter{ .state = &sm };
+        try sm.setBalance(sender, 1_000_000_000);
+        try sm.setCode(target, &code);
+        var receipt = try tx_processor.processTransactionWithOptions(
+            std.testing.allocator,
+            &sm,
+            adapter.hostInterface(),
+            sender,
+            makeLegacyTx(.{ .to = target, .value = 0, .data = &.{}, .gas_limit = 100_000, .gas_price = 1, .nonce = 0 }),
+            defaultBlockContext(),
+            .{ .hardfork_override = .PRAGUE },
+        );
+        defer receipt.deinit(std.testing.allocator);
+        try std.testing.expect(!receipt.status.?.success);
+    }
+}
+
+test "EIP-7951 P256VERIFY precompile executes across zevm -> guillotine-mini -> voltaire on Osaka" {
+    const vector_hex =
+        "4cee90eb86eaa050036147a12d49004b6b9c72bd725d39d4785011fe190f0b4d" ++
+        "a73bd4903f0ce3b639bbbf6e8e80d16931ff4bcf5993d58468e8fb19086e8cac" ++
+        "36dbcd03009df8c59286b162af3bd7fcc0450c9aa81be5d10d312af6c66b1d60" ++
+        "4aebd3099c618202fcfe16ae7770b0c49ab5eadf74b754204a3bb6060e44eff3" ++
+        "7618b065f9832de4ca6ca971a7a1adc826d0f7c00181a5fb2ddf79ae00b4e10e";
+    var input: [160]u8 = undefined;
+    _ = try std.fmt.hexToBytes(&input, vector_hex);
+
+    const sender = primitives.Address.fromU256(0x102);
+    const p256_addr = primitives.Address.fromU256(0x0100);
+
+    // Osaka: valid signature returns 32-byte big-endian 1
+    {
+        var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+        defer sm.deinit();
+        var adapter = host_adapter.HostAdapter{ .state = &sm };
+        try sm.setBalance(sender, 1_000_000_000);
+        var out: []u8 = &.{};
+        defer std.testing.allocator.free(out);
+        var receipt = try tx_processor.processTransactionWithOptions(
+            std.testing.allocator,
+            &sm,
+            adapter.hostInterface(),
+            sender,
+            makeLegacyTx(.{ .to = p256_addr, .value = 0, .data = &input, .gas_limit = 100_000, .gas_price = 1, .nonce = 0 }),
+            defaultBlockContext(),
+            .{ .hardfork_override = .OSAKA, .capture_output = &out },
+        );
+        defer receipt.deinit(std.testing.allocator);
+        try std.testing.expect(receipt.status.?.success);
+        try std.testing.expectEqual(@as(usize, 32), out.len);
+        try std.testing.expectEqual(@as(u256, 1), std.mem.readInt(u256, out[0..32], .big));
+    }
+
+    // Prague: 0x0100 is not a precompile (empty account call returns empty output)
+    {
+        var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+        defer sm.deinit();
+        var adapter = host_adapter.HostAdapter{ .state = &sm };
+        try sm.setBalance(sender, 1_000_000_000);
+        var out: []u8 = &.{};
+        defer std.testing.allocator.free(out);
+        var receipt = try tx_processor.processTransactionWithOptions(
+            std.testing.allocator,
+            &sm,
+            adapter.hostInterface(),
+            sender,
+            makeLegacyTx(.{ .to = p256_addr, .value = 0, .data = &input, .gas_limit = 100_000, .gas_price = 1, .nonce = 0 }),
+            defaultBlockContext(),
+            .{ .hardfork_override = .PRAGUE, .capture_output = &out },
+        );
+        defer receipt.deinit(std.testing.allocator);
+        try std.testing.expect(receipt.status.?.success);
+        try std.testing.expectEqual(@as(usize, 0), out.len);
+    }
+}

@@ -267,6 +267,10 @@ test "NetworkConfig.hoodi has expected genesis, fork, and checkpoint values" {
     try std.testing.expectEqual([4]u8{ 0x50, 0x00, 0x09, 0x10 }, config.fork_config.forkVersionForEpoch(0));
     try std.testing.expectEqual([4]u8{ 0x50, 0x00, 0x09, 0x10 }, config.fork_config.forkVersionForEpoch(2047));
     try std.testing.expectEqual([4]u8{ 0x60, 0x00, 0x09, 0x10 }, config.fork_config.forkVersionForEpoch(2048));
+    try std.testing.expectEqual([4]u8{ 0x70, 0x00, 0x09, 0x10 }, config.fork_config.forkVersionForEpoch(50688));
+
+    const mainnet = consensus_sync.NetworkConfig.mainnet("https://example.com");
+    try std.testing.expectEqual([4]u8{ 0x06, 0x00, 0x00, 0x00 }, mainnet.fork_config.forkVersionForEpoch(411392));
 }
 
 test "baked default checkpoints are distinct per network" {
