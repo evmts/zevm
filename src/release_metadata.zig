@@ -7,6 +7,7 @@ pub const light_default_checkpoints_schema_version = "zevm-light-default-checkpo
 
 pub const release_tuple_filename = "release-tuple.json";
 pub const light_default_checkpoints_filename = "light-default-checkpoints.json";
+pub const native_dependencies_filename = "native-dependencies.json";
 
 pub const default_checkpoints = CheckpointDefaults{
     .mainnet = light_default_checkpoints.mainnet_prefixed,
@@ -111,7 +112,7 @@ pub fn generateReleaseMetadataFiles(
     const zevm_revision = try captureGitRevision(allocator, ".");
     defer allocator.free(zevm_revision);
 
-    const manifest = try std.fs.cwd().readFileAlloc(allocator, "build.zig.zon", 1024 * 1024);
+    const manifest = try std.fs.cwd().readFileAlloc(allocator, native_dependencies_filename, 1024 * 1024);
     defer allocator.free(manifest);
 
     const voltaire_revision = try captureDependencyRevisionFromManifest(allocator, manifest, "voltaire");
@@ -181,22 +182,28 @@ fn captureGitRevision(allocator: std.mem.Allocator, cwd: []const u8) ![]u8 {
     return try allocator.dupe(u8, revision);
 }
 
-fn captureDependencyRevisionFromManifest(
+/// Reads a pinned revision from native-dependencies.json, the manifest
+/// tools/checkout-native.sh uses to materialize the sibling checkouts.
+pub fn captureDependencyRevisionFromManifest(
     allocator: std.mem.Allocator,
     manifest: []const u8,
     repo: []const u8,
 ) ![]u8 {
-    const prefix = try std.fmt.allocPrint(
-        allocator,
-        "https://github.com/evmts/{s}/archive/",
-        .{repo},
-    );
-    defer allocator.free(prefix);
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, manifest, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.MalformedJson,
+    };
+    defer parsed.deinit();
 
-    const start = std.mem.indexOf(u8, manifest, prefix) orelse return error.MissingDependency;
-    const rest = manifest[start + prefix.len ..];
-    const end = std.mem.indexOf(u8, rest, ".tar.gz") orelse return error.MalformedDependencyUrl;
-    const revision = rest[0..end];
+    if (parsed.value != .object) return error.MalformedJson;
+    const entry = parsed.value.object.get(repo) orelse return error.MissingDependency;
+    if (entry != .object) return error.MalformedJson;
+
+    const repository = try getStringField(entry.object, "repository");
+    if (!std.mem.startsWith(u8, repository, "evmts/") or
+        !std.mem.eql(u8, repository["evmts/".len..], repo)) return error.MalformedDependencyUrl;
+
+    const revision = try getStringField(entry.object, "revision");
     if (!isGitRevision(revision)) return error.MalformedGitRevision;
     return try allocator.dupe(u8, revision);
 }
@@ -541,6 +548,31 @@ const test_checkpoints = LightDefaultCheckpoints{
     .releaseIdentifier = test_tuple.releaseIdentifier,
     .defaults = default_checkpoints,
 };
+
+test "dependency revisions come from native-dependencies.json" {
+    const manifest =
+        \\{"voltaire":{"repository":"evmts/voltaire","revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+        \\ "guillotine-mini":{"repository":"evmts/guillotine-mini","revision":"CCCC"},
+        \\ "fork":{"repository":"someone/fork","revision":"dddddddddddddddddddddddddddddddddddddddd"}}
+    ;
+    const revision = try captureDependencyRevisionFromManifest(std.testing.allocator, manifest, "voltaire");
+    defer std.testing.allocator.free(revision);
+    try std.testing.expectEqualStrings(test_tuple.voltaireGitRevision, revision);
+
+    try std.testing.expectError(error.MalformedGitRevision, captureDependencyRevisionFromManifest(std.testing.allocator, manifest, "guillotine-mini"));
+    try std.testing.expectError(error.MalformedDependencyUrl, captureDependencyRevisionFromManifest(std.testing.allocator, manifest, "fork"));
+    try std.testing.expectError(error.MissingDependency, captureDependencyRevisionFromManifest(std.testing.allocator, manifest, "absent"));
+    try std.testing.expectError(error.MalformedJson, captureDependencyRevisionFromManifest(std.testing.allocator, "[", "voltaire"));
+}
+
+test "checked-in native-dependencies.json pins both native dependencies" {
+    const manifest = try std.fs.cwd().readFileAlloc(std.testing.allocator, native_dependencies_filename, 1024 * 1024);
+    defer std.testing.allocator.free(manifest);
+    for ([_][]const u8{ "voltaire", "guillotine-mini" }) |repo| {
+        const revision = try captureDependencyRevisionFromManifest(std.testing.allocator, manifest, repo);
+        std.testing.allocator.free(revision);
+    }
+}
 
 test "release tuple generator emits valid json" {
     const json = try generateReleaseTupleJson(std.testing.allocator, test_tuple);

@@ -58,6 +58,8 @@ for (const [platformName, packageName] of platformPackages) {
   if (copyIfPresent(source, destination)) {
     console.log(`staged ${path.relative(repoRoot, destination)} for ${packageName}`);
   } else {
+    // Never leave an addon from an earlier build staged for publication.
+    fs.rmSync(destination, { force: true });
     console.warn(`skipping ${packageName}; missing ${path.relative(repoRoot, source)}`);
   }
 }
