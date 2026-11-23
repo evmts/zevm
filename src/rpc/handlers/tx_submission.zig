@@ -3,6 +3,7 @@ const primitives = @import("primitives");
 const jsonrpc = @import("jsonrpc");
 const guillotine_mini = @import("guillotine_mini");
 const runtime = @import("../../node/runtime.zig");
+const blob_fee = @import("../../blob_fee.zig");
 const tx_encoding = @import("../../transaction_encoding.zig");
 const tx_processor = @import("../../tx_processor.zig");
 const mining = @import("../../mining.zig");
@@ -21,6 +22,11 @@ pub const TxSubmissionError = error{
     IntrinsicGasExceedsLimit,
     /// EIP-7825: declared transaction gas exceeds the Osaka cap.
     TransactionGasLimitExceeded,
+    /// EIP-7594: blob network wrapper version does not match the active fork
+    /// (v0 before Osaka, v1 from Osaka).
+    BlobWrapperVersionMismatch,
+    /// EIP-7594 / Fusaka: blob transaction exceeds per-tx or block blob limit.
+    TooManyBlobs,
     GasPriceBelowMinimum,
     InitcodeTooLarge,
     PoolInsertFailed,
@@ -53,6 +59,9 @@ pub fn handleSendRawTransaction(
     defer arena.deinit();
     const arena_alloc = arena.allocator();
 
+    const pending_timestamp = rt.pendingBlockTimestamp();
+    const hardfork = rt.hardforkAt(rt.head_block_number +| 1, pending_timestamp);
+    const wrapper = tx_encoding.decodeBlobNetworkWrapper(raw_bytes) catch return TxSubmissionError.DecodeFailed;
     const decoded = tx_encoding.decodeEnvelope(arena_alloc, raw_bytes) catch |err| switch (err) {
         error.InvalidTransactionType => return if (raw_bytes[0] <= 0x7f)
             TxSubmissionError.UnsupportedTxType
@@ -66,14 +75,23 @@ pub fn handleSendRawTransaction(
         if (cid != rt.chain_id) return TxSubmissionError.ChainIdMismatch;
     }
 
-    const sender = tx_encoding.recoverEnvelopeSender(arena_alloc, decoded) catch return TxSubmissionError.SenderRecoveryFailed;
-
     const is_create = tx.to == null;
-    const hardfork = rt.pendingHardfork();
     const receipt_type = tx_encoding.envelopeReceiptType(decoded);
     if (!rawTransactionTypeSupported(receipt_type, hardfork)) {
         return TxSubmissionError.UnsupportedTxType;
     }
+    if (receipt_type == .eip4844) {
+        const versioned_hashes = tx_encoding.envelopeBlobVersionedHashes(decoded) orelse &.{};
+        const blob_params = blob_fee.blobParamsForFork(rt.hardfork_config, hardfork, pending_timestamp);
+        if (versioned_hashes.len == 0) return TxSubmissionError.DecodeFailed;
+        if (versioned_hashes.len > blob_params.max_blobs) return TxSubmissionError.TooManyBlobs;
+        if (hardfork.isAtLeast(.OSAKA) and versioned_hashes.len > tx_encoding.MAX_BLOBS_PER_TRANSACTION) {
+            return TxSubmissionError.TooManyBlobs;
+        }
+        try validateBlobWrapperForFork(raw_bytes, versioned_hashes, hardfork);
+    }
+
+    const sender = tx_encoding.recoverEnvelopeSender(arena_alloc, decoded) catch return TxSubmissionError.SenderRecoveryFailed;
 
     // EIP-3860: cap initcode size for create transactions.
     if (hardfork.isAtLeast(.SHANGHAI) and is_create and tx.data.len > MAX_INITCODE_SIZE) {
@@ -101,28 +119,30 @@ pub fn handleSendRawTransaction(
     const balance = rt.state.getBalance(sender) catch return TxSubmissionError.StateError;
     if (balance < total_cost) return TxSubmissionError.InsufficientBalance;
 
-    const canonical = tx_encoding.canonicalTransactionEnvelope(allocator, raw_bytes) catch |err| switch (err) {
-        error.OutOfMemory => return TxSubmissionError.OutOfMemory,
-        else => return TxSubmissionError.DecodeFailed,
-    };
+    const canonical = if (wrapper) |view|
+        view.canonicalEnvelope(allocator) catch return TxSubmissionError.OutOfMemory
+    else
+        tx_encoding.CanonicalEnvelope{ .bytes = raw_bytes };
     defer canonical.deinit(allocator);
 
     const tx_hash = computeTxHash(canonical.bytes);
 
     const blob_versioned_hashes = tx_encoding.envelopeBlobVersionedHashBytes(allocator, decoded) catch return TxSubmissionError.OutOfMemory;
     defer if (blob_versioned_hashes) |hashes| allocator.free(hashes);
-    const blob_sidecars = if (receipt_type == .eip4844)
-        tx_encoding.eip4844BlobSidecars(
-            allocator,
-            raw_bytes,
-            tx_encoding.envelopeBlobVersionedHashes(decoded) orelse &.{},
-        ) catch |err| switch (err) {
+    const blob_sidecars = if (wrapper) |view|
+        view.sidecars(allocator) catch |err| switch (err) {
             error.OutOfMemory => return TxSubmissionError.OutOfMemory,
             else => return TxSubmissionError.DecodeFailed,
         }
     else
         null;
     defer if (blob_sidecars) |sidecars| allocator.free(sidecars);
+    if (blob_sidecars) |sidecars| {
+        rt.blob_verifier.verify(allocator, sidecars) catch |err| switch (err) {
+            error.OutOfMemory => return TxSubmissionError.OutOfMemory,
+            else => return TxSubmissionError.DecodeFailed,
+        };
+    }
 
     rt.pool.setNonce(sender, current_nonce) catch return TxSubmissionError.PoolInsertFailed;
     rt.pool.add(allocator, .{
@@ -463,6 +483,20 @@ fn transactionAccessListGasCost(access_list: []const primitives.Transaction.Acce
         gas = try std.math.add(u64, gas, storage_cost);
     }
     return gas;
+}
+
+/// EIP-7594 pool gating for a type-3 submission. A bare canonical envelope
+/// carries no wrapper and passes. A wrapper must be structurally valid, commit
+/// to the transaction's versioned hashes, and use v1 (cell proofs) from Osaka
+/// on or v0 (blob proofs) before Osaka.
+pub fn validateBlobWrapperForFork(
+    raw: []const u8,
+    versioned_hashes: []const primitives.Blob.VersionedHash,
+    hardfork: guillotine_mini.Hardfork,
+) TxSubmissionError!void {
+    const wrapper = (tx_encoding.decodeBlobNetworkWrapper(raw) catch return TxSubmissionError.DecodeFailed) orelse return;
+    tx_encoding.validateWrapperCommitments(wrapper, versioned_hashes) catch return TxSubmissionError.DecodeFailed;
+    if (!wrapper.version.activeAt(hardfork)) return TxSubmissionError.BlobWrapperVersionMismatch;
 }
 
 fn rawTransactionTypeSupported(receipt_type: primitives.Receipt.TransactionType, hardfork: guillotine_mini.Hardfork) bool {

@@ -7,18 +7,19 @@ const block_builder = @import("block_builder.zig");
 const host_adapter = @import("host_adapter.zig");
 const dev_runtime = @import("rpc/dev_runtime.zig");
 const hardfork_schedule = @import("hardfork_schedule.zig");
+const blob_fee = @import("blob_fee.zig");
 
 pub const INITIAL_BASE_FEE: u256 = 1_000_000_000;
 pub const BASE_FEE_MAX_CHANGE_DENOMINATOR: u64 = 8;
 pub const ELASTICITY_MULTIPLIER: u64 = 2;
-pub const GAS_PER_BLOB: u64 = 131_072;
-pub const CANCUN_TARGET_BLOB_GAS_PER_BLOCK: u64 = 393_216;
-pub const CANCUN_MAX_BLOB_GAS_PER_BLOCK: u64 = 786_432;
-pub const PRAGUE_TARGET_BLOB_GAS_PER_BLOCK: u64 = 786_432;
-pub const PRAGUE_MAX_BLOB_GAS_PER_BLOCK: u64 = 1_179_648;
-pub const MIN_BASE_FEE_PER_BLOB_GAS: u256 = 1;
-pub const CANCUN_BLOB_BASE_FEE_UPDATE_FRACTION: u64 = 3_338_477;
-pub const PRAGUE_BLOB_BASE_FEE_UPDATE_FRACTION: u64 = 5_007_716;
+pub const GAS_PER_BLOB: u64 = blob_fee.GAS_PER_BLOB;
+pub const CANCUN_TARGET_BLOB_GAS_PER_BLOCK: u64 = hardfork_schedule.MAINNET_CANCUN_BLOB_CONFIG.target * GAS_PER_BLOB;
+pub const CANCUN_MAX_BLOB_GAS_PER_BLOCK: u64 = hardfork_schedule.MAINNET_CANCUN_BLOB_CONFIG.max * GAS_PER_BLOB;
+pub const PRAGUE_TARGET_BLOB_GAS_PER_BLOCK: u64 = hardfork_schedule.MAINNET_PRAGUE_BLOB_CONFIG.target * GAS_PER_BLOB;
+pub const PRAGUE_MAX_BLOB_GAS_PER_BLOCK: u64 = hardfork_schedule.MAINNET_PRAGUE_BLOB_CONFIG.max * GAS_PER_BLOB;
+pub const MIN_BASE_FEE_PER_BLOB_GAS: u256 = blob_fee.MIN_BASE_FEE_PER_BLOB_GAS;
+pub const CANCUN_BLOB_BASE_FEE_UPDATE_FRACTION: u64 = hardfork_schedule.MAINNET_CANCUN_BLOB_CONFIG.base_fee_update_fraction;
+pub const PRAGUE_BLOB_BASE_FEE_UPDATE_FRACTION: u64 = hardfork_schedule.MAINNET_PRAGUE_BLOB_CONFIG.base_fee_update_fraction;
 
 pub const MAINNET_CHAIN_CONFIG = hardfork_schedule.MAINNET_CHAIN_CONFIG;
 pub const ChainConfig = hardfork_schedule.ChainConfig;
@@ -114,8 +115,9 @@ pub fn maxBlobGasPerBlock(hardfork: primitives.Hardfork) u64 {
 }
 
 pub fn calculateNextExcessBlobGas(parent_excess_blob_gas: u64, parent_blob_gas_used: u64, target_blob_gas: u64) u64 {
-    const parent_blob_gas = std.math.add(u64, parent_excess_blob_gas, parent_blob_gas_used) catch std.math.maxInt(u64);
-    return if (parent_blob_gas < target_blob_gas) 0 else parent_blob_gas - target_blob_gas;
+    const parent_blob_gas = @as(u128, parent_excess_blob_gas) + @as(u128, parent_blob_gas_used);
+    if (parent_blob_gas < target_blob_gas) return 0;
+    return std.math.cast(u64, parent_blob_gas - target_blob_gas) orelse std.math.maxInt(u64);
 }
 
 pub fn nextExcessBlobGas(parent_header: primitives.BlockHeader.BlockHeader) u64 {
@@ -140,59 +142,60 @@ pub fn nextExcessBlobGasForChildWithConfig(
     child_block_number: u64,
     child_timestamp: u64,
 ) u64 {
-    const child_hardfork = resolveHardforkWithConfig(chain_config, child_block_number, child_timestamp);
-    if (child_hardfork.isBefore(.CANCUN)) return 0;
-
-    const parent_hardfork = resolveHardforkWithConfig(chain_config, parent_header.number, parent_header.timestamp);
-    const parent_excess_blob_gas = if (parent_hardfork.isAtLeast(.CANCUN)) parent_header.excess_blob_gas orelse 0 else 0;
-    const parent_blob_gas_used = if (parent_hardfork.isAtLeast(.CANCUN)) parent_header.blob_gas_used orelse 0 else 0;
-
-    return calculateNextExcessBlobGas(parent_excess_blob_gas, parent_blob_gas_used, blobTargetGasPerBlock(child_hardfork));
+    return blob_fee.nextExcessBlobGasForHeader(chain_config, parent_header, child_block_number, child_timestamp);
 }
 
+/// Named-fork blob base fee ignoring BPO schedules. Callers with a config and
+/// block timestamp should use `blob_fee.blobBaseFeeAt`.
 pub fn nextBlobBaseFee(excess_blob_gas: u64, hardfork: primitives.Hardfork) u256 {
     if (hardfork.isBefore(.CANCUN)) return 0;
     const denominator = if (hardfork.isAtLeast(.PRAGUE))
         PRAGUE_BLOB_BASE_FEE_UPDATE_FRACTION
     else
         CANCUN_BLOB_BASE_FEE_UPDATE_FRACTION;
-    return fakeExponential(MIN_BASE_FEE_PER_BLOB_GAS, excess_blob_gas, denominator);
+    return blob_fee.calcBlobBaseFee(excess_blob_gas, denominator);
 }
 
-pub fn fakeExponential(factor: u256, numerator: u64, denominator: u64) u256 {
-    if (denominator == 0) return std.math.maxInt(u256);
-
-    var i: u512 = 1;
-    var output: u512 = 0;
-    var numerator_accumulated = @as(u512, factor) * @as(u512, denominator);
-    while (numerator_accumulated > 0) {
-        output = std.math.add(u512, output, numerator_accumulated) catch std.math.maxInt(u512);
-        const product = std.math.mul(u512, numerator_accumulated, @as(u512, numerator)) catch std.math.maxInt(u512);
-        numerator_accumulated = product / (@as(u512, denominator) * i);
-        i += 1;
-    }
-
-    return clampU512ToU256(output / @as(u512, denominator));
-}
+pub const fakeExponential = blob_fee.fakeExponential;
 
 pub fn validateBlobGas(
     parent_header: primitives.BlockHeader.BlockHeader,
     child_header: primitives.BlockHeader.BlockHeader,
 ) HeaderValidationError!void {
-    const child_hardfork = resolveHardfork(child_header.number, child_header.timestamp);
+    return validateBlobGasWithConfig(MAINNET_CHAIN_CONFIG, parent_header, child_header);
+}
+
+pub fn validateBlobGasWithConfig(
+    chain_config: ChainConfig,
+    parent_header: primitives.BlockHeader.BlockHeader,
+    child_header: primitives.BlockHeader.BlockHeader,
+) HeaderValidationError!void {
+    const child_hardfork = resolveHardforkWithConfig(chain_config, child_header.number, child_header.timestamp);
     if (child_hardfork.isBefore(.CANCUN)) {
         if ((child_header.blob_gas_used orelse 0) != 0) return HeaderValidationError.UnexpectedBlobGas;
         if ((child_header.excess_blob_gas orelse 0) != 0) return HeaderValidationError.UnexpectedBlobGas;
         return;
     }
 
+    const params = blob_fee.blobParamsForFork(chain_config, child_hardfork, child_header.timestamp);
     const blob_gas_used = child_header.blob_gas_used orelse return HeaderValidationError.MissingBlobGas;
-    if (blob_gas_used > maxBlobGasPerBlock(child_hardfork)) return HeaderValidationError.BlobGasLimitExceeded;
+    if (blob_gas_used > params.max_blob_gas) return HeaderValidationError.BlobGasLimitExceeded;
 
-    const expected_excess_blob_gas = nextExcessBlobGasForChild(parent_header, child_header.number, child_header.timestamp);
+    const expected_excess_blob_gas = nextExcessBlobGasForChildWithConfig(
+        chain_config,
+        parent_header,
+        child_header.number,
+        child_header.timestamp,
+    );
     const actual_excess_blob_gas = child_header.excess_blob_gas orelse return HeaderValidationError.MissingBlobGas;
     if (actual_excess_blob_gas != expected_excess_blob_gas) return HeaderValidationError.InvalidExcessBlobGas;
 }
+
+pub const ParentBlobFees = struct {
+    excess: u64,
+    used: u64,
+    base_fee: u256,
+};
 
 fn clampU512ToU256(value: u512) u256 {
     const max_u256 = @as(u512, std.math.maxInt(u256));
@@ -211,6 +214,7 @@ pub const MiningCoordinator = struct {
     coinbase: primitives.Address,
     current_base_fee_per_gas: ?u256,
     current_excess_blob_gas: u64,
+    parent_blob_fees: ?ParentBlobFees = null,
     current_blob_gas_used: u64,
     next_prevrandao: u256,
     mined_blocks: std.ArrayList(block_builder.BlockResult),
@@ -228,6 +232,7 @@ pub const MiningCoordinator = struct {
             .coinbase = primitives.Address{ .bytes = [_]u8{0xCB} ++ [_]u8{0} ** 19 },
             .current_base_fee_per_gas = null,
             .current_excess_blob_gas = 0,
+            .parent_blob_fees = null,
             .current_blob_gas_used = 0,
             .next_prevrandao = 0,
             .mined_blocks = .{},
@@ -253,21 +258,30 @@ pub const MiningCoordinator = struct {
         self.next_prevrandao = prevrandao;
     }
 
+    pub fn excessAt(self: *const MiningCoordinator, block_number: u64, timestamp: u64) u64 {
+        const fork = resolveHardforkWithConfig(self.chain_config, block_number, timestamp);
+        if (fork.isBefore(.CANCUN)) return 0;
+        const parent = self.parent_blob_fees orelse return self.current_excess_blob_gas;
+        const params = blob_fee.blobParamsForFork(self.chain_config, fork, timestamp);
+        return blob_fee.calcExcessBlobGas(fork, params, parent.excess, parent.used, parent.base_fee);
+    }
+
     pub fn blockContext(self: *const MiningCoordinator, options: MiningBlockOptions) guillotine_mini.BlockContext {
-        const active_hardfork = resolveHardforkWithConfig(self.chain_config, self.current_block_number, self.current_timestamp);
+        const timestamp = if (options.dev_runtime) |rt| rt.config.next_block_timestamp orelse self.current_timestamp else self.current_timestamp;
+        const active_hardfork = resolveHardforkWithConfig(self.chain_config, self.current_block_number, timestamp);
         const block_base_fee = currentBlockBaseFee(self.current_base_fee_per_gas, active_hardfork);
-        const excess_blob_gas = if (active_hardfork.isAtLeast(.CANCUN)) self.current_excess_blob_gas else 0;
+        const excess_blob_gas = self.excessAt(self.current_block_number, timestamp);
 
         return guillotine_mini.BlockContext{
             .chain_id = self.chain_id,
             .block_number = self.current_block_number,
-            .block_timestamp = self.current_timestamp,
+            .block_timestamp = timestamp,
             .block_difficulty = 0,
             .block_prevrandao = if (active_hardfork.isAtLeast(.MERGE)) options.prevrandao else 0,
             .block_coinbase = self.coinbase,
             .block_gas_limit = self.block_gas_limit,
             .block_base_fee = block_base_fee,
-            .blob_base_fee = nextBlobBaseFee(excess_blob_gas, active_hardfork),
+            .blob_base_fee = blob_fee.blobParamsForFork(self.chain_config, active_hardfork, timestamp).baseFee(excess_blob_gas),
             .block_hashes = options.block_hashes,
         };
     }
@@ -323,14 +337,14 @@ pub const MiningCoordinator = struct {
         const block_base_fee = block_ctx.block_base_fee;
         const empty_withdrawals: []const primitives.BlockBody.Withdrawal = &.{};
 
-        const result = try block_builder.buildBlockWithOptions(
+        var result = try block_builder.buildBlockWithOptions(
             allocator,
             sm,
             host_iface,
             self.pending_txs.items,
             block_ctx,
             .{
-                .fork = blockBuilderFork(active_hardfork),
+                .fork = block_builder.hardforkFromEvm(active_hardfork),
                 .dev_runtime = options.dev_runtime,
                 .hardfork_config = self.chain_config,
                 .parent_hash = options.parent_hash,
@@ -339,15 +353,22 @@ pub const MiningCoordinator = struct {
                 .skip_invalid_transactions = options.skip_invalid_transactions,
             },
         );
+        errdefer result.deinit(allocator);
 
         self.pending_txs.clearRetainingCapacity();
-        // Advance the blob-fee state using the block's ACTUAL blob gas
-        // (result.blob_gas_used), not the caller-supplied options.blob_gas_used
-        // (which defaults to 0 and is never populated on the production path).
-        // Using the real value keeps current_excess_blob_gas in agreement with
-        // calculateExcessBlobGasForFork(parent_excess, parent_blob_gas_used) so the
-        // EIP-4844/EIP-7691 blob base fee escalates when blocks contain blob txs.
-        self.advanceFeeState(active_hardfork, block_base_fee, result.total_gas_used, result.blob_gas_used, block_ctx.block_gas_limit);
+        // Retain actual parent inputs so interval mining or timestamp overrides
+        // recompute the child's excess using the child's true BPO parameters.
+        self.current_timestamp = block_ctx.block_timestamp;
+        self.parent_blob_fees = if (active_hardfork.isAtLeast(.CANCUN)) .{
+            .excess = self.excessAt(self.current_block_number, block_ctx.block_timestamp),
+            .used = result.blob_gas_used,
+            .base_fee = block_base_fee,
+        } else .{
+            .excess = 0,
+            .used = 0,
+            .base_fee = block_base_fee,
+        };
+        self.advanceFeeState(active_hardfork, block_base_fee, result.total_gas_used, block_ctx.block_gas_limit);
         self.current_block_number += 1;
         self.current_timestamp = block_ctx.block_timestamp +| 1;
 
@@ -413,10 +434,9 @@ pub const MiningCoordinator = struct {
         active_hardfork: primitives.Hardfork,
         block_base_fee: u256,
         gas_used: u64,
-        blob_gas_used: u64,
         block_gas_limit: u64,
     ) void {
-        const next_hardfork = resolveHardforkWithConfig(self.chain_config, self.current_block_number + 1, self.current_timestamp + 1);
+        const next_hardfork = resolveHardforkWithConfig(self.chain_config, self.current_block_number + 1, self.current_timestamp +| 1);
         if (next_hardfork.isBefore(.LONDON)) {
             self.current_base_fee_per_gas = null;
         } else if (active_hardfork.isBefore(.LONDON)) {
@@ -425,19 +445,7 @@ pub const MiningCoordinator = struct {
             self.current_base_fee_per_gas = calculateNextBaseFee(block_base_fee, gas_used, block_gas_limit);
         }
 
-        if (next_hardfork.isBefore(.CANCUN)) {
-            self.current_excess_blob_gas = 0;
-            self.current_blob_gas_used = 0;
-            return;
-        }
-
-        const parent_excess_blob_gas = if (active_hardfork.isAtLeast(.CANCUN)) self.current_excess_blob_gas else 0;
-        const parent_blob_gas_used = if (active_hardfork.isAtLeast(.CANCUN)) blob_gas_used else 0;
-        self.current_excess_blob_gas = calculateNextExcessBlobGas(
-            parent_excess_blob_gas,
-            parent_blob_gas_used,
-            blobTargetGasPerBlock(next_hardfork),
-        );
+        self.current_excess_blob_gas = self.excessAt(self.current_block_number + 1, self.current_timestamp +| 1);
         self.current_blob_gas_used = 0;
     }
 };
@@ -515,21 +523,6 @@ fn cloneBlockResult(
     result.receipts = receipts;
     result.included_tx_indexes = included_tx_indexes;
     return result;
-}
-
-fn blockBuilderFork(fork: primitives.Hardfork) block_builder.Hardfork {
-    if (fork.isAtLeast(.OSAKA)) return .osaka;
-    if (fork.isAtLeast(.PRAGUE)) return .prague;
-    if (fork.isAtLeast(.CANCUN)) return .cancun;
-    if (fork.isAtLeast(.SHANGHAI)) return .shanghai;
-    if (fork.isAtLeast(.MERGE)) return .paris;
-    if (fork.isAtLeast(.LONDON)) return .london;
-    if (fork.isAtLeast(.BERLIN)) return .berlin;
-    if (fork.isAtLeast(.ISTANBUL)) return .istanbul;
-    if (fork.isAtLeast(.CONSTANTINOPLE)) return .constantinople;
-    if (fork.isAtLeast(.BYZANTIUM)) return .byzantium;
-    if (fork.isAtLeast(.HOMESTEAD)) return .homestead;
-    return .frontier;
 }
 
 // ---------------------------------------------------------------------------

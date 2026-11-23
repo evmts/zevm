@@ -1773,14 +1773,14 @@ test "engine_getBlobsV1 returns blob sidecars from txpool" {
     var handlers = dispatcher.HandlerRegistry{};
     dispatch_wiring.install(&handlers, &rt);
 
-    var sidecar: primitives.Blob.BlobSidecar = undefined;
+    var sidecar: tx_encoding.BlobSidecar = undefined;
     @memset(sidecar.blob[0..], 0xab);
     sidecar.commitment = [_]u8{0x11} ** 48;
-    sidecar.proof = [_]u8{0x22} ** 48;
+    sidecar.proofs = .{ .blob = [_]u8{0x22} ** 48 };
     const versioned_hash = primitives.Blob.commitmentToVersionedHash(sidecar.commitment).bytes;
     const hash_hex = try primitives.Hex.bytesToHex(std.testing.allocator, &versioned_hash);
     defer std.testing.allocator.free(hash_hex);
-    const proof_hex = try primitives.Hex.bytesToHex(std.testing.allocator, &sidecar.proof);
+    const proof_hex = try primitives.Hex.bytesToHex(std.testing.allocator, &sidecar.proofs.blob);
     defer std.testing.allocator.free(proof_hex);
 
     try rt.pool.setNonce(runtime_mod.DEFAULT_DEV_ACCOUNTS[0], 0);
@@ -1792,7 +1792,7 @@ test "engine_getBlobsV1 returns blob sidecars from txpool" {
         .receipt_type = .eip4844,
         .hash = [_]u8{0x44} ** 32,
         .blob_versioned_hashes = &[_][32]u8{versioned_hash},
-        .blob_sidecars = &[_]primitives.Blob.BlobSidecar{sidecar},
+        .blob_sidecars = &[_]tx_encoding.BlobSidecar{sidecar},
     });
 
     var hashes = std.json.Array.init(std.testing.allocator);
@@ -1813,6 +1813,91 @@ test "engine_getBlobsV1 returns blob sidecars from txpool" {
     const blob_object = result_items[0].object;
     try std.testing.expectEqualStrings(proof_hex, blob_object.get("proof").?.string);
     try std.testing.expectEqual(@as(usize, 2 + primitives.Blob.BYTES_PER_BLOB * 2), blob_object.get("blob").?.string.len);
+}
+
+test "engine_getBlobsV2 and V3 return 128 PeerDAS cell proofs and follow all-or-null vs partial semantics" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    const sidecar = try std.testing.allocator.create(tx_encoding.BlobSidecar);
+    defer std.testing.allocator.destroy(sidecar);
+    @memset(sidecar.blob[0..], 0xcd);
+    sidecar.commitment = [_]u8{0x21} ** 48;
+    sidecar.proofs = .{ .cells = [_][48]u8{[_]u8{0x31} ** 48} ** tx_encoding.CELLS_PER_EXT_BLOB };
+    sidecar.proofs.cells[127] = [_]u8{0x99} ** 48;
+
+    const versioned_hash = primitives.Blob.commitmentToVersionedHash(sidecar.commitment).bytes;
+    const hash_hex = try primitives.Hex.bytesToHex(std.testing.allocator, &versioned_hash);
+    defer std.testing.allocator.free(hash_hex);
+    const missing_hash = [_]u8{0x01} ++ [_]u8{0xfe} ** 31;
+    const missing_hex = try primitives.Hex.bytesToHex(std.testing.allocator, &missing_hash);
+    defer std.testing.allocator.free(missing_hex);
+    const last_proof_hex = try primitives.Hex.bytesToHex(std.testing.allocator, &sidecar.proofs.cells[127]);
+    defer std.testing.allocator.free(last_proof_hex);
+
+    try rt.pool.setNonce(runtime_mod.DEFAULT_DEV_ACCOUNTS[0], 0);
+    try rt.pool.add(std.testing.allocator, .{
+        .sender = runtime_mod.DEFAULT_DEV_ACCOUNTS[0],
+        .nonce = 0,
+        .gas_limit = 21_000,
+        .max_fee_per_gas = runtime_mod.DEFAULT_GAS_PRICE,
+        .receipt_type = .eip4844,
+        .hash = [_]u8{0x55} ** 32,
+        .blob_versioned_hashes = &[_][32]u8{versioned_hash},
+        .blob_sidecars = sidecar[0..1],
+    });
+
+    // V2 returns all 128 cell proofs when every hash is present.
+    {
+        var hashes = std.json.Array.init(std.testing.allocator);
+        defer hashes.deinit();
+        try hashes.append(.{ .string = hash_hex });
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .array = hashes });
+
+        var request = try makeRequest("engine_getBlobsV2", .{ .array = params });
+        defer request.deinit(std.testing.allocator);
+        var response = try dispatcher.dispatch(std.testing.allocator, request, &handlers);
+        defer response.deinit(std.testing.allocator);
+
+        try std.testing.expect(response.error_value == null);
+        const items = response.result.?.array.items;
+        try std.testing.expectEqual(@as(usize, 1), items.len);
+        const proofs = items[0].object.get("proofs").?.array.items;
+        try std.testing.expectEqual(@as(usize, tx_encoding.CELLS_PER_EXT_BLOB), proofs.len);
+        try std.testing.expectEqualStrings(last_proof_hex, proofs[127].string);
+    }
+
+    // With a missing hash: V2 returns null (all-or-null); V3 returns [entry, null].
+    {
+        var hashes = std.json.Array.init(std.testing.allocator);
+        defer hashes.deinit();
+        try hashes.append(.{ .string = hash_hex });
+        try hashes.append(.{ .string = missing_hex });
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .array = hashes });
+
+        var v2_req = try makeRequest("engine_getBlobsV2", .{ .array = params });
+        defer v2_req.deinit(std.testing.allocator);
+        var v2_resp = try dispatcher.dispatch(std.testing.allocator, v2_req, &handlers);
+        defer v2_resp.deinit(std.testing.allocator);
+        try std.testing.expect(v2_resp.error_value == null);
+        try std.testing.expect(v2_resp.result.? == .null);
+
+        var v3_req = try makeRequest("engine_getBlobsV3", .{ .array = params });
+        defer v3_req.deinit(std.testing.allocator);
+        var v3_resp = try dispatcher.dispatch(std.testing.allocator, v3_req, &handlers);
+        defer v3_resp.deinit(std.testing.allocator);
+        try std.testing.expect(v3_resp.error_value == null);
+        try std.testing.expectEqual(@as(usize, 2), v3_resp.result.?.array.items.len);
+        try std.testing.expect(v3_resp.result.?.array.items[0] == .object);
+        try std.testing.expect(v3_resp.result.?.array.items[1] == .null);
+    }
 }
 
 test "eth_getTransactionByHash returns pending txpool transaction" {

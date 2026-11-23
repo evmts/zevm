@@ -1044,3 +1044,85 @@ test "EIP-7825 raw admission follows pending timestamp and permits exact cap" {
         try std.testing.expectEqual(before_balance, try rt.state.getBalance(sender));
     }
 }
+
+test "EIP-7594 admission gates v0/v1 wrappers, verifies KZG proofs, upgrades sidecars, and enforces 6-blob cap" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const temp = arena.allocator();
+
+    const infinity = [_]u8{0xc0} ++ [_]u8{0} ** 47;
+    const versioned_hash = primitives.Blob.commitmentToVersionedHash(infinity);
+    const sidecar = try temp.create(tx_encoding.BlobSidecar);
+    @memset(&sidecar.blob, 0);
+    sidecar.commitment = infinity;
+    sidecar.proofs = .{ .cells = [_][48]u8{infinity} ** tx_encoding.CELLS_PER_EXT_BLOB };
+
+    var tx = primitives.Transaction.Eip4844Transaction{
+        .chain_id = runtime.DEFAULT_CHAIN_ID,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 1,
+        .max_fee_per_gas = runtime.DEFAULT_GAS_PRICE,
+        .gas_limit = 21_000,
+        .to = runtime.DEFAULT_DEV_ACCOUNTS[1],
+        .value = 0,
+        .data = &.{},
+        .access_list = &.{},
+        .max_fee_per_blob_gas = 1,
+        .blob_versioned_hashes = &.{versioned_hash},
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+    const unsigned = try primitives.Transaction.encodeEip4844ForSigning(temp, tx);
+    const sig = try crypto.Crypto.unaudited_signHash(tx_encoding.transactionHash(unsigned), genesis.DEV_ACCOUNTS[0].private_key);
+    tx.y_parity = sig.v - 27;
+    std.mem.writeInt(u256, &tx.r, sig.r, .big);
+    std.mem.writeInt(u256, &tx.s, sig.s, .big);
+    const signed = try primitives.Transaction.encodeEip4844ForSigning(temp, tx);
+
+    const v1_raw = try tx_encoding.encodeBlobNetworkEnvelope(temp, signed, sidecar[0..1]);
+    const v1_params = makeRawTxParams(try bytesToHexAlloc(temp, v1_raw));
+    sidecar.proofs = .{ .blob = infinity };
+    const v0_raw = try tx_encoding.encodeBlobNetworkEnvelope(temp, signed, sidecar[0..1]);
+    const v0_params = makeRawTxParams(try bytesToHexAlloc(temp, v0_raw));
+
+    var rt = try makeRuntime();
+    defer rt.deinit();
+
+    // Pre-Osaka: v1 rejected, v0 verified via c-kzg and pooled.
+    try std.testing.expectError(error.BlobWrapperVersionMismatch, tx_submission.handleSendRawTransaction(temp, &rt, v1_params));
+    _ = try tx_submission.handleSendRawTransaction(temp, &rt, v0_params);
+    try std.testing.expect(rt.pool.items()[0].blob_sidecars[0].proofs == .blob);
+
+    // Activate Osaka: v0 rejected, tampered v1 rejected by c-kzg cell batch verify, valid v1 upgrades sidecar.
+    rt.hardfork_config.osaka_timestamp = 0;
+    try std.testing.expectError(error.BlobWrapperVersionMismatch, tx_submission.handleSendRawTransaction(temp, &rt, v0_params));
+
+    sidecar.proofs = .{ .cells = [_][48]u8{infinity} ** tx_encoding.CELLS_PER_EXT_BLOB };
+    sidecar.blob[31] = 1;
+    const tampered_v1 = try tx_encoding.encodeBlobNetworkEnvelope(temp, signed, sidecar[0..1]);
+    try std.testing.expectError(error.DecodeFailed, tx_submission.handleSendRawTransaction(temp, &rt, makeRawTxParams(try bytesToHexAlloc(temp, tampered_v1))));
+    try std.testing.expect(rt.pool.items()[0].blob_sidecars[0].proofs == .blob);
+
+    _ = try tx_submission.handleSendRawTransaction(temp, &rt, v1_params);
+    const pooled = rt.pool.items()[0];
+    try std.testing.expectEqualSlices(u8, signed, pooled.raw);
+    try std.testing.expectEqual(tx_encoding.transactionHash(signed), pooled.hash);
+    try std.testing.expectEqual(infinity, pooled.blob_sidecars[0].proofs.cells[127]);
+
+    // Fusaka 6-blobs-per-tx cap: 7-blob tx rejected with TooManyBlobs on Osaka even if block max > 6.
+    const seven_hashes = [_]primitives.Blob.VersionedHash{versioned_hash} ** 7;
+    var tx7 = tx;
+    tx7.nonce = 1;
+    tx7.blob_versioned_hashes = &seven_hashes;
+    tx7.y_parity = 0;
+    tx7.r = [_]u8{0} ** 32;
+    tx7.s = [_]u8{0} ** 32;
+    const unsigned7 = try primitives.Transaction.encodeEip4844ForSigning(temp, tx7);
+    const sig7 = try crypto.Crypto.unaudited_signHash(tx_encoding.transactionHash(unsigned7), genesis.DEV_ACCOUNTS[0].private_key);
+    tx7.y_parity = sig7.v - 27;
+    std.mem.writeInt(u256, &tx7.r, sig7.r, .big);
+    std.mem.writeInt(u256, &tx7.s, sig7.s, .big);
+    const signed7 = try primitives.Transaction.encodeEip4844ForSigning(temp, tx7);
+    try std.testing.expectError(error.TooManyBlobs, tx_submission.handleSendRawTransaction(temp, &rt, makeRawTxParams(try bytesToHexAlloc(temp, signed7))));
+}

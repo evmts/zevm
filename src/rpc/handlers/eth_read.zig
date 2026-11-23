@@ -5,6 +5,7 @@ const primitives = @import("primitives");
 const state_manager = @import("state-manager");
 const runtime = @import("../../node/runtime.zig");
 const block_builder = @import("../../block_builder.zig");
+const blob_fee = @import("../../blob_fee.zig");
 const mpt_proof = @import("../../mpt_proof.zig");
 const rpc_parse = @import("../parse.zig");
 
@@ -319,20 +320,38 @@ pub fn handleEthFeeHistory(
     const range = try resolveFeeHistoryRange(rt, params);
 
     const base_fees = try allocator.alloc(jsonrpc.types.Quantity, range.count + 1);
+    var base_fees_initialized: usize = 0;
+    errdefer {
+        for (base_fees[0..base_fees_initialized]) |fee| allocator.free(fee.value.string);
+        allocator.free(base_fees);
+    }
     for (base_fees, 0..) |*fee, index| {
         const block_number = range.oldest + @as(u64, @intCast(index));
         fee.* = try quantityHexU256(allocator, try feeHistoryBaseFee(rt, block_number));
+        base_fees_initialized += 1;
     }
+
     const gas_ratios = try allocator.alloc(f64, range.count);
+    errdefer allocator.free(gas_ratios);
     for (gas_ratios, 0..) |*ratio, index| {
         const block_number = range.oldest + @as(u64, @intCast(index));
         ratio.* = try feeHistoryGasUsedRatio(rt, block_number);
     }
+
     const blob_base_fees = try allocator.alloc(jsonrpc.types.Quantity, range.count + 1);
-    for (blob_base_fees) |*fee| {
-        fee.* = try quantityHexU256(allocator, currentBlobBaseFee(rt));
+    var blob_base_fees_initialized: usize = 0;
+    errdefer {
+        for (blob_base_fees[0..blob_base_fees_initialized]) |fee| allocator.free(fee.value.string);
+        allocator.free(blob_base_fees);
     }
+    for (blob_base_fees, 0..) |*fee, index| {
+        const block_number = range.oldest + @as(u64, @intCast(index));
+        fee.* = try quantityHexU256(allocator, try feeHistoryBlobBaseFee(rt, block_number));
+        blob_base_fees_initialized += 1;
+    }
+
     const blob_ratios = try allocator.alloc(f64, range.count);
+    errdefer allocator.free(blob_ratios);
     for (blob_ratios, 0..) |*ratio, index| {
         const block_number = range.oldest + @as(u64, @intCast(index));
         ratio.* = try feeHistoryBlobGasUsedRatio(rt, block_number);
@@ -476,10 +495,38 @@ fn feeHistoryGasUsedRatio(rt: *runtime.NodeRuntime, block_number: u64) !f64 {
         @as(f64, @floatFromInt(block.header.gas_limit));
 }
 
+fn feeHistoryBlobBaseFee(rt: *runtime.NodeRuntime, block_number: u64) !u256 {
+    if (try rt.blockchain.getBlockByNumber(block_number)) |block| {
+        const excess = block.header.excess_blob_gas orelse return 0;
+        return blob_fee.blobBaseFeeAt(rt.hardfork_config, block.header.number, block.header.timestamp, excess);
+    }
+    if (rt.dev_runtime.config.blob_base_fee) |override| return override;
+    if (block_number > 0) {
+        if (try rt.blockchain.getBlockByNumber(block_number - 1)) |parent| {
+            const next_timestamp = if (block_number == rt.head_block_number +| 1)
+                rt.pendingBlockTimestamp()
+            else
+                parent.header.timestamp +| rt.hardfork_config.seconds_per_slot;
+            const next_excess = blob_fee.nextExcessBlobGasForHeader(
+                rt.hardfork_config,
+                parent.header,
+                block_number,
+                next_timestamp,
+            );
+            return blob_fee.blobBaseFeeAt(rt.hardfork_config, block_number, next_timestamp, next_excess);
+        }
+    }
+    return currentBlobBaseFee(rt);
+}
+
 fn feeHistoryBlobGasUsedRatio(rt: *runtime.NodeRuntime, block_number: u64) !f64 {
     const block = (try rt.blockchain.getBlockByNumber(block_number)) orelse return 0.0;
     const blob_gas_used = block.header.blob_gas_used orelse return 0.0;
-    const max_blob_gas = block_builder.maxBlobGasPerBlock(.cancun) orelse return 0.0;
+    const max_blob_gas = blob_fee.resolveBlobParams(
+        rt.hardfork_config,
+        block.header.number,
+        block.header.timestamp,
+    ).max_blob_gas;
     if (max_blob_gas == 0) return 0.0;
     return @as(f64, @floatFromInt(blob_gas_used)) /
         @as(f64, @floatFromInt(max_blob_gas));
@@ -671,8 +718,35 @@ fn zeroRewards(
     return rewards;
 }
 
-fn currentBlobBaseFee(rt: *const runtime.NodeRuntime) u256 {
-    return rt.dev_runtime.config.blob_base_fee orelse rt.blob_base_fee;
+pub fn currentBlobBaseFee(rt: *const runtime.NodeRuntime) u256 {
+    if (rt.dev_runtime.config.blob_base_fee) |override| return override;
+
+    const pending_fork = rt.pendingHardfork();
+    if (pending_fork.isBefore(.CANCUN)) return 0;
+
+    var chain = @constCast(&rt.blockchain);
+    if (chain.getCanonicalHash(rt.head_block_number)) |head_hash| {
+        if (chain.getBlockLocal(head_hash)) |head_block| {
+            const next_block_number = rt.head_block_number +| 1;
+            const next_timestamp = rt.pendingBlockTimestamp();
+            const next_excess = blob_fee.nextExcessBlobGasForHeader(
+                rt.hardfork_config,
+                head_block.header,
+                next_block_number,
+                next_timestamp,
+            );
+            const computed = blob_fee.blobBaseFeeAt(
+                rt.hardfork_config,
+                next_block_number,
+                next_timestamp,
+                next_excess,
+            );
+            if (next_excess > 0 or rt.blob_base_fee == runtime.DEFAULT_BLOB_BASE_FEE) {
+                return computed;
+            }
+        }
+    }
+    return rt.blob_base_fee;
 }
 
 fn quantityValueHexU64(allocator: std.mem.Allocator, value: u64) !std.json.Value {
@@ -1011,8 +1085,9 @@ fn feeHistoryBlobBaseFeeArray(
         array.deinit();
     }
 
-    for (0..(range.count + 1)) |_| {
-        try array.append(try quantityValueHexU256(allocator, currentBlobBaseFee(rt)));
+    for (0..(range.count + 1)) |index| {
+        const block_number = range.oldest + @as(u64, @intCast(index));
+        try array.append(try quantityValueHexU256(allocator, try feeHistoryBlobBaseFee(rt, block_number)));
     }
     return .{ .array = array };
 }

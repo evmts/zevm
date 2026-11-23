@@ -2,6 +2,11 @@ const std = @import("std");
 const primitives = @import("primitives");
 const crypto = @import("crypto");
 
+pub const CELLS_PER_EXT_BLOB: usize = 128;
+pub const MAX_BLOBS_PER_TRANSACTION: usize = 6;
+pub const BYTES_PER_COMMITMENT: usize = 48;
+pub const BYTES_PER_PROOF: usize = 48;
+
 pub const TransactionEncodingError = error{
     InputTooShort,
     InputTooLong,
@@ -13,8 +18,80 @@ pub const TransactionEncodingError = error{
     InvalidRemainder,
     InvalidSignatureV,
     InvalidTransactionType,
+    UnsupportedBlobWrapperVersion,
     RlpPayloadTooLarge,
     OutOfMemory,
+};
+
+pub const BlobWrapperVersion = enum(u8) {
+    v0 = 0,
+    v1 = 1,
+
+    pub fn proofsPerBlob(self: BlobWrapperVersion) usize {
+        return switch (self) {
+            .v0 => 1,
+            .v1 => CELLS_PER_EXT_BLOB,
+        };
+    }
+
+    pub fn activeAt(self: BlobWrapperVersion, fork: primitives.Hardfork) bool {
+        if (fork.isBefore(.CANCUN)) return false;
+        return switch (self) {
+            .v0 => fork.isBefore(.OSAKA),
+            .v1 => fork.isAtLeast(.OSAKA),
+        };
+    }
+};
+
+pub const BlobSidecar = struct {
+    blob: [primitives.Blob.BYTES_PER_BLOB]u8,
+    commitment: [BYTES_PER_COMMITMENT]u8,
+    proofs: union(enum) {
+        blob: [BYTES_PER_PROOF]u8,
+        cells: [CELLS_PER_EXT_BLOB][BYTES_PER_PROOF]u8,
+    },
+};
+
+/// Zero-copy validated view over a type-3 network wrapper (EIP-4844 v0 or
+/// EIP-7594 PeerDAS v1). Slices borrow the input buffer; all structural checks
+/// run before any allocation.
+pub const BlobNetworkWrapper = struct {
+    version: BlobWrapperVersion,
+    /// RLP-encoded `[tx_payload]` bytes (without the leading `0x03` type byte).
+    tx_payload: []const u8,
+    blob_count: usize,
+    blobs: []const u8,
+    commitments: []const u8,
+    proofs: []const u8,
+
+    pub fn canonicalEnvelope(self: BlobNetworkWrapper, allocator: std.mem.Allocator) TransactionEncodingError!CanonicalEnvelope {
+        const canonical = try allocator.alloc(u8, self.tx_payload.len + 1);
+        canonical[0] = 0x03;
+        @memcpy(canonical[1..], self.tx_payload);
+        return .{ .bytes = canonical, .owned = canonical };
+    }
+
+    pub fn sidecars(self: BlobNetworkWrapper, allocator: std.mem.Allocator) TransactionEncodingError![]BlobSidecar {
+        const result = try allocator.alloc(BlobSidecar, self.blob_count);
+        errdefer allocator.free(result);
+        var bi: usize = 0;
+        var ci: usize = 0;
+        var pi: usize = 0;
+        for (result) |*sidecar| {
+            @memcpy(&sidecar.blob, try nextFixedBytes(primitives.Blob.BYTES_PER_BLOB, self.blobs, &bi));
+            sidecar.commitment = (try nextFixedBytes(BYTES_PER_COMMITMENT, self.commitments, &ci)).*;
+            switch (self.version) {
+                .v0 => sidecar.proofs = .{ .blob = (try nextFixedBytes(BYTES_PER_PROOF, self.proofs, &pi)).* },
+                .v1 => {
+                    sidecar.proofs = .{ .cells = undefined };
+                    for (&sidecar.proofs.cells) |*proof| {
+                        proof.* = (try nextFixedBytes(BYTES_PER_PROOF, self.proofs, &pi)).*;
+                    }
+                },
+            }
+        }
+        return result;
+    }
 };
 
 const RlpItem = union(enum) {
@@ -77,62 +154,178 @@ pub fn canonicalTransactionEnvelope(
     raw: []const u8,
 ) TransactionEncodingError!CanonicalEnvelope {
     if (raw.len == 0 or raw[0] != 0x03) return .{ .bytes = raw };
-    const tx_payload = try eip4844WrapperTransactionPayload(raw) orelse return .{ .bytes = raw };
-
-    const canonical = try allocator.alloc(u8, tx_payload.len + 1);
-    canonical[0] = 0x03;
-    @memcpy(canonical[1..], tx_payload);
-    return .{ .bytes = canonical, .owned = canonical };
+    const wrapper = try decodeBlobNetworkWrapper(raw) orelse return .{ .bytes = raw };
+    return wrapper.canonicalEnvelope(allocator);
 }
 
+/// Decodes and structurally validates a type-3 network wrapper (EIP-4844 v0 or
+/// EIP-7594 PeerDAS v1). Returns `null` for a bare canonical type-3 envelope.
+pub fn decodeBlobNetworkWrapper(raw: []const u8) TransactionEncodingError!?BlobNetworkWrapper {
+    if (raw.len == 0 or raw[0] != 0x03) return null;
+    const payload = try decodeTypedPayload(raw, 0x03);
+    var index: usize = 0;
+    switch (try parseRlpItem(payload, &index)) {
+        .string => return null,
+        .list => {},
+    }
+    const tx_payload = payload[0..index];
+
+    var items: [4]RlpItem = undefined;
+    var item_count: usize = 0;
+    while (index < payload.len) : (item_count += 1) {
+        if (item_count == items.len) return error.InvalidLength;
+        items[item_count] = try parseRlpItem(payload, &index);
+    }
+
+    const version: BlobWrapperVersion, const sections: []const RlpItem = switch (item_count) {
+        3 => .{ .v0, items[0..3] },
+        4 => blk: {
+            const version_bytes = try rlpItemString(items[0]);
+            if (version_bytes.len != 1 or version_bytes[0] != @intFromEnum(BlobWrapperVersion.v1)) {
+                return error.UnsupportedBlobWrapperVersion;
+            }
+            break :blk .{ .v1, items[1..4] };
+        },
+        else => return error.InvalidLength,
+    };
+
+    const blobs = try rlpItemList(sections[0]);
+    const commitments = try rlpItemList(sections[1]);
+    const proofs = try rlpItemList(sections[2]);
+
+    const blob_count = try rlpFixedStringListCount(blobs, primitives.Blob.BYTES_PER_BLOB);
+    const commitment_count = try rlpFixedStringListCount(commitments, BYTES_PER_COMMITMENT);
+    const proof_count = try rlpFixedStringListCount(proofs, BYTES_PER_PROOF);
+    if (blob_count == 0 or commitment_count != blob_count) return error.InvalidLength;
+    const expected_proofs = std.math.mul(usize, blob_count, version.proofsPerBlob()) catch return error.InvalidLength;
+    if (proof_count != expected_proofs) return error.InvalidLength;
+
+    return .{
+        .version = version,
+        .tx_payload = tx_payload,
+        .blob_count = blob_count,
+        .blobs = blobs,
+        .commitments = commitments,
+        .proofs = proofs,
+    };
+}
+
+/// Checks that the wrapper carries one commitment per versioned hash and that
+/// every commitment hashes to the transaction's corresponding versioned hash.
+pub fn validateWrapperCommitments(
+    wrapper: BlobNetworkWrapper,
+    expected_hashes: []const primitives.Blob.VersionedHash,
+) TransactionEncodingError!void {
+    if (wrapper.blob_count != expected_hashes.len) return error.InvalidLength;
+    var commitment_index: usize = 0;
+    for (expected_hashes) |expected| {
+        const commitment = try nextFixedBytes(BYTES_PER_COMMITMENT, wrapper.commitments, &commitment_index);
+        const versioned_hash = primitives.Blob.commitmentToVersionedHash(commitment.*);
+        if (!std.mem.eql(u8, &versioned_hash.bytes, &expected.bytes)) return error.InvalidLength;
+    }
+}
+
+/// Rejects network-wrapped blob transactions in canonical block bodies and
+/// Engine execution payloads.
+pub fn requireCanonicalEnvelope(raw: []const u8) TransactionEncodingError!void {
+    if (raw.len == 0 or raw[0] != 0x03) return;
+    const payload = try decodeTypedPayload(raw, 0x03);
+    var index: usize = 0;
+    if ((try parseRlpItem(payload, &index)) == .list) return error.UnexpectedInput;
+}
+
+/// Encodes a signed canonical type-3 envelope with the supplied sidecars into
+/// either a v0 (EIP-4844) or v1 (EIP-7594) network wrapper.
+pub fn encodeBlobNetworkEnvelope(
+    allocator: std.mem.Allocator,
+    canonical: []const u8,
+    sidecars: []const BlobSidecar,
+) TransactionEncodingError![]u8 {
+    try requireCanonicalEnvelope(canonical);
+    const fields = try decodeTypedPayloadFields(14, canonical, 0x03);
+    const hashes = try rlpItemList(fields[10]);
+    if (sidecars.len == 0) return error.InvalidLength;
+    const is_v1 = sidecars[0].proofs == .cells;
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const temp = arena.allocator();
+
+    const blobs = try temp.alloc([]const u8, sidecars.len);
+    const commitments = try temp.alloc([]const u8, sidecars.len);
+    var proofs = std.ArrayList([]const u8){};
+    var hash_index: usize = 0;
+    for (sidecars, blobs, commitments) |*sidecar, *blob_encoded, *commitment_encoded| {
+        if ((sidecar.proofs == .cells) != is_v1) return error.UnexpectedInput;
+        const expected = try nextFixedBytes(32, hashes, &hash_index);
+        const calculated = primitives.Blob.commitmentToVersionedHash(sidecar.commitment);
+        if (!std.mem.eql(u8, expected, &calculated.bytes)) return error.InvalidLength;
+        blob_encoded.* = primitives.Rlp.encodeBytes(temp, &sidecar.blob) catch return error.OutOfMemory;
+        commitment_encoded.* = primitives.Rlp.encodeBytes(temp, &sidecar.commitment) catch return error.OutOfMemory;
+        switch (sidecar.proofs) {
+            .blob => |*proof| try proofs.append(temp, primitives.Rlp.encodeBytes(temp, proof) catch return error.OutOfMemory),
+            .cells => |*cell_proofs| for (cell_proofs) |*proof| {
+                try proofs.append(temp, primitives.Rlp.encodeBytes(temp, proof) catch return error.OutOfMemory);
+            },
+        }
+    }
+    if (hash_index != hashes.len) return error.InvalidLength;
+
+    const blob_list = try encodeRlpListFromEncodedFields(temp, blobs);
+    const commitment_list = try encodeRlpListFromEncodedFields(temp, commitments);
+    const proof_list = try encodeRlpListFromEncodedFields(temp, proofs.items);
+    const wrapper_payload = if (is_v1)
+        try encodeRlpListFromEncodedFields(temp, &.{ canonical[1..], &.{@intFromEnum(BlobWrapperVersion.v1)}, blob_list, commitment_list, proof_list })
+    else
+        try encodeRlpListFromEncodedFields(temp, &.{ canonical[1..], blob_list, commitment_list, proof_list });
+
+    const out = try allocator.alloc(u8, wrapper_payload.len + 1);
+    out[0] = 0x03;
+    @memcpy(out[1..], wrapper_payload);
+    return out;
+}
+
+/// Compatibility reader returning EIP-4844 single-proof sidecars for v0 network
+/// wrappers. Returns `null` for bare envelopes and for v1 PeerDAS wrappers
+/// (which carry 128 cell proofs per blob; use `BlobNetworkWrapper.sidecars`).
 pub fn eip4844BlobSidecars(
     allocator: std.mem.Allocator,
     raw: []const u8,
     expected_hashes: []const primitives.Blob.VersionedHash,
 ) TransactionEncodingError!?[]const primitives.Blob.BlobSidecar {
     if (raw.len == 0 or raw[0] != 0x03) return null;
-    const payload = try decodeTypedPayload(raw, 0x03);
-    var payload_index: usize = 0;
-    const first = try parseRlpItem(payload, &payload_index);
-    switch (first) {
-        .string => return null,
-        .list => {
-            const blobs = try rlpItemList(try parseRlpItem(payload, &payload_index));
-            const commitments = try rlpItemList(try parseRlpItem(payload, &payload_index));
-            const proofs = try rlpItemList(try parseRlpItem(payload, &payload_index));
-            if (payload_index != payload.len) return error.InvalidLength;
-            if (try rlpListItemCount(blobs) != expected_hashes.len) return error.InvalidLength;
-            if (try rlpListItemCount(commitments) != expected_hashes.len) return error.InvalidLength;
-            if (try rlpListItemCount(proofs) != expected_hashes.len) return error.InvalidLength;
+    const wrapper = try decodeBlobNetworkWrapper(raw) orelse return null;
+    try validateWrapperCommitments(wrapper, expected_hashes);
+    if (wrapper.version != .v0) return null;
 
-            const sidecars = try allocator.alloc(primitives.Blob.BlobSidecar, expected_hashes.len);
-            errdefer allocator.free(sidecars);
+    const sidecars = try allocator.alloc(primitives.Blob.BlobSidecar, wrapper.blob_count);
+    errdefer allocator.free(sidecars);
 
-            var blob_index: usize = 0;
-            var commitment_index: usize = 0;
-            var proof_index: usize = 0;
-            for (sidecars, 0..) |*sidecar, index| {
-                const blob = try rlpItemString(try parseRlpItem(blobs, &blob_index));
-                const commitment = try rlpItemString(try parseRlpItem(commitments, &commitment_index));
-                const proof = try rlpItemString(try parseRlpItem(proofs, &proof_index));
-                if (blob.len != primitives.Blob.BYTES_PER_BLOB) return error.InvalidLength;
-                if (commitment.len != 48) return error.InvalidLength;
-                if (proof.len != 48) return error.InvalidLength;
-                @memcpy(sidecar.blob[0..], blob);
-                sidecar.commitment = commitment[0..48].*;
-                sidecar.proof = proof[0..48].*;
-
-                const versioned_hash = primitives.Blob.commitmentToVersionedHash(sidecar.commitment);
-                if (!std.mem.eql(u8, &versioned_hash.bytes, &expected_hashes[index].bytes)) {
-                    return error.InvalidLength;
-                }
-            }
-            if (blob_index != blobs.len or commitment_index != commitments.len or proof_index != proofs.len) {
-                return error.InvalidLength;
-            }
-            return sidecars;
-        },
+    var blob_index: usize = 0;
+    var commitment_index: usize = 0;
+    var proof_index: usize = 0;
+    for (sidecars) |*sidecar| {
+        @memcpy(sidecar.blob[0..], try nextFixedBytes(primitives.Blob.BYTES_PER_BLOB, wrapper.blobs, &blob_index));
+        sidecar.commitment = (try nextFixedBytes(BYTES_PER_COMMITMENT, wrapper.commitments, &commitment_index)).*;
+        sidecar.proof = (try nextFixedBytes(BYTES_PER_PROOF, wrapper.proofs, &proof_index)).*;
     }
+    return sidecars;
+}
+
+fn rlpFixedStringListCount(list_payload: []const u8, item_len: usize) TransactionEncodingError!usize {
+    var count: usize = 0;
+    var index: usize = 0;
+    while (index < list_payload.len) : (count += 1) {
+        const item = try rlpItemString(try parseRlpItem(list_payload, &index));
+        if (item.len != item_len) return error.InvalidLength;
+    }
+    return count;
+}
+
+fn nextFixedBytes(comptime size: usize, payload: []const u8, index: *usize) TransactionEncodingError!*const [size]u8 {
+    const bytes = try rlpItemString(try parseRlpItem(payload, index));
+    if (bytes.len != size) return error.InvalidLength;
+    return bytes[0..size];
 }
 
 pub fn envelopeToLegacyLikeTx(decoded: DecodedEnvelope) primitives.Transaction.LegacyTransaction {
@@ -441,11 +634,17 @@ pub fn decodeEip4844Envelope(
     allocator: std.mem.Allocator,
     raw: []const u8,
 ) TransactionEncodingError!primitives.Transaction.Eip4844Transaction {
-    const fields = try decodeEip4844PayloadFields(raw);
+    const wrapper = try decodeBlobNetworkWrapper(raw);
+    const fields = if (wrapper) |w| blk: {
+        var idx: usize = 0;
+        const tx_item = try parseRlpItem(w.tx_payload, &idx);
+        break :blk try decodeRlpPayloadFields(14, try rlpItemList(tx_item));
+    } else try decodeTypedPayloadFields(14, raw, 0x03);
     const access_list = try rlpItemToTransactionAccessList(allocator, fields[8]);
     errdefer freeTransactionAccessList(allocator, access_list);
     const blob_hashes = try rlpItemToBlobVersionedHashes(allocator, fields[10]);
     errdefer allocator.free(blob_hashes);
+    if (wrapper) |w| try validateWrapperCommitments(w, blob_hashes);
     const y_parity = try rlpStringToU8(try rlpItemString(fields[11]));
     if (y_parity > 1) return error.InvalidSignatureV;
     const to = try rlpStringToAddress(try rlpItemString(fields[5]));
@@ -668,45 +867,6 @@ fn decodeTypedPayload(
     return payload;
 }
 
-fn decodeEip4844PayloadFields(raw: []const u8) TransactionEncodingError![14]RlpItem {
-    const payload = try decodeTypedPayload(raw, 0x03);
-    var payload_index: usize = 0;
-    const first = try parseRlpItem(payload, &payload_index);
-    switch (first) {
-        .string => return decodeRlpPayloadFields(14, payload),
-        .list => |tx_payload| {
-            const blobs = try parseRlpItem(payload, &payload_index);
-            const commitments = try parseRlpItem(payload, &payload_index);
-            const proofs = try parseRlpItem(payload, &payload_index);
-            if (payload_index != payload.len) return error.InvalidLength;
-            _ = try rlpItemList(blobs);
-            _ = try rlpItemList(commitments);
-            _ = try rlpItemList(proofs);
-            return decodeRlpPayloadFields(14, tx_payload);
-        },
-    }
-}
-
-fn eip4844WrapperTransactionPayload(raw: []const u8) TransactionEncodingError!?[]const u8 {
-    const payload = try decodeTypedPayload(raw, 0x03);
-    var payload_index: usize = 0;
-    const first = try parseRlpItem(payload, &payload_index);
-    switch (first) {
-        .string => return null,
-        .list => {
-            const tx_payload = payload[0..payload_index];
-            const blobs = try parseRlpItem(payload, &payload_index);
-            const commitments = try parseRlpItem(payload, &payload_index);
-            const proofs = try parseRlpItem(payload, &payload_index);
-            if (payload_index != payload.len) return error.InvalidLength;
-            _ = try rlpItemList(blobs);
-            _ = try rlpItemList(commitments);
-            _ = try rlpItemList(proofs);
-            return tx_payload;
-        },
-    }
-}
-
 fn rlpItemString(item: RlpItem) TransactionEncodingError![]const u8 {
     return switch (item) {
         .string => |bytes| bytes,
@@ -719,16 +879,6 @@ fn rlpItemList(item: RlpItem) TransactionEncodingError![]const u8 {
         .list => |payload| payload,
         .string => error.UnexpectedInput,
     };
-}
-
-fn rlpListItemCount(payload: []const u8) TransactionEncodingError!usize {
-    var count: usize = 0;
-    var index: usize = 0;
-    while (index < payload.len) {
-        _ = try parseRlpItem(payload, &index);
-        count += 1;
-    }
-    return count;
 }
 
 fn rlpItemToTransactionAccessList(
@@ -1035,12 +1185,96 @@ test "eip4844 blob sidecars decode from network wrapper" {
     defer canonical_from_wrapper.deinit(allocator);
     try std.testing.expectEqualSlices(u8, canonical, canonical_from_wrapper.bytes);
 
+    const wrapper = (try decodeBlobNetworkWrapper(raw)).?;
+    try std.testing.expectEqual(BlobWrapperVersion.v0, wrapper.version);
+    try std.testing.expect(wrapper.version.activeAt(.PRAGUE));
+    try std.testing.expect(!wrapper.version.activeAt(.OSAKA));
+    const tagged_sidecars = try wrapper.sidecars(allocator);
+    defer allocator.free(tagged_sidecars);
+    try std.testing.expectEqual(@as(usize, 1), tagged_sidecars.len);
+    try std.testing.expectEqualSlices(u8, blob, tagged_sidecars[0].blob[0..]);
+    try std.testing.expectEqualSlices(u8, &commitment, tagged_sidecars[0].commitment[0..]);
+    try std.testing.expectEqualSlices(u8, &proof, &tagged_sidecars[0].proofs.blob);
+    const reencoded_v0 = try encodeBlobNetworkEnvelope(allocator, canonical, tagged_sidecars);
+    defer allocator.free(reencoded_v0);
+    try std.testing.expectEqualSlices(u8, raw, reencoded_v0);
+
+    try requireCanonicalEnvelope(canonical);
+    try std.testing.expectError(error.UnexpectedInput, requireCanonicalEnvelope(raw));
+
     const sidecars = (try eip4844BlobSidecars(allocator, raw, &versioned_hashes)).?;
     defer allocator.free(sidecars);
     try std.testing.expectEqual(@as(usize, 1), sidecars.len);
     try std.testing.expectEqualSlices(u8, blob, sidecars[0].blob[0..]);
     try std.testing.expectEqualSlices(u8, &commitment, sidecars[0].commitment[0..]);
     try std.testing.expectEqualSlices(u8, &proof, sidecars[0].proof[0..]);
+
+    // EIP-7594 PeerDAS v1 network wrapper: 5-item list with version=1 and 128 cell proofs/blob.
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const temp = arena.allocator();
+    var cell_fields = [_][]const u8{encoded_proof} ** CELLS_PER_EXT_BLOB;
+    const last_proof = [_]u8{0x88} ** 48;
+    cell_fields[127] = try primitives.Rlp.encodeBytes(temp, &last_proof);
+    const cells = try encodeRlpListFromEncodedFields(temp, &cell_fields);
+    const v1_payload = try encodeRlpListFromEncodedFields(temp, &.{ canonical[1..], &.{1}, blobs, commitments, cells });
+    const v1_raw = try std.mem.concat(temp, u8, &.{ &.{0x03}, v1_payload });
+
+    const v1_view = (try decodeBlobNetworkWrapper(v1_raw)).?;
+    try std.testing.expectEqual(BlobWrapperVersion.v1, v1_view.version);
+    try std.testing.expect(v1_view.version.activeAt(.OSAKA));
+    try std.testing.expect(!v1_view.version.activeAt(.PRAGUE));
+    try std.testing.expectEqual(@as(?[]const primitives.Blob.BlobSidecar, null), try eip4844BlobSidecars(allocator, v1_raw, &versioned_hashes));
+    const v1_sidecars = try v1_view.sidecars(allocator);
+    defer allocator.free(v1_sidecars);
+    try std.testing.expectEqual(@as(usize, 1), v1_sidecars.len);
+    try std.testing.expectEqualSlices(u8, &last_proof, &v1_sidecars[0].proofs.cells[127]);
+    const reencoded_v1 = try encodeBlobNetworkEnvelope(allocator, canonical, v1_sidecars);
+    defer allocator.free(reencoded_v1);
+    try std.testing.expectEqualSlices(u8, v1_raw, reencoded_v1);
+    try std.testing.expectError(error.UnexpectedInput, requireCanonicalEnvelope(v1_raw));
+
+    const bare = try canonicalTransactionEnvelope(allocator, v1_raw);
+    defer bare.deinit(allocator);
+    try std.testing.expectEqualSlices(u8, canonical, bare.bytes);
+    try std.testing.expectEqual(transactionHash(canonical), transactionHash(bare.bytes));
+    const v1_tx = try decodeEnvelope(allocator, v1_raw);
+    defer v1_tx.deinit(allocator);
+    try std.testing.expectEqual(tx.nonce, v1_tx.eip4844.nonce);
+
+    // Unsupported version encodings must fail with UnsupportedBlobWrapperVersion (or NonCanonicalSize).
+    const bad_versions = [_][]const u8{ &.{0x80}, &.{0x02}, &.{ 0x82, 0x01, 0x01 } };
+    for (bad_versions) |bad_ver| {
+        const bad_payload = try encodeRlpListFromEncodedFields(temp, &.{ canonical[1..], bad_ver, blobs, commitments, cells });
+        const bad_raw = try std.mem.concat(temp, u8, &.{ &.{0x03}, bad_payload });
+        try std.testing.expectError(error.UnsupportedBlobWrapperVersion, decodeBlobNetworkWrapper(bad_raw));
+    }
+
+    // Malformed wrappers across counts, widths, commitment hash mismatch, and list types.
+    const short_cells = try encodeRlpListFromEncodedFields(temp, cell_fields[0..127]);
+    const extra_cells = try encodeRlpListFromEncodedFields(temp, &(cell_fields ++ .{encoded_proof}));
+    const empty_list: []const u8 = &.{0xc0};
+    const wrong_commitment = try encodeRlpListFromEncodedFields(temp, &.{encoded_proof});
+    const malformed_cases = [_][]const []const u8{
+        &.{ canonical[1..], &.{ 0x81, 1 }, blobs, commitments, cells },
+        &.{ canonical[1..], &.{1}, blobs, commitments, short_cells },
+        &.{ canonical[1..], &.{1}, blobs, commitments, extra_cells },
+        &.{ canonical[1..], &.{1}, commitments, commitments, cells },
+        &.{ canonical[1..], &.{1}, empty_list, empty_list, empty_list },
+        &.{ canonical[1..], blobs, empty_list, proofs },
+        &.{ canonical[1..], blobs, wrong_commitment, proofs },
+        &.{ canonical[1..], blobs, commitments, blobs },
+        &.{ canonical[1..], blobs, blobs, proofs },
+        &.{ canonical[1..], blobs, commitments, cells },
+        &.{ canonical[1..], empty_list, commitments, proofs },
+        &.{ canonical[1..], blobs, commitments, proofs, empty_list },
+        &.{ canonical[1..], &.{1}, blobs, commitments, cells, empty_list },
+    };
+    for (malformed_cases) |fields| {
+        const invalid_payload = try encodeRlpListFromEncodedFields(temp, fields);
+        const invalid = try std.mem.concat(temp, u8, &.{ &.{0x03}, invalid_payload });
+        if (decodeEnvelope(temp, invalid)) |_| return error.ExpectedMalformedWrapper else |_| {}
+    }
 }
 
 test "legacy envelope decodes pre-eip155 and eip155 chain ids" {

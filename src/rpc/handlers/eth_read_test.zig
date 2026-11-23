@@ -1,8 +1,11 @@
 const std = @import("std");
 const jsonrpc = @import("jsonrpc");
+const primitives = @import("primitives");
 const eth_read = @import("eth_read.zig");
 const runtime = @import("../../node/runtime.zig");
 const genesis = @import("../../genesis.zig");
+const blob_fee = @import("../../blob_fee.zig");
+const hardfork_schedule = @import("../../hardfork_schedule.zig");
 
 fn makeBlockSpec(tag: []const u8) jsonrpc.types.BlockSpec {
     return .{ .value = .{ .string = tag } };
@@ -458,4 +461,75 @@ fn expectQuantityStr(q: jsonrpc.types.Quantity, expected: []const u8) !void {
         .string => |s| try std.testing.expectEqualStrings(expected, s),
         else => return error.ExpectedString,
     }
+}
+
+test "eth_blobBaseFee and eth_feeHistory reflect EIP-7892 BPO2 max and EIP-7918 reserve with non-trivial fees" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, .{
+        .chain_id = 1,
+        .hardfork_config = hardfork_schedule.MAINNET_CHAIN_CONFIG,
+    });
+    defer rt.deinit();
+
+    // Canonical BPO2 block: 18 blobs used (of 21 max), 350 blobs excess, 1 gwei base fee.
+    const parent = (try rt.blockchain.getBlockByNumber(0)).?;
+    const bpo2_excess: u64 = 350 * blob_fee.GAS_PER_BLOB;
+    const bpo2_used: u64 = 18 * blob_fee.GAS_PER_BLOB;
+    const bpo2_ts = hardfork_schedule.MAINNET_BPO2.timestamp;
+    const bpo2_fraction = hardfork_schedule.MAINNET_BPO2.base_fee_update_fraction;
+    const header = primitives.BlockHeader.BlockHeader{
+        .parent_hash = parent.hash,
+        .ommers_hash = primitives.BlockHeader.EMPTY_OMMERS_HASH,
+        .beneficiary = rt.coinbase,
+        .state_root = parent.header.state_root,
+        .transactions_root = primitives.BlockHeader.EMPTY_TRANSACTIONS_ROOT,
+        .receipts_root = primitives.BlockHeader.EMPTY_RECEIPTS_ROOT,
+        .logs_bloom = [_]u8{0} ** primitives.BlockHeader.BLOOM_SIZE,
+        .difficulty = 0,
+        .number = 1,
+        .gas_limit = 30_000_000,
+        .gas_used = 0,
+        .timestamp = bpo2_ts,
+        .base_fee_per_gas = 1_000_000_000,
+        .withdrawals_root = primitives.BlockHeader.EMPTY_WITHDRAWALS_ROOT,
+        .blob_gas_used = bpo2_used,
+        .excess_blob_gas = bpo2_excess,
+        .parent_beacon_block_root = primitives.Hash.ZERO,
+    };
+    const body = primitives.BlockBody.init();
+    const block = try primitives.Block.from(&header, &body, std.testing.allocator);
+    try rt.blockchain.putBlock(block);
+    try rt.blockchain.setCanonicalHead(block.hash);
+    rt.head_block_number = 1;
+    rt.head_block_timestamp = bpo2_ts;
+    rt.setNextBlockTimestamp(bpo2_ts + 12);
+
+    // EIP-7918 next excess on BPO2: 350 + (18 * 7) / 21 = 356 blobs (vs 354 without reserve).
+    const expected_next_fee = blob_fee.calcBlobBaseFee(356 * blob_fee.GAS_PER_BLOB, bpo2_fraction);
+    const expected_block1_fee = blob_fee.calcBlobBaseFee(bpo2_excess, bpo2_fraction);
+    const non_reserve_next_fee = blob_fee.calcBlobBaseFee(354 * blob_fee.GAS_PER_BLOB, bpo2_fraction);
+    try std.testing.expect(expected_block1_fee > 1);
+    try std.testing.expect(expected_next_fee > non_reserve_next_fee);
+    try std.testing.expect(expected_next_fee > expected_block1_fee);
+
+    const expected_next_hex = try std.fmt.allocPrint(arena.allocator(), "0x{x}", .{expected_next_fee});
+    const expected_block1_hex = try std.fmt.allocPrint(arena.allocator(), "0x{x}", .{expected_block1_fee});
+
+    const blob_fee_result = try eth_read.handleEthBlobBaseFee(arena.allocator(), &rt, .{});
+    try expectQuantityStr(blob_fee_result.value, expected_next_hex);
+
+    const history = try eth_read.handleEthFeeHistory(
+        arena.allocator(),
+        &rt,
+        .{
+            .block_count = .{ .value = .{ .string = "0x1" } },
+            .newest_block = makeBlockSpec("latest"),
+        },
+    );
+    try std.testing.expectEqual(@as(usize, 2), history.base_fee_per_blob_gas.?.len);
+    try expectQuantityStr(history.base_fee_per_blob_gas.?[0], expected_block1_hex);
+    try expectQuantityStr(history.base_fee_per_blob_gas.?[1], expected_next_hex);
+    try std.testing.expectApproxEqAbs(@as(f64, 18.0 / 21.0), history.blob_gas_used_ratio.?[0], 1e-12);
 }

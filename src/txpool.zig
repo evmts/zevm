@@ -1,5 +1,6 @@
 const std = @import("std");
 const primitives = @import("primitives");
+const tx_encoding = @import("transaction_encoding.zig");
 
 pub const EntryStatus = enum {
     pending,
@@ -20,7 +21,7 @@ pub const PooledTransaction = struct {
     input: []const u8 = &.{},
     raw: []const u8 = &.{},
     blob_versioned_hashes: []const [32]u8 = &.{},
-    blob_sidecars: []const primitives.Blob.BlobSidecar = &.{},
+    blob_sidecars: []const tx_encoding.BlobSidecar = &.{},
     v: u64 = 0,
     r: [32]u8 = [_]u8{0} ** 32,
     s: [32]u8 = [_]u8{0} ** 32,
@@ -68,6 +69,7 @@ pub const TransactionPool = struct {
 
         for (self.transactions.items) |tx| {
             const cloned = try cloneTransaction(allocator, tx);
+            errdefer out.freeStoredTransaction(cloned);
             try out.transactions.append(allocator, cloned);
         }
 
@@ -89,9 +91,16 @@ pub const TransactionPool = struct {
         if (self.findTransactionIndex(tx.sender, tx.nonce)) |index| {
             const existing = self.transactions.items[index];
             if (sameHash(tx.hash, existing.hash)) {
-                return;
-            }
-            if (!isPriceReplacement(existing, tx)) {
+                // Across the Osaka boundary the same signed blob tx may be
+                // resubmitted with cell proofs; a bare resubmission preserves
+                // existing sidecars.
+                if (tx.blob_sidecars.len == 0) return;
+                if (existing.blob_sidecars.len != 0 and
+                    std.meta.activeTag(tx.blob_sidecars[0].proofs) == std.meta.activeTag(existing.blob_sidecars[0].proofs))
+                {
+                    return;
+                }
+            } else if (!isPriceReplacement(existing, tx)) {
                 return error.ReplacementUnderpriced;
             }
 
@@ -102,6 +111,7 @@ pub const TransactionPool = struct {
         }
 
         const stored = try cloneTransaction(self.allocator, tx);
+        errdefer self.freeStoredTransaction(stored);
         try self.transactions.append(self.allocator, stored);
     }
 
@@ -275,7 +285,7 @@ fn cloneTransaction(
     errdefer allocator.free(cloned.raw);
     cloned.blob_versioned_hashes = try allocator.dupe([32]u8, tx.blob_versioned_hashes);
     errdefer allocator.free(cloned.blob_versioned_hashes);
-    cloned.blob_sidecars = try allocator.dupe(primitives.Blob.BlobSidecar, tx.blob_sidecars);
+    cloned.blob_sidecars = try allocator.dupe(tx_encoding.BlobSidecar, tx.blob_sidecars);
     errdefer allocator.free(cloned.blob_sidecars);
     return cloned;
 }

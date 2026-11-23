@@ -1,6 +1,8 @@
 const std = @import("std");
 const mining = @import("mining.zig");
 const mining_coordinator = @import("mining_coordinator.zig");
+const blob_fee = @import("blob_fee.zig");
+const hardfork_schedule = @import("hardfork_schedule.zig");
 const primitives = @import("primitives");
 
 test "MiningConfig default is auto" {
@@ -222,6 +224,49 @@ test "MiningCoordinator blockContext uses configured chain schedule" {
     try std.testing.expectEqual(
         mining_coordinator.nextBlobBaseFee(0, .CANCUN),
         coordinator.blockContext(.{}).blob_base_fee,
+    );
+}
+
+test "validateBlobGas and blockContext enforce EIP-7892 BPO1/BPO2 and EIP-7918 reserve with non-trivial fees" {
+    const gas_per_blob = mining_coordinator.GAS_PER_BLOB;
+    const bpo1_ts = hardfork_schedule.MAINNET_BPO1.timestamp;
+    const bpo2_ts = hardfork_schedule.MAINNET_BPO2.timestamp;
+
+    // BPO1 transition: parent has 12 blobs used, 1 gwei base fee -> reserve active: 12 * 5 / 15 = 4 blobs.
+    const parent = makeHeader(.{
+        .number = hardfork_schedule.MAINNET_CHAIN_CONFIG.merge_block,
+        .timestamp = bpo1_ts - 12,
+        .base_fee_per_gas = 1_000_000_000,
+        .blob_gas_used = 12 * gas_per_blob,
+        .excess_blob_gas = 0,
+    });
+    var child = makeHeader(.{
+        .number = parent.number + 1,
+        .timestamp = bpo1_ts,
+        .blob_gas_used = 15 * gas_per_blob,
+        .excess_blob_gas = 4 * gas_per_blob,
+    });
+    try mining_coordinator.validateBlobGas(parent, child);
+
+    child.blob_gas_used = 16 * gas_per_blob;
+    try std.testing.expectError(error.BlobGasLimitExceeded, mining_coordinator.validateBlobGas(parent, child));
+
+    // Non-trivial >1 wei blob fee comparison: BPO2 fraction lowers fee vs Prague at same excess.
+    var coordinator = mining_coordinator.MiningCoordinator.init();
+    defer coordinator.deinit(std.testing.allocator);
+    coordinator.current_block_number = hardfork_schedule.MAINNET_CHAIN_CONFIG.merge_block + 1;
+    coordinator.current_excess_blob_gas = 200 * gas_per_blob;
+
+    coordinator.current_timestamp = hardfork_schedule.MAINNET_CHAIN_CONFIG.prague_timestamp;
+    const prague_fee = coordinator.blockContext(.{}).blob_base_fee;
+    coordinator.current_timestamp = bpo2_ts;
+    const bpo2_fee = coordinator.blockContext(.{}).blob_base_fee;
+
+    try std.testing.expect(bpo2_fee > 1);
+    try std.testing.expect(bpo2_fee < prague_fee);
+    try std.testing.expectEqual(
+        blob_fee.calcBlobBaseFee(200 * gas_per_blob, hardfork_schedule.MAINNET_BPO2.base_fee_update_fraction),
+        bpo2_fee,
     );
 }
 

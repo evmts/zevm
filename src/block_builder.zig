@@ -5,6 +5,7 @@ const guillotine_mini = @import("guillotine_mini");
 const tx_processor = @import("tx_processor.zig");
 const dev_runtime = @import("rpc/dev_runtime.zig");
 const hardfork_schedule = @import("hardfork_schedule.zig");
+const blob_fee = @import("blob_fee.zig");
 const host_adapter = @import("host_adapter.zig");
 
 const INITIAL_BASE_FEE_PER_GAS: u256 = 1_000_000_000;
@@ -13,10 +14,6 @@ const GAS_LIMIT_ELASTICITY_MULTIPLIER: u64 = 2;
 const WEI_PER_GWEI: u256 = 1_000_000_000;
 const WEI_PER_ETHER: u256 = 1_000_000_000_000_000_000;
 const HISTORY_BUFFER_LENGTH: u64 = 8191;
-const CANCUN_MAX_BLOB_GAS_PER_BLOCK: u64 = 786_432;
-const PRAGUE_MAX_BLOB_GAS_PER_BLOCK: u64 = 1_179_648;
-const CANCUN_TARGET_BLOB_GAS_PER_BLOCK: u64 = 393_216;
-const PRAGUE_TARGET_BLOB_GAS_PER_BLOCK: u64 = 786_432;
 const SYSTEM_CALL_GAS_LIMIT: u64 = 30_000_000;
 const DEPOSIT_REQUEST_TYPE: u8 = 0x00;
 const WITHDRAWAL_REQUEST_TYPE: u8 = 0x01;
@@ -150,6 +147,8 @@ pub const BlockValidationInput = struct {
     header: *const primitives.BlockHeader.BlockHeader,
     parent_header: *const primitives.BlockHeader.BlockHeader,
     fork: Hardfork = .paris,
+    /// Source of EIP-7892 blob parameters. Null uses `MAINNET_CHAIN_CONFIG`.
+    hardfork_config: ?hardfork_schedule.ChainConfig = null,
     execution_transactions: []const tx_processor.ExecutionTx = &.{},
     transaction_envelopes: ?[]const primitives.BlockBody.TransactionData = null,
     receipts: []const primitives.Receipt.Receipt = &.{},
@@ -247,7 +246,14 @@ pub fn buildBlockWithOptions(
 
     var total_gas_used: u64 = 0;
     var total_blob_gas_used: u64 = 0;
-    const blob_gas_cap = maxBlobGasPerBlock(effective_fork);
+    const blob_gas_cap: ?u64 = if (atLeast(effective_fork, .cancun))
+        blob_fee.blobParamsForFork(
+            options.hardfork_config orelse hardfork_schedule.MAINNET_CHAIN_CONFIG,
+            evmHardforkFromBlockBuilderFork(effective_fork),
+            effective_block_ctx.block_timestamp,
+        ).max_blob_gas
+    else
+        null;
 
     for (transactions, 0..) |item, tx_index| {
         if (total_gas_used >= effective_block_ctx.block_gas_limit) {
@@ -570,7 +576,13 @@ pub fn validateBlock(allocator: std.mem.Allocator, input: BlockValidationInput) 
         if (!std.mem.eql(u8, &state_root, &input.header.state_root)) return error.InvalidStateRoot;
     }
 
-    const blob_gas_used = try validateBlobGas(input.header, input.parent_header, input.receipts, input.fork);
+    const blob_gas_used = try validateBlobGas(
+        input.header,
+        input.parent_header,
+        input.receipts,
+        input.fork,
+        input.hardfork_config orelse hardfork_schedule.MAINNET_CHAIN_CONFIG,
+    );
     const requests_hash = input.requests_hash;
 
     return .{
@@ -1247,20 +1259,24 @@ fn normalizedCodeHash(hash: [32]u8) [32]u8 {
     return hash;
 }
 
+/// Named-fork baseline blob gas cap ignoring BPO entries. Callers with a
+/// block timestamp should use `blob_fee.resolveBlobParams` or `blobParamsForFork`.
 pub fn maxBlobGasPerBlock(fork: Hardfork) ?u64 {
-    return switch (fork) {
-        .cancun => CANCUN_MAX_BLOB_GAS_PER_BLOCK,
-        // Osaka keeps the Prague blob schedule until a BPO fork changes it;
-        // BPO parameters resolve through the blob-fee module, not this enum.
-        .prague, .osaka => PRAGUE_MAX_BLOB_GAS_PER_BLOCK,
-        else => null,
-    };
+    if (!atLeast(fork, .cancun)) return null;
+    var named = hardfork_schedule.MAINNET_CHAIN_CONFIG;
+    named.blob_schedule = hardfork_schedule.BlobSchedule.empty;
+    return blob_fee.blobParamsForFork(named, evmHardforkFromBlockBuilderFork(fork), 0).max_blob_gas;
 }
 
+/// Named-fork excess blob gas without a parent base fee (EIP-4844/EIP-7691
+/// callers). Osaka+ callers with a parent base fee and BPO schedule should use
+/// `blob_fee.calcExcessBlobGas` or `blob_fee.nextExcessBlobGasForHeader`.
 pub fn calculateExcessBlobGasForFork(fork: Hardfork, parent_excess_blob_gas: u64, parent_blob_gas_used: u64) u64 {
-    const target = if (atLeast(fork, .prague)) PRAGUE_TARGET_BLOB_GAS_PER_BLOCK else CANCUN_TARGET_BLOB_GAS_PER_BLOCK;
-    if (parent_excess_blob_gas + parent_blob_gas_used < target) return 0;
-    return parent_excess_blob_gas + parent_blob_gas_used - target;
+    var named = hardfork_schedule.MAINNET_CHAIN_CONFIG;
+    named.blob_schedule = hardfork_schedule.BlobSchedule.empty;
+    const evm_fork = evmHardforkFromBlockBuilderFork(fork);
+    const params = blob_fee.blobParamsForFork(named, evm_fork, 0);
+    return blob_fee.calcExcessBlobGas(evm_fork, params, parent_excess_blob_gas, parent_blob_gas_used, 0);
 }
 
 fn validateWithdrawalsRoot(
@@ -1287,6 +1303,7 @@ fn validateBlobGas(
     parent: *const primitives.BlockHeader.BlockHeader,
     receipts: []const primitives.Receipt.Receipt,
     fork: Hardfork,
+    config: hardfork_schedule.ChainConfig,
 ) !u64 {
     const actual_blob_gas = try blobGasUsedFromReceipts(receipts);
 
@@ -1299,11 +1316,18 @@ fn validateBlobGas(
     const header_blob_gas = header.blob_gas_used orelse return error.MissingBlobGasUsed;
     if (header_blob_gas != actual_blob_gas) return error.InvalidBlobGasUsed;
 
-    const cap = maxBlobGasPerBlock(fork).?;
-    if (actual_blob_gas > cap) return error.BlobGasLimitExceeded;
+    const evm_fork = evmHardforkFromBlockBuilderFork(fork);
+    const params = blob_fee.blobParamsForFork(config, evm_fork, header.timestamp);
+    if (actual_blob_gas > params.max_blob_gas) return error.BlobGasLimitExceeded;
 
     const header_excess = header.excess_blob_gas orelse return error.MissingExcessBlobGas;
-    const expected_excess = calculateExcessBlobGasForFork(fork, parent.excess_blob_gas orelse 0, parent.blob_gas_used orelse 0);
+    const expected_excess = blob_fee.calcExcessBlobGas(
+        evm_fork,
+        params,
+        parent.excess_blob_gas orelse 0,
+        parent.blob_gas_used orelse 0,
+        parent.base_fee_per_gas orelse 0,
+    );
     if (header_excess != expected_excess) return error.InvalidExcessBlobGas;
 
     return actual_blob_gas;

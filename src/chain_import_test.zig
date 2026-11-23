@@ -400,3 +400,34 @@ test "EIP-7934 import rejects an oversized block after valid ones" {
     try std.testing.expect((try chain.getBlockByHash(blockHashOf(small))) != null);
     try std.testing.expectEqual(@as(?primitives.Block.Block, null), try chain.getBlockByHash(blockHashOf(oversized)));
 }
+
+test "validateImportedBlobHeader enforces EIP-7918 and EIP-7892 BPO1/BPO2 rules" {
+    const gas_per_blob: u64 = hardfork_schedule.GAS_PER_BLOB;
+    const parent = primitives.BlockHeader.BlockHeader{
+        .number = 24_000_000,
+        .timestamp = hardfork_schedule.MAINNET_BPO1.timestamp - 12,
+        .base_fee_per_gas = 1_000_000_000,
+        .blob_gas_used = 12 * gas_per_blob,
+        .excess_blob_gas = 0,
+    };
+    var child = primitives.BlockHeader.BlockHeader{
+        .number = 24_000_001,
+        .timestamp = hardfork_schedule.MAINNET_BPO1.timestamp,
+        .blob_gas_used = 15 * gas_per_blob,
+        .excess_blob_gas = 4 * gas_per_blob,
+    };
+    try chain_import.validateImportedBlobHeader(hardfork_schedule.MAINNET_CHAIN_CONFIG, parent, child);
+
+    child.excess_blob_gas = 2 * gas_per_blob;
+    try std.testing.expectError(
+        error.InvalidExcessBlobGas,
+        chain_import.validateImportedBlobHeader(hardfork_schedule.MAINNET_CHAIN_CONFIG, parent, child),
+    );
+
+    child.excess_blob_gas = 4 * gas_per_blob;
+    child.blob_gas_used = 16 * gas_per_blob;
+    try std.testing.expectError(
+        error.BlobGasLimitExceeded,
+        chain_import.validateImportedBlobHeader(hardfork_schedule.MAINNET_CHAIN_CONFIG, parent, child),
+    );
+}

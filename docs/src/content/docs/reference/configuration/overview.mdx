@@ -134,6 +134,18 @@ For concrete capture examples and failure triage flow, see [Troubleshooting -> C
 
 Trusted hardfork policy is explicit and owned by the runtime. `chainId = 1` defaults to the mainnet activation schedule; any other trusted chain defaults to a dev schedule with Cancun active from genesis and Prague/Osaka inactive. `mode.trusted.hardfork` can override any activation field with decimal `u64` values: `homesteadBlock`, `daoBlock`, `tangerineWhistleBlock`, `spuriousDragonBlock`, `byzantiumBlock`, `petersburgBlock`, `istanbulBlock`, `muirGlacierBlock`, `berlinBlock`, `londonBlock`, `arrowGlacierBlock`, `grayGlacierBlock`, `mergeBlock`, `shanghaiTimestamp`, `cancunTimestamp`, `pragueTimestamp`, `osakaTimestamp`, and `secondsPerSlot`.
 
+`mode.trusted.hardfork.blobSchedule` declares EIP-7892 blob-parameter-only (BPO) forks. It is an array of objects with four required decimal `u64` fields: `timestamp`, `target`, `max`, and `baseFeeUpdateFraction`. Entries must have strictly increasing timestamps at or after `osakaTimestamp`, `max` greater than zero, `target` at most `max`, and a non-zero `baseFeeUpdateFraction`; the array holds at most 32 entries. From its timestamp on, an entry replaces the blob target, the blob limit, and the blob base fee update fraction of the active hardfork. BPO forks apply only once Osaka is active. When `blobSchedule` is absent, `chainId = 1` defaults to the Ethereum mainnet schedule (BPO1 at `1765290071` with target 10 and max 15, BPO2 at `1767747671` with target 14 and max 21) and dev chains default to no BPO forks; an empty array `[]` explicitly disables BPO forks.
+
+```json
+"hardfork": {
+  "osakaTimestamp": 0,
+  "blobSchedule": [
+    { "timestamp": 1765290071, "target": 10, "max": 15, "baseFeeUpdateFraction": 8346193 },
+    { "timestamp": 1767747671, "target": 14, "max": 21, "baseFeeUpdateFraction": 11684671 }
+  ]
+}
+```
+
 `mode.trusted.genesis` or CLI `--genesis` points at a genesis JSON file and imports its `alloc` object at startup. Alloc entries may use `balance` or legacy `wei`, plus optional `nonce`, `code`, and `storage`. When a genesis file is supplied, ZEVM seeds state from that allocation instead of pre-funding the deterministic dev accounts; the managed signing accounts remain available through `eth_accounts`.
 
 `mode.trusted.chainRlp` or CLI `--chain-rlp` points at a concatenated RLP block stream. ZEVM imports those blocks after genesis as query-only block history, makes the imported head canonical, and keeps decoded transaction bodies available for block and transaction-by-position reads. It does not execute imported transactions or materialize imported state, receipts, or logs in phase 1.

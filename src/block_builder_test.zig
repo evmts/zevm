@@ -1169,3 +1169,102 @@ test "EIP-7825 validateBlock rejects an Osaka block holding a transaction above 
         }
     }
 }
+
+test "validateBlock enforces EIP-7918 reserve price on Osaka and EIP-7892 BPO2 max blobs" {
+    const gas_per_blob: u64 = hardfork_schedule.GAS_PER_BLOB;
+    const withdrawals = [_]primitives.BlockBody.Withdrawal{};
+
+    // Parent at Osaka with target blob usage (6 blobs) and 1 gwei base fee.
+    var parent = parentHeader();
+    parent.timestamp = hardfork_schedule.MAINNET_CHAIN_CONFIG.osaka_timestamp;
+    parent.base_fee_per_gas = 1_000_000_000;
+    parent.withdrawals_root = primitives.BlockHeader.EMPTY_WITHDRAWALS_ROOT;
+    parent.blob_gas_used = 6 * gas_per_blob;
+    parent.excess_blob_gas = 0;
+    parent.parent_beacon_block_root = primitives.Hash.ZERO;
+
+    var child = childHeader(parent);
+    child.timestamp = parent.timestamp + 12;
+    child.base_fee_per_gas = try block_builder.expectedBaseFeePerGas(&parent);
+    child.gas_used = 0;
+    child.transactions_root = primitives.BlockHeader.EMPTY_TRANSACTIONS_ROOT;
+    child.receipts_root = primitives.BlockHeader.EMPTY_RECEIPTS_ROOT;
+    child.withdrawals_root = try block_builder.computeWithdrawalsRoot(std.testing.allocator, &withdrawals);
+    child.blob_gas_used = 0;
+    child.parent_beacon_block_root = primitives.Hash.ZERO;
+
+    // Pre-Osaka (Prague): excess resets to 0.
+    child.excess_blob_gas = 0;
+    _ = try block_builder.validateBlock(std.testing.allocator, .{
+        .header = &child,
+        .parent_header = &parent,
+        .fork = .prague,
+        .withdrawals = &withdrawals,
+    });
+    // Osaka: reserve active -> excess = 6 * 3 / 9 = 2 blobs; 0 is rejected.
+    try std.testing.expectError(error.InvalidExcessBlobGas, block_builder.validateBlock(std.testing.allocator, .{
+        .header = &child,
+        .parent_header = &parent,
+        .fork = .osaka,
+        .withdrawals = &withdrawals,
+    }));
+    child.excess_blob_gas = 2 * gas_per_blob;
+    _ = try block_builder.validateBlock(std.testing.allocator, .{
+        .header = &child,
+        .parent_header = &parent,
+        .fork = .osaka,
+        .withdrawals = &withdrawals,
+    });
+
+    // BPO2 (max 21 blobs): 21 blobs accepted, 22 blobs rejected.
+    var bpo2_parent = parent;
+    bpo2_parent.timestamp = hardfork_schedule.MAINNET_BPO2.timestamp - 12;
+    bpo2_parent.blob_gas_used = 0;
+    bpo2_parent.excess_blob_gas = 0;
+    const blob_21_receipts = [_]primitives.Receipt.Receipt{makeReceipt(.{
+        .logs_bloom = [_]u8{0} ** 256,
+        .tx_type = .eip4844,
+        .blob_gas_used = 21 * gas_per_blob,
+    })};
+    const tx_raw = [_]u8{ 0x03, 0xc0 };
+    const txs = [_]primitives.BlockBody.TransactionData{.{ .raw = &tx_raw }};
+
+    var bpo2_child = childHeader(bpo2_parent);
+    bpo2_child.timestamp = hardfork_schedule.MAINNET_BPO2.timestamp;
+    bpo2_child.base_fee_per_gas = try block_builder.expectedBaseFeePerGas(&bpo2_parent);
+    bpo2_child.gas_used = 21_000;
+    bpo2_child.transactions_root = try block_builder.computeRawTransactionsRoot(std.testing.allocator, &txs);
+    bpo2_child.receipts_root = try block_builder.computeReceiptsRoot(std.testing.allocator, &blob_21_receipts);
+    bpo2_child.logs_bloom = block_builder.aggregateLogsBloom(&blob_21_receipts);
+    bpo2_child.withdrawals_root = try block_builder.computeWithdrawalsRoot(std.testing.allocator, &withdrawals);
+    bpo2_child.blob_gas_used = 21 * gas_per_blob;
+    bpo2_child.excess_blob_gas = 0;
+    bpo2_child.parent_beacon_block_root = primitives.Hash.ZERO;
+
+    _ = try block_builder.validateBlock(std.testing.allocator, .{
+        .header = &bpo2_child,
+        .parent_header = &bpo2_parent,
+        .fork = .osaka,
+        .hardfork_config = hardfork_schedule.MAINNET_CHAIN_CONFIG,
+        .transaction_envelopes = &txs,
+        .receipts = &blob_21_receipts,
+        .withdrawals = &withdrawals,
+    });
+
+    const blob_22_receipts = [_]primitives.Receipt.Receipt{makeReceipt(.{
+        .logs_bloom = [_]u8{0} ** 256,
+        .tx_type = .eip4844,
+        .blob_gas_used = 22 * gas_per_blob,
+    })};
+    bpo2_child.receipts_root = try block_builder.computeReceiptsRoot(std.testing.allocator, &blob_22_receipts);
+    bpo2_child.blob_gas_used = 22 * gas_per_blob;
+    try std.testing.expectError(error.BlobGasLimitExceeded, block_builder.validateBlock(std.testing.allocator, .{
+        .header = &bpo2_child,
+        .parent_header = &bpo2_parent,
+        .fork = .osaka,
+        .hardfork_config = hardfork_schedule.MAINNET_CHAIN_CONFIG,
+        .transaction_envelopes = &txs,
+        .receipts = &blob_22_receipts,
+        .withdrawals = &withdrawals,
+    }));
+}

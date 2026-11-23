@@ -227,6 +227,9 @@ const FileHardforkConfig = struct {
     prague_timestamp: ?u64 = null,
     osaka_timestamp: ?u64 = null,
     seconds_per_slot: ?u64 = null,
+    /// EIP-7892 BPO entries. Replaces the chain default (mainnet BPO1/BPO2 on
+    /// chain 1, empty on dev chains); `[]` disables BPO forks.
+    blob_schedule: ?hardfork_schedule.BlobSchedule = null,
 };
 
 const FileLight = struct {
@@ -432,7 +435,7 @@ fn resolveTrusted(
         .max_priority_fee_per_gas = options.max_priority_fee_per_gas orelse file_value.max_priority_fee_per_gas orelse node_runtime.DEFAULT_MAX_PRIORITY_FEE,
         .block_gas_limit = options.block_gas_limit orelse file_value.block_gas_limit orelse DEFAULT_BLOCK_GAS_LIMIT,
         .mining_config = try resolveMining(options, file_value.mining_config),
-        .hardfork_config = resolveHardforkConfig(chain_id, file_value.hardfork_config),
+        .hardfork_config = try resolveHardforkConfig(chain_id, file_value.hardfork_config),
         .fork = fork,
         .engine_sync_fallback_url = engine_sync_fallback_url,
         .genesis_alloc_path = genesis_alloc_path,
@@ -440,7 +443,7 @@ fn resolveTrusted(
     };
 }
 
-fn resolveHardforkConfig(chain_id: u64, file_config: ?FileHardforkConfig) hardfork_schedule.ChainConfig {
+fn resolveHardforkConfig(chain_id: u64, file_config: ?FileHardforkConfig) LoadError!hardfork_schedule.ChainConfig {
     var config = node_runtime.defaultHardforkConfigForChainId(chain_id);
     const overrides = file_config orelse return config;
     if (overrides.homestead_block) |value| config.homestead_block = value;
@@ -462,6 +465,14 @@ fn resolveHardforkConfig(chain_id: u64, file_config: ?FileHardforkConfig) hardfo
     if (overrides.prague_timestamp) |value| config.prague_timestamp = value;
     if (overrides.osaka_timestamp) |value| config.osaka_timestamp = value;
     if (overrides.seconds_per_slot) |value| config.seconds_per_slot = value;
+    if (overrides.blob_schedule) |value| {
+        // EIP-7892 BPO forks activate at or after Osaka; reject an explicitly
+        // configured entry timestamped before `osaka_timestamp`.
+        for (value.entries()) |entry| {
+            if (entry.timestamp < config.osaka_timestamp) return error.InvalidConfig;
+        }
+        config.blob_schedule = value;
+    }
     return config;
 }
 
@@ -821,11 +832,61 @@ fn parseHardforkConfig(value: std.json.Value) LoadError!FileHardforkConfig {
             config.osaka_timestamp = try parseU64(entry.value_ptr.*);
         } else if (std.mem.eql(u8, key, "secondsPerSlot")) {
             config.seconds_per_slot = try parseU64(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "blobSchedule")) {
+            config.blob_schedule = try parseBlobSchedule(entry.value_ptr.*);
         } else {
             return error.InvalidConfig;
         }
     }
     return config;
+}
+
+/// Parses `[{ "timestamp", "target", "max", "baseFeeUpdateFraction" }, ...]`.
+/// Entries must have strictly increasing timestamps and valid parameters.
+fn parseBlobSchedule(value: std.json.Value) LoadError!hardfork_schedule.BlobSchedule {
+    const items = switch (value) {
+        .array => |array| array.items,
+        else => return error.InvalidConfig,
+    };
+    if (items.len > hardfork_schedule.MAX_BLOB_SCHEDULE_ENTRIES) return error.InvalidConfig;
+
+    var entries: [hardfork_schedule.MAX_BLOB_SCHEDULE_ENTRIES]hardfork_schedule.BlobScheduleEntry = undefined;
+    for (items, 0..) |item, index| {
+        entries[index] = try parseBlobScheduleEntry(item);
+    }
+    return hardfork_schedule.BlobSchedule.init(entries[0..items.len]) catch error.InvalidConfig;
+}
+
+fn parseBlobScheduleEntry(value: std.json.Value) LoadError!hardfork_schedule.BlobScheduleEntry {
+    const object = switch (value) {
+        .object => |object| object,
+        else => return error.InvalidConfig,
+    };
+    var timestamp: ?u64 = null;
+    var target: ?u64 = null;
+    var max: ?u64 = null;
+    var fraction: ?u64 = null;
+    var iterator = object.iterator();
+    while (iterator.next()) |entry| {
+        const key = entry.key_ptr.*;
+        if (std.mem.eql(u8, key, "timestamp")) {
+            timestamp = try parseU64(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "target")) {
+            target = try parseU64(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "max")) {
+            max = try parseU64(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "baseFeeUpdateFraction")) {
+            fraction = try parseU64(entry.value_ptr.*);
+        } else {
+            return error.InvalidConfig;
+        }
+    }
+    return .{
+        .timestamp = timestamp orelse return error.InvalidConfig,
+        .target = target orelse return error.InvalidConfig,
+        .max = max orelse return error.InvalidConfig,
+        .base_fee_update_fraction = fraction orelse return error.InvalidConfig,
+    };
 }
 
 fn parseMining(value: std.json.Value) LoadError!mining.MiningConfig {
@@ -944,14 +1005,11 @@ fn parseBool(value: std.json.Value) LoadError!bool {
 }
 
 fn parseU64(value: std.json.Value) LoadError!u64 {
-    const integer = switch (value) {
-        .integer => |integer| integer,
-        else => return error.InvalidConfig,
+    return switch (value) {
+        .integer => |integer| std.math.cast(u64, integer) orelse error.InvalidConfig,
+        .number_string => |number| std.fmt.parseInt(u64, number, 10) catch error.InvalidConfig,
+        else => error.InvalidConfig,
     };
-    if (integer < 0) {
-        return error.InvalidConfig;
-    }
-    return @intCast(integer);
 }
 
 fn parseU16(value: std.json.Value) LoadError!u16 {

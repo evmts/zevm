@@ -3,6 +3,8 @@ const blockchain_mod = @import("blockchain");
 const primitives = @import("primitives");
 const block_builder = @import("block_builder.zig");
 const hardfork_schedule = @import("hardfork_schedule.zig");
+const mining_coordinator = @import("mining_coordinator.zig");
+const tx_encoding = @import("transaction_encoding.zig");
 
 /// EIP-7934 maximum RLP-encoded execution block size, enforced from Osaka.
 pub const MAX_RLP_BLOCK_SIZE: usize = block_builder.MAX_RLP_BLOCK_SIZE;
@@ -102,6 +104,16 @@ pub fn importChainFileWithOptions(
 /// no size rule, so larger historical blocks stay valid.
 pub fn validateBlockRlpSize(block_rlp_size: u64, hardfork: primitives.Hardfork) error{BlockRlpSizeExceeded}!void {
     if (hardfork.isAtLeast(.OSAKA) and block_rlp_size > MAX_RLP_BLOCK_SIZE) return error.BlockRlpSizeExceeded;
+}
+
+/// Validates an imported block header's blob gas limit and EIP-7918 / EIP-7892
+/// excess blob gas against its parent header and chain configuration.
+pub fn validateImportedBlobHeader(
+    chain_config: hardfork_schedule.ChainConfig,
+    parent_header: primitives.BlockHeader.BlockHeader,
+    child_header: primitives.BlockHeader.BlockHeader,
+) mining_coordinator.HeaderValidationError!void {
+    return mining_coordinator.validateBlobGasWithConfig(chain_config, parent_header, child_header);
 }
 
 pub fn importChainBytes(
@@ -326,6 +338,7 @@ fn decodeTransactions(
             .list => block_bytes[tx_span.start..tx_span.end],
             .string => block_bytes[tx_span.payload_start..tx_span.payload_end],
         };
+        try tx_encoding.requireCanonicalEnvelope(raw);
         transactions[index] = .{ .raw = try allocator.dupe(u8, raw) };
         initialized += 1;
     }

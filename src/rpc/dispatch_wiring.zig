@@ -8,6 +8,7 @@ const primitives = @import("primitives");
 const guillotine_mini = @import("guillotine_mini");
 const rpc_parse = @import("parse.zig");
 const block_builder = @import("../block_builder.zig");
+const blob_fee = @import("../blob_fee.zig");
 const dispatcher_mod = @import("dispatcher.zig");
 const log_index_mod = @import("../log_index.zig");
 const block_query_handlers = @import("handlers/block_query_handlers.zig");
@@ -139,7 +140,7 @@ fn dispatchMethod(
     }
     if (std.mem.eql(u8, method_name, "eth_blobBaseFee")) {
         try validateNoParams(params);
-        return hexU256(allocator, currentBlobBaseFee(rt));
+        return hexU256(allocator, eth_read.currentBlobBaseFee(rt));
     }
     if (std.mem.eql(u8, method_name, "eth_feeHistory")) {
         const fee_history_params = try eth_read.parseEthFeeHistoryParams(allocator, params);
@@ -249,6 +250,8 @@ fn dispatchMethod(
             error.InvalidHexData,
             error.DecodeFailed,
             error.UnsupportedTxType,
+            error.BlobWrapperVersionMismatch,
+            error.TooManyBlobs,
             error.SenderRecoveryFailed,
             => return error.InvalidParams,
             else => return err,
@@ -1501,6 +1504,7 @@ fn parseEnginePayloadTransactions(
     for (items, 0..) |item, index| {
         const raw = try rpc_parse.parseHexDataBytes(allocator, item);
         if (raw.len == 0) return error.InvalidParams;
+        tx_encoding.requireCanonicalEnvelope(raw) catch return error.InvalidParams;
         transactions[index] = .{ .raw = raw };
     }
     return transactions;
@@ -1586,9 +1590,20 @@ fn engineGetPayloadValue(
         mining_coordinator.nextExcessBlobGasForChildWithConfig(rt.hardfork_config, parent_block.header, block_number, job.attrs.timestamp)
     else
         0;
-    const blob_base_fee = mining_coordinator.nextBlobBaseFee(excess_blob_gas, hardfork);
+    const blob_base_fee = blob_fee.blobBaseFeeAt(rt.hardfork_config, block_number, job.attrs.timestamp, excess_blob_gas);
 
-    const ready = try rt.pool.getReady(temp);
+    const candidates = try rt.pool.getReady(temp);
+    var eligible: usize = 0;
+    for (candidates) |pooled| {
+        if (pooled.receipt_type == .eip4844 and (pooled.blob_sidecars.len == 0 or
+            (pooled.blob_sidecars[0].proofs == .cells) != hardfork.isAtLeast(.OSAKA)))
+        {
+            continue;
+        }
+        candidates[eligible] = pooled;
+        eligible += 1;
+    }
+    const ready = candidates[0..eligible];
     var from_pool = true;
     for (ready) |pooled| {
         appendTestingBuildBlockTx(temp, pooled.raw, &raw_txs, &exec_txs, blob_base_fee) catch {
@@ -1642,7 +1657,7 @@ fn engineGetPayloadValue(
         exec_txs.items,
         block_ctx,
         .{
-            .fork = blockBuilderFork(hardfork),
+            .fork = block_builder.hardforkFromEvm(hardfork),
             .hardfork_config = rt.hardfork_config,
             .withdrawals = withdrawals,
             .parent_beacon_block_root = parent_beacon_block_root,
@@ -1723,8 +1738,8 @@ fn includedBlobSidecarsFromReady(
     allocator: std.mem.Allocator,
     ready: []const txpool.PooledTransaction,
     included_tx_indexes: []const usize,
-) ![]primitives.Blob.BlobSidecar {
-    var sidecars = std.ArrayList(primitives.Blob.BlobSidecar){};
+) ![]tx_encoding.BlobSidecar {
+    var sidecars = std.ArrayList(tx_encoding.BlobSidecar){};
     errdefer sidecars.deinit(allocator);
 
     for (included_tx_indexes) |ready_index| {
@@ -1736,19 +1751,19 @@ fn includedBlobSidecarsFromReady(
 }
 
 test "included blob sidecars are filtered by included transaction indexes" {
-    var first_sidecar: primitives.Blob.BlobSidecar = undefined;
+    var first_sidecar: tx_encoding.BlobSidecar = undefined;
     @memset(first_sidecar.blob[0..], 0x11);
     first_sidecar.commitment = [_]u8{0x12} ** 48;
-    first_sidecar.proof = [_]u8{0x13} ** 48;
-    var first_sidecars = [_]primitives.Blob.BlobSidecar{first_sidecar};
+    first_sidecar.proofs = .{ .blob = [_]u8{0x13} ** 48 };
+    var first_sidecars = [_]tx_encoding.BlobSidecar{first_sidecar};
 
-    var included_sidecars = [_]primitives.Blob.BlobSidecar{ undefined, undefined };
+    var included_sidecars = [_]tx_encoding.BlobSidecar{ undefined, undefined };
     @memset(included_sidecars[0].blob[0..], 0x21);
     included_sidecars[0].commitment = [_]u8{0x22} ** 48;
-    included_sidecars[0].proof = [_]u8{0x23} ** 48;
+    included_sidecars[0].proofs = .{ .blob = [_]u8{0x23} ** 48 };
     @memset(included_sidecars[1].blob[0..], 0x31);
     included_sidecars[1].commitment = [_]u8{0x32} ** 48;
-    included_sidecars[1].proof = [_]u8{0x33} ** 48;
+    included_sidecars[1].proofs = .{ .blob = [_]u8{0x33} ** 48 };
 
     var ready = [_]txpool.PooledTransaction{
         .{
@@ -1828,7 +1843,7 @@ fn enginePayloadEnvelopeValue(
     payload: std.json.Value,
     block_value: u256,
     version: u8,
-    blob_sidecars: []const primitives.Blob.BlobSidecar,
+    blob_sidecars: []const tx_encoding.BlobSidecar,
 ) !std.json.Value {
     var obj = std.json.ObjectMap.init(allocator);
     errdefer {
@@ -1849,7 +1864,7 @@ fn enginePayloadEnvelopeValue(
 
 fn blobsBundleValue(
     allocator: std.mem.Allocator,
-    sidecars: []const primitives.Blob.BlobSidecar,
+    sidecars: []const tx_encoding.BlobSidecar,
 ) !std.json.Value {
     var blobs_bundle = std.json.ObjectMap.init(allocator);
     errdefer {
@@ -1870,7 +1885,7 @@ const BlobSidecarArrayField = enum {
 
 fn blobSidecarArrayValue(
     allocator: std.mem.Allocator,
-    sidecars: []const primitives.Blob.BlobSidecar,
+    sidecars: []const tx_encoding.BlobSidecar,
     field: BlobSidecarArrayField,
 ) !std.json.Value {
     var array = std.json.Array.init(allocator);
@@ -1878,13 +1893,21 @@ fn blobSidecarArrayValue(
         for (array.items) |*item| deinitJsonValue(allocator, item);
         array.deinit();
     }
-    for (sidecars) |sidecar| {
+    for (sidecars) |*sidecar| {
+        if (field == .proofs and sidecar.proofs == .cells) {
+            try array.ensureUnusedCapacity(sidecar.proofs.cells.len);
+            for (&sidecar.proofs.cells) |*proof| {
+                array.appendAssumeCapacity(try hexBytes(allocator, proof));
+            }
+            continue;
+        }
         const bytes: []const u8 = switch (field) {
             .commitments => sidecar.commitment[0..],
-            .proofs => sidecar.proof[0..],
+            .proofs => &sidecar.proofs.blob,
             .blobs => sidecar.blob[0..],
         };
-        try array.append(try hexBytes(allocator, bytes));
+        try array.ensureUnusedCapacity(1);
+        array.appendAssumeCapacity(try hexBytes(allocator, bytes));
     }
     return .{ .array = array };
 }
@@ -1964,37 +1987,37 @@ fn engineBlobsValue(
     const hashes = try engineHashArrayItems(params);
     if (hashes.len > 128) return error.TooLargeRequest;
 
-    if (std.mem.eql(u8, method_name, "engine_getBlobsV2")) {
-        return .null;
-    }
-
+    const v2 = std.mem.eql(u8, method_name, "engine_getBlobsV2");
+    const cells = v2 or std.mem.eql(u8, method_name, "engine_getBlobsV3");
     var array = std.json.Array.init(allocator);
-    errdefer {
+    var transferred = false;
+    defer if (!transferred) {
         for (array.items) |*item| deinitJsonValue(allocator, item);
         array.deinit();
-    }
-    const v3_shape = std.mem.eql(u8, method_name, "engine_getBlobsV3");
+    };
+    try array.ensureTotalCapacity(hashes.len);
     for (hashes) |hash_value| {
         const hash = try rpc_parse.parseHash32Value(hash_value);
-        if (!v3_shape) {
-            if (findBlobSidecar(rt, hash)) |sidecar| {
-                try array.append(try blobAndProofV1Value(allocator, sidecar));
-            } else {
-                try array.append(.null);
-            }
+        if (findBlobSidecar(rt, hash, cells)) |sidecar| {
+            array.appendAssumeCapacity(try blobAndProofValue(allocator, sidecar));
+        } else if (v2) {
+            return .null;
         } else {
-            try array.append(.null);
+            array.appendAssumeCapacity(.null);
         }
     }
+    transferred = true;
     return .{ .array = array };
 }
 
 fn findBlobSidecar(
     rt: *runtime_mod.NodeRuntime,
     versioned_hash: [32]u8,
-) ?primitives.Blob.BlobSidecar {
+    cells: bool,
+) ?*const tx_encoding.BlobSidecar {
     for (rt.pool.items()) |tx| {
-        for (tx.blob_sidecars) |sidecar| {
+        for (tx.blob_sidecars) |*sidecar| {
+            if ((sidecar.proofs == .cells) != cells) continue;
             const candidate = primitives.Blob.commitmentToVersionedHash(sidecar.commitment);
             if (std.mem.eql(u8, &candidate.bytes, &versioned_hash)) return sidecar;
         }
@@ -2002,9 +2025,9 @@ fn findBlobSidecar(
     return null;
 }
 
-fn blobAndProofV1Value(
+fn blobAndProofValue(
     allocator: std.mem.Allocator,
-    sidecar: primitives.Blob.BlobSidecar,
+    sidecar: *const tx_encoding.BlobSidecar,
 ) !std.json.Value {
     var obj = std.json.ObjectMap.init(allocator);
     errdefer {
@@ -2012,7 +2035,11 @@ fn blobAndProofV1Value(
         deinitJsonValue(allocator, &value);
     }
     try putOwnedJson(&obj, allocator, "blob", try hexBytes(allocator, sidecar.blob[0..]));
-    try putOwnedJson(&obj, allocator, "proof", try hexBytes(allocator, sidecar.proof[0..]));
+    if (sidecar.proofs == .cells) {
+        try putOwnedJson(&obj, allocator, "proofs", try blobSidecarArrayValue(allocator, sidecar[0..1], .proofs));
+    } else {
+        try putOwnedJson(&obj, allocator, "proof", try hexBytes(allocator, &sidecar.proofs.blob));
+    }
     return .{ .object = obj };
 }
 
@@ -3285,7 +3312,7 @@ fn handleTestingBuildBlockV1(
         mining_coordinator.nextExcessBlobGasForChildWithConfig(rt.hardfork_config, parent_block.header, block_number, attrs.timestamp)
     else
         0;
-    const blob_base_fee = mining_coordinator.nextBlobBaseFee(excess_blob_gas, hardfork);
+    const blob_base_fee = blob_fee.blobBaseFeeAt(rt.hardfork_config, block_number, attrs.timestamp, excess_blob_gas);
 
     const from_pool = items[2] == .null;
     switch (items[2]) {
@@ -3337,7 +3364,7 @@ fn handleTestingBuildBlockV1(
         exec_txs.items,
         block_ctx,
         .{
-            .fork = blockBuilderFork(hardfork),
+            .fork = block_builder.hardforkFromEvm(hardfork),
             .hardfork_config = rt.hardfork_config,
             .withdrawals = attrs.withdrawals,
             .parent_beacon_block_root = if (hardfork.isAtLeast(.CANCUN)) attrs.parent_beacon_block_root else null,
@@ -3361,7 +3388,7 @@ fn handleTestingBuildBlockV1(
             exec_txs.items,
             block_ctx,
             .{
-                .fork = blockBuilderFork(hardfork),
+                .fork = block_builder.hardforkFromEvm(hardfork),
                 .hardfork_config = rt.hardfork_config,
                 .withdrawals = attrs.withdrawals,
                 .parent_beacon_block_root = if (hardfork.isAtLeast(.CANCUN)) attrs.parent_beacon_block_root else null,
@@ -3623,21 +3650,6 @@ fn blockValueFromReceipts(
         total = total +| payment;
     }
     return total;
-}
-
-fn blockBuilderFork(fork: guillotine_mini.Hardfork) block_builder.Hardfork {
-    if (fork.isAtLeast(.OSAKA)) return .osaka;
-    if (fork.isAtLeast(.PRAGUE)) return .prague;
-    if (fork.isAtLeast(.CANCUN)) return .cancun;
-    if (fork.isAtLeast(.SHANGHAI)) return .shanghai;
-    if (fork.isAtLeast(.MERGE)) return .paris;
-    if (fork.isAtLeast(.LONDON)) return .london;
-    if (fork.isAtLeast(.BERLIN)) return .berlin;
-    if (fork.isAtLeast(.ISTANBUL)) return .istanbul;
-    if (fork.isAtLeast(.CONSTANTINOPLE)) return .constantinople;
-    if (fork.isAtLeast(.BYZANTIUM)) return .byzantium;
-    if (fork.isAtLeast(.HOMESTEAD)) return .homestead;
-    return .frontier;
 }
 
 fn typedResultToJsonValue(allocator: std.mem.Allocator, result: anytype) !std.json.Value {
@@ -4403,10 +4415,6 @@ fn intervalMiningSeconds(rt: *const runtime_mod.NodeRuntime) u64 {
         .interval => |interval| interval.block_time,
         else => 0,
     };
-}
-
-fn currentBlobBaseFee(rt: *const runtime_mod.NodeRuntime) u256 {
-    return rt.dev_runtime.config.blob_base_fee orelse rt.blob_base_fee;
 }
 
 pub fn deinitJsonValue(allocator: std.mem.Allocator, value: *std.json.Value) void {

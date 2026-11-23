@@ -3,6 +3,7 @@ const primitives = @import("primitives");
 const guillotine_mini = @import("guillotine_mini");
 const precompiles = @import("precompiles");
 const runtime = @import("../../node/runtime.zig");
+const blob_fee = @import("../../blob_fee.zig");
 const block_builder = @import("../../block_builder.zig");
 const host_adapter = @import("../../host_adapter.zig");
 const tx_encoding = @import("../../transaction_encoding.zig");
@@ -213,6 +214,7 @@ const SimulatedBlockData = struct {
     requests_hash: ?[32]u8,
     gas_used: u64,
     blob_gas_used: u64,
+    excess_blob_gas: u64,
     size: u64,
     fork: guillotine_mini.Hardfork,
 };
@@ -518,7 +520,7 @@ pub fn handleEthSimulateV1(
             .parent_hash = [_]u8{0} ** 32,
             .ommers_hash = primitives.BlockHeader.EMPTY_OMMERS_HASH,
             .beneficiary = parent_ctx.block_coinbase,
-            .state_root = block_builder.computeStateRootForFork(allocator, &rt.state, simBlockBuilderFork(rt.hardforkForBlockContext(parent_ctx))) catch primitives.State.EMPTY_TRIE_ROOT,
+            .state_root = block_builder.computeStateRootForFork(allocator, &rt.state, block_builder.hardforkFromEvm(rt.hardforkForBlockContext(parent_ctx))) catch primitives.State.EMPTY_TRIE_ROOT,
             .transactions_root = primitives.BlockHeader.EMPTY_TRANSACTIONS_ROOT,
             .receipts_root = primitives.BlockHeader.EMPTY_RECEIPTS_ROOT,
             .difficulty = parent_ctx.block_difficulty,
@@ -561,7 +563,7 @@ pub fn handleEthSimulateV1(
         if (block_overrides.number) |number| target_ctx.block_number = number;
         while (target_ctx.block_number > next_ctx.block_number) {
             var empty_calls = std.json.Array.init(allocator);
-            var simulated = try simulateBlock(allocator, rt, next_ctx, parent_hash, null, &[_]std.json.Value{}, options, &empty_calls, &remaining_default_gas, &nonce_tracker, &precompile_moves);
+            var simulated = try simulateBlock(allocator, rt, next_ctx, parent_header, null, parent_hash, null, &[_]std.json.Value{}, options, &empty_calls, &remaining_default_gas, &nonce_tracker, &precompile_moves);
             defer simulated.deinit(allocator);
             try blocks.append(try simulatedBlockValue(allocator, simulated.data, empty_calls, simulated.transactions, options.return_full_transactions));
             parent_hash = simulated.data.block_hash;
@@ -591,6 +593,8 @@ pub fn handleEthSimulateV1(
             allocator,
             rt,
             target_ctx,
+            parent_header,
+            block_overrides.blob_base_fee,
             parent_hash,
             block_request.get("stateOverrides"),
             calls,
@@ -1142,7 +1146,9 @@ fn executeDisabledPrecompile(
 fn simulateBlock(
     allocator: std.mem.Allocator,
     rt: *runtime.NodeRuntime,
-    block_ctx: guillotine_mini.BlockContext,
+    context: guillotine_mini.BlockContext,
+    parent_header: primitives.BlockHeader.BlockHeader,
+    blob_fee_override: ?u256,
     parent_hash: [32]u8,
     state_overrides: ?std.json.Value,
     calls: []const std.json.Value,
@@ -1152,6 +1158,15 @@ fn simulateBlock(
     nonce_tracker: *std.ArrayList(SimulatedNonceState),
     precompile_moves: *PrecompileMoveState,
 ) !SimulateBlockResult {
+    var block_ctx = context;
+    const blob_params = blob_fee.resolveBlobParams(rt.hardfork_config, block_ctx.block_number, block_ctx.block_timestamp);
+    const excess_blob_gas = blob_fee.nextExcessBlobGasForHeader(
+        rt.hardfork_config,
+        parent_header,
+        block_ctx.block_number,
+        block_ctx.block_timestamp,
+    );
+    block_ctx.blob_base_fee = blob_fee_override orelse rt.dev_runtime.config.blob_base_fee orelse blob_params.baseFee(excess_blob_gas);
     const fork = rt.hardforkForBlockContext(block_ctx);
     if (state_overrides) |overrides| {
         try applyStateOverrides(allocator, rt, overrides, precompile_moves, fork);
@@ -1247,6 +1262,10 @@ fn simulateBlock(
         if (receipt.blob_gas_used) |receipt_blob_gas| {
             const receipt_blob_gas_u64 = std.math.cast(u64, receipt_blob_gas) orelse return error.InvalidParams;
             blob_gas_used = std.math.add(u64, blob_gas_used, receipt_blob_gas_u64) catch return error.InvalidParams;
+            if (options.validation and blob_gas_used > blob_params.max_blob_gas) {
+                setSimulationRpcErrorStatic(-38015, "block blob gas limit exceeded");
+                return error.SimulationRpcError;
+            }
         }
         remaining_default_gas.* = if (remaining_default_gas.* > tx_gas_used) remaining_default_gas.* - tx_gas_used else 0;
 
@@ -1296,7 +1315,7 @@ fn simulateBlock(
     else
         block_builder.PragueSystemRequests{};
     defer system_requests.deinit(allocator);
-    const builder_fork = simBlockBuilderFork(fork);
+    const builder_fork = block_builder.hardforkFromEvm(fork);
     if (fork.isBefore(.MERGE)) {
         try block_builder.applyMinerReward(&rt.state, block_ctx.block_coinbase, builder_fork);
     }
@@ -1309,9 +1328,8 @@ fn simulateBlock(
     else
         null;
 
-    var header = simulatedHeader(block_ctx, parent_hash, state_root, transactions_root, receipts_root, logs_bloom, gas_used, blob_gas_used, fork);
+    const header = simulatedHeader(block_ctx, parent_hash, state_root, transactions_root, receipts_root, logs_bloom, gas_used, blob_gas_used, excess_blob_gas, fork);
     const block_hash = try block_builder.computeHeaderHashWithRequestsHash(allocator, &header, requests_hash);
-    header = simulatedHeader(block_ctx, parent_hash, state_root, transactions_root, receipts_root, logs_bloom, gas_used, blob_gas_used, fork);
     for (receipts.items) |*receipt| {
         receipt.block_hash = block_hash;
         var global_log_index: u32 = 0;
@@ -1343,6 +1361,7 @@ fn simulateBlock(
             .requests_hash = requests_hash,
             .gas_used = gas_used,
             .blob_gas_used = blob_gas_used,
+            .excess_blob_gas = excess_blob_gas,
             .size = size,
             .fork = fork,
         },
@@ -1966,7 +1985,10 @@ fn blockContext(
         .block_coinbase = block.header.beneficiary,
         .block_gas_limit = block.header.gas_limit,
         .block_base_fee = block.header.base_fee_per_gas orelse 0,
-        .blob_base_fee = rt.blob_base_fee,
+        .blob_base_fee = if (block.header.excess_blob_gas) |excess|
+            blob_fee.blobBaseFeeAt(rt.hardfork_config, block.header.number, block.header.timestamp, excess)
+        else
+            rt.blob_base_fee,
     };
     var effective = block_builder.blockContextWithEnvironmentOverrides(&rt.dev_runtime, ctx);
     effective.block_hashes = try rt.recentBlockHashesForExecution(effective.block_number, recent_block_hashes);
@@ -2466,6 +2488,7 @@ fn simulatedHeader(
     logs_bloom: [256]u8,
     gas_used: u64,
     blob_gas_used: u64,
+    excess_blob_gas: u64,
     fork: guillotine_mini.Hardfork,
 ) primitives.BlockHeader.BlockHeader {
     return .{
@@ -2487,7 +2510,7 @@ fn simulatedHeader(
         .base_fee_per_gas = if (fork.isAtLeast(.LONDON)) block_ctx.block_base_fee else null,
         .withdrawals_root = if (fork.isAtLeast(.SHANGHAI)) primitives.BlockHeader.EMPTY_WITHDRAWALS_ROOT else null,
         .blob_gas_used = if (fork.isAtLeast(.CANCUN)) blob_gas_used else null,
-        .excess_blob_gas = if (fork.isAtLeast(.CANCUN)) 0 else null,
+        .excess_blob_gas = if (fork.isAtLeast(.CANCUN)) excess_blob_gas else null,
         .parent_beacon_block_root = if (fork.isAtLeast(.CANCUN)) primitives.Hash.ZERO else null,
     };
 }
@@ -2502,23 +2525,9 @@ fn headerFromSimulatedBlock(block: SimulatedBlockData) primitives.BlockHeader.Bl
         block.logs_bloom,
         block.gas_used,
         block.blob_gas_used,
+        block.excess_blob_gas,
         block.fork,
     );
-}
-
-fn simBlockBuilderFork(fork: guillotine_mini.Hardfork) block_builder.Hardfork {
-    if (fork.isAtLeast(.OSAKA)) return .osaka;
-    if (fork.isAtLeast(.PRAGUE)) return .prague;
-    if (fork.isAtLeast(.CANCUN)) return .cancun;
-    if (fork.isAtLeast(.SHANGHAI)) return .shanghai;
-    if (fork.isAtLeast(.MERGE)) return .paris;
-    if (fork.isAtLeast(.LONDON)) return .london;
-    if (fork.isAtLeast(.BERLIN)) return .berlin;
-    if (fork.isAtLeast(.ISTANBUL)) return .istanbul;
-    if (fork.isAtLeast(.CONSTANTINOPLE)) return .constantinople;
-    if (fork.isAtLeast(.BYZANTIUM)) return .byzantium;
-    if (fork.isAtLeast(.HOMESTEAD)) return .homestead;
-    return .frontier;
 }
 
 fn simulatedBlockSize(

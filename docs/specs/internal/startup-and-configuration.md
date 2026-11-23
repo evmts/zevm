@@ -49,7 +49,7 @@ Resolved config sub-shapes:
 
 - top-level `engineRpc`: optional `{ "host": "127.0.0.1", "port": 8551 }`; enables a trusted-mode Engine API listener
 - `mining`: `{ "type": "auto" }`, `{ "type": "manual" }`, or `{ "type": "interval", "blockTime": <u64> }`
-- `hardfork`: object of optional activation overrides using camelCase keys (`homesteadBlock`, `daoBlock`, `tangerineWhistleBlock`, `spuriousDragonBlock`, `byzantiumBlock`, `petersburgBlock`, `istanbulBlock`, `muirGlacierBlock`, `berlinBlock`, `londonBlock`, `arrowGlacierBlock`, `grayGlacierBlock`, `mergeBlock`, `shanghaiTimestamp`, `cancunTimestamp`, `pragueTimestamp`, `osakaTimestamp`, `secondsPerSlot`)
+- `hardfork`: object of optional activation overrides using camelCase keys (`homesteadBlock`, `daoBlock`, `tangerineWhistleBlock`, `spuriousDragonBlock`, `byzantiumBlock`, `petersburgBlock`, `istanbulBlock`, `muirGlacierBlock`, `berlinBlock`, `londonBlock`, `arrowGlacierBlock`, `grayGlacierBlock`, `mergeBlock`, `shanghaiTimestamp`, `cancunTimestamp`, `pragueTimestamp`, `osakaTimestamp`, `secondsPerSlot`) plus optional `blobSchedule`, an array of up to 32 EIP-7892 BPO forks `{ timestamp, target, max, baseFeeUpdateFraction }` with strictly increasing timestamps at or after `osakaTimestamp` (absent: mainnet BPO1/BPO2 for `chainId = 1`, empty for dev chains; `[]`: no BPO forks)
 - `fork`: `null`, `{ "url": "https://..." }`, or `{ "url": "https://...", "blockNumber": <u64> }`
 - `genesis`: `null` or a path to a genesis JSON file whose top-level `alloc` object seeds trusted-mode state
 - `chainRlp`: `null` or a path to a concatenated RLP block stream imported after genesis as query-only block history

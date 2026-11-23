@@ -363,6 +363,9 @@ fn createModuleSet(
         },
     });
 
+    zevm_mod.addIncludePath(voltaire.path("packages/voltaire-zig/lib/c-kzg-4844/src"));
+    zevm_mod.addIncludePath(voltaire.path("packages/voltaire-zig/lib/c-kzg-4844/blst/bindings"));
+
     return .{
         .voltaire_rust_crypto = voltaire_rust_crypto,
         .primitives_mod = primitives_mod,

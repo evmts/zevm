@@ -419,3 +419,115 @@ test "load selects persisted checkpoint when explicit inputs are absent" {
     try std.testing.expectEqual(config.CheckpointSource.persisted, light.checkpoint_source);
     try std.testing.expectEqual(@as(u8, 0xaa), light.checkpoint[0]);
 }
+
+test "load applies mainnet BPO default for chain 1, empty default for dev, custom schedule, and empty disable" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Chain 1 defaults to mainnet BPO1/BPO2.
+    {
+        var app_config = try config.load(std.testing.allocator, &[_][]const u8{ "--chain-id", "1" });
+        defer app_config.deinit(std.testing.allocator);
+        const trusted = switch (app_config.mode) {
+            .trusted => |t| t,
+            else => return error.UnexpectedMode,
+        };
+        try std.testing.expectEqual(@as(usize, 2), trusted.hardfork_config.blob_schedule.entries().len);
+        try std.testing.expectEqual(hardfork_schedule.MAINNET_BPO1, trusted.hardfork_config.blob_schedule.entries()[0]);
+        try std.testing.expectEqual(hardfork_schedule.MAINNET_BPO2, trusted.hardfork_config.blob_schedule.entries()[1]);
+    }
+
+    // Dev chain defaults to empty BPO schedule.
+    {
+        var app_config = try config.load(std.testing.allocator, &[_][]const u8{});
+        defer app_config.deinit(std.testing.allocator);
+        const trusted = switch (app_config.mode) {
+            .trusted => |t| t,
+            else => return error.UnexpectedMode,
+        };
+        try std.testing.expectEqual(@as(usize, 0), trusted.hardfork_config.blob_schedule.entries().len);
+    }
+
+    // Custom blobSchedule parses cleanly and survives AppConfig.deinit copy.
+    const custom_path = try writeTmpFile(std.testing.allocator, &tmp_dir, "custom_bpo.json",
+        \\{
+        \\  "mode": {
+        \\    "trusted": {
+        \\      "hardfork": {
+        \\        "osakaTimestamp": 100,
+        \\        "blobSchedule": [
+        \\          { "timestamp": 200, "target": 10, "max": 15, "baseFeeUpdateFraction": 8346193 },
+        \\          { "timestamp": 300, "target": 14, "max": 21, "baseFeeUpdateFraction": 11684671 }
+        \\        ]
+        \\      }
+        \\    }
+        \\  }
+        \\}
+    );
+    defer std.testing.allocator.free(custom_path);
+    const copied_cfg = blk: {
+        var app_config = try config.load(std.testing.allocator, &[_][]const u8{ "--config", custom_path });
+        defer app_config.deinit(std.testing.allocator);
+        break :blk switch (app_config.mode) {
+            .trusted => |t| t.hardfork_config,
+            else => return error.UnexpectedMode,
+        };
+    };
+    try std.testing.expectEqual(@as(usize, 2), copied_cfg.blob_schedule.entries().len);
+    try std.testing.expectEqual(@as(u64, 200), copied_cfg.blob_schedule.entries()[0].timestamp);
+    try std.testing.expectEqual(@as(u64, 21), copied_cfg.blob_schedule.entries()[1].max);
+
+    // Explicit empty array disables mainnet BPO on chain 1.
+    const empty_path = try writeTmpFile(std.testing.allocator, &tmp_dir, "empty_bpo.json",
+        \\{
+        \\  "mode": {
+        \\    "trusted": {
+        \\      "chainId": 1,
+        \\      "hardfork": { "blobSchedule": [] }
+        \\    }
+        \\  }
+        \\}
+    );
+    defer std.testing.allocator.free(empty_path);
+    var empty_cfg = try config.load(std.testing.allocator, &[_][]const u8{ "--config", empty_path });
+    defer empty_cfg.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), empty_cfg.mode.trusted.hardfork_config.blob_schedule.entries().len);
+}
+
+test "load rejects malformed, unordered, invalid, and pre-Osaka blobSchedule configs" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const invalid_cases = [_][]const u8{
+        \\{"mode":{"trusted":{"hardfork":{"osakaTimestamp":0,"blobSchedule":{}}}}}
+        ,
+        \\{"mode":{"trusted":{"hardfork":{"osakaTimestamp":0,"blobSchedule":[42]}}}}
+        ,
+        \\{"mode":{"trusted":{"hardfork":{"osakaTimestamp":0,"blobSchedule":[{"timestamp":10,"target":1,"max":2}]}}}}
+        ,
+        \\{"mode":{"trusted":{"hardfork":{"osakaTimestamp":0,"blobSchedule":[{"timestamp":10,"target":1,"max":2,"baseFeeUpdateFraction":1,"extra":0}]}}}}
+        ,
+        \\{"mode":{"trusted":{"hardfork":{"osakaTimestamp":0,"blobSchedule":[{"timestamp":-1,"target":1,"max":2,"baseFeeUpdateFraction":1}]}}}}
+        ,
+        \\{"mode":{"trusted":{"hardfork":{"osakaTimestamp":0,"blobSchedule":[{"timestamp":10,"target":3,"max":2,"baseFeeUpdateFraction":1}]}}}}
+        ,
+        \\{"mode":{"trusted":{"hardfork":{"osakaTimestamp":0,"blobSchedule":[{"timestamp":10,"target":0,"max":0,"baseFeeUpdateFraction":1}]}}}}
+        ,
+        \\{"mode":{"trusted":{"hardfork":{"osakaTimestamp":0,"blobSchedule":[{"timestamp":10,"target":1,"max":2,"baseFeeUpdateFraction":0}]}}}}
+        ,
+        \\{"mode":{"trusted":{"hardfork":{"osakaTimestamp":0,"blobSchedule":[{"timestamp":20,"target":1,"max":2,"baseFeeUpdateFraction":1},{"timestamp":10,"target":2,"max":3,"baseFeeUpdateFraction":1}]}}}}
+        ,
+        \\{"mode":{"trusted":{"hardfork":{"osakaTimestamp":0,"blobSchedule":[{"timestamp":10,"target":1,"max":2,"baseFeeUpdateFraction":1},{"timestamp":10,"target":2,"max":3,"baseFeeUpdateFraction":1}]}}}}
+        ,
+        \\{"mode":{"trusted":{"hardfork":{"osakaTimestamp":100,"blobSchedule":[{"timestamp":99,"target":1,"max":2,"baseFeeUpdateFraction":1}]}}}}
+        ,
+    };
+
+    for (invalid_cases, 0..) |body, i| {
+        var name_buf: [32]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buf, "bad_bpo_{d}.json", .{i});
+        const path = try writeTmpFile(std.testing.allocator, &tmp_dir, name, body);
+        defer std.testing.allocator.free(path);
+        try std.testing.expectError(error.InvalidConfig, config.load(std.testing.allocator, &[_][]const u8{ "--config", path }));
+    }
+}

@@ -17,6 +17,8 @@ const log_index_mod = @import("../log_index.zig");
 const checkpoint = @import("../checkpoint.zig");
 const consensus_sync = @import("../consensus_sync.zig");
 const hardfork_schedule = @import("../hardfork_schedule.zig");
+const blob_fee = @import("../blob_fee.zig");
+const blob_kzg = @import("../blob_kzg.zig");
 const light_proof = @import("../light_proof.zig");
 const tx_encoding = @import("../transaction_encoding.zig");
 const log = @import("../log.zig");
@@ -78,6 +80,7 @@ pub const DEFAULT_DEV_HARDFORK_CONFIG = hardfork_schedule.ChainConfig{
     .cancun_timestamp = 0,
     .prague_timestamp = std.math.maxInt(u64),
     .osaka_timestamp = std.math.maxInt(u64),
+    .blob_schedule = hardfork_schedule.BlobSchedule.empty,
 };
 
 pub fn defaultHardforkConfigForChainId(chain_id: u64) hardfork_schedule.ChainConfig {
@@ -471,6 +474,7 @@ pub const NodeRuntime = struct {
     default_max_priority_fee: u256,
     default_mining_config: mining.MiningConfig,
     hardfork_config: hardfork_schedule.ChainConfig,
+    blob_verifier: blob_kzg.Verifier = .{},
     coinbase: primitives.Address,
     head_block_number: u64,
     head_block_timestamp: u64,
@@ -622,6 +626,11 @@ pub const NodeRuntime = struct {
         var startup_head_block_number: u64 = 0;
         var startup_head_block_timestamp: u64 = genesis_header.timestamp;
         var startup_base_fee = config.base_fee;
+        const genesis_blob_fee = if (genesis_header.excess_blob_gas) |excess|
+            blob_fee.blobBaseFeeAt(runtime_hardfork_config, 0, genesis_header.timestamp, excess)
+        else
+            config.blob_base_fee;
+        var startup_blob_fee = genesis_blob_fee;
         if (config.chain_rlp_path) |path| {
             const stats = try chain_import.importChainFileWithOptions(allocator, &blockchain, &owned_block_bodies, path, .{
                 .hardfork_config = runtime_hardfork_config,
@@ -630,6 +639,14 @@ pub const NodeRuntime = struct {
             startup_head_block_number = imported_head.header.number;
             startup_head_block_timestamp = imported_head.header.timestamp;
             startup_base_fee = imported_head.header.base_fee_per_gas orelse startup_base_fee;
+            if (imported_head.header.excess_blob_gas) |excess| {
+                startup_blob_fee = blob_fee.blobBaseFeeAt(
+                    runtime_hardfork_config,
+                    imported_head.header.number,
+                    imported_head.header.timestamp,
+                    excess,
+                );
+            }
             const head_hash_hex = std.fmt.bytesToHex(stats.head_hash, .lower);
             const materialized = try materializeImportedChain(
                 allocator,
@@ -711,7 +728,7 @@ pub const NodeRuntime = struct {
             .default_coinbase = default_coinbase,
             .default_gas_price = config.gas_price,
             .default_base_fee = config.base_fee,
-            .default_blob_base_fee = config.blob_base_fee,
+            .default_blob_base_fee = genesis_blob_fee,
             .default_max_priority_fee = config.max_priority_fee,
             .default_mining_config = config.mining_config,
             .hardfork_config = runtime_hardfork_config,
@@ -720,7 +737,7 @@ pub const NodeRuntime = struct {
             .head_block_timestamp = startup_head_block_timestamp,
             .gas_price = config.gas_price,
             .base_fee = startup_base_fee,
-            .blob_base_fee = config.blob_base_fee,
+            .blob_base_fee = startup_blob_fee,
             .max_priority_fee = config.max_priority_fee,
             .mining_config = config.mining_config,
             .pool = txpool.TransactionPool.init(allocator),
@@ -1127,7 +1144,7 @@ pub const NodeRuntime = struct {
         return self.hardforkAt(block_number, timestamp);
     }
 
-    fn pendingBlockTimestamp(self: *const NodeRuntime) u64 {
+    pub fn pendingBlockTimestamp(self: *const NodeRuntime) u64 {
         const minimum = self.head_block_timestamp +| 1;
         if (self.next_block_timestamp) |timestamp| {
             return @max(minimum, timestamp);
@@ -1222,6 +1239,17 @@ pub const NodeRuntime = struct {
                 .skip_invalid_transactions = true,
             };
             const parent_hash = self.blockchain.getCanonicalHash(self.head_block_number) orelse return error.MissingParentBlock;
+            const parent_block = self.blockchain.getBlockLocal(parent_hash) orelse return error.MissingParentBlock;
+            const parent_fork = self.hardforkAt(parent_block.header.number, parent_block.header.timestamp);
+            coordinator.parent_blob_fees = if (parent_fork.isAtLeast(.CANCUN)) .{
+                .excess = parent_block.header.excess_blob_gas orelse 0,
+                .used = parent_block.header.blob_gas_used orelse 0,
+                .base_fee = parent_block.header.base_fee_per_gas orelse 0,
+            } else .{
+                .excess = 0,
+                .used = 0,
+                .base_fee = parent_block.header.base_fee_per_gas orelse 0,
+            };
             var block_ctx = block_builder.blockContextWithEnvironmentOverrides(
                 &self.dev_runtime,
                 coordinator.blockContext(block_options),
@@ -1230,7 +1258,7 @@ pub const NodeRuntime = struct {
             block_ctx.block_hashes = try self.recentBlockHashesForExecution(block_ctx.block_number, &recent_block_hashes);
             block_options.block_hashes = block_ctx.block_hashes;
             block_options.parent_hash = parent_hash;
-            const block_excess_blob_gas = coordinator.current_excess_blob_gas;
+            const block_excess_blob_gas = coordinator.excessAt(block_ctx.block_number, block_ctx.block_timestamp);
 
             var result = try coordinator.mineBlockWithOptions(
                 self.allocator,
@@ -1254,6 +1282,7 @@ pub const NodeRuntime = struct {
             const block = (try self.blockchain.getBlockByHash(block_hash)) orelse return error.MinedBlockMissing;
             self.head_block_number = block.header.number;
             self.head_block_timestamp = block.header.timestamp;
+            self.blob_base_fee = block_ctx.blob_base_fee;
             const block_hash_hex = std.fmt.bytesToHex(block.hash, .lower);
             log.info(
                 .mining,
@@ -1890,6 +1919,7 @@ pub const NodeRuntime = struct {
     pub fn deinit(self: *NodeRuntime) void {
         self.stopLightSyncThread();
         self.stopIntervalMiningTimer();
+        self.blob_verifier.deinit();
         if (self.light) |*light| {
             light.deinit(self.allocator);
             self.light = null;
@@ -2319,7 +2349,14 @@ pub const NodeRuntime = struct {
         self.head_block_number = head_block.header.number;
         self.head_block_timestamp = head_block.header.timestamp;
         if (head_block.header.base_fee_per_gas) |base_fee| self.base_fee = base_fee;
-        if (head_block.header.excess_blob_gas) |excess| self.blob_base_fee = primitives.Blob.calculateBlobGasPrice(excess);
+        if (head_block.header.excess_blob_gas) |excess| {
+            self.blob_base_fee = blob_fee.blobBaseFeeAt(
+                self.hardfork_config,
+                head_block.header.number,
+                head_block.header.timestamp,
+                excess,
+            );
+        }
         return .{ .status = .valid, .latest_valid_hash = head_hash };
     }
 
@@ -2861,8 +2898,14 @@ fn materializeImportedBlock(
 
     var adapter = host_adapter.HostAdapter{ .state = sm };
     var recent_hashes: [256][32]u8 = undefined;
-    const block_ctx = try importedBlockContext(blockchain, chain_id, blob_base_fee, block, &recent_hashes);
+    var block_ctx = try importedBlockContext(blockchain, chain_id, blob_base_fee, block, &recent_hashes);
     const hardfork = inferImportedBlockHardfork(hardfork_config, block_ctx, block);
+    if (block.header.excess_blob_gas) |excess| {
+        const params = blob_fee.blobParamsForFork(hardfork_config, hardfork, block.header.timestamp);
+        if (params.base_fee_update_fraction != 0) {
+            block_ctx.blob_base_fee = blob_fee.calcBlobBaseFee(excess, params.base_fee_update_fraction);
+        }
+    }
     // EIP-7934: every imported or engine-supplied block passes through here
     // with its resolved fork, so the Osaka size cap is enforced once.
     try chain_import.validateBlockRlpSize(block.size, hardfork);
@@ -3001,6 +3044,7 @@ fn materializeImportedBlock(
             .header = &block.header,
             .parent_header = &parent.header,
             .fork = blockBuilderHardfork(hardfork),
+            .hardfork_config = hardfork_config,
             .transaction_envelopes = block.body.transactions,
             .receipts = receipts.items,
             .withdrawals = block.body.withdrawals,
@@ -3034,8 +3078,10 @@ fn importedBlockContext(
         .block_coinbase = block.header.beneficiary,
         .block_gas_limit = block.header.gas_limit,
         .block_base_fee = block.header.base_fee_per_gas orelse 0,
+        // Callers with a resolved hardfork overwrite this from the header's
+        // excess blob gas using the fork/BPO update fraction.
         .blob_base_fee = if (block.header.excess_blob_gas) |excess|
-            primitives.Blob.calculateBlobGasPrice(excess)
+            blob_fee.calcBlobBaseFee(excess, hardfork_schedule.MAINNET_CANCUN_BLOB_CONFIG.base_fee_update_fraction)
         else
             blob_base_fee,
         .block_hashes = if (block.header.number == 0)
@@ -3120,18 +3166,7 @@ fn isDefaultDevHardforkConfig(config: hardfork_schedule.ChainConfig) bool {
 }
 
 fn blockBuilderHardfork(hardfork: guillotine_mini.Hardfork) block_builder.Hardfork {
-    if (hardfork.isBefore(.HOMESTEAD)) return .frontier;
-    if (hardfork.isBefore(.BYZANTIUM)) return .homestead;
-    if (hardfork.isBefore(.CONSTANTINOPLE)) return .byzantium;
-    if (hardfork.isBefore(.ISTANBUL)) return .constantinople;
-    if (hardfork.isBefore(.BERLIN)) return .istanbul;
-    if (hardfork.isBefore(.LONDON)) return .berlin;
-    if (hardfork.isBefore(.MERGE)) return .london;
-    if (hardfork.isBefore(.SHANGHAI)) return .paris;
-    if (hardfork.isBefore(.CANCUN)) return .shanghai;
-    if (hardfork.isBefore(.PRAGUE)) return .cancun;
-    if (hardfork.isBefore(.OSAKA)) return .prague;
-    return .osaka;
+    return block_builder.hardforkFromEvm(hardfork);
 }
 
 fn finalizeReceiptsForBlock(

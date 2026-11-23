@@ -3,6 +3,7 @@ const primitives = @import("primitives");
 const state_manager = @import("state-manager");
 const guillotine_mini = @import("guillotine_mini");
 const host_adapter = @import("host_adapter.zig");
+const blob_fee = @import("blob_fee.zig");
 const tx_encoding = @import("transaction_encoding.zig");
 const hardfork_schedule = @import("hardfork_schedule.zig");
 const precompile_compat = @import("precompile_compat.zig");
@@ -67,6 +68,8 @@ pub const ProcessTransactionOptions = struct {
 };
 
 pub const TxError = error{
+    /// EIP-7594 / Fusaka: blob transaction carries more than 6 blobs on Osaka+.
+    TooManyBlobs,
     InsufficientBalance,
     NonceMismatch,
     SenderNotEOA,
@@ -412,6 +415,9 @@ pub fn processTransactionWithOptions(
     }
 
     const blob_gas_used: u256 = if (options.receipt_type == .eip4844) options.blob_gas_used orelse 0 else 0;
+    if (hardfork.isAtLeast(.OSAKA) and blob_gas_used > tx_encoding.MAX_BLOBS_PER_TRANSACTION * blob_fee.GAS_PER_BLOB) {
+        return TxError.TooManyBlobs;
+    }
     const blob_gas_price: u256 = if (options.receipt_type == .eip4844) options.blob_gas_price orelse block_ctx.blob_base_fee else 0;
     const max_fee_per_blob_gas: u256 = if (options.receipt_type == .eip4844) options.max_fee_per_blob_gas orelse 0 else 0;
     if (!options.skip_fee_validation and options.receipt_type == .eip4844 and max_fee_per_blob_gas < blob_gas_price) return TxError.GasPriceBelowBaseFee;

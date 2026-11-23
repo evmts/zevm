@@ -125,13 +125,13 @@ pub const RpcServer = struct {
     pub fn stop(self: *RpcServer) void {
         self.stop_requested.store(true, .seq_cst);
         self.unblockAccept();
-        self.shutdownActiveConnections();
 
         if (self.accept_thread) |thread| {
             thread.join();
             self.accept_thread = null;
         }
 
+        self.shutdownActiveConnections();
         self.waitForConnections();
         log.info(.rpc, "listener stopped address={any}", .{self.address()});
     }
@@ -194,11 +194,12 @@ pub const RpcServer = struct {
 
     fn spawnConnection(self: *RpcServer, connection: std.net.Server.Connection) !void {
         var registered = false;
-        errdefer if (!registered) self.connection_slots.post();
-        errdefer connection.stream.close();
+        errdefer if (!registered) {
+            connection.stream.close();
+            self.connection_slots.post();
+        };
 
         const ctx = try self.allocator.create(ConnectionContext);
-        errdefer self.allocator.destroy(ctx);
         ctx.* = .{
             .server = self,
             .connection = connection,
@@ -239,8 +240,8 @@ pub const RpcServer = struct {
         }
 
         if (ctx.next) |next| next.prev = ctx.prev;
-        ctx.prev = null;
-        ctx.next = null;
+        ctx.connection.stream.close();
+        self.allocator.destroy(ctx);
 
         std.debug.assert(self.active_connections > 0);
         self.active_connections -= 1;
@@ -339,8 +340,6 @@ pub const TestListener = struct {
 
 fn connectionThread(ctx: *ConnectionContext) void {
     const start_ns = std.time.nanoTimestamp();
-    defer ctx.server.allocator.destroy(ctx);
-    defer ctx.connection.stream.close();
     defer ctx.server.unregisterConnection(ctx);
 
     setConnectionTimeouts(ctx.connection.stream, ctx.server.limits) catch |err| {
