@@ -40,15 +40,53 @@ pub const Database = struct {
         var rebuilt = @import("accounts.zig").Accounts.init(self.accounts.allocator);
         errdefer rebuilt.deinit();
 
-        var it = self.state.accountIterator();
-        while (it.next()) |entry| {
-            const address = entry.key_ptr.*;
+        // `setCode` and `setStorage` write their own caches without creating
+        // an account-cache entry, so collect the union of all three caches.
+        var addresses = std.AutoHashMapUnmanaged(primitives.Address, void){};
+        defer addresses.deinit(allocator);
+
+        var account_it = self.state.accountIterator();
+        while (account_it.next()) |entry| {
+            try addresses.put(allocator, entry.key_ptr.*, {});
+        }
+        var code_it = self.state.journaled_state.contract_cache.cache.keyIterator();
+        while (code_it.next()) |address| {
+            try addresses.put(allocator, address.*, {});
+        }
+        var storage_it = self.state.journaled_state.storage_cache.cache.keyIterator();
+        while (storage_it.next()) |address| {
+            try addresses.put(allocator, address.*, {});
+        }
+
+        var address_it = addresses.keyIterator();
+        while (address_it.next()) |address_ptr| {
+            const address = address_ptr.*;
+            // EIP-161: an account with zero nonce, zero balance and no code
+            // is empty and has no leaf in the state trie, however it came to
+            // be cached (a touch, a read, or a reverted write).
+            if (try self.accountIsEmpty(address)) continue;
             const account = try self.buildAccountState(allocator, address);
             try rebuilt.put(allocator, address, &account);
         }
 
         self.accounts.deinit();
         self.accounts = rebuilt;
+    }
+
+    fn accountIsEmpty(self: *Database, address: primitives.Address) !bool {
+        if (try self.state.getNonce(address) != 0) return false;
+        if (try self.state.getBalance(address) != 0) return false;
+        if ((try self.state.getCode(address)).len != 0) return false;
+        return !self.hasNonZeroStorage(address);
+    }
+
+    fn hasNonZeroStorage(self: *const Database, address: primitives.Address) bool {
+        const slots = self.state.journaled_state.storage_cache.cache.getPtr(address) orelse return false;
+        var it = slots.valueIterator();
+        while (it.next()) |val| {
+            if (val.* != 0) return true;
+        }
+        return false;
     }
 
     fn buildAccountState(self: *Database, allocator: std.mem.Allocator, address: primitives.Address) !primitives.AccountState.AccountState {
@@ -116,4 +154,26 @@ fn computeAccountStorageRoot(
 
     if (keys.items.len == 0) return primitives.State.EMPTY_TRIE_ROOT;
     return try primitives.TrieHash.secure_trie_root(arena_alloc, keys.items, values.items);
+}
+
+test "syncCachedAccountsToTrie keeps EIP-161 empty accounts out of the trie" {
+    const allocator = std.testing.allocator;
+    const funded = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
+    const touched = primitives.Address{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 19 };
+
+    var reference = try Database.init(allocator, null);
+    defer reference.deinit(allocator);
+    try reference.state.setBalance(funded, 100);
+    try reference.syncCachedAccountsToTrie(allocator);
+
+    var db = try Database.init(allocator, null);
+    defer db.deinit(allocator);
+    try db.state.setBalance(funded, 100);
+    // A zero-value touch caches the account without making it non-empty.
+    try db.state.setBalance(touched, 0);
+    try db.state.setNonce(touched, 0);
+    try db.syncCachedAccountsToTrie(allocator);
+
+    try std.testing.expectEqualSlices(u8, &reference.accounts.stateRoot().?, &db.accounts.stateRoot().?);
+    try std.testing.expect((try db.accounts.get(allocator, touched)) == null);
 }

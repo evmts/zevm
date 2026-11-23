@@ -15,7 +15,7 @@
 //! Domain          Zig implementation under test
 //! BLOB_FEE        zevm.blob_fee.calcBlobBaseFee, zevm.blob_fee.calcExcessBlobGas
 //! BASE_FEE        zevm.block_builder.expectedBaseFeePerGas
-//! EFFECTIVE_GAS   zevm.tx_processor.effectiveGasUsed
+//! EFFECTIVE_GAS   zevm.tx_processor.transactionGasFloorForFork, effectiveGasUsed
 //! RLP_DECODE      primitives.Rlp.decode
 //! TX_DECODE       zevm.transaction_encoding.decodeBlobNetworkWrapper, decodeEnvelope
 //! MODEXP          precompiles.modexp.execute
@@ -405,37 +405,38 @@ fn generateBaseFee(fuzzer: *Fuzzer, allocator: std.mem.Allocator, case: *Case) a
 // EFFECTIVE_GAS
 // ---------------------------------------------------------------------------
 
-/// EIP-7623 calldata floor. `tx_processor.transactionGasFloorForFork` is
-/// private and takes calldata bytes, so the floor for a (zero, non-zero) byte
-/// count is rebuilt here from the EIP constants and passed to the real
-/// `tx_processor.effectiveGasUsed`.
-fn calldataFloor(fork: primitives.Hardfork, zero_bytes: u64, non_zero_bytes: u64) u64 {
-    if (fork.isBefore(.PRAGUE)) return 0;
-    return 21_000 + 10 * (zero_bytes + 4 * non_zero_bytes);
-}
-
 fn generateEffectiveGas(fuzzer: *Fuzzer, allocator: std.mem.Allocator, case: *Case) anyerror!void {
     const random = fuzzer.random;
     const named = pickFork(random, &gas_forks);
-    const zero_bytes: u64 = switch (random.uintLessThan(u8, 4)) {
+    const calldata_len: usize = switch (random.uintLessThan(u8, 8)) {
         0 => 0,
-        1 => random.uintLessThan(u64, 64),
-        else => random.uintLessThan(u64, 1 << 20),
+        1...3 => random.uintLessThan(usize, 64),
+        4...6 => random.uintLessThan(usize, 4096),
+        else => random.uintLessThan(usize, 1 << 20),
     };
-    const non_zero_bytes: u64 = switch (random.uintLessThan(u8, 4)) {
+    const calldata = try allocator.alloc(u8, calldata_len);
+    defer allocator.free(calldata);
+    const zero_percent: u8 = switch (random.uintLessThan(u8, 4)) {
         0 => 0,
-        1 => random.uintLessThan(u64, 64),
-        else => random.uintLessThan(u64, 1 << 20),
+        1 => 100,
+        else => random.uintLessThan(u8, 100),
     };
-    const prague_floor = 21_000 + 10 * (zero_bytes + 4 * non_zero_bytes);
-    const intrinsic = 21_000 + 4 * zero_bytes + 16 * non_zero_bytes;
+    var zero_bytes: usize = 0;
+    for (calldata) |*byte| {
+        byte.* = if (random.uintLessThan(u8, 100) < zero_percent) 0 else random.intRangeAtMost(u8, 1, 255);
+        zero_bytes += @intFromBool(byte.* == 0);
+    }
+    const non_zero_bytes = calldata.len - zero_bytes;
+    const gas_floor = try zevm.tx_processor.transactionGasFloorForFork(calldata, named.fork);
+    const intrinsic = zevm.tx_processor.intrinsicGasForFork(calldata, false, named.fork);
+    const boundary = @max(gas_floor, intrinsic);
 
     const exec_gas: u64 = switch (random.uintLessThan(u8, 8)) {
         0 => intrinsic,
         1 => intrinsic + random.uintLessThan(u64, 100_000),
         // Straddle the floor so both arms of the final max() are taken.
-        2, 3 => (prague_floor -| 200) + random.uintLessThan(u64, 400),
-        4 => (prague_floor * 5 / 4 -| 200) + random.uintLessThan(u64, 400),
+        2, 3 => (boundary -| 200) + random.uintLessThan(u64, 400),
+        4 => (boundary * 5 / 4 -| 200) + random.uintLessThan(u64, 400),
         5 => random.uintLessThan(u64, 30_000_000),
         6 => random.uintLessThan(u64, 1 << 40),
         else => random.uintLessThan(u64, 16),
@@ -450,12 +451,7 @@ fn generateEffectiveGas(fuzzer: *Fuzzer, allocator: std.mem.Allocator, case: *Ca
         else => random.int(u64),
     };
 
-    const billed = zevm.tx_processor.effectiveGasUsed(
-        exec_gas,
-        calldataFloor(named.fork, zero_bytes, non_zero_bytes),
-        refund,
-        named.fork,
-    );
+    const billed = zevm.tx_processor.effectiveGasUsed(exec_gas, gas_floor, refund, named.fork);
     try case.request.print(allocator, "EFFECTIVE_GAS {s} {d} {d} {d} {d}", .{
         named.name, exec_gas, refund, zero_bytes, non_zero_bytes,
     });

@@ -18,6 +18,56 @@ pub const MiningType = enum {
     interval,
 };
 
+/// Matches `web3_clientVersion` (`zevm/<VERSION>`).
+pub const VERSION = "0.1.0";
+
+pub const usage =
+    \\Usage: zevm [options]
+    \\
+    \\General:
+    \\  --config <path>                    JSON config file
+    \\  --mode <trusted|light>             Node mode (default: trusted)
+    \\  --host <ip|localhost>              JSON-RPC bind host (default: 127.0.0.1)
+    \\  --port <u16>                       JSON-RPC port (default: 8545)
+    \\  -h, --help                         Print this help and exit
+    \\  -V, --version                      Print the version and exit
+    \\
+    \\Engine API (trusted mode):
+    \\  --engine-host <ip|localhost>       Engine API bind host
+    \\  --engine-port <u16>                Engine API port (default: 8551)
+    \\  --authrpc.jwtsecret <path>         Hex-encoded 32-byte JWT secret file; generated when omitted
+    \\
+    \\Trusted mode:
+    \\  --chain-id <u64>                   Chain id (non-zero)
+    \\  --coinbase-index <u8>              Dev account used as coinbase
+    \\  --initial-balance <wei>            Dev account balance
+    \\  --gas-price <wei>                  Legacy gas price
+    \\  --base-fee <wei>                   Initial base fee
+    \\  --blob-base-fee <wei>              Initial blob base fee
+    \\  --max-priority-fee-per-gas <wei>   Default priority fee
+    \\  --block-gas-limit <u64>            Block gas limit (non-zero)
+    \\  --mining <auto|manual|interval>    Mining mode
+    \\  --block-time <seconds>             Interval mining period (non-zero)
+    \\  --fork-url <url>                   Upstream RPC to fork
+    \\  --fork-block-number <u64>          Fork pin block
+    \\  --genesis <path>                   Genesis alloc JSON
+    \\  --chain-rlp <path>                 Chain RLP to import
+    \\  --execution-fixture-rpc-dir <dir>  Serve recorded .io fixtures (opt-in)
+    \\
+    \\Light mode:
+    \\  --network <mainnet|sepolia|holesky|hoodi>
+    \\  --consensus-rpc-url <url>
+    \\  --execution-rpc-url <url>
+    \\  --checkpoint <0x-hash>
+    \\  --checkpoint-dir <path>
+    \\  --max-checkpoint-age-seconds <u64>
+    \\  --strict-checkpoint-age
+    \\
+    \\Environment:
+    \\  ZEVM_LOG_LEVEL=<err|warn|info|debug>
+    \\
+;
+
 pub const ParseError = error{
     UnknownArgument,
     MissingFlagValue,
@@ -31,6 +81,9 @@ pub const Options = struct {
     port: ?u16 = null,
     engine_host: ?[]const u8 = null,
     engine_port: ?u16 = null,
+    engine_jwt_secret_file: ?[]const u8 = null,
+    help: bool = false,
+    version: bool = false,
 
     chain_id: ?u64 = null,
     coinbase_index: ?u8 = null,
@@ -46,6 +99,7 @@ pub const Options = struct {
     fork_block_number: ?u64 = null,
     genesis_alloc_path: ?[]const u8 = null,
     chain_rlp_path: ?[]const u8 = null,
+    execution_fixture_rpc_dir: ?[]const u8 = null,
 
     network: ?Network = null,
     consensus_rpc_url: ?[]const u8 = null,
@@ -70,11 +124,12 @@ pub const Options = struct {
             self.fork_url != null or
             self.fork_block_number != null or
             self.genesis_alloc_path != null or
-            self.chain_rlp_path != null;
+            self.chain_rlp_path != null or
+            self.execution_fixture_rpc_dir != null;
     }
 
     pub fn hasEngineRpc(self: Options) bool {
-        return self.engine_host != null or self.engine_port != null;
+        return self.engine_host != null or self.engine_port != null or self.engine_jwt_secret_file != null;
     }
 
     pub fn hasLightOnly(self: Options) bool {
@@ -102,7 +157,11 @@ pub fn parse(args: []const []const u8) ParseError!Options {
     while (index < args.len) : (index += 1) {
         const arg = args[index];
 
-        if (std.mem.eql(u8, arg, "--config")) {
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            options.help = true;
+        } else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V")) {
+            options.version = true;
+        } else if (std.mem.eql(u8, arg, "--config")) {
             options.config_path = try nextValue(args, &index);
         } else if (std.mem.eql(u8, arg, "--mode")) {
             options.mode = modeFromString(try nextValue(args, &index)) orelse return error.InvalidFlagValue;
@@ -114,6 +173,8 @@ pub fn parse(args: []const []const u8) ParseError!Options {
             options.engine_host = try nextValue(args, &index);
         } else if (std.mem.eql(u8, arg, "--engine-port")) {
             options.engine_port = try parseIntValue(u16, try nextValue(args, &index));
+        } else if (std.mem.eql(u8, arg, "--authrpc.jwtsecret")) {
+            options.engine_jwt_secret_file = try nonEmptyValue(try nextValue(args, &index));
         } else if (std.mem.eql(u8, arg, "--chain-id")) {
             options.chain_id = try parseIntValue(u64, try nextValue(args, &index));
         } else if (std.mem.eql(u8, arg, "--coinbase-index")) {
@@ -142,6 +203,8 @@ pub fn parse(args: []const []const u8) ParseError!Options {
             options.genesis_alloc_path = try nextValue(args, &index);
         } else if (std.mem.eql(u8, arg, "--chain-rlp")) {
             options.chain_rlp_path = try nextValue(args, &index);
+        } else if (std.mem.eql(u8, arg, "--execution-fixture-rpc-dir")) {
+            options.execution_fixture_rpc_dir = try nonEmptyValue(try nextValue(args, &index));
         } else if (std.mem.eql(u8, arg, "--network")) {
             options.network = networkFromString(try nextValue(args, &index)) orelse return error.InvalidFlagValue;
         } else if (std.mem.eql(u8, arg, "--consensus-rpc-url")) {
@@ -165,6 +228,20 @@ pub fn parse(args: []const []const u8) ParseError!Options {
     }
 
     return options;
+}
+
+pub const EarlyAction = enum { help, version };
+
+/// Returns the informational action requested anywhere in `args`, so
+/// `--help` and `--version` work even when other flags are invalid.
+pub fn earlyAction(args: []const []const u8) ?EarlyAction {
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) return .help;
+    }
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V")) return .version;
+    }
+    return null;
 }
 
 pub fn modeFromString(value: []const u8) ?Mode {
@@ -221,6 +298,11 @@ fn nextValue(args: []const []const u8, index: *usize) ParseError![]const u8 {
         return error.MissingFlagValue;
     }
     return args[index.*];
+}
+
+fn nonEmptyValue(value: []const u8) ParseError![]const u8 {
+    if (std.mem.trim(u8, value, " \t\r\n").len == 0) return error.InvalidFlagValue;
+    return value;
 }
 
 fn parseIntValue(comptime T: type, value: []const u8) ParseError!T {

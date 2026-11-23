@@ -8,7 +8,6 @@ const dispatch_wiring = @import("../rpc/dispatch_wiring.zig");
 const rpc_server = @import("../rpc/server.zig");
 const simulation = @import("../rpc/handlers/simulation.zig");
 const precompile_compat = @import("../precompile_compat.zig");
-const evm_overrides = @import("../evm_overrides.zig");
 
 fn postRpc(
     allocator: std.mem.Allocator,
@@ -40,7 +39,7 @@ test "fuzz: simulation.decodeRevertReason on arbitrary ABI and malformed revert 
         ("\x00" ** 31) ++ "\x20" ++
         ("\x00" ** 31) ++ "\x04" ++
         "boom" ++ ("\x00" ** 28);
-    // Panic(uint256) 0x11 (arithmetic overflow)
+    // Solidity 0x4e487b71 (arithmetic overflow)
     const valid_panic = "\x4e\x48\x7b\x71" ++ ("\x00" ** 31) ++ "\x11";
     // Huge offset / huge length attacks
     const huge_offset = "\x08\xc3\x79\xa0" ++ ("\xff" ** 32) ++ ("\x00" ** 32);
@@ -370,7 +369,7 @@ test "property: metamorphic eth_estimateGas soundness, eth_call zero-mutation an
     }
 }
 
-test "property: evm_overrides preserves CALLVALUE across DELEGATECALL for arbitrary nonzero values" {
+test "property: DELEGATECALL preserves CALLVALUE for arbitrary nonzero values" {
     const allocator = std.testing.allocator;
     var prng = std.Random.DefaultPrng.init(0xde1e_9a7e_0034_cafe);
     const random = prng.random();
@@ -420,7 +419,73 @@ test "property: evm_overrides preserves CALLVALUE across DELEGATECALL for arbitr
         defer allocator.free(expected);
         try std.testing.expectEqualStrings(expected, res.value.object.get("result").?.string);
     }
+}
 
-    // Reference evm_overrides.config explicitly so the override config stays exercised.
-    try std.testing.expectEqual(@as(u8, 0x34), evm_overrides.config.opcode_overrides[0].opcode);
+test "property: 0-value self-CALL reads CALLVALUE 0 for arbitrary nonzero outer values" {
+    // Regression for the removed CALLVALUE opcode override. It treated any
+    // 0-value frame whose parent shared its address and caller as a
+    // DELEGATECALL and returned the parent's value. A 0-value CALL to self
+    // from a transaction sent by the contract address itself matches that
+    // shape, so the inner frame read the outer value instead of 0.
+    const allocator = std.testing.allocator;
+    var prng = std.Random.DefaultPrng.init(0x5e1f_ca11_0034_0000);
+    const random = prng.random();
+
+    var rt = try runtime_mod.NodeRuntime.init(allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    // Outer frame (calldata empty): CALL(gas, self, 0, 0, 1, 0, 32) then
+    // RETURN(0, 32). Inner frame (calldata non-empty): return CALLVALUE.
+    const self_addr = primitives.Address.fromU256(0x9003);
+    const self_code = [_]u8{
+        0x36, // CALLDATASIZE
+        0x60, 0x19, // PUSH1 inner (25)
+        0x57, // JUMPI
+        0x60, 0x20, // retSize = 32
+        0x60, 0x00, // retOffset = 0
+        0x60, 0x01, // argsSize = 1 (marks the inner frame)
+        0x60, 0x00, // argsOffset = 0
+        0x60, 0x00, // value = 0
+        0x30, // ADDRESS (self)
+        0x5a, // GAS
+        0xf1, // CALL
+        0x50, // POP
+        0x60, 0x20, 0x60, 0x00, 0xf3, // RETURN(0, 32)
+        0xfe, // INVALID (unreachable padding)
+        0xfe,
+        0x5b, // JUMPDEST inner (offset 25)
+        0x34, // CALLVALUE
+        0x60, 0x00, 0x52, // MSTORE(0, callvalue)
+        0x60, 0x20, 0x60, 0x00, 0xf3, // RETURN(0, 32)
+    };
+    comptime std.debug.assert(self_code[25] == 0x5b);
+    try rt.setCode(self_addr, &self_code);
+
+    const zero_word = "0x" ++ "0" ** 64;
+    const senders = [_][]const u8{
+        // Contract calls itself as the transaction sender: parent and child
+        // share both address and caller, the shape the old override misread.
+        "0x0000000000000000000000000000000000009003",
+        // Ordinary external sender.
+        "0x0000000000000000000000000000000000009004",
+    };
+
+    for (0..16) |_| {
+        const value: u64 = 1 + random.int(u48);
+        for (senders) |sender_hex| {
+            const req = try std.fmt.allocPrint(
+                allocator,
+                "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_call\",\"params\":[{{\"from\":\"{s}\",\"to\":\"0x0000000000000000000000000000000000009003\",\"value\":\"0x{x}\"}},\"latest\",{{\"{s}\":{{\"balance\":\"0xffffffffffffffffffff\"}}}}]}}",
+                .{ sender_hex, value, sender_hex },
+            );
+            defer allocator.free(req);
+            var res = try postRpc(allocator, &handlers, req);
+            defer res.deinit();
+            try std.testing.expect(res.value.object.get("error") == null);
+            try std.testing.expectEqualStrings(zero_word, res.value.object.get("result").?.string);
+        }
+    }
 }

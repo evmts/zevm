@@ -138,7 +138,7 @@ test "importChainBytes transfers block body ownership to owned_block_bodies with
         .gas_limit = 1_000_000,
         .gas_used = 0,
         .timestamp = 42,
-        .extra_data = "chain-import-regression-extra-data",
+        .extra_data = "chain-import-regression-extra",
         .mix_hash = primitives.Hash.ZERO,
         .nonce = [_]u8{0} ** primitives.BlockHeader.NONCE_SIZE,
         .base_fee_per_gas = 7,
@@ -430,4 +430,320 @@ test "validateImportedBlobHeader enforces EIP-7918 and EIP-7892 BPO1/BPO2 rules"
         error.BlobGasLimitExceeded,
         chain_import.validateImportedBlobHeader(hardfork_schedule.MAINNET_CHAIN_CONFIG, parent, child),
     );
+}
+
+/// One empty-bodied London block, or a block carrying `tx_item` verbatim as
+/// its only transaction-list element.
+fn encodeLinkedBlock(
+    allocator: std.mem.Allocator,
+    number: u64,
+    parent_hash: [32]u8,
+    tx_item: ?[]const u8,
+) ![]u8 {
+    var header = primitives.BlockHeader.BlockHeader{
+        .parent_hash = parent_hash,
+        .ommers_hash = primitives.BlockHeader.EMPTY_OMMERS_HASH,
+        .beneficiary = try primitives.Address.fromHex("0x00000000000000000000000000000000000000aa"),
+        .state_root = primitives.State.EMPTY_TRIE_ROOT,
+        .transactions_root = primitives.BlockHeader.EMPTY_TRANSACTIONS_ROOT,
+        .receipts_root = primitives.BlockHeader.EMPTY_RECEIPTS_ROOT,
+        .logs_bloom = [_]u8{0} ** primitives.BlockHeader.BLOOM_SIZE,
+        .difficulty = 0,
+        .number = number,
+        .gas_limit = 1_000_000,
+        .gas_used = 0,
+        .timestamp = 42 + number,
+        .extra_data = &.{},
+        .mix_hash = primitives.Hash.ZERO,
+        .nonce = [_]u8{0} ** primitives.BlockHeader.NONCE_SIZE,
+        .base_fee_per_gas = 7,
+    };
+    _ = &header;
+    const header_rlp = try primitives.BlockHeader.rlpEncode(&header, allocator);
+    defer allocator.free(header_rlp);
+
+    const tx_list = if (tx_item) |item|
+        try encodeListFromEncoded(allocator, &.{item})
+    else
+        try allocator.dupe(u8, &[_]u8{0xc0});
+    defer allocator.free(tx_list);
+
+    return encodeListFromEncoded(allocator, &.{ header_rlp, tx_list, &[_]u8{0xc0} });
+}
+
+fn headerHashOf(allocator: std.mem.Allocator, block_rlp: []const u8) ![32]u8 {
+    var decoded = try chain_import.decodeNextBlock(allocator, block_rlp);
+    defer decoded.deinit(allocator);
+    return decoded.block.hash;
+}
+
+fn importStream(stream: []const u8) !chain_import.ImportStats {
+    var chain = try blockchain_mod.Blockchain.init(std.testing.allocator, null);
+    defer chain.deinit();
+    var owned_block_bodies = std.ArrayList(chain_import.OwnedBlockBody){};
+    defer {
+        for (owned_block_bodies.items) |*body| body.deinit(std.testing.allocator);
+        owned_block_bodies.deinit(std.testing.allocator);
+    }
+    return chain_import.importChainBytes(std.testing.allocator, &chain, &owned_block_bodies, stream);
+}
+
+test "importChainBytes enforces parent hash and block number linkage across a stream" {
+    const allocator = std.testing.allocator;
+
+    const genesis = try encodeLinkedBlock(allocator, 0, primitives.Hash.ZERO, null);
+    defer allocator.free(genesis);
+    const genesis_hash = try headerHashOf(allocator, genesis);
+
+    const child = try encodeLinkedBlock(allocator, 1, genesis_hash, null);
+    defer allocator.free(child);
+    const linked = try std.mem.concat(allocator, u8, &.{ genesis, child });
+    defer allocator.free(linked);
+    const stats = try importStream(linked);
+    try std.testing.expectEqual(@as(usize, 2), stats.block_count);
+    try std.testing.expectEqual(@as(u64, 1), stats.head_block_number);
+
+    // Right number, wrong parent hash.
+    const wrong_parent = try encodeLinkedBlock(allocator, 1, [_]u8{0x99} ** 32, null);
+    defer allocator.free(wrong_parent);
+    const unlinked = try std.mem.concat(allocator, u8, &.{ genesis, wrong_parent });
+    defer allocator.free(unlinked);
+    try std.testing.expectError(error.InvalidParentHash, importStream(unlinked));
+
+    // Right parent hash, skipped block number.
+    const skipped = try encodeLinkedBlock(allocator, 2, genesis_hash, null);
+    defer allocator.free(skipped);
+    const gapped = try std.mem.concat(allocator, u8, &.{ genesis, skipped });
+    defer allocator.free(gapped);
+    try std.testing.expectError(error.InvalidBlockNumber, importStream(gapped));
+
+    try chain_import.validateBlockLinkage(.{ .parent_hash = genesis_hash, .number = 1 }, genesis_hash, 0);
+    try std.testing.expectError(
+        error.InvalidBlockNumber,
+        chain_import.validateBlockLinkage(.{ .parent_hash = genesis_hash, .number = 0 }, genesis_hash, std.math.maxInt(u64)),
+    );
+}
+
+test "decodeNextBlock distinguishes legacy lists from typed byte strings (ASTRA-R1-28)" {
+    const allocator = std.testing.allocator;
+
+    // Nine one-byte fields: a well-formed legacy transaction list.
+    const legacy = [_]u8{ 0xc9, 0x80, 0x01, 0x80, 0x80, 0x80, 0x80, 0x1b, 0x01, 0x01 };
+    const typed = [_]u8{ 0x02, 0xc3, 0x01, 0x80, 0x80 };
+
+    // Legacy as a list item: accepted, raw bytes are the whole list.
+    {
+        const block = try encodeLinkedBlock(allocator, 0, primitives.Hash.ZERO, &legacy);
+        defer allocator.free(block);
+        var decoded = try chain_import.decodeNextBlock(allocator, block);
+        defer decoded.deinit(allocator);
+        try std.testing.expectEqualSlices(u8, &legacy, decoded.block.body.transactions[0].raw);
+    }
+
+    // Typed as a byte string: accepted, raw bytes are `type || payload`.
+    {
+        const item = try primitives.Rlp.encodeBytes(allocator, &typed);
+        defer allocator.free(item);
+        const block = try encodeLinkedBlock(allocator, 0, primitives.Hash.ZERO, item);
+        defer allocator.free(block);
+        var decoded = try chain_import.decodeNextBlock(allocator, block);
+        defer decoded.deinit(allocator);
+        try std.testing.expectEqualSlices(u8, &typed, decoded.block.body.transactions[0].raw);
+    }
+
+    // The same legacy list wrapped in a byte string is not that transaction.
+    {
+        const item = try primitives.Rlp.encodeBytes(allocator, &legacy);
+        defer allocator.free(item);
+        const block = try encodeLinkedBlock(allocator, 0, primitives.Hash.ZERO, item);
+        defer allocator.free(block);
+        try std.testing.expectError(error.InvalidChainRlp, chain_import.decodeNextBlock(allocator, block));
+    }
+
+    // Type byte 0x00, a type byte above 0x7f, and a bare type byte are invalid.
+    for ([_][]const u8{ &.{ 0x00, 0xc0 }, &.{ 0x80, 0xc0 }, &.{0x02} }) |envelope| {
+        const item = try primitives.Rlp.encodeBytes(allocator, envelope);
+        defer allocator.free(item);
+        const block = try encodeLinkedBlock(allocator, 0, primitives.Hash.ZERO, item);
+        defer allocator.free(block);
+        try std.testing.expectError(error.InvalidChainRlp, chain_import.decodeNextBlock(allocator, block));
+    }
+}
+
+/// A block whose header has `field_count` fields: a 17-field Shanghai header
+/// followed by `field_count - 17` appended fields (blob gas used, excess blob
+/// gas, parent beacon block root, requests hash, in that order).
+fn encodeBlockWithHeaderFieldCount(allocator: std.mem.Allocator, field_count: usize, extra_data: []const u8) ![]u8 {
+    var header = primitives.BlockHeader.BlockHeader{
+        .parent_hash = primitives.Hash.ZERO,
+        .ommers_hash = primitives.BlockHeader.EMPTY_OMMERS_HASH,
+        .beneficiary = try primitives.Address.fromHex("0x00000000000000000000000000000000000000aa"),
+        .state_root = primitives.State.EMPTY_TRIE_ROOT,
+        .transactions_root = primitives.BlockHeader.EMPTY_TRANSACTIONS_ROOT,
+        .receipts_root = primitives.BlockHeader.EMPTY_RECEIPTS_ROOT,
+        .logs_bloom = [_]u8{0} ** primitives.BlockHeader.BLOOM_SIZE,
+        .difficulty = 0,
+        .number = 1,
+        .gas_limit = 1_000_000,
+        .gas_used = 0,
+        .timestamp = 42,
+        .extra_data = extra_data,
+        .mix_hash = primitives.Hash.ZERO,
+        .nonce = [_]u8{0} ** primitives.BlockHeader.NONCE_SIZE,
+        .base_fee_per_gas = 7,
+        .withdrawals_root = primitives.BlockHeader.EMPTY_WITHDRAWALS_ROOT,
+    };
+    _ = &header;
+    const shanghai_rlp = try primitives.BlockHeader.rlpEncode(&header, allocator);
+    defer allocator.free(shanghai_rlp);
+    // The logs bloom alone makes the payload longer than 255 bytes, so the
+    // list prefix is 0xf9 plus a two-byte length.
+    try std.testing.expectEqual(@as(u8, 0xf9), shanghai_rlp[0]);
+    const shanghai_fields = shanghai_rlp[3..];
+
+    const hash_field = [_]u8{0xa0} ++ [_]u8{0x11} ** 32;
+    const appended = [_][]const u8{
+        &[_]u8{0x80}, // blob_gas_used = 0
+        &[_]u8{0x80}, // excess_blob_gas = 0
+        &hash_field, // parent_beacon_block_root
+        &hash_field, // requests_hash
+    };
+
+    var fields = std.ArrayList([]const u8){};
+    defer fields.deinit(allocator);
+    try fields.append(allocator, shanghai_fields);
+    try fields.appendSlice(allocator, appended[0 .. field_count - 17]);
+    const header_rlp = try encodeListFromEncoded(allocator, fields.items);
+    defer allocator.free(header_rlp);
+
+    return encodeListFromEncoded(allocator, &.{ header_rlp, &[_]u8{0xc0}, &[_]u8{0xc0} });
+}
+
+test "decodeNextBlock accepts only the header field counts a fork defines (NEON-R2-13)" {
+    const allocator = std.testing.allocator;
+
+    for ([_]usize{ 17, 20, 21 }) |field_count| {
+        const block_rlp = try encodeBlockWithHeaderFieldCount(allocator, field_count, "chain");
+        defer allocator.free(block_rlp);
+        var decoded = try chain_import.decodeNextBlock(allocator, block_rlp);
+        defer decoded.deinit(allocator);
+        try std.testing.expectEqual(@as(u64, 1), decoded.block.header.number);
+        try std.testing.expectEqual(field_count >= 20, decoded.block.header.blob_gas_used != null);
+        try std.testing.expectEqual(field_count >= 20, decoded.block.header.parent_beacon_block_root != null);
+    }
+
+    // Cancun adds three fields at once: 18 and 19 fields match no fork.
+    for ([_]usize{ 18, 19 }) |field_count| {
+        const block_rlp = try encodeBlockWithHeaderFieldCount(allocator, field_count, "chain");
+        defer allocator.free(block_rlp);
+        try std.testing.expectError(error.InvalidChainRlp, chain_import.decodeNextBlock(allocator, block_rlp));
+    }
+}
+
+test "decodeNextBlock caps header extra data at 32 bytes (NEON-R2-13)" {
+    const allocator = std.testing.allocator;
+
+    const at_cap = try encodeBlockWithHeaderFieldCount(allocator, 17, &([_]u8{0xee} ** 32));
+    defer allocator.free(at_cap);
+    var decoded = try chain_import.decodeNextBlock(allocator, at_cap);
+    defer decoded.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 32), decoded.block.header.extra_data.len);
+
+    const over_cap = try encodeBlockWithHeaderFieldCount(allocator, 17, &([_]u8{0xee} ** 33));
+    defer allocator.free(over_cap);
+    try std.testing.expectError(error.InvalidChainRlp, chain_import.decodeNextBlock(allocator, over_cap));
+}
+
+test "importChainBytes rejects a first block whose parent the populated store does not hold" {
+    const allocator = std.testing.allocator;
+
+    var chain = try blockchain_mod.Blockchain.init(allocator, null);
+    defer chain.deinit();
+    var owned_block_bodies = std.ArrayList(chain_import.OwnedBlockBody){};
+    defer {
+        for (owned_block_bodies.items) |*body| body.deinit(allocator);
+        owned_block_bodies.deinit(allocator);
+    }
+
+    // The store holds genesis block 0.
+    const genesis = try encodeLinkedBlock(allocator, 0, primitives.Hash.ZERO, null);
+    defer allocator.free(genesis);
+    const genesis_hash = try headerHashOf(allocator, genesis);
+    _ = try chain_import.importChainBytes(allocator, &chain, &owned_block_bodies, genesis);
+    try std.testing.expectEqual(@as(?u64, 0), chain.getHeadBlockNumber());
+
+    // A separate stream starts at block 1 with a parent hash the store does
+    // not hold. It is rejected before it reaches the store.
+    const foreign = try encodeLinkedBlock(allocator, 1, [_]u8{0x99} ** 32, null);
+    defer allocator.free(foreign);
+    const foreign_hash = try headerHashOf(allocator, foreign);
+    try std.testing.expectError(
+        error.MissingParentBlock,
+        chain_import.importChainBytes(allocator, &chain, &owned_block_bodies, foreign),
+    );
+    try std.testing.expect(chain.getBlockLocal(foreign_hash) == null);
+    try std.testing.expectEqual(@as(?u64, 0), chain.getHeadBlockNumber());
+    try std.testing.expectEqual(@as(usize, 1), owned_block_bodies.items.len);
+
+    // A stream that skips ahead is rejected the same way.
+    const skipped = try encodeLinkedBlock(allocator, 5, [_]u8{0x77} ** 32, null);
+    defer allocator.free(skipped);
+    try std.testing.expectError(
+        error.MissingParentBlock,
+        chain_import.importChainBytes(allocator, &chain, &owned_block_bodies, skipped),
+    );
+
+    // Block 1 that names the stored genesis as its parent still imports.
+    const child = try encodeLinkedBlock(allocator, 1, genesis_hash, null);
+    defer allocator.free(child);
+    const stats = try chain_import.importChainBytes(allocator, &chain, &owned_block_bodies, child);
+    try std.testing.expectEqual(@as(usize, 1), stats.block_count);
+    try std.testing.expectEqual(@as(?u64, 1), chain.getHeadBlockNumber());
+}
+
+test "importChainBytes rejects a block 0 that differs from the stored genesis (R4-08)" {
+    const allocator = std.testing.allocator;
+
+    var chain = try blockchain_mod.Blockchain.init(allocator, null);
+    defer chain.deinit();
+    var owned_block_bodies = std.ArrayList(chain_import.OwnedBlockBody){};
+    defer {
+        for (owned_block_bodies.items) |*body| body.deinit(allocator);
+        owned_block_bodies.deinit(allocator);
+    }
+
+    // The configured genesis.
+    const genesis = try encodeLinkedBlock(allocator, 0, primitives.Hash.ZERO, null);
+    defer allocator.free(genesis);
+    const genesis_hash = try headerHashOf(allocator, genesis);
+    _ = try chain_import.importChainBytes(allocator, &chain, &owned_block_bodies, genesis);
+
+    // Another chain's block 0: same number, different parent hash field, so
+    // a different block hash.
+    const foreign_genesis = try encodeLinkedBlock(allocator, 0, [_]u8{0x99} ** 32, null);
+    defer allocator.free(foreign_genesis);
+    const foreign_hash = try headerHashOf(allocator, foreign_genesis);
+    try std.testing.expect(!std.mem.eql(u8, &genesis_hash, &foreign_hash));
+
+    // Alone, and as the first block of a longer stream.
+    const foreign_child = try encodeLinkedBlock(allocator, 1, foreign_hash, null);
+    defer allocator.free(foreign_child);
+    const foreign_chain = try std.mem.concat(allocator, u8, &.{ foreign_genesis, foreign_child });
+    defer allocator.free(foreign_chain);
+    for ([_][]const u8{ foreign_genesis, foreign_chain }) |stream| {
+        try std.testing.expectError(
+            error.GenesisHashMismatch,
+            chain_import.importChainBytes(allocator, &chain, &owned_block_bodies, stream),
+        );
+    }
+
+    // The configured genesis is still canonical and nothing foreign was stored.
+    try std.testing.expectEqualSlices(u8, &genesis_hash, &chain.getCanonicalHash(0).?);
+    try std.testing.expect(chain.getBlockLocal(foreign_hash) == null);
+    try std.testing.expectEqual(@as(?u64, 0), chain.getHeadBlockNumber());
+    try std.testing.expectEqual(@as(usize, 1), owned_block_bodies.items.len);
+
+    // An empty store still accepts any block 0.
+    const stats = try importStream(foreign_genesis);
+    try std.testing.expectEqual(@as(usize, 1), stats.block_count);
 }

@@ -53,26 +53,7 @@ fn poolEntries(
     rt: *const runtime.NodeRuntime,
     shape: EntryShape,
 ) !std.json.Value {
-    var pending = std.json.ObjectMap.init(allocator);
-    var queued = std.json.ObjectMap.init(allocator);
-
-    for (rt.pool.items()) |tx| {
-        if (isBlobPoolOnly(tx)) continue;
-        const section = switch (rt.pool.statusOf(tx.sender, tx.nonce)) {
-            .pending => &pending,
-            .queued => &queued,
-        };
-
-        switch (shape) {
-            .content => try appendContentTx(allocator, section, tx),
-            .inspect => try appendInspectTx(allocator, section, tx),
-        }
-    }
-
-    var obj = std.json.ObjectMap.init(allocator);
-    try putOwnedJson(&obj, allocator, "pending", .{ .object = pending });
-    try putOwnedJson(&obj, allocator, "queued", .{ .object = queued });
-    return .{ .object = obj };
+    return poolEntriesFiltered(allocator, rt, shape, null);
 }
 
 fn poolEntriesFrom(
@@ -81,16 +62,31 @@ fn poolEntriesFrom(
     shape: EntryShape,
     sender: primitives.Address,
 ) !std.json.Value {
+    return poolEntriesFiltered(allocator, rt, shape, sender);
+}
+
+/// Groups pooled transactions into `pending` and `queued`, including EIP-4844
+/// blob transactions. Each sender's pending nonce range is computed once, so
+/// the whole listing costs O(pool size) instead of O(pool size x chain length).
+fn poolEntriesFiltered(
+    allocator: std.mem.Allocator,
+    rt: *const runtime.NodeRuntime,
+    shape: EntryShape,
+    only_sender: ?primitives.Address,
+) !std.json.Value {
     var pending = std.json.ObjectMap.init(allocator);
     var queued = std.json.ObjectMap.init(allocator);
 
+    var ready_ranges = std.AutoHashMapUnmanaged([20]u8, txpool_mod.TransactionPool.ReadyRange){};
+    defer ready_ranges.deinit(allocator);
+
     for (rt.pool.items()) |tx| {
-        if (isBlobPoolOnly(tx)) continue;
-        if (!std.mem.eql(u8, &tx.sender.bytes, &sender.bytes)) continue;
-        const section = switch (rt.pool.statusOf(tx.sender, tx.nonce)) {
-            .pending => &pending,
-            .queued => &queued,
-        };
+        if (only_sender) |sender| {
+            if (!std.mem.eql(u8, &tx.sender.bytes, &sender.bytes)) continue;
+        }
+        const range_entry = try ready_ranges.getOrPut(allocator, tx.sender.bytes);
+        if (!range_entry.found_existing) range_entry.value_ptr.* = rt.pool.readyRange(tx.sender);
+        const section = if (range_entry.value_ptr.contains(tx.nonce)) &pending else &queued;
 
         switch (shape) {
             .content => try appendContentTx(allocator, section, tx),
@@ -142,8 +138,23 @@ pub fn transactionObject(allocator: std.mem.Allocator, tx: txpool_mod.PooledTran
 
 fn fallbackTransactionObject(allocator: std.mem.Allocator, tx: txpool_mod.PooledTransaction) !std.json.Value {
     var obj = std.json.ObjectMap.init(allocator);
-    try putCommonTransactionFields(&obj, allocator, tx, tx.nonce, tx.gas_limit, tx.to, tx.value, tx.input, 0);
+    const type_field: u8 = switch (tx.receipt_type) {
+        .legacy => 0,
+        .eip2930 => 1,
+        .eip1559 => 2,
+        .eip4844 => 3,
+        .eip7702 => 4,
+    };
+    try putCommonTransactionFields(&obj, allocator, tx, tx.nonce, tx.gas_limit, tx.to, tx.value, tx.input, type_field);
     try putOwnedJson(&obj, allocator, "gasPrice", .{ .string = try quantityHex(allocator, tx.max_fee_per_gas) });
+    if (type_field >= 2) {
+        try putOwnedJson(&obj, allocator, "maxFeePerGas", .{ .string = try quantityHex(allocator, tx.max_fee_per_gas) });
+        try putOwnedJson(&obj, allocator, "maxPriorityFeePerGas", .{ .string = try quantityHex(allocator, tx.max_priority_fee_per_gas) });
+    }
+    if (tx.receipt_type == .eip4844) {
+        try putOwnedJson(&obj, allocator, "maxFeePerBlobGas", .{ .string = try quantityHex(allocator, tx.max_fee_per_blob_gas orelse 0) });
+        try putOwnedJson(&obj, allocator, "blobVersionedHashes", try hashArrayValue(allocator, tx.blob_versioned_hashes));
+    }
     if (tx.v != 0) try putOwnedJson(&obj, allocator, "v", .{ .string = try quantityHex(allocator, tx.v) });
     if (!std.mem.allEqual(u8, &tx.r, 0)) try putOwnedJson(&obj, allocator, "r", .{ .string = try quantityHex(allocator, tx_encoding.bytes32ToU256(tx.r)) });
     if (!std.mem.allEqual(u8, &tx.s, 0)) try putOwnedJson(&obj, allocator, "s", .{ .string = try quantityHex(allocator, tx_encoding.bytes32ToU256(tx.s)) });
@@ -195,13 +206,6 @@ fn decodedTransactionObject(
         },
     }
     return .{ .object = obj };
-}
-
-fn isBlobPoolOnly(tx: txpool_mod.PooledTransaction) bool {
-    return tx.receipt_type == .eip4844 or
-        tx.max_fee_per_blob_gas != null or
-        tx.blob_versioned_hashes.len != 0 or
-        tx.blob_sidecars.len != 0;
 }
 
 fn putCommonTransactionFields(

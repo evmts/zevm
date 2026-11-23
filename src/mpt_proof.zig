@@ -136,8 +136,13 @@ fn buildNode(allocator: std.mem.Allocator, entries: []const Entry, level: usize)
     // Single counting pass across all 16 nibble buckets instead of 16 separate scans.
     var counts = [_]usize{0} ** 16;
     var total_children: usize = 0;
+    var terminated = false;
     for (entries) |entry| {
         if (entry.key.len == level) {
+            // Two entries ending at the same node share one key. Building on
+            // would silently drop a value and yield a root no peer reproduces.
+            if (terminated) return error.DuplicateKey;
+            terminated = true;
             branch.value = entry.value;
         } else {
             counts[entry.key[level]] += 1;
@@ -230,8 +235,11 @@ fn collectProofNodes(
     // its parent (see nodeReferenceData) and must NOT be emitted separately.
     // The root node is always emitted even when < 32 bytes.
     if (is_root or cached.len >= 32) {
+        // Reserve the slot first: once the copy exists, storing it cannot fail,
+        // so an out-of-memory append can never strand the copy.
+        try proof_nodes.ensureUnusedCapacity(proof_allocator, 1);
         const duped = try proof_allocator.dupe(u8, cached);
-        try proof_nodes.append(proof_allocator, duped);
+        proof_nodes.appendAssumeCapacity(duped);
     }
 
     switch (node.kind) {
@@ -527,4 +535,33 @@ test "secureProof does not emit inline (sub-32-byte) children as standalone entr
     for (proof.nodes[1..]) |node| {
         try std.testing.expect(node.len >= 32);
     }
+}
+
+test "secureProof rejects duplicate keys" {
+    const allocator = std.testing.allocator;
+    const key = [_]u8{0x11} ** 20;
+    const other = [_]u8{0x22} ** 20;
+    const keys = [_][]const u8{ &key, &other, &key };
+    const values = [_][]const u8{ &[_]u8{0x01}, &[_]u8{0x02}, &[_]u8{0x03} };
+
+    try std.testing.expectError(error.DuplicateKey, secureProof(allocator, &keys, &values, &key));
+}
+
+test "secureProof frees every node when an allocation fails" {
+    const Harness = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var key_storage: [8][20]u8 = undefined;
+            var keys: [8][]const u8 = undefined;
+            var values: [8][]const u8 = undefined;
+            const value = [_]u8{0xab} ** 40;
+            for (&key_storage, 0..) |*key, i| {
+                @memset(key, @intCast(i + 1));
+                keys[i] = key;
+                values[i] = &value;
+            }
+            var proof = try secureProof(allocator, &keys, &values, keys[3]);
+            proof.deinit(allocator);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Harness.run, .{});
 }

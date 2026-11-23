@@ -253,3 +253,7 @@ tevm-monorepo/
 # npm release staging copies the root LICENSE into each published package
 npm/zevm/LICENSE
 npm/platforms/*/LICENSE
+
+# Local Smithers runtime database
+.smithers/pg/
+.smithers/migrated.json

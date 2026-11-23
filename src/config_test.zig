@@ -177,13 +177,13 @@ test "load parses trusted hardfork overrides from config" {
         \\    "trusted": {
         \\      "chainId": 1,
         \\      "hardfork": {
-        \\        "constantinopleBlock": 8,
-        \\        "londonBlock": 10,
-        \\        "mergeBlock": 20,
-        \\        "shanghaiTimestamp": 30,
-        \\        "cancunTimestamp": 40,
-        \\        "pragueTimestamp": 50,
-        \\        "osakaTimestamp": 60,
+        \\        "constantinopleBlock": 7000000,
+        \\        "londonBlock": 13000000,
+        \\        "mergeBlock": 16000000,
+        \\        "shanghaiTimestamp": 1700000000,
+        \\        "cancunTimestamp": 1710000000,
+        \\        "pragueTimestamp": 1740000000,
+        \\        "osakaTimestamp": 1760000000,
         \\        "secondsPerSlot": 2
         \\      }
         \\    }
@@ -197,17 +197,17 @@ test "load parses trusted hardfork overrides from config" {
 
     const trusted = try expectTrusted(app_config);
     try std.testing.expectEqual(hardfork_schedule.MAINNET_CHAIN_CONFIG.berlin_block, trusted.hardfork_config.berlin_block);
-    try std.testing.expectEqual(@as(u64, 8), trusted.hardfork_config.constantinople_block);
-    try std.testing.expectEqual(@as(u64, 10), trusted.hardfork_config.london_block);
-    try std.testing.expectEqual(@as(u64, 20), trusted.hardfork_config.merge_block);
-    try std.testing.expectEqual(@as(u64, 30), trusted.hardfork_config.shanghai_timestamp);
-    try std.testing.expectEqual(@as(u64, 40), trusted.hardfork_config.cancun_timestamp);
-    try std.testing.expectEqual(@as(u64, 50), trusted.hardfork_config.prague_timestamp);
-    try std.testing.expectEqual(@as(u64, 60), trusted.hardfork_config.osaka_timestamp);
+    try std.testing.expectEqual(@as(u64, 7_000_000), trusted.hardfork_config.constantinople_block);
+    try std.testing.expectEqual(@as(u64, 13_000_000), trusted.hardfork_config.london_block);
+    try std.testing.expectEqual(@as(u64, 16_000_000), trusted.hardfork_config.merge_block);
+    try std.testing.expectEqual(@as(u64, 1_700_000_000), trusted.hardfork_config.shanghai_timestamp);
+    try std.testing.expectEqual(@as(u64, 1_710_000_000), trusted.hardfork_config.cancun_timestamp);
+    try std.testing.expectEqual(@as(u64, 1_740_000_000), trusted.hardfork_config.prague_timestamp);
+    try std.testing.expectEqual(@as(u64, 1_760_000_000), trusted.hardfork_config.osaka_timestamp);
     try std.testing.expectEqual(@as(u64, 2), trusted.hardfork_config.seconds_per_slot);
 
     const node_config = trusted.toNodeConfig();
-    try std.testing.expectEqual(@as(u64, 40), node_config.hardfork_config.?.cancun_timestamp);
+    try std.testing.expectEqual(@as(u64, 1_710_000_000), node_config.hardfork_config.?.cancun_timestamp);
 }
 
 test "load requires config to contain exactly one mode branch" {
@@ -454,6 +454,7 @@ test "load applies mainnet BPO default for chain 1, empty default for dev, custo
         \\  "mode": {
         \\    "trusted": {
         \\      "hardfork": {
+        \\        "pragueTimestamp": 0,
         \\        "osakaTimestamp": 100,
         \\        "blobSchedule": [
         \\          { "timestamp": 200, "target": 10, "max": 15, "baseFeeUpdateFraction": 8346193 },

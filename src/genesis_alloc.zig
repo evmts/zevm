@@ -20,6 +20,9 @@ pub const HeaderConfig = struct {
     blob_gas_used: ?u64 = null,
     excess_blob_gas: ?u64 = null,
     parent_beacon_block_root: ?primitives.Hash.Hash = null,
+    /// EIP-7685 `requestsHash`. Present in Prague+ genesis files; part of the
+    /// genesis header RLP and therefore of the genesis hash.
+    requests_hash: ?primitives.Hash.Hash = null,
 
     pub fn deinit(self: *HeaderConfig, allocator: std.mem.Allocator) void {
         if (self.extra_data) |bytes| {
@@ -36,6 +39,11 @@ pub const HeaderConfig = struct {
 pub const LoadedGenesis = struct {
     account_count: usize,
     header: HeaderConfig,
+    /// EIP-6110 deposit contract from `config.depositContractAddress` (the
+    /// Geth and Reth location) or, failing that, a top-level
+    /// `depositContractAddress`. Null when the file names none; callers copy
+    /// it to `ChainConfig.deposit_contract_address`.
+    deposit_contract_address: ?primitives.Address = null,
 
     pub fn deinit(self: *LoadedGenesis, allocator: std.mem.Allocator) void {
         self.header.deinit(allocator);
@@ -78,10 +86,24 @@ pub fn loadGenesisValue(
 
     var header = try parseHeaderConfig(allocator, root);
     errdefer header.deinit(allocator);
+    // Parse before the allocation is applied: a malformed address rejects
+    // the file without touching state.
+    const deposit_contract_address = try parseDepositContractAddress(root);
+
+    // Apply the allocation under a checkpoint: an invalid account, code, or
+    // storage entry anywhere in the file rolls back every earlier write, so a
+    // rejected genesis never leaves partial state behind.
+    try sm.checkpoint();
+    const account_count = applyAllocObject(allocator, sm, root) catch |err| {
+        sm.revert();
+        return err;
+    };
+    sm.commit();
 
     return .{
-        .account_count = try applyAllocObject(allocator, sm, root),
+        .account_count = account_count,
         .header = header,
+        .deposit_contract_address = deposit_contract_address,
     };
 }
 
@@ -185,8 +207,33 @@ fn parseHeaderConfig(allocator: std.mem.Allocator, root: std.json.ObjectMap) !He
     if (root.get("parentBeaconBlockRoot")) |value| {
         header.parent_beacon_block_root = try parseOptionalHashValue(value);
     }
+    if (root.get("requestsHash")) |value| {
+        header.requests_hash = try parseOptionalHashValue(value);
+    }
 
     return header;
+}
+
+/// Read the optional EIP-6110 `depositContractAddress` of a genesis object.
+/// `config.depositContractAddress` wins over a top-level field; a JSON null
+/// counts as absent. A value that is not a 20-byte hex address is
+/// `error.InvalidGenesisAlloc`.
+pub fn parseDepositContractAddress(root: std.json.ObjectMap) Error!?primitives.Address {
+    if (root.get("config")) |config_value| {
+        switch (config_value) {
+            .object => |config| {
+                if (config.get("depositContractAddress")) |value| {
+                    if (value != .null) return try parseAddressValue(value);
+                }
+            },
+            .null => {},
+            else => return error.InvalidGenesisAlloc,
+        }
+    }
+    if (root.get("depositContractAddress")) |value| {
+        if (value != .null) return try parseAddressValue(value);
+    }
+    return null;
 }
 
 fn applyGenesisAccount(
@@ -301,6 +348,8 @@ fn parseQuantity(value: std.json.Value) Error!u256 {
     return switch (value) {
         .string => |text| try parseQuantityString(text),
         .integer => |number| if (number < 0) error.InvalidGenesisAlloc else @intCast(number),
+        // std.json reports an integer literal outside the i64 range as text.
+        .number_string => |text| std.fmt.parseInt(u256, text, 10) catch error.InvalidGenesisAlloc,
         else => error.InvalidGenesisAlloc,
     };
 }

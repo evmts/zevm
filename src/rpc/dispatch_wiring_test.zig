@@ -400,7 +400,11 @@ fn contractProbeParams(allocator: std.mem.Allocator, method: []const u8) !?std.j
         return try arrayParams(allocator, &.{.{ .array = std.json.Array.init(allocator) }});
     }
     if (std.mem.eql(u8, method, "engine_exchangeTransitionConfigurationV1")) {
-        return try arrayParams(allocator, &.{try emptyObjectValue(allocator)});
+        var config = std.json.ObjectMap.init(allocator);
+        try config.put("terminalTotalDifficulty", .{ .string = "0x0" });
+        try config.put("terminalBlockHash", hash32Value());
+        try config.put("terminalBlockNumber", .{ .string = "0x0" });
+        return try arrayParams(allocator, &.{.{ .object = config }});
     }
     if (std.mem.eql(u8, method, "engine_getClientVersionV1")) {
         var client = std.json.ObjectMap.init(allocator);
@@ -3461,4 +3465,292 @@ test "eth_config returns current fork config with null next and last on the defa
 
     try std.testing.expect((try objectField(&result, "next")) == .null);
     try std.testing.expect((try objectField(&result, "last")) == .null);
+}
+
+fn transitionConfigParams(allocator: std.mem.Allocator, extra_nested: bool) !std.json.Value {
+    var config = std.json.ObjectMap.init(allocator);
+    try config.put("terminalTotalDifficulty", .{ .string = "0xc70d815d562d3cfa955" });
+    try config.put("terminalBlockHash", hash32Value());
+    try config.put("terminalBlockNumber", .{ .string = "0x0" });
+    if (extra_nested) {
+        var nested = std.json.ObjectMap.init(allocator);
+        try nested.put("deep", .{ .array = std.json.Array.init(allocator) });
+        try config.put("extra", .{ .object = nested });
+    }
+    return arrayParams(allocator, &.{.{ .object = config }});
+}
+
+test "engine_exchangeTransitionConfigurationV1 returns typed fields and rejects extra input" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    {
+        var response = try dispatchForTest(&rt, "engine_exchangeTransitionConfigurationV1", try transitionConfigParams(arena.allocator(), false));
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        const result = response.result.?.object;
+        try std.testing.expectEqual(@as(usize, 3), result.count());
+        try std.testing.expectEqualStrings("0xc70d815d562d3cfa955", result.get("terminalTotalDifficulty").?.string);
+        try std.testing.expectEqualStrings("0x0", result.get("terminalBlockNumber").?.string);
+        try std.testing.expectEqual(@as(usize, 66), result.get("terminalBlockHash").?.string.len);
+    }
+    try expectErrorCode(&rt, "engine_exchangeTransitionConfigurationV1", try transitionConfigParams(arena.allocator(), true), jsonrpc.envelope.ErrorCode.INVALID_PARAMS);
+}
+
+fn requestsArray(allocator: std.mem.Allocator, items: []const []const u8) !std.json.Value {
+    var array = std.json.Array.init(allocator);
+    for (items) |item| try array.append(.{ .string = item });
+    return .{ .array = array };
+}
+
+test "parseExecutionRequestsHash rejects empty, duplicate, and unordered request types" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try std.testing.expectError(error.InvalidParams, dispatch_wiring.parseExecutionRequestsHash(allocator, try requestsArray(allocator, &.{"0x00"})));
+    try std.testing.expectError(error.InvalidParams, dispatch_wiring.parseExecutionRequestsHash(allocator, try requestsArray(allocator, &.{ "0x0001", "0x0002" })));
+    try std.testing.expectError(error.InvalidParams, dispatch_wiring.parseExecutionRequestsHash(allocator, try requestsArray(allocator, &.{ "0x0101", "0x0001" })));
+    try std.testing.expectError(error.InvalidParams, dispatch_wiring.parseExecutionRequestsHash(allocator, try requestsArray(allocator, &.{"0x03aa"})));
+
+    const hash = try dispatch_wiring.parseExecutionRequestsHash(allocator, try requestsArray(allocator, &.{ "0x00aa", "0x01bb", "0x02cc" }));
+    const expected = block_builder.computeRequestsHash(.{
+        .deposits = &.{0xaa},
+        .withdrawals = &.{0xbb},
+        .consolidations = &.{0xcc},
+    });
+    try std.testing.expectEqualSlices(u8, &expected, &hash);
+}
+
+test "engine getPayload fork matrix rejects out-of-fork versions" {
+    try dispatch_wiring.validateEngineGetPayloadForFork(3, .CANCUN);
+    try std.testing.expectError(error.UnsupportedFork, dispatch_wiring.validateEngineGetPayloadForFork(3, .PRAGUE));
+    try dispatch_wiring.validateEngineGetPayloadForFork(4, .PRAGUE);
+    try std.testing.expectError(error.UnsupportedFork, dispatch_wiring.validateEngineGetPayloadForFork(4, .CANCUN));
+    try std.testing.expectError(error.UnsupportedFork, dispatch_wiring.validateEngineGetPayloadForFork(4, .OSAKA));
+    try dispatch_wiring.validateEngineGetPayloadForFork(5, .OSAKA);
+    try std.testing.expectError(error.UnsupportedFork, dispatch_wiring.validateEngineGetPayloadForFork(5, .PRAGUE));
+}
+
+test "engine_getBlobsV1 is an unsupported fork once Osaka is active" {
+    var config = runtime_mod.DEFAULT_DEV_HARDFORK_CONFIG;
+    config.prague_timestamp = 0;
+    config.osaka_timestamp = 0;
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, .{ .hardfork_config = config });
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var hashes = std.json.Array.init(arena.allocator());
+    try hashes.append(hash32Value());
+    const params = try arrayParams(arena.allocator(), &.{.{ .array = hashes }});
+
+    try std.testing.expectError(
+        error.UnsupportedFork,
+        handlers.on_method_with_context.?(handlers.context, std.testing.allocator, "engine_getBlobsV1", params),
+    );
+}
+
+test "engine_getPayloadBodiesByRangeV1 over 1024 is too large request" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const params = try arrayParams(arena.allocator(), &.{ .{ .string = "0x1" }, .{ .string = "0x401" } });
+    try expectErrorCode(&rt, "engine_getPayloadBodiesByRangeV1", params, dispatcher.RuntimeErrorCode.ENGINE_TOO_LARGE_REQUEST);
+}
+
+test "mine methods cap block count at MAX_MINE_BLOCKS" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const too_many = try std.fmt.allocPrint(arena.allocator(), "0x{x}", .{dispatch_wiring.MAX_MINE_BLOCKS + 1});
+    inline for (.{ "anvil_mine", "evm_mine", "hardhat_mine" }) |method| {
+        const params = try arrayParams(arena.allocator(), &.{.{ .string = too_many }});
+        try expectErrorCode(&rt, method, params, jsonrpc.envelope.ErrorCode.INVALID_PARAMS);
+    }
+    try std.testing.expectEqual(@as(u64, 0), rt.head_block_number);
+}
+
+test "testing_buildBlockV1 on genesis reports the requested parent hash" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const head = try rt.blockchain.getCanonicalHeadBlock();
+    const head_text = try hashText(allocator, head.hash);
+
+    var attrs = std.json.ObjectMap.init(allocator);
+    try attrs.put("timestamp", .{ .string = "0x1" });
+    try attrs.put("prevRandao", hash32Value());
+    try attrs.put("suggestedFeeRecipient", validAddress());
+    try attrs.put("withdrawals", emptyArrayValueForTest(allocator));
+    try attrs.put("parentBeaconBlockRoot", hash32Value());
+    const params = try arrayParams(allocator, &.{ .{ .string = head_text }, .{ .object = attrs }, .null, .{ .string = "0x" } });
+
+    var response = try dispatchForTest(&rt, "testing_buildBlockV1", params);
+    defer response.deinit(std.testing.allocator);
+    try std.testing.expect(response.error_value == null);
+    const payload = try getObjectField(response.result.?, "executionPayload");
+    try std.testing.expectEqualStrings(head_text, (try getObjectField(payload, "parentHash")).string);
+    const requests = try getObjectField(response.result.?, "executionRequests");
+    try std.testing.expectEqual(@as(usize, 0), requests.array.items.len);
+}
+
+test "engineBlockRlpSize counts the Prague requests_hash header field" {
+    var header = primitives.BlockHeader.init();
+    header.base_fee_per_gas = 7;
+    header.withdrawals_root = primitives.BlockHeader.EMPTY_WITHDRAWALS_ROOT;
+    header.blob_gas_used = 0;
+    header.excess_blob_gas = 0;
+    header.parent_beacon_block_root = [_]u8{0} ** 32;
+    const body = primitives.BlockBody.BlockBody{
+        .transactions = &.{},
+        .ommers = &.{},
+        .withdrawals = &.{},
+    };
+
+    const without = try dispatch_wiring.engineBlockRlpSize(std.testing.allocator, &header, &body, null);
+    const with = try dispatch_wiring.engineBlockRlpSize(std.testing.allocator, &header, &body, [_]u8{0x11} ** 32);
+    try std.testing.expectEqual(without + 33, with);
+
+    const block = try primitives.Block.from(&header, &body, std.testing.allocator);
+    try std.testing.expectEqual(block.size, without);
+}
+
+test "engine getPayload V1/V2/V6 fork windows return UnsupportedFork" {
+    try dispatch_wiring.validateEngineGetPayloadForFork(1, .MERGE);
+    try std.testing.expectError(error.UnsupportedFork, dispatch_wiring.validateEngineGetPayloadForFork(1, .SHANGHAI));
+    try dispatch_wiring.validateEngineGetPayloadForFork(2, .SHANGHAI);
+    try std.testing.expectError(error.UnsupportedFork, dispatch_wiring.validateEngineGetPayloadForFork(2, .CANCUN));
+    try std.testing.expectError(error.UnsupportedFork, dispatch_wiring.validateEngineGetPayloadForFork(5, .AMSTERDAM));
+    try std.testing.expectError(error.UnsupportedFork, dispatch_wiring.validateEngineGetPayloadForFork(6, .OSAKA));
+    try dispatch_wiring.validateEngineGetPayloadForFork(6, .AMSTERDAM);
+}
+
+test "engine forkchoiceUpdated version outside its fork is UnsupportedFork" {
+    try dispatch_wiring.validateEngineMethodForkWindow(2, .SHANGHAI);
+    try std.testing.expectError(error.UnsupportedFork, dispatch_wiring.validateEngineMethodForkWindow(2, .CANCUN));
+    try dispatch_wiring.validateEngineMethodForkWindow(3, .CANCUN);
+    try std.testing.expectError(error.UnsupportedFork, dispatch_wiring.validateEngineMethodForkWindow(3, .SHANGHAI));
+}
+
+test "loadState JSON depth scan ignores brackets inside strings" {
+    try std.testing.expect(dispatch_wiring.jsonNestingDepthWithin("{\"a\":[[1]]}", 3));
+    try std.testing.expect(!dispatch_wiring.jsonNestingDepthWithin("{\"a\":[[1]]}", 2));
+    try std.testing.expect(dispatch_wiring.jsonNestingDepthWithin("{\"a\":\"[[[[[[\\\"[[[\"}", 1));
+
+    const deep = "[" ** (dispatch_wiring.MAX_LOAD_STATE_JSON_DEPTH + 1) ++ "]" ** (dispatch_wiring.MAX_LOAD_STATE_JSON_DEPTH + 1);
+    try std.testing.expect(!dispatch_wiring.jsonNestingDepthWithin(deep, dispatch_wiring.MAX_LOAD_STATE_JSON_DEPTH));
+    const at_limit = "[" ** dispatch_wiring.MAX_LOAD_STATE_JSON_DEPTH ++ "]" ** dispatch_wiring.MAX_LOAD_STATE_JSON_DEPTH;
+    try std.testing.expect(dispatch_wiring.jsonNestingDepthWithin(at_limit, dispatch_wiring.MAX_LOAD_STATE_JSON_DEPTH));
+}
+
+test "anvil_loadState with a malformed account leaves existing state intact" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    const existing = try parseTestAddress("0x0000000000000000000000000000000000000042");
+    try rt.setBalance(existing, 7);
+
+    // The first account is valid; the second key is not an address. The old
+    // code wiped local state before reaching the bad key.
+    const state_json =
+        \\{"version":1,"accounts":{
+        \\"0x0000000000000000000000000000000000000001":{"balance":"0x1","nonce":"0x0","code":"0x","storage":{}},
+        \\"not-an-address":{"balance":"0x1","nonce":"0x0","code":"0x","storage":{}}}}
+    ;
+    const hex = try std.fmt.allocPrint(std.testing.allocator, "0x{x}", .{state_json});
+    defer std.testing.allocator.free(hex);
+
+    var params = std.json.Array.init(std.testing.allocator);
+    defer params.deinit();
+    try params.append(.{ .string = hex });
+    try expectErrorCode(&rt, "anvil_loadState", .{ .array = params }, jsonrpc.envelope.ErrorCode.INVALID_PARAMS);
+
+    try std.testing.expectEqual(@as(u256, 7), try rt.getBalance(existing));
+}
+
+test "engine_newPayloadV3 returns INVALID status for undecodable transaction" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const bloom_hex = "0x" ++ "00" ** 256;
+
+    var payload_obj = std.json.ObjectMap.init(allocator);
+    try payload_obj.put("parentHash", hash32Value());
+    try payload_obj.put("feeRecipient", validAddress());
+    try payload_obj.put("stateRoot", hash32Value());
+    try payload_obj.put("receiptsRoot", hash32Value());
+    try payload_obj.put("logsBloom", .{ .string = bloom_hex });
+    try payload_obj.put("prevRandao", hash32Value());
+    try payload_obj.put("blockNumber", .{ .string = "0x1" });
+    try payload_obj.put("gasLimit", .{ .string = "0x1000000" });
+    try payload_obj.put("gasUsed", .{ .string = "0x0" });
+    try payload_obj.put("timestamp", .{ .string = "0x1" });
+    try payload_obj.put("extraData", .{ .string = "0x" });
+    try payload_obj.put("baseFeePerGas", .{ .string = "0x1" });
+    try payload_obj.put("blockHash", hash32Value());
+    try payload_obj.put("blobGasUsed", .{ .string = "0x0" });
+    try payload_obj.put("excessBlobGas", .{ .string = "0x0" });
+    try payload_obj.put("withdrawals", emptyArrayValueForTest(allocator));
+
+    var txs = std.json.Array.init(allocator);
+    try txs.append(.{ .string = "0xdeadbeef" });
+    try payload_obj.put("transactions", .{ .array = txs });
+
+    const expected_hashes = std.json.Array.init(allocator);
+
+    var params = std.json.Array.init(allocator);
+    try params.append(.{ .object = payload_obj });
+    try params.append(.{ .array = expected_hashes });
+    try params.append(hash32Value());
+
+    var request = try makeRequest("engine_newPayloadV3", .{ .array = params });
+    defer request.deinit(std.testing.allocator);
+    var response = try dispatcher.dispatch(std.testing.allocator, request, &handlers);
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expect(response.error_value == null);
+    const status = (try getObjectField(response.result.?, "status")).string;
+    try std.testing.expectEqualStrings("INVALID", status);
+}
+
+test "anvil_loadState rejects JSON nested beyond the depth limit" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    const existing = try parseTestAddress("0x0000000000000000000000000000000000000042");
+    try rt.setBalance(existing, 9);
+
+    const depth = dispatch_wiring.MAX_LOAD_STATE_JSON_DEPTH + 8;
+    const deep_json = "{\"version\":1,\"accounts\":{},\"x\":" ++ "[" ** depth ++ "]" ** depth ++ "}";
+    const hex = try std.fmt.allocPrint(std.testing.allocator, "0x{x}", .{deep_json});
+    defer std.testing.allocator.free(hex);
+
+    var params = std.json.Array.init(std.testing.allocator);
+    defer params.deinit();
+    try params.append(.{ .string = hex });
+    try expectErrorCode(&rt, "anvil_loadState", .{ .array = params }, jsonrpc.envelope.ErrorCode.INVALID_PARAMS);
+
+    try std.testing.expectEqual(@as(u256, 9), try rt.getBalance(existing));
 }

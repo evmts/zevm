@@ -14,6 +14,7 @@ pub const blockchain = @import("blockchain");
 pub const host_adapter = @import("host_adapter.zig");
 pub const console_log = @import("console_log.zig");
 pub const tx_processor = @import("tx_processor.zig");
+pub const evm_backend = @import("evm_backend.zig");
 pub const transaction_encoding = @import("transaction_encoding.zig");
 pub const block_builder = @import("block_builder.zig");
 pub const blob_fee = @import("blob_fee.zig");
@@ -45,6 +46,7 @@ test {
     _ = @import("log.zig");
     _ = @import("database/root.zig");
     _ = @import("host_adapter_test.zig");
+    _ = @import("evm_backend.zig");
     _ = @import("transaction_encoding.zig");
     _ = @import("hardfork_schedule.zig");
     _ = @import("blob_fee.zig");

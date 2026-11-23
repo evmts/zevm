@@ -177,3 +177,147 @@ test "applyGenesisJson rejects malformed allocation data" {
         ),
     );
 }
+
+test "loadGenesisJson parses requestsHash" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+
+    var loaded = try genesis_alloc.loadGenesisJson(std.testing.allocator, &sm,
+        \\{
+        \\  "requestsHash": "0xe3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        \\  "alloc": {}
+        \\}
+    );
+    defer loaded.deinit(std.testing.allocator);
+
+    var expected: [32]u8 = undefined;
+    _ = try std.fmt.hexToBytes(&expected, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    try std.testing.expectEqualSlices(u8, &expected, &loaded.header.requests_hash.?);
+
+    var absent = try genesis_alloc.loadGenesisJson(std.testing.allocator, &sm,
+        \\{ "requestsHash": null, "alloc": {} }
+    );
+    defer absent.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(?primitives.Hash.Hash, null), absent.header.requests_hash);
+}
+
+test "applyGenesisJson accepts integer literals above the i64 range" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+
+    _ = try genesis_alloc.applyGenesisJson(std.testing.allocator, &sm,
+        \\{
+        \\  "alloc": {
+        \\    "0x0000000000000000000000000000000000000007": {
+        \\      "balance": 1000000000000000000000000
+        \\    }
+        \\  }
+        \\}
+    );
+    const account = try primitives.Address.fromHex("0x0000000000000000000000000000000000000007");
+    try std.testing.expectEqual(@as(u256, 1_000_000_000_000_000_000_000_000), try sm.getBalance(account));
+}
+
+test "applyGenesisJson rolls back every account when a later one is invalid" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+
+    const existing = try primitives.Address.fromHex("0x00000000000000000000000000000000000000ee");
+    try sm.setBalance(existing, 5);
+
+    // The first account is valid. The second installs balance, nonce, and
+    // code before its storage value fails to parse.
+    try std.testing.expectError(
+        error.InvalidGenesisAlloc,
+        genesis_alloc.applyGenesisJson(std.testing.allocator, &sm,
+            \\{
+            \\  "alloc": {
+            \\    "0x0000000000000000000000000000000000000008": {
+            \\      "balance": "0x64",
+            \\      "storage": { "0x01": "0x02" }
+            \\    },
+            \\    "0x0000000000000000000000000000000000000009": {
+            \\      "balance": "0x65",
+            \\      "nonce": "0x3",
+            \\      "code": "0x6001",
+            \\      "storage": { "0x01": "not-a-quantity" }
+            \\    }
+            \\  }
+            \\}
+        ),
+    );
+
+    const first = try primitives.Address.fromHex("0x0000000000000000000000000000000000000008");
+    const second = try primitives.Address.fromHex("0x0000000000000000000000000000000000000009");
+    try std.testing.expectEqual(@as(u256, 0), try sm.getBalance(first));
+    try std.testing.expectEqual(@as(u256, 0), try sm.getStorage(first, 1));
+    try std.testing.expectEqual(@as(u256, 0), try sm.getBalance(second));
+    try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(second));
+    try std.testing.expectEqual(@as(usize, 0), (try sm.getCode(second)).len);
+    // State that predates the call is untouched.
+    try std.testing.expectEqual(@as(u256, 5), try sm.getBalance(existing));
+}
+
+test "loadGenesisJson parses depositContractAddress from config or the top level" {
+    const allocator = std.testing.allocator;
+    const from_config = try primitives.Address.fromHex("0x4242424242424242424242424242424242424242");
+    const from_root = try primitives.Address.fromHex("0x1111111111111111111111111111111111111111");
+
+    {
+        // Geth and Reth put the address in `config`. It wins over a
+        // top-level field.
+        var sm = try state_manager.StateManager.init(allocator, null);
+        defer sm.deinit();
+        var loaded = try genesis_alloc.loadGenesisJson(allocator, &sm,
+            \\{
+            \\  "config": {
+            \\    "chainId": 3151908,
+            \\    "depositContractAddress": "0x4242424242424242424242424242424242424242"
+            \\  },
+            \\  "depositContractAddress": "0x1111111111111111111111111111111111111111",
+            \\  "alloc": {}
+            \\}
+        );
+        defer loaded.deinit(allocator);
+        try std.testing.expect(loaded.deposit_contract_address.?.equals(from_config));
+    }
+    {
+        var sm = try state_manager.StateManager.init(allocator, null);
+        defer sm.deinit();
+        var loaded = try genesis_alloc.loadGenesisJson(allocator, &sm,
+            \\{
+            \\  "config": { "chainId": 1 },
+            \\  "depositContractAddress": "0x1111111111111111111111111111111111111111",
+            \\  "alloc": {}
+            \\}
+        );
+        defer loaded.deinit(allocator);
+        try std.testing.expect(loaded.deposit_contract_address.?.equals(from_root));
+    }
+    {
+        // Absent or null: the caller falls back to the mainnet contract.
+        var sm = try state_manager.StateManager.init(allocator, null);
+        defer sm.deinit();
+        var loaded = try genesis_alloc.loadGenesisJson(allocator, &sm,
+            \\{ "config": { "depositContractAddress": null }, "alloc": {} }
+        );
+        defer loaded.deinit(allocator);
+        try std.testing.expect(loaded.deposit_contract_address == null);
+
+        const options = block_builder.BuildBlockOptions{};
+        try std.testing.expect(options.effectiveDepositContractAddress().equals(block_builder.DEPOSIT_CONTRACT_ADDRESS));
+    }
+    {
+        // A malformed address rejects the file and applies no account.
+        var sm = try state_manager.StateManager.init(allocator, null);
+        defer sm.deinit();
+        const funded = try primitives.Address.fromHex("0x0000000000000000000000000000000000000009");
+        try std.testing.expectError(error.InvalidGenesisAlloc, genesis_alloc.loadGenesisJson(allocator, &sm,
+            \\{
+            \\  "config": { "depositContractAddress": "0x1234" },
+            \\  "alloc": { "0x0000000000000000000000000000000000000009": { "balance": "0x1" } }
+            \\}
+        ));
+        try std.testing.expectEqual(@as(u256, 0), try sm.getBalance(funded));
+    }
+}

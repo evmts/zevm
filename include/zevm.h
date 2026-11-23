@@ -51,6 +51,10 @@ void zevm_node_free_response(unsigned char* response, size_t response_len);
 #define ZEVM_NETWORK_MAINNET 0
 #define ZEVM_NETWORK_SEPOLIA 1
 #define ZEVM_NETWORK_HOLESKY 2
+#define ZEVM_NETWORK_HOODI   3
+
+/* Length in bytes of a beacon block root checkpoint. */
+#define ZEVM_CHECKPOINT_LEN 32
 
 /* Return codes. */
 #define ZEVM_OK                  0
@@ -76,24 +80,48 @@ const char* zevm_version(void);
 /* Return a stable static string for a ZEVM_* return code. */
 const char* zevm_error_message(int code);
 
-/* Return "mainnet", "sepolia", or "holesky"; NULL for unknown networks. */
+/* Return "mainnet", "sepolia", "holesky", or "hoodi"; NULL for unknown networks. */
 const char* zevm_light_network_name(int network);
 
 /*
  * Initialize a light client handle.
  *
- *   network          one of ZEVM_NETWORK_* (mainnet/sepolia/holesky)
- *   beacon_rpc_url   null-terminated consensus-layer RPC endpoint
- *   execution_rpc_url null-terminated execution-layer RPC endpoint
+ *   network          one of ZEVM_NETWORK_* (mainnet/sepolia/holesky/hoodi)
+ *   beacon_rpc_url   null-terminated, non-empty consensus-layer RPC endpoint
+ *   execution_rpc_url null-terminated, non-empty execution-layer RPC endpoint
  *                    (used for eth_getProof / eth_getCode lookups)
  *
- * Returns NULL on allocation failure or invalid network. The handle must
- * be released with zevm_light_shutdown.
+ * Bootstraps from the network's built-in default checkpoint. A stale default
+ * checkpoint logs a warning but does not fail.
+ *
+ * Returns NULL on allocation failure, invalid network, or a NULL or empty
+ * URL. The handle must be released with zevm_light_shutdown.
  */
 ZevmHandle* zevm_light_init(
     int network,
     const char* beacon_rpc_url,
     const char* execution_rpc_url);
+
+/*
+ * Initialize a light client handle with an explicit trusted checkpoint.
+ *
+ *   checkpoint             NULL to use the network default, otherwise a
+ *                          pointer to ZEVM_CHECKPOINT_LEN (32) bytes holding
+ *                          a trusted beacon block root, for example a value
+ *                          previously read with zevm_light_get_checkpoint
+ *   strict_checkpoint_age  nonzero to make the first zevm_light_sync_step
+ *                          fail with ZEVM_ERR_INVALID_ARG when the verified
+ *                          checkpoint is older than the network's maximum
+ *                          checkpoint age; zero to warn and continue
+ *
+ * Other arguments and the return value match zevm_light_init.
+ */
+ZevmHandle* zevm_light_init_ex(
+    int network,
+    const char* beacon_rpc_url,
+    const char* execution_rpc_url,
+    const uint8_t* checkpoint,
+    int strict_checkpoint_age);
 
 /* Release a handle. Safe to call with NULL. */
 void zevm_light_shutdown(ZevmHandle* handle);
@@ -110,9 +138,30 @@ void zevm_light_shutdown(ZevmHandle* handle);
  * calls run the engine's `advance` step.
  *
  * Returns ZEVM_OK on success, otherwise an error code; details available
- * via zevm_light_last_error.
+ * via zevm_light_last_error:
+ *
+ *   ZEVM_ERR_PROOF        the beacon node served data that failed proof or
+ *                         signature verification
+ *   ZEVM_ERR_NETWORK      transport, HTTP, or upstream response failure
+ *   ZEVM_ERR_INVALID_ARG  NULL handle, or the checkpoint is too old under
+ *                         strict_checkpoint_age
+ *   ZEVM_ERR_INTERNAL     allocation failure
+ *
+ * A failed step after a successful initial sync keeps the last verified
+ * state: zevm_light_status stays ZEVM_STATUS_SYNCED, reads keep working, and
+ * the next call retries.
  */
 int zevm_light_sync_step(ZevmHandle* handle);
+
+/*
+ * Copy the latest verified finalized checkpoint (a beacon block root) into
+ * out_checkpoint, which must hold ZEVM_CHECKPOINT_LEN (32) bytes. Persist it
+ * and pass it to zevm_light_init_ex to resume from a recent checkpoint.
+ *
+ * Returns ZEVM_ERR_NOT_SYNCED before the initial sync completes and
+ * ZEVM_ERR_INVALID_ARG for a NULL handle or out_checkpoint.
+ */
+int zevm_light_get_checkpoint(ZevmHandle* handle, uint8_t* out_checkpoint);
 
 /*
  * Read a verified account balance.
@@ -126,7 +175,9 @@ int zevm_light_sync_step(ZevmHandle* handle);
  *                 lowercase hex string (no leading zero padding)
  *   out_len       on input: capacity of out_hex in bytes (must include
  *                 room for a NUL terminator); on output: number of bytes
- *                 written, including the NUL terminator
+ *                 written, including the NUL terminator. Must not be NULL;
+ *                 a NULL out_len fails with ZEVM_ERR_INVALID_ARG before any
+ *                 network request.
  *
  * 80 bytes is always sufficient for the balance string.
  */
@@ -152,7 +203,8 @@ int zevm_light_get_transaction_count(
  * Read verified contract code.
  *
  *   out_buf  receives the raw code bytes
- *   out_len  on input: capacity; on output: number of bytes written
+ *   out_len  on input: capacity; on output: number of bytes written.
+ *            Must not be NULL; checked before any network request.
  *
  * Returns ZEVM_ERR_BUFFER_TOO_SMALL with the required capacity in
  * *out_len if the buffer is undersized.
@@ -170,6 +222,7 @@ int zevm_light_get_code(
  *   slot_hex  null-terminated 0x-prefixed slot key (any width)
  *   out_hex   receives the value as a 0x-prefixed 64-hex-digit string
  *             (zero-padded to 32 bytes). 67 bytes is always sufficient.
+ *   out_len   same contract as zevm_light_get_balance; must not be NULL.
  */
 int zevm_light_get_storage(
     ZevmHandle* handle,

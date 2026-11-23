@@ -21,6 +21,7 @@ pub const RuntimeErrorCode = struct {
     pub const ENGINE_INVALID_FORKCHOICE_STATE: i32 = -38002;
     pub const ENGINE_INVALID_PAYLOAD_ATTRIBUTES: i32 = -38003;
     pub const ENGINE_TOO_LARGE_REQUEST: i32 = -38004;
+    pub const ENGINE_UNSUPPORTED_FORK: i32 = -38005;
 };
 
 pub fn dispatch(allocator: std.mem.Allocator, request: jsonrpc.envelope.RequestEnvelope, handlers: *const HandlerRegistry) !jsonrpc.envelope.ResponseEnvelope {
@@ -92,6 +93,24 @@ pub fn dispatch(allocator: std.mem.Allocator, request: jsonrpc.envelope.RequestE
         },
         error.TooLargeRequest => {
             return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.ENGINE_TOO_LARGE_REQUEST, "Too large request");
+        },
+        error.UnsupportedFork => {
+            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.ENGINE_UNSUPPORTED_FORK, "Unsupported fork");
+        },
+        error.BlockUnavailable => {
+            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.BUILD_BLOCK_FAILED, "Block not available");
+        },
+        error.GasPriceBelowBaseFee => {
+            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.BUILD_BLOCK_FAILED, "Max fee per gas less than block base fee");
+        },
+        error.SenderNotEOA => {
+            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.BUILD_BLOCK_FAILED, "Sender is not an EOA");
+        },
+        error.NonceTooHigh => {
+            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.BUILD_BLOCK_FAILED, "Nonce too high");
+        },
+        error.TooManyFilters => {
+            return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, RuntimeErrorCode.BUILD_BLOCK_FAILED, "Too many active filters");
         },
         else => {
             if (!isTestBuild()) {
@@ -169,7 +188,7 @@ fn isZevmSetRpcUrlMethod(method_name: []const u8) bool {
         std.mem.eql(u8, method_name, "anvil_setRpcUrl");
 }
 
-fn isEngineNamespaceMethod(method_name: []const u8) bool {
+pub fn isEngineNamespaceMethod(method_name: []const u8) bool {
     return std.mem.startsWith(u8, method_name, "engine_");
 }
 

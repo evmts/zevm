@@ -390,9 +390,6 @@ test "log_index: deinit frees all memory" {
 }
 
 test "log_index: failed append leaves the index unchanged (#53)" {
-    // The log list, the range map, and the clones share one failing allocator.
-    // Any allocation failure must roll the block back completely: no orphan
-    // logs without a block range, and no leaked clones.
     var failing = testing.FailingAllocator.init(testing.allocator, .{});
     const allocator = failing.allocator();
     var idx = log_index.LogIndex.init();
@@ -437,4 +434,98 @@ test "log_index: failed append leaves the index unchanged (#53)" {
     const by_range = try idx.query(testing.allocator, .{ .from_block = 2, .to_block = 2 }, 2);
     defer testing.allocator.free(by_range);
     try testing.expectEqual(@as(usize, 5), by_range.len);
+}
+
+test "log_index: empty address list is a wildcard" {
+    const allocator = testing.allocator;
+    var idx = log_index.LogIndex.init();
+    defer idx.deinit(allocator);
+
+    var bh: [32]u8 = undefined;
+    @memset(&bh, 0x01);
+    const addr = primitives.Address{ .bytes = [_]u8{0x11} ** 20 };
+
+    var receipt = try makeReceiptWithLogs(allocator, addr, null, 2);
+    defer receipt.deinit(allocator);
+    try idx.appendBlockLogs(allocator, 1, bh, &[_]primitives.Receipt.Receipt{receipt});
+
+    const no_addresses: []const primitives.Address.Address = &.{};
+    const by_range = try idx.query(allocator, .{ .from_block = 1, .to_block = 1, .addresses = no_addresses }, 1);
+    defer allocator.free(by_range);
+    try testing.expectEqual(@as(usize, 2), by_range.len);
+
+    const by_hash = try idx.query(allocator, .{ .block_hash = bh, .addresses = no_addresses }, 1);
+    defer allocator.free(by_hash);
+    try testing.expectEqual(@as(usize, 2), by_hash.len);
+}
+
+test "log_index: removeBlocksAbove drops stale blocks by number and by hash" {
+    const allocator = testing.allocator;
+    var idx = log_index.LogIndex.init();
+    defer idx.deinit(allocator);
+
+    const addr = primitives.Address{ .bytes = [_]u8{0x22} ** 20 };
+    var hashes: [4][32]u8 = undefined;
+    for (&hashes, 0..) |*hash, i| @memset(hash, @intCast(i + 1));
+
+    var receipt = try makeReceiptWithLogs(allocator, addr, null, 2);
+    defer receipt.deinit(allocator);
+    var empty_receipt = try makeReceiptWithLogs(allocator, addr, null, 0);
+    defer empty_receipt.deinit(allocator);
+
+    try idx.appendBlockLogs(allocator, 1, hashes[0], &[_]primitives.Receipt.Receipt{receipt});
+    try idx.appendBlockLogs(allocator, 2, hashes[1], &[_]primitives.Receipt.Receipt{receipt});
+    try idx.appendBlockLogs(allocator, 3, hashes[2], &[_]primitives.Receipt.Receipt{empty_receipt});
+
+    idx.removeBlocksAbove(1);
+
+    const kept = try idx.query(allocator, .{ .from_block = 0, .to_block = 3 }, 3);
+    defer allocator.free(kept);
+    try testing.expectEqual(@as(usize, 2), kept.len);
+    try testing.expect(std.mem.eql(u8, &kept[0].block_hash, &hashes[0]));
+
+    const stale = try idx.query(allocator, .{ .block_hash = hashes[1] }, 3);
+    defer allocator.free(stale);
+    try testing.expectEqual(@as(usize, 0), stale.len);
+    try testing.expectEqual(@as(usize, 1), idx.block_hash_range.count());
+
+    try idx.appendBlockLogs(allocator, 2, hashes[3], &[_]primitives.Receipt.Receipt{receipt});
+    const replaced = try idx.query(allocator, .{ .from_block = 2, .to_block = 2 }, 2);
+    defer allocator.free(replaced);
+    try testing.expectEqual(@as(usize, 2), replaced.len);
+    try testing.expect(std.mem.eql(u8, &replaced[0].block_hash, &hashes[3]));
+    try testing.expectEqual(@as(usize, 4), idx.logs.items.len);
+
+    idx.removeBlocksAbove(std.math.maxInt(u64));
+    try testing.expectEqual(@as(usize, 2), idx.block_numbers.items.len);
+}
+
+test "log_index: failed append leaves the index unchanged" {
+    const base = testing.allocator;
+    var idx = log_index.LogIndex.init();
+    defer idx.deinit(base);
+
+    const addr = primitives.Address{ .bytes = [_]u8{0x33} ** 20 };
+    var bh: [32]u8 = undefined;
+    @memset(&bh, 0x07);
+    var receipt = try makeReceiptWithLogs(base, addr, null, 3);
+    defer receipt.deinit(base);
+
+    var fail_index: usize = 0;
+    while (fail_index < 64) : (fail_index += 1) {
+        var failing = std.testing.FailingAllocator.init(base, .{ .fail_index = fail_index });
+        if (idx.appendBlockLogs(failing.allocator(), 5, bh, &[_]primitives.Receipt.Receipt{receipt})) |_| {
+            break;
+        } else |err| {
+            try testing.expectEqual(error.OutOfMemory, err);
+            try testing.expectEqual(@as(usize, 0), idx.logs.items.len);
+            try testing.expectEqual(@as(usize, 0), idx.block_range.count());
+            try testing.expectEqual(@as(usize, 0), idx.block_hash_range.count());
+            try testing.expectEqual(@as(usize, 0), idx.block_numbers.items.len);
+        }
+    } else return error.TestUnexpectedResult;
+
+    const result = try idx.query(base, .{ .from_block = 5, .to_block = 5 }, 5);
+    defer base.free(result);
+    try testing.expectEqual(@as(usize, 3), result.len);
 }

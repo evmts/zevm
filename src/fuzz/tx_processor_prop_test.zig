@@ -498,6 +498,11 @@ test "property: blob fee is burned exactly and blob-count boundaries hold per fo
         try sm.setBalance(sender_address, sender_balance);
         try sm.setBalance(peer_address, random.int(u32));
 
+        var blob_hashes: [9][32]u8 = undefined;
+        for (blob_hashes[0..blob_count], 0..) |*h, idx| {
+            h.* = [_]u8{@intCast(idx)} ** 32;
+            h[0] = 0x01;
+        }
         const total_before = try totalBalance(&sm);
         const receipt = try tx_processor.processTransactionWithOptions(
             std.testing.allocator,
@@ -521,6 +526,7 @@ test "property: blob fee is burned exactly and blob-count boundaries hold per fo
                 .blob_gas_used = blob_gas,
                 .blob_gas_price = blob_price,
                 .max_fee_per_blob_gas = blob_price + random.uintAtMost(u32, 100),
+                .blob_versioned_hashes = blob_hashes[0..blob_count],
             },
         );
         defer receipt.deinit(std.testing.allocator);

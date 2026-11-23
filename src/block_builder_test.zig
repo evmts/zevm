@@ -92,12 +92,26 @@ test "buildBlock enforces block gas limit" {
         },
     };
 
-    var result = try block_builder.buildBlock(
+    // Default strict mode rejects blocks whose transactions exceed block gas limit.
+    try std.testing.expectError(
+        error.InvalidIncludedTransaction,
+        block_builder.buildBlock(
+            std.testing.allocator,
+            &sm,
+            host,
+            &txs,
+            blockContextWithGasLimit(30_000),
+        ),
+    );
+
+    // Packing mode skips transactions that do not fit remaining block gas.
+    var result = try block_builder.buildBlockWithOptions(
         std.testing.allocator,
         &sm,
         host,
         &txs,
         blockContextWithGasLimit(30_000),
+        .{ .skip_invalid_transactions = true },
     );
     defer result.deinit(std.testing.allocator);
 
@@ -161,6 +175,7 @@ test "buildBlock enforces Cancun blob gas limit" {
             .fork = .cancun,
             .hardfork_config = hardfork_schedule.ChainConfig{ .cancun_timestamp = 0 },
             .withdrawals = &withdrawals,
+            .skip_invalid_transactions = true,
         },
     );
     defer result.deinit(std.testing.allocator);
@@ -425,6 +440,27 @@ test "buildBlockWithOptions consumes dev block environment overrides once" {
     block_ctx.block_base_fee = 3;
     block_ctx.blob_base_fee = 1;
 
+    // Deploy minimal EIP-4788-style system contract that stores TIMESTAMP at slot `TIMESTAMP % 8191`
+    // and CALLDATALOAD(0) at slot `(TIMESTAMP % 8191) + 8191`.
+    // PUSH2 8191; TIMESTAMP; MOD; DUP1; TIMESTAMP; SWAP1; SSTORE; PUSH2 8191; ADD; PUSH0; CALLDATALOAD; SWAP1; SSTORE; STOP
+    const beacon_system_code = [_]u8{
+        0x61, 0x1f, 0xff, // PUSH2 8191
+        0x42, // TIMESTAMP
+        0x06, // MOD -> [slot]
+        0x80, // DUP1 -> [slot, slot]
+        0x42, // TIMESTAMP -> [slot, slot, ts]
+        0x90, // SWAP1 -> [slot, ts, slot]
+        0x55, // SSTORE -> [slot]
+        0x61, 0x1f, 0xff, // PUSH2 8191
+        0x01, // ADD -> [slot + 8191]
+        0x5f, // PUSH0
+        0x35, // CALLDATALOAD -> [slot + 8191, root]
+        0x90, // SWAP1 -> [root, slot + 8191]
+        0x55, // SSTORE -> []
+        0x00, // STOP
+    };
+    try sm.setCode(block_builder.BEACON_ROOTS_ADDRESS, &beacon_system_code);
+
     const withdrawals = [_]primitives.BlockBody.Withdrawal{};
     const parent_beacon_root = [_]u8{0x42} ** 32;
     var result = try block_builder.buildBlockWithOptions(
@@ -438,6 +474,7 @@ test "buildBlockWithOptions consumes dev block environment overrides once" {
             .withdrawals = &withdrawals,
             .parent_beacon_block_root = parent_beacon_root,
             .dev_runtime = &runtime,
+            .skip_invalid_transactions = true,
         },
     );
     defer result.deinit(std.testing.allocator);
@@ -569,9 +606,32 @@ test "beacon roots system storage writes timestamp and root" {
 
     const timestamp: u64 = 8193;
     const root = [_]u8{0x42} ** 32;
+    const slot = timestamp % 8191;
+
+    // EIP-4788: empty system contract address is a no-op.
+    try block_builder.applyBeaconRootsSystemCall(&sm, timestamp, root);
+    try std.testing.expectEqual(@as(u256, 0), try sm.getStorage(block_builder.BEACON_ROOTS_ADDRESS, slot));
+
+    // When code is deployed, the system call executes the contract and writes storage.
+    const beacon_system_code = [_]u8{
+        0x61, 0x1f, 0xff, // PUSH2 8191
+        0x42, // TIMESTAMP
+        0x06, // MOD -> [slot]
+        0x80, // DUP1 -> [slot, slot]
+        0x42, // TIMESTAMP -> [slot, slot, ts]
+        0x90, // SWAP1 -> [slot, ts, slot]
+        0x55, // SSTORE -> [slot]
+        0x61, 0x1f, 0xff, // PUSH2 8191
+        0x01, // ADD -> [slot + 8191]
+        0x5f, // PUSH0
+        0x35, // CALLDATALOAD -> [slot + 8191, root]
+        0x90, // SWAP1 -> [root, slot + 8191]
+        0x55, // SSTORE -> []
+        0x00, // STOP
+    };
+    try sm.setCode(block_builder.BEACON_ROOTS_ADDRESS, &beacon_system_code);
     try block_builder.applyBeaconRootsSystemCall(&sm, timestamp, root);
 
-    const slot = timestamp % 8191;
     try std.testing.expectEqual(@as(u256, timestamp), try sm.getStorage(block_builder.BEACON_ROOTS_ADDRESS, slot));
     try std.testing.expectEqual(std.mem.readInt(u256, &root, .big), try sm.getStorage(block_builder.BEACON_ROOTS_ADDRESS, slot + 8191));
 }
@@ -582,9 +642,28 @@ test "historical block hash system storage writes parent hash" {
 
     const block_number: u64 = 8193;
     const parent_hash = [_]u8{0x34} ** 32;
+    const slot = (block_number - 1) % 8191;
+
+    // EIP-2935: empty system contract address is a no-op.
+    try block_builder.applyHistoricalBlockHashSystemCall(&sm, block_number, parent_hash);
+    try std.testing.expectEqual(@as(u256, 0), try sm.getStorage(block_builder.HISTORY_STORAGE_ADDRESS, slot));
+
+    // When code is deployed, the system call executes the contract:
+    // stores CALLDATALOAD(0) at slot `(NUMBER - 1) % 8191`.
+    const history_system_code = [_]u8{
+        0x5f, // PUSH0
+        0x35, // CALLDATALOAD -> [parent_hash]
+        0x61, 0x1f, 0xff, // PUSH2 8191
+        0x60, 0x01, // PUSH1 1
+        0x43, // NUMBER
+        0x03, // SUB -> [NUMBER - 1]
+        0x06, // MOD -> [(NUMBER - 1) % 8191]
+        0x55, // SSTORE
+        0x00, // STOP
+    };
+    try sm.setCode(block_builder.HISTORY_STORAGE_ADDRESS, &history_system_code);
     try block_builder.applyHistoricalBlockHashSystemCall(&sm, block_number, parent_hash);
 
-    const slot = (block_number - 1) % 8191;
     try std.testing.expectEqual(
         std.mem.readInt(u256, &parent_hash, .big),
         try sm.getStorage(block_builder.HISTORY_STORAGE_ADDRESS, slot),
@@ -1160,6 +1239,7 @@ test "EIP-7825 validateBlock rejects an Osaka block holding a transaction above 
             .transaction_envelopes = &txs,
             .receipts = &receipts,
             .withdrawals = &withdrawals,
+            .requests_hash = if (case.fork == .cancun) null else [_]u8{0x5a} ** 32,
         });
         if (case.valid) {
             _ = try validated;
@@ -1199,6 +1279,7 @@ test "validateBlock enforces EIP-7918 reserve price on Osaka and EIP-7892 BPO2 m
         .parent_header = &parent,
         .fork = .prague,
         .withdrawals = &withdrawals,
+        .requests_hash = [_]u8{0x5a} ** 32,
     });
     // Osaka: reserve active -> excess = 6 * 3 / 9 = 2 blobs; 0 is rejected.
     try std.testing.expectError(error.InvalidExcessBlobGas, block_builder.validateBlock(std.testing.allocator, .{
@@ -1206,6 +1287,7 @@ test "validateBlock enforces EIP-7918 reserve price on Osaka and EIP-7892 BPO2 m
         .parent_header = &parent,
         .fork = .osaka,
         .withdrawals = &withdrawals,
+        .requests_hash = [_]u8{0x5a} ** 32,
     }));
     child.excess_blob_gas = 2 * gas_per_blob;
     _ = try block_builder.validateBlock(std.testing.allocator, .{
@@ -1213,6 +1295,7 @@ test "validateBlock enforces EIP-7918 reserve price on Osaka and EIP-7892 BPO2 m
         .parent_header = &parent,
         .fork = .osaka,
         .withdrawals = &withdrawals,
+        .requests_hash = [_]u8{0x5a} ** 32,
     });
 
     // BPO2 (max 21 blobs): 21 blobs accepted, 22 blobs rejected.
@@ -1246,6 +1329,7 @@ test "validateBlock enforces EIP-7918 reserve price on Osaka and EIP-7892 BPO2 m
         .fork = .osaka,
         .hardfork_config = hardfork_schedule.MAINNET_CHAIN_CONFIG,
         .transaction_envelopes = &txs,
+        .requests_hash = [_]u8{0x5a} ** 32,
         .receipts = &blob_21_receipts,
         .withdrawals = &withdrawals,
     });
@@ -1263,7 +1347,403 @@ test "validateBlock enforces EIP-7918 reserve price on Osaka and EIP-7892 BPO2 m
         .fork = .osaka,
         .hardfork_config = hardfork_schedule.MAINNET_CHAIN_CONFIG,
         .transaction_envelopes = &txs,
+        .requests_hash = [_]u8{0x5a} ** 32,
         .receipts = &blob_22_receipts,
         .withdrawals = &withdrawals,
     }));
+}
+
+test "pre-Byzantium receipts carry the intermediate state root instead of a status" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+
+    const sender = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
+    const recipient = primitives.Address{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 19 };
+    try sm.setBalance(sender, 1_000_000);
+
+    const txs = [_]tx_processor.ExecutionTx{
+        .{
+            .caller = sender,
+            .tx = makeLegacyTx(.{ .to = recipient, .value = 1, .data = &.{}, .gas_limit = 21_000, .gas_price = 1, .nonce = 0 }),
+        },
+        .{
+            .caller = sender,
+            .tx = makeLegacyTx(.{ .to = recipient, .value = 1, .data = &.{}, .gas_limit = 21_000, .gas_price = 1, .nonce = 1 }),
+        },
+    };
+
+    var result = try block_builder.buildBlockWithOptions(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        &txs,
+        blockContextWithGasLimit(1_000_000),
+        .{ .fork = .homestead },
+    );
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), result.receipts.len);
+    for (result.receipts) |receipt| {
+        try std.testing.expect(receipt.status == null);
+        try std.testing.expect(receipt.root != null);
+    }
+    const first_root = result.receipts[0].root.?;
+    const second_root = result.receipts[1].root.?;
+    try std.testing.expect(!std.mem.eql(u8, &first_root, &second_root));
+    // The block reward lands after the last transaction, so the last receipt
+    // root is not the block state root.
+    try std.testing.expect(!std.mem.eql(u8, &second_root, &result.state_root));
+
+    // The receipts root commits to the root-form receipts.
+    const receipts_root = try block_builder.computeReceiptsRoot(std.testing.allocator, result.receipts);
+    try std.testing.expectEqualSlices(u8, &receipts_root, &result.receipts_root);
+}
+
+test "Byzantium and later receipts keep the status code" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+
+    const sender = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
+    try sm.setBalance(sender, 1_000_000);
+    const txs = [_]tx_processor.ExecutionTx{.{
+        .caller = sender,
+        .tx = makeLegacyTx(.{ .to = primitives.Address{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 19 }, .value = 1, .data = &.{}, .gas_limit = 21_000, .gas_price = 1, .nonce = 0 }),
+    }};
+
+    var result = try block_builder.buildBlockWithOptions(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        &txs,
+        blockContextWithGasLimit(1_000_000),
+        .{ .fork = .byzantium },
+    );
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(result.receipts[0].status.?.success);
+    try std.testing.expect(result.receipts[0].root == null);
+}
+
+test "validateBlock requires a requests hash from Prague and validateHeader rejects one before" {
+    const gas_per_blob: u64 = 131_072;
+    const withdrawals = [_]primitives.BlockBody.Withdrawal{};
+
+    var parent = parentHeader();
+    parent.timestamp = hardfork_schedule.MAINNET_CHAIN_CONFIG.osaka_timestamp;
+    parent.base_fee_per_gas = 1_000_000_000;
+    parent.withdrawals_root = primitives.BlockHeader.EMPTY_WITHDRAWALS_ROOT;
+    parent.blob_gas_used = 6 * gas_per_blob;
+    parent.excess_blob_gas = 0;
+    parent.parent_beacon_block_root = primitives.Hash.ZERO;
+
+    var child = childHeader(parent);
+    child.timestamp = parent.timestamp + 12;
+    child.base_fee_per_gas = try block_builder.expectedBaseFeePerGas(&parent);
+    child.gas_used = 0;
+    child.transactions_root = primitives.BlockHeader.EMPTY_TRANSACTIONS_ROOT;
+    child.receipts_root = primitives.BlockHeader.EMPTY_RECEIPTS_ROOT;
+    child.withdrawals_root = try block_builder.computeWithdrawalsRoot(std.testing.allocator, &withdrawals);
+    child.blob_gas_used = 0;
+    child.excess_blob_gas = 0;
+    child.parent_beacon_block_root = primitives.Hash.ZERO;
+
+    const hash = [_]u8{0x5a} ** 32;
+
+    // Prague: a block that commits to no requests hash is invalid.
+    try std.testing.expectError(error.InvalidRequestsHash, block_builder.validateBlock(std.testing.allocator, .{
+        .header = &child,
+        .parent_header = &parent,
+        .fork = .prague,
+        .withdrawals = &withdrawals,
+    }));
+    const prague = try block_builder.validateBlock(std.testing.allocator, .{
+        .header = &child,
+        .parent_header = &parent,
+        .fork = .prague,
+        .withdrawals = &withdrawals,
+        .requests_hash = hash,
+    });
+    try std.testing.expectEqualSlices(u8, &hash, &prague.requests_hash.?);
+
+    // The hash may also live in the header itself.
+    var with_field = child;
+    with_field.requests_hash = hash;
+    _ = try block_builder.validateBlock(std.testing.allocator, .{
+        .header = &with_field,
+        .parent_header = &parent,
+        .fork = .prague,
+        .withdrawals = &withdrawals,
+    });
+
+    // Before Prague the header field does not exist.
+    try block_builder.validateHeader(&with_field, &parent, .prague);
+    try std.testing.expectError(error.InvalidRequestsHash, block_builder.validateHeader(&with_field, &parent, .cancun));
+    var paris_with_requests = with_field;
+    paris_with_requests.withdrawals_root = null;
+    paris_with_requests.blob_gas_used = null;
+    paris_with_requests.excess_blob_gas = null;
+    paris_with_requests.parent_beacon_block_root = null;
+    try std.testing.expectError(error.InvalidRequestsHash, block_builder.validateHeader(&paris_with_requests, &parent, .paris));
+    try block_builder.validateHeader(&child, &parent, .cancun);
+}
+
+test "EIP-6110 deposit requests come from the configured deposit contract" {
+    const allocator = std.testing.allocator;
+    const custom = primitives.Address{ .bytes = [_]u8{0xde} ** 20 };
+    const topics = [_]primitives.Hash.Hash{block_builder.DEPOSIT_EVENT_TOPIC};
+
+    // A log with the deposit topic and malformed data is a deposit only when
+    // it comes from the configured contract.
+    const logs = [_]primitives.EventLog.EventLog{.{
+        .address = custom,
+        .topics = &topics,
+        .data = &.{},
+        .block_number = null,
+        .transaction_hash = null,
+        .transaction_index = null,
+        .log_index = null,
+        .removed = false,
+    }};
+    var receipt = makeReceipt(.{ .logs_bloom = [_]u8{0} ** 256 });
+    receipt.logs = &logs;
+    const receipts = [_]primitives.Receipt.Receipt{receipt};
+
+    try std.testing.expect((try block_builder.extractDepositRequests(allocator, &receipts)) == null);
+    try std.testing.expectError(
+        error.InvalidDepositEventLayout,
+        block_builder.extractDepositRequestsFrom(allocator, &receipts, custom),
+    );
+    const defaults = block_builder.BuildBlockOptions{};
+    try std.testing.expect(defaults.deposit_contract_address == null);
+    try std.testing.expect(defaults.effectiveDepositContractAddress().equals(block_builder.DEPOSIT_CONTRACT_ADDRESS));
+}
+
+test "EIP-161 deletes a touched pre-existing empty beneficiary and keeps an untouched one" {
+    const allocator = std.testing.allocator;
+    var sm = try state_manager.StateManager.init(allocator, null);
+    defer sm.deinit();
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+
+    const sender = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
+    const recipient = primitives.Address{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 19 };
+    const untouched_empty = primitives.Address{ .bytes = [_]u8{0xE1} ++ [_]u8{0} ** 19 };
+    const beneficiary = primitives.Address{ .bytes = [_]u8{0xE2} ++ [_]u8{0} ** 19 };
+
+    const sender_balance: u256 = 1_000_000_000;
+    try sm.setBalance(sender, sender_balance);
+    // Two accounts that are in the state trie and empty before the block.
+    try sm.initAccount(untouched_empty, 0);
+    try sm.initAccount(beneficiary, 0);
+
+    // Post-Merge block whose transaction pays exactly the base fee: the
+    // priority fee is zero, so fee settlement touches the beneficiary
+    // without crediting it.
+    var block_ctx = blockContextWithGasLimit(30_000_000);
+    block_ctx.block_coinbase = beneficiary;
+    block_ctx.block_base_fee = 7;
+
+    const transfer_value: u256 = 1;
+    const txs = [_]tx_processor.ExecutionTx{.{
+        .caller = sender,
+        .tx = makeLegacyTx(.{
+            .to = recipient,
+            .value = transfer_value,
+            .data = &.{},
+            .gas_limit = 21_000,
+            .gas_price = 7,
+            .nonce = 0,
+        }),
+    }};
+
+    var config = hardfork_schedule.MAINNET_CHAIN_CONFIG;
+    config.shanghai_timestamp = std.math.maxInt(u64);
+    config.cancun_timestamp = std.math.maxInt(u64);
+    config.prague_timestamp = std.math.maxInt(u64);
+    config.osaka_timestamp = std.math.maxInt(u64);
+    config.merge_block = 0;
+    config.london_block = 0;
+
+    var result = try block_builder.buildBlockWithOptions(
+        allocator,
+        &sm,
+        adapter.hostInterface(),
+        &txs,
+        block_ctx,
+        .{ .fork = .paris, .hardfork_config = config },
+    );
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.receipts.len);
+    try std.testing.expect(result.receipts[0].status.?.success);
+    // The beneficiary earned nothing.
+    try std.testing.expectEqual(@as(u256, 0), try sm.getBalance(beneficiary));
+
+    // Only the untouched empty account is still in the state trie.
+    const expected_accounts = [_]genesis.PremineAccount{
+        .{ .address = sender, .balance = sender_balance - transfer_value - 21_000 * 7, .nonce = 1 },
+        .{ .address = recipient, .balance = transfer_value, .nonce = 0 },
+        .{ .address = untouched_empty, .balance = 0, .nonce = 0 },
+    };
+    const expected_root = try genesis.computeStateRootFromPremine(allocator, &expected_accounts);
+    try std.testing.expectEqualSlices(u8, &expected_root, &result.state_root);
+
+    // Keeping the touched beneficiary, as the builder did before, gives a
+    // different root.
+    const stale_accounts = expected_accounts ++ [_]genesis.PremineAccount{
+        .{ .address = beneficiary, .balance = 0, .nonce = 0 },
+    };
+    const stale_root = try genesis.computeStateRootFromPremine(allocator, &stale_accounts);
+    try std.testing.expect(!std.mem.eql(u8, &stale_root, &result.state_root));
+}
+
+test "pruneEmptyAccounts deletes touched or new empty accounts and keeps untouched pre-existing ones" {
+    const allocator = std.testing.allocator;
+    var sm = try state_manager.StateManager.init(allocator, null);
+    defer sm.deinit();
+
+    const untouched_empty = primitives.Address{ .bytes = [_]u8{0xE1} ++ [_]u8{0} ** 19 };
+    const touched_empty = primitives.Address{ .bytes = [_]u8{0xE2} ++ [_]u8{0} ** 19 };
+    const new_empty = primitives.Address{ .bytes = [_]u8{0xE3} ++ [_]u8{0} ** 19 };
+    const touched_funded = primitives.Address{ .bytes = [_]u8{0xE4} ++ [_]u8{0} ** 19 };
+
+    try sm.initAccount(untouched_empty, 0);
+    try sm.initAccount(touched_empty, 0);
+    try sm.initAccount(touched_funded, 5);
+
+    var preserved = try block_builder.collectEmptyAccounts(allocator, &sm);
+    defer preserved.deinit();
+    try std.testing.expectEqual(@as(u32, 2), preserved.count());
+
+    try sm.initAccount(new_empty, 0);
+
+    var touched = std.AutoHashMap(primitives.Address, void).init(allocator);
+    defer touched.deinit();
+    try touched.put(touched_empty, {});
+    try touched.put(touched_funded, {});
+
+    try block_builder.pruneEmptyAccounts(allocator, &sm, &preserved, &touched);
+
+    const expected_accounts = [_]genesis.PremineAccount{
+        .{ .address = untouched_empty, .balance = 0, .nonce = 0 },
+        .{ .address = touched_funded, .balance = 5, .nonce = 0 },
+    };
+    const expected_root = try genesis.computeStateRootFromPremine(allocator, &expected_accounts);
+    try std.testing.expectEqualSlices(u8, &expected_root, &(try block_builder.computeStateRoot(allocator, &sm)));
+}
+
+test "buildBlockWithOptions rejects a Prague block without the request predeploys only in strict mode" {
+    const allocator = std.testing.allocator;
+    // mstore8(0, 0xaa); return(0, 1)
+    const one_byte = [_]u8{ 0x60, 0xaa, 0x60, 0x00, 0x53, 0x60, 0x01, 0x60, 0x00, 0xf3 };
+    var block_ctx = blockContextWithGasLimit(30_000_000);
+    block_ctx.block_timestamp = hardfork_schedule.MAINNET_CHAIN_CONFIG.prague_timestamp;
+    block_ctx.block_number = 22_500_000;
+
+    const predeploys = [_]primitives.Address{
+        block_builder.WITHDRAWAL_REQUESTS_ADDRESS,
+        block_builder.CONSOLIDATION_REQUESTS_ADDRESS,
+    };
+    for (predeploys) |deployed| {
+        var sm = try state_manager.StateManager.init(allocator, null);
+        defer sm.deinit();
+        var adapter = host_adapter.HostAdapter{ .state = &sm };
+        try sm.setCode(deployed, &one_byte);
+        const root_before = try block_builder.computeStateRoot(allocator, &sm);
+
+        var options = block_builder.BuildBlockOptions{
+            .fork = .prague,
+            .hardfork_config = hardfork_schedule.MAINNET_CHAIN_CONFIG,
+            .withdrawals = &.{},
+            .parent_hash = [_]u8{0x11} ** 32,
+            .require_system_contracts = true,
+        };
+        try std.testing.expectError(
+            error.SystemContractMissingCode,
+            block_builder.buildBlockWithOptions(allocator, &sm, adapter.hostInterface(), &.{}, block_ctx, options),
+        );
+        // The rejected block left the state unchanged.
+        try std.testing.expectEqualSlices(u8, &root_before, &(try block_builder.computeStateRoot(allocator, &sm)));
+
+        options.require_system_contracts = false;
+        var result = try block_builder.buildBlockWithOptions(allocator, &sm, adapter.hostInterface(), &.{}, block_ctx, options);
+        defer result.deinit(allocator);
+        try std.testing.expectEqual(@as(usize, 1), result.execution_requests.len);
+    }
+}
+
+test "applyBlockRewards does not overflow near the top of the block number range (R4-07)" {
+    const allocator = std.testing.allocator;
+    const miner = primitives.Address{ .bytes = [_]u8{0xa1} ++ [_]u8{0} ** 19 };
+    const ommer_miner = primitives.Address{ .bytes = [_]u8{0xb2} ++ [_]u8{0} ** 19 };
+    const reward = block_builder.blockRewardWei(.london).?;
+    const max = std.math.maxInt(u64);
+
+    {
+        var sm = try state_manager.StateManager.init(allocator, null);
+        defer sm.deinit();
+        const ommers = [_]primitives.BlockBody.UncleHeader{.{ .number = max - 2, .beneficiary = ommer_miner }};
+        try block_builder.applyBlockRewards(&sm, miner, &ommers, max, .london);
+        try std.testing.expectEqual(reward + reward / 32, try sm.getBalance(miner));
+        // Distance 2: (8 - 2) / 8 of the block reward.
+        try std.testing.expectEqual(reward * 6 / 8, try sm.getBalance(ommer_miner));
+    }
+
+    // Distance 6 is the oldest ommer the Yellow Paper admits.
+    {
+        var sm = try state_manager.StateManager.init(allocator, null);
+        defer sm.deinit();
+        const ommers = [_]primitives.BlockBody.UncleHeader{.{ .number = max - 6, .beneficiary = ommer_miner }};
+        try block_builder.applyBlockRewards(&sm, miner, &ommers, max, .london);
+        try std.testing.expectEqual(reward * 2 / 8, try sm.getBalance(ommer_miner));
+    }
+
+    // Distance 7, a same-height ommer and a future ommer are rejected.
+    for ([_]struct { ommer: u64, block: u64 }{
+        .{ .ommer = max - 7, .block = max },
+        .{ .ommer = 3, .block = 10 },
+        .{ .ommer = max, .block = max },
+        .{ .ommer = max, .block = max - 1 },
+    }) |case| {
+        var sm = try state_manager.StateManager.init(allocator, null);
+        defer sm.deinit();
+        const ommers = [_]primitives.BlockBody.UncleHeader{.{ .number = case.ommer, .beneficiary = ommer_miner }};
+        try std.testing.expectError(
+            error.InvalidOmmerReward,
+            block_builder.applyBlockRewards(&sm, miner, &ommers, case.block, .london),
+        );
+    }
+}
+
+test "collectBlockExecutionRequestsWithOptions honors require_system_contracts (R4-06)" {
+    const allocator = std.testing.allocator;
+    const block_ctx = blockContextWithGasLimit(30_000_000);
+
+    var sm = try state_manager.StateManager.init(allocator, null);
+    defer sm.deinit();
+
+    // Neither EIP-7002 nor EIP-7251 predeploy has code.
+    try std.testing.expectError(
+        error.SystemContractMissingCode,
+        block_builder.collectBlockExecutionRequestsWithOptions(allocator, &sm, &.{}, .prague, block_ctx, .{
+            .require_system_contracts = true,
+        }),
+    );
+
+    // The relaxed option and the thin wrapper keep the dev-chain no-op.
+    const relaxed = try block_builder.collectBlockExecutionRequestsWithOptions(allocator, &sm, &.{}, .prague, block_ctx, .{});
+    defer block_builder.freeExecutionRequests(allocator, relaxed);
+    try std.testing.expectEqual(@as(usize, 0), relaxed.len);
+
+    const wrapped = try block_builder.collectBlockExecutionRequestsFrom(allocator, &sm, &.{}, .prague, block_ctx, block_builder.DEPOSIT_CONTRACT_ADDRESS);
+    defer block_builder.freeExecutionRequests(allocator, wrapped);
+    try std.testing.expectEqual(@as(usize, 0), wrapped.len);
+
+    // Before Prague there are no requests and no system-contract check.
+    const cancun = try block_builder.collectBlockExecutionRequestsWithOptions(allocator, &sm, &.{}, .cancun, block_ctx, .{
+        .require_system_contracts = true,
+    });
+    defer block_builder.freeExecutionRequests(allocator, cancun);
+    try std.testing.expectEqual(@as(usize, 0), cancun.len);
 }

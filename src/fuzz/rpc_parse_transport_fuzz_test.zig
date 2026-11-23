@@ -373,7 +373,7 @@ test "listener applies the published HTTP head limit on the wire" {
     const limit = server.MAX_HTTP_HEAD_BYTES;
     var buf: [limit + 1]u8 = undefined;
     try checkWire(&listener, paddedHead(buf[0..limit], 'a'), .method_not_allowed);
-    try checkWire(&listener, paddedHead(&buf, 'a'), null);
+    try checkWire(&listener, paddedHead(&buf, 'a'), .request_header_fields_too_large);
 }
 
 test "listener applies an inclusive decoded body limit to fixed and chunked frames" {
@@ -388,7 +388,7 @@ test "listener applies an inclusive decoded body limit to fixed and chunked fram
         for ([_]bool{ false, true }) |chunked| {
             var buf: [384]u8 = undefined;
             var writer = std.Io.Writer.fixed(&buf);
-            try writer.writeAll("POST / HTTP/1.1\r\nConnection: close\r\nContent-Type: application/json\r\n");
+            try writer.writeAll("POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nContent-Type: application/json\r\n");
             if (chunked) {
                 const split = notification.len / 2;
                 try writer.print("Transfer-Encoding: chunked\r\n\r\n{x}\r\n{s}\r\n{x}\r\n{s}\r\n0\r\n\r\n", .{ split, body[0..split], len - split, body[split..len] });

@@ -34,7 +34,6 @@
   },
   "files": [
     "src/index.js",
-    "native/zevm.node",
     "LICENSE",
     "README.md"
   ],

@@ -2,7 +2,7 @@ const builtin = @import("builtin");
 const std = @import("std");
 
 const ModuleSet = struct {
-    voltaire_rust_crypto: *std.Build.Step.Run,
+    rust_crypto: RustCrypto,
     primitives_mod: *std.Build.Module,
     state_manager_mod: *std.Build.Module,
     blockchain_mod: *std.Build.Module,
@@ -15,29 +15,18 @@ const ModuleSet = struct {
     blst_include_path: std.Build.LazyPath,
 };
 
+const RustCrypto = struct {
+    build_step: ?*std.Build.Step,
+    archive: std.Build.LazyPath,
+};
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const modules = createModuleSet(b, target, optimize, "zevm");
-    const mod = modules.zevm_mod;
-
-    // Executable
-    const exe = b.addExecutable(.{
-        .name = "zevm",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "zevm", .module = mod },
-            },
-        }),
-    });
-
-    exe.step.dependOn(&modules.voltaire_rust_crypto.step);
-    linkRustSupport(exe, target);
-    b.installArtifact(exe);
+    const skip_rust_build = b.option(bool, "skip-rust-build", "Skip invoking cargo build for Voltaire Rust crypto (caller pre-built it)") orelse false;
+    const fuzz_filter = b.option([]const u8, "fuzz-filter", "Filter tests in the fuzz and fuzz-c-abi steps");
+    const fuzz_filters: []const []const u8 = if (fuzz_filter) |filter| &.{filter} else &.{};
 
     const launch_policy_preflight_step = b.step("launch-policy-preflight", "Check that locally built executables can launch on this host");
     if (builtin.os.tag == .macos) {
@@ -50,7 +39,7 @@ pub fn build(b: *std.Build) void {
         .name = "release-metadata",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/release_metadata.zig"),
-            .target = target,
+            .target = b.graph.host,
             .optimize = optimize,
         }),
     });
@@ -67,7 +56,7 @@ pub fn build(b: *std.Build) void {
         .name = "qualification-check",
         .root_module = b.createModule(.{
             .root_source_file = b.path("tools/qualification_check.zig"),
-            .target = target,
+            .target = b.graph.host,
             .optimize = optimize,
         }),
     });
@@ -86,7 +75,7 @@ pub fn build(b: *std.Build) void {
         .name = "test-graph-check",
         .root_module = b.createModule(.{
             .root_source_file = b.path("tools/test_graph_check.zig"),
-            .target = target,
+            .target = b.graph.host,
             .optimize = optimize,
         }),
     });
@@ -95,7 +84,7 @@ pub fn build(b: *std.Build) void {
         .name = "dependency-preflight",
         .root_module = b.createModule(.{
             .root_source_file = b.path("tools/dependency_preflight.zig"),
-            .target = target,
+            .target = b.graph.host,
             .optimize = optimize,
         }),
     });
@@ -107,6 +96,48 @@ pub fn build(b: *std.Build) void {
         dependency_preflight_cmd.addArgs(args);
     }
     dependency_preflight_step.dependOn(&dependency_preflight_cmd.step);
+
+    const qualification_check_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/qualification_check.zig"),
+            .target = b.graph.host,
+            .optimize = optimize,
+        }),
+    });
+    const run_qualification_check_tests = b.addRunArtifact(qualification_check_tests);
+    run_qualification_check_tests.step.dependOn(launch_policy_preflight_step);
+    const dependency_preflight_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/dependency_preflight.zig"),
+            .target = b.graph.host,
+            .optimize = optimize,
+        }),
+    });
+    const run_dependency_preflight_tests = b.addRunArtifact(dependency_preflight_tests);
+    run_dependency_preflight_tests.step.dependOn(launch_policy_preflight_step);
+    const run_test_graph_check = b.addRunArtifact(test_graph_check_exe);
+    run_test_graph_check.step.dependOn(launch_policy_preflight_step);
+
+    const release_binaries_step = b.step("release-binaries", "Build the selected target's ReleaseSafe ZEVM CLI under zig-out/dist/<target>/bin");
+    const npm_platform_step = b.step("npm-platform-artifacts", "Build the selected target's ReleaseSafe Node-API addon under zig-out/npm/prebuilds");
+    const rust_target = rustTargetTriple(target) orelse {
+        const failure = b.addFail(if (target.result.cpu.arch == .wasm64)
+            "ZEVM does not support wasm64"
+        else
+            b.fmt("ZEVM has no Voltaire Rust crypto target for {s}", .{target.result.zigTriple(b.allocator) catch unreachable}));
+        b.getInstallStep().dependOn(&failure.step);
+        release_binaries_step.dependOn(&failure.step);
+        npm_platform_step.dependOn(&failure.step);
+        return;
+    };
+
+    const voltaire = voltaireDependency(b, target, optimize);
+    const rust_crypto = configureRustCrypto(b, target, rust_target, voltaire, skip_rust_build);
+    const modules = createModuleSet(b, target, optimize, "zevm", voltaire, rust_crypto);
+    const mod = modules.zevm_mod;
+
+    const exe = addZevmCli(b, target, optimize, modules);
+    b.installArtifact(exe);
 
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
@@ -123,29 +154,10 @@ pub fn build(b: *std.Build) void {
         .root_module = mod,
         .filters = if (test_filter) |filter| &.{filter} else &.{},
     });
-    mod_tests.step.dependOn(&modules.voltaire_rust_crypto.step);
-    linkRustSupport(mod_tests, target);
+    linkRustSupport(mod_tests, target, rust_crypto);
     const run_mod_tests = b.addRunArtifact(mod_tests);
     run_mod_tests.step.dependOn(launch_policy_preflight_step);
 
-    const qualification_check_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/qualification_check.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    const run_qualification_check_tests = b.addRunArtifact(qualification_check_tests);
-    run_qualification_check_tests.step.dependOn(launch_policy_preflight_step);
-    const dependency_preflight_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/dependency_preflight.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    const run_dependency_preflight_tests = b.addRunArtifact(dependency_preflight_tests);
-    run_dependency_preflight_tests.step.dependOn(launch_policy_preflight_step);
     const abi_tests_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tools/abi_tests.zig"),
@@ -156,16 +168,9 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    abi_tests_tests.step.dependOn(&modules.voltaire_rust_crypto.step);
-    linkRustSupport(abi_tests_tests, target);
+    linkRustSupport(abi_tests_tests, target, rust_crypto);
     const run_abi_tests_tests = b.addRunArtifact(abi_tests_tests);
     run_abi_tests_tests.step.dependOn(launch_policy_preflight_step);
-    const run_test_graph_check = b.addRunArtifact(test_graph_check_exe);
-    run_test_graph_check.step.dependOn(launch_policy_preflight_step);
-
-    const fuzz_filter = b.option([]const u8, "fuzz-filter", "Filter tests in the fuzz and fuzz-c-abi steps");
-    const fuzz_filters: []const []const u8 = if (fuzz_filter) |filter| &.{filter} else &.{};
-    const skip_rust_build = b.option(bool, "skip-rust-build", "Skip invoking cargo build for voltaire Rust crypto (caller pre-built it)") orelse false;
 
     const fuzz_mod = b.createModule(.{
         .root_source_file = b.path("src/fuzz_tests.zig"),
@@ -190,10 +195,7 @@ pub fn build(b: *std.Build) void {
         .filters = fuzz_filters,
         .use_llvm = true,
     });
-    if (!skip_rust_build) {
-        fuzz_tests.step.dependOn(&modules.voltaire_rust_crypto.step);
-    }
-    linkRustSupport(fuzz_tests, target);
+    linkRustSupport(fuzz_tests, target, rust_crypto);
     const run_fuzz_tests = b.addRunArtifact(fuzz_tests);
     run_fuzz_tests.step.dependOn(launch_policy_preflight_step);
 
@@ -214,10 +216,7 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
     });
     c_abi_fuzz_tests.linkLibC();
-    if (!skip_rust_build) {
-        c_abi_fuzz_tests.step.dependOn(&modules.voltaire_rust_crypto.step);
-    }
-    linkRustSupport(c_abi_fuzz_tests, target);
+    linkRustSupport(c_abi_fuzz_tests, target, rust_crypto);
     const run_c_abi_fuzz_tests = b.addRunArtifact(c_abi_fuzz_tests);
     run_c_abi_fuzz_tests.step.dependOn(launch_policy_preflight_step);
 
@@ -244,8 +243,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    lean_diff_fuzz.step.dependOn(&modules.voltaire_rust_crypto.step);
-    linkRustSupport(lean_diff_fuzz, target);
+    linkRustSupport(lean_diff_fuzz, target, rust_crypto);
     const run_lean_diff_fuzz = b.addRunArtifact(lean_diff_fuzz);
     run_lean_diff_fuzz.step.dependOn(launch_policy_preflight_step);
     if (b.args) |args| {
@@ -301,14 +299,12 @@ pub fn build(b: *std.Build) void {
         },
     });
     const rlp_tests_unit = b.addTest(.{ .root_module = rlp_tests_mod });
-    rlp_tests_unit.step.dependOn(&modules.voltaire_rust_crypto.step);
-    linkRustSupport(rlp_tests_unit, target);
+    linkRustSupport(rlp_tests_unit, target, rust_crypto);
     const run_rlp_tests_unit = b.addRunArtifact(rlp_tests_unit);
     run_rlp_tests_unit.step.dependOn(launch_policy_preflight_step);
 
     const rlp_tests_exe = b.addExecutable(.{ .name = "rlp-tests", .root_module = rlp_tests_mod });
-    rlp_tests_exe.step.dependOn(&modules.voltaire_rust_crypto.step);
-    linkRustSupport(rlp_tests_exe, target);
+    linkRustSupport(rlp_tests_exe, target, rust_crypto);
     const run_rlp_tests = b.addRunArtifact(rlp_tests_exe);
     run_rlp_tests.step.dependOn(launch_policy_preflight_step);
     run_rlp_tests.addDirectoryArg(b.path("."));
@@ -342,8 +338,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    external_verify_exe.step.dependOn(&modules.voltaire_rust_crypto.step);
-    linkRustSupport(external_verify_exe, target);
+    linkRustSupport(external_verify_exe, target, rust_crypto);
     const run_external_verify = b.addRunArtifact(external_verify_exe);
     run_external_verify.step.dependOn(launch_policy_preflight_step);
     run_external_verify.addDirectoryArg(b.path("."));
@@ -365,8 +360,7 @@ pub fn build(b: *std.Build) void {
         .name = "trie-tests",
         .root_module = trie_tests_module,
     });
-    trie_tests_exe.step.dependOn(&modules.voltaire_rust_crypto.step);
-    linkRustSupport(trie_tests_exe, target);
+    linkRustSupport(trie_tests_exe, target, rust_crypto);
     const run_trie_tests = b.addRunArtifact(trie_tests_exe);
     run_trie_tests.step.dependOn(launch_policy_preflight_step);
     run_trie_tests.addDirectoryArg(b.path("."));
@@ -374,8 +368,7 @@ pub fn build(b: *std.Build) void {
     trie_tests_step.dependOn(&run_trie_tests.step);
 
     const trie_tests_unit = b.addTest(.{ .root_module = trie_tests_module });
-    trie_tests_unit.step.dependOn(&modules.voltaire_rust_crypto.step);
-    linkRustSupport(trie_tests_unit, target);
+    linkRustSupport(trie_tests_unit, target, rust_crypto);
     const run_trie_tests_unit = b.addRunArtifact(trie_tests_unit);
     run_trie_tests_unit.step.dependOn(launch_policy_preflight_step);
     test_step.dependOn(&run_trie_tests_unit.step);
@@ -393,8 +386,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    transaction_tests.step.dependOn(&modules.voltaire_rust_crypto.step);
-    linkRustSupport(transaction_tests, target);
+    linkRustSupport(transaction_tests, target, rust_crypto);
     const run_transaction_tests = b.addRunArtifact(transaction_tests);
     run_transaction_tests.step.dependOn(launch_policy_preflight_step);
     if (b.args) |args| run_transaction_tests.addArgs(args);
@@ -416,8 +408,7 @@ pub fn build(b: *std.Build) void {
     b.step("verify-mid-forks", "Verify Berlin and Shanghai external state tests").dependOn(&run_mid_forks.step);
 
     const external_verify_tests = b.addTest(.{ .root_module = external_verify_exe.root_module });
-    external_verify_tests.step.dependOn(&modules.voltaire_rust_crypto.step);
-    linkRustSupport(external_verify_tests, target);
+    linkRustSupport(external_verify_tests, target, rust_crypto);
     const run_external_verify_tests = b.addRunArtifact(external_verify_tests);
     run_external_verify_tests.step.dependOn(launch_policy_preflight_step);
     test_step.dependOn(&run_external_verify_tests.step);
@@ -459,8 +450,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    abi_tests_exe.step.dependOn(&modules.voltaire_rust_crypto.step);
-    linkRustSupport(abi_tests_exe, target);
+    linkRustSupport(abi_tests_exe, target, rust_crypto);
     const run_abi_tests = b.addRunArtifact(abi_tests_exe);
     run_abi_tests.step.dependOn(launch_policy_preflight_step);
     run_abi_tests.addDirectoryArg(b.path("."));
@@ -471,9 +461,8 @@ pub fn build(b: *std.Build) void {
 
     // C ABI libraries for embedding in non-Zig hosts (Swift, C/C++, N-API).
     // Additive only: the default `zig build` step still produces the CLI.
-    const c_bindings_mod = createCBindingsModule(b, target, optimize, modules);
-    const static_lib = addCAbiLibrary(b, "zevm", .static, c_bindings_mod, target, modules);
-    const shared_lib = addCAbiLibrary(b, "zevm", .dynamic, c_bindings_mod, target, modules);
+    const static_lib = addCAbiLibrary(b, "zevm", .static, target, optimize, modules);
+    const shared_lib = addCAbiLibrary(b, "zevm", .dynamic, target, optimize, modules);
 
     const install_static_lib = b.addInstallArtifact(static_lib, .{});
     const install_shared_lib = b.addInstallArtifact(shared_lib, .{});
@@ -506,8 +495,7 @@ pub fn build(b: *std.Build) void {
     c_smoke_exe.addIncludePath(b.path("include"));
     c_smoke_exe.linkLibrary(static_lib);
     c_smoke_exe.linkLibC();
-    linkRustSupport(c_smoke_exe, target);
-    c_smoke_exe.step.dependOn(&modules.voltaire_rust_crypto.step);
+    linkRustSupport(c_smoke_exe, target, rust_crypto);
 
     const run_c_smoke = b.addRunArtifact(c_smoke_exe);
     run_c_smoke.step.dependOn(launch_policy_preflight_step);
@@ -535,27 +523,36 @@ pub fn build(b: *std.Build) void {
     npm_smoke_step.dependOn(&execution_smoke.step);
 
     const release_name = releaseTargetName(b, target);
-    const release_binaries_step = b.step("release-binaries", "Build the selected target's ReleaseSafe ZEVM CLI under zig-out/dist/<target>/bin");
-    const release_modules = createModuleSet(b, target, .ReleaseSafe, "zevm_release");
-    const release_exe = addZevmCli(b, target, .ReleaseSafe, release_modules);
-    const install_release_exe = b.addInstallArtifact(release_exe, .{
-        .dest_dir = .{ .override = .{ .custom = b.fmt("dist/{s}/bin", .{release_name}) } },
-    });
-    release_binaries_step.dependOn(&install_release_exe.step);
-
     const npm_platform_name = npmPlatformName(b, target);
-    const npm_platform_step = b.step("npm-platform-artifacts", "Build the selected target's ReleaseSafe Node-API addon under zig-out/npm/prebuilds");
-    const npm_platform_modules = createModuleSet(b, target, .ReleaseSafe, "zevm_npm_platform");
-    const npm_platform_c_mod = createCBindingsModule(b, target, .ReleaseSafe, npm_platform_modules);
-    const npm_platform_addon = addNapiAddon(
-        b,
-        target,
-        npm_platform_modules,
-        npm_platform_c_mod,
-        b.fmt("npm/prebuilds/{s}", .{npm_platform_name}),
-        "zevm.node",
-    );
-    npm_platform_step.dependOn(&npm_platform_addon.step);
+    if (release_name != null or npm_platform_name != null) {
+        const release_voltaire = voltaireDependency(b, target, .ReleaseSafe);
+        const release_modules = createModuleSet(b, target, .ReleaseSafe, "zevm_release", release_voltaire, rust_crypto);
+        if (release_name) |name| {
+            const release_exe = addZevmCli(b, target, .ReleaseSafe, release_modules);
+            const install_release_exe = b.addInstallArtifact(release_exe, .{
+                .dest_dir = .{ .override = .{ .custom = b.fmt("dist/{s}/bin", .{name}) } },
+            });
+            release_binaries_step.dependOn(&install_release_exe.step);
+        }
+        if (npm_platform_name) |name| {
+            const npm_platform_c_mod = createCBindingsModule(b, target, .ReleaseSafe, release_modules);
+            const npm_platform_addon = addNapiAddon(
+                b,
+                target,
+                release_modules,
+                npm_platform_c_mod,
+                b.fmt("npm/prebuilds/{s}", .{name}),
+                "zevm.node",
+            );
+            npm_platform_step.dependOn(&npm_platform_addon.step);
+        }
+    }
+    if (release_name == null) {
+        release_binaries_step.dependOn(&b.addFail("No release binary is published for the selected target").step);
+    }
+    if (npm_platform_name == null) {
+        npm_platform_step.dependOn(&b.addFail("No npm addon is published for the selected target").step);
+    }
 
     // Performance benchmark suites (each wired as its own `bench-<suite>` step
     // so Smithers PACKAGE.ts targets can build and run only affected suites).
@@ -607,12 +604,11 @@ pub fn build(b: *std.Build) void {
                 },
             }),
         });
-        bench_exe.step.dependOn(&modules.voltaire_rust_crypto.step);
         if (suite.link_c_abi) {
             bench_exe.linkLibrary(static_lib);
             bench_exe.linkLibC();
         }
-        linkRustSupport(bench_exe, target);
+        linkRustSupport(bench_exe, target, rust_crypto);
 
         const run_bench = b.addRunArtifact(bench_exe);
         run_bench.step.dependOn(launch_policy_preflight_step);
@@ -634,14 +630,9 @@ fn createModuleSet(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     zevm_module_name: []const u8,
+    voltaire: *std.Build.Dependency,
+    rust_crypto: RustCrypto,
 ) ModuleSet {
-    const voltaire = b.dependency("voltaire", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    const voltaire_rust_crypto = addVoltaireRustCryptoStep(b, target);
-    voltaire_rust_crypto.setName("voltaire-rust-crypto");
-    voltaire_rust_crypto.setCwd(voltaire.path("."));
     const primitives_mod = voltaire.module("primitives");
     const state_manager_mod = voltaire.module("state-manager");
     const blockchain_mod = voltaire.module("blockchain");
@@ -691,7 +682,7 @@ fn createModuleSet(
     zevm_mod.addIncludePath(blst_include_path);
 
     return .{
-        .voltaire_rust_crypto = voltaire_rust_crypto,
+        .rust_crypto = rust_crypto,
         .primitives_mod = primitives_mod,
         .state_manager_mod = state_manager_mod,
         .blockchain_mod = blockchain_mod,
@@ -705,98 +696,117 @@ fn createModuleSet(
     };
 }
 
-fn addVoltaireRustCryptoStep(
+fn voltaireDependency(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-) *std.Build.Step.Run {
-    const cargo_build = b.addSystemCommand(&[_][]const u8{ "cargo", "build", "--release" });
-    if (usesExplicitRustTarget(target)) {
-        cargo_build.addArg("--target");
-        cargo_build.addArg(rustTargetTriple(target));
-    }
-    if (needsPortableRustCrypto(target)) {
-        cargo_build.addArg("--no-default-features");
-        cargo_build.addArg("--features");
-        cargo_build.addArg("portable");
-    }
-    return cargo_build;
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Dependency {
+    return b.dependency("voltaire", .{ .target = target, .optimize = optimize });
 }
 
-fn rustTargetTriple(target: std.Build.ResolvedTarget) []const u8 {
-    if (target.result.cpu.arch == .wasm32 or target.result.cpu.arch == .wasm64) {
-        return "wasm32-unknown-unknown";
+fn configureRustCrypto(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    rust_target: []const u8,
+    voltaire: *std.Build.Dependency,
+    skip_rust_build: bool,
+) RustCrypto {
+    const explicit_target = usesExplicitRustTarget(target);
+    const filename = if (target.result.os.tag == .windows and target.result.abi == .msvc)
+        "crypto_wrappers.lib"
+    else
+        "libcrypto_wrappers.a";
+    const target_dir = b.graph.env_map.get("CARGO_TARGET_DIR") orelse "";
+    const cargo_output: std.Build.LazyPath = if (std.fs.path.isAbsolute(target_dir))
+        .{ .cwd_relative = target_dir }
+    else
+        voltaire.path(if (target_dir.len == 0) "target" else target_dir);
+    const archive_path = if (explicit_target)
+        b.fmt("{s}/release/{s}", .{ rust_target, filename })
+    else
+        b.fmt("release/{s}", .{filename});
+    const archive = cargo_output.path(b, archive_path);
+    if (skip_rust_build) return .{ .build_step = null, .archive = archive };
+
+    const cargo_build = b.addSystemCommand(&.{ "cargo", "build", "--release" });
+    cargo_build.setName("voltaire-rust-crypto");
+    cargo_build.setCwd(voltaire.path("."));
+    if (explicit_target) {
+        cargo_build.addArgs(&.{ "--target", rust_target, "--no-default-features", "--features", "portable" });
     }
+    return .{ .build_step = &cargo_build.step, .archive = archive };
+}
+
+fn rustTargetTriple(target: std.Build.ResolvedTarget) ?[]const u8 {
+    if (target.result.cpu.arch == .wasm64) return null;
+    if (target.result.cpu.arch == .wasm32) return "wasm32-unknown-unknown";
 
     return switch (target.result.os.tag) {
         .linux => switch (target.result.abi) {
             .gnu => switch (target.result.cpu.arch) {
                 .x86_64 => "x86_64-unknown-linux-gnu",
                 .aarch64 => "aarch64-unknown-linux-gnu",
-                else => unsupportedTarget("unsupported Linux GNU Rust architecture"),
+                else => return null,
             },
             .musl => switch (target.result.cpu.arch) {
                 .x86_64 => "x86_64-unknown-linux-musl",
                 .aarch64 => "aarch64-unknown-linux-musl",
-                else => unsupportedTarget("unsupported Linux musl Rust architecture"),
+                else => return null,
             },
-            else => unsupportedTarget("unsupported Linux Rust ABI"),
+            else => return null,
         },
         .freebsd => switch (target.result.cpu.arch) {
             .x86_64 => "x86_64-unknown-freebsd",
             .aarch64 => "aarch64-unknown-freebsd",
-            else => unsupportedTarget("unsupported FreeBSD Rust architecture"),
+            else => return null,
         },
         .macos => switch (target.result.cpu.arch) {
             .x86_64 => "x86_64-apple-darwin",
             .aarch64 => "aarch64-apple-darwin",
-            else => unsupportedTarget("unsupported macOS Rust architecture"),
+            else => return null,
         },
         .windows => switch (target.result.abi) {
             .gnu => switch (target.result.cpu.arch) {
                 .x86_64 => "x86_64-pc-windows-gnu",
                 .x86 => "i686-pc-windows-gnu",
                 .aarch64 => "aarch64-pc-windows-gnu",
-                else => unsupportedTarget("unsupported Windows GNU Rust architecture"),
+                else => return null,
             },
             .msvc => switch (target.result.cpu.arch) {
                 .x86_64 => "x86_64-pc-windows-msvc",
                 .x86 => "i686-pc-windows-msvc",
                 .aarch64 => "aarch64-pc-windows-msvc",
-                else => unsupportedTarget("unsupported Windows MSVC Rust architecture"),
+                else => return null,
             },
-            else => unsupportedTarget("unsupported Windows Rust architecture"),
+            else => return null,
         },
-        else => unsupportedTarget("unsupported Rust target OS"),
+        else => return null,
     };
 }
 
 fn usesExplicitRustTarget(target: std.Build.ResolvedTarget) bool {
     // Match Voltaire even when Zig and rustup choose different Windows host ABIs.
     if (target.result.os.tag == .windows) return true;
-    if (target.result.cpu.arch == .wasm32 or target.result.cpu.arch == .wasm64) return true;
+    if (target.result.cpu.arch == .wasm32) return true;
     if (target.result.os.tag != builtin.target.os.tag) return true;
     if (target.result.cpu.arch != builtin.target.cpu.arch) return true;
     if (target.result.abi != builtin.target.abi) return true;
     return false;
 }
 
-fn needsPortableRustCrypto(target: std.Build.ResolvedTarget) bool {
-    return usesExplicitRustTarget(target);
-}
-
-fn releaseTargetName(b: *std.Build, target: std.Build.ResolvedTarget) []const u8 {
+fn releaseTargetName(b: *std.Build, target: std.Build.ResolvedTarget) ?[]const u8 {
     const arch = switch (target.result.cpu.arch) {
         .aarch64 => "aarch64",
         .x86 => "x86",
         .x86_64 => "x86_64",
-        else => unsupportedTarget("unsupported release CPU architecture"),
+        else => return null,
     };
     const os = switch (target.result.os.tag) {
         .freebsd => "freebsd",
         .macos => "macos",
         .linux => "linux",
         .windows => "windows",
-        else => unsupportedTarget("unsupported release OS"),
+        else => return null,
     };
     if (target.result.os.tag == .linux or target.result.os.tag == .windows) {
         return b.fmt("{s}-{s}-{s}", .{ arch, os, @tagName(target.result.abi) });
@@ -804,29 +814,24 @@ fn releaseTargetName(b: *std.Build, target: std.Build.ResolvedTarget) []const u8
     return b.fmt("{s}-{s}", .{ arch, os });
 }
 
-fn npmPlatformName(b: *std.Build, target: std.Build.ResolvedTarget) []const u8 {
+fn npmPlatformName(b: *std.Build, target: std.Build.ResolvedTarget) ?[]const u8 {
     const arch = switch (target.result.cpu.arch) {
         .aarch64 => "arm64",
         .x86 => "ia32",
         .x86_64 => "x64",
-        else => unsupportedTarget("unsupported npm CPU architecture"),
+        else => return null,
     };
     const os = switch (target.result.os.tag) {
         .freebsd => "freebsd",
         .macos => "darwin",
         .linux => "linux",
         .windows => "win32",
-        else => unsupportedTarget("unsupported npm OS"),
+        else => return null,
     };
     if (target.result.os.tag == .linux or target.result.os.tag == .windows) {
         return b.fmt("{s}-{s}-{s}", .{ os, arch, @tagName(target.result.abi) });
     }
     return b.fmt("{s}-{s}", .{ os, arch });
-}
-
-fn unsupportedTarget(message: []const u8) noreturn {
-    std.debug.print("error: {s}\n", .{message});
-    std.process.exit(1);
 }
 
 fn addZevmCli(
@@ -846,8 +851,7 @@ fn addZevmCli(
             },
         }),
     });
-    exe.step.dependOn(&modules.voltaire_rust_crypto.step);
-    linkRustSupport(exe, target);
+    linkRustSupport(exe, target, modules.rust_crypto);
     return exe;
 }
 
@@ -880,14 +884,14 @@ fn addCAbiLibrary(
     b: *std.Build,
     name: []const u8,
     linkage: std.builtin.LinkMode,
-    c_bindings_mod: *std.Build.Module,
     target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
     modules: ModuleSet,
 ) *std.Build.Step.Compile {
     const lib = b.addLibrary(.{
         .name = name,
         .linkage = linkage,
-        .root_module = c_bindings_mod,
+        .root_module = createCBindingsModule(b, target, optimize, modules),
         // Zig 0.15.2's self-hosted x86_64 backend (the Debug default on
         // x86_64-linux) miscompiles this shared library: the first RPC
         // dereferences a null allocator vtable. The static archive keeps the
@@ -895,8 +899,7 @@ fn addCAbiLibrary(
         .use_llvm = if (linkage == .dynamic) true else null,
     });
     lib.linkLibC();
-    lib.step.dependOn(&modules.voltaire_rust_crypto.step);
-    linkRustSupport(lib, target);
+    linkRustSupport(lib, target, modules.rust_crypto);
     return lib;
 }
 
@@ -921,8 +924,7 @@ fn addNapiAddon(
     napi_lib.addIncludePath(b.path("npm/zevm/native"));
     napi_lib.linkLibC();
     napi_lib.linker_allow_shlib_undefined = true;
-    napi_lib.step.dependOn(&modules.voltaire_rust_crypto.step);
-    linkRustSupport(napi_lib, target);
+    linkRustSupport(napi_lib, target, modules.rust_crypto);
 
     return b.addInstallArtifact(napi_lib, .{
         .dest_dir = .{ .override = .{ .custom = install_dir } },
@@ -930,7 +932,9 @@ fn addNapiAddon(
     });
 }
 
-fn linkRustSupport(compile: *std.Build.Step.Compile, target: std.Build.ResolvedTarget) void {
+fn linkRustSupport(compile: *std.Build.Step.Compile, target: std.Build.ResolvedTarget, rust_crypto: RustCrypto) void {
+    if (rust_crypto.build_step) |step| compile.step.dependOn(step);
+    if (target.result.cpu.arch != .wasm32) compile.root_module.addObjectFile(rust_crypto.archive);
     if (target.result.os.tag == .linux) {
         compile.linkSystemLibrary("gcc_s");
     } else if (target.result.os.tag == .windows and target.result.abi == .gnu) {

@@ -161,7 +161,7 @@ const ModelAccount = struct {
     }
 
     fn exists(self: *const ModelAccount) bool {
-        return self.in_account_cache or self.in_contract_cache or self.in_storage_cache;
+        return !self.isEmpty();
     }
 
     fn isEmpty(self: *const ModelAccount) bool {
@@ -199,10 +199,24 @@ const ReferenceState = struct {
 
     fn revert(self: *ReferenceState) void {
         if (self.frames.pop()) |frame| self.current = frame;
+        self.dropConsumedSnapshots();
     }
 
     fn commit(self: *ReferenceState) void {
         _ = self.frames.pop();
+        self.dropConsumedSnapshots();
+    }
+
+    fn dropConsumedSnapshots(self: *ReferenceState) void {
+        const current_depth = self.depth();
+        var index: usize = 0;
+        while (index < self.snapshots.items.len) {
+            if (self.snapshots.items[index].depth >= current_depth) {
+                _ = self.snapshots.swapRemove(index);
+            } else {
+                index += 1;
+            }
+        }
     }
 
     fn snapshot(self: *ReferenceState, allocator: std.mem.Allocator) !u64 {
@@ -764,6 +778,10 @@ fn randomPathAccount(random: std.Random, index: u8) PathAccount {
         const low: u256 = slot_index;
         key.* = if (random.boolean()) low else (random.int(u256) & ~@as(u256, 0xff)) | low;
         value.* = nonZeroU256(random);
+    }
+    // Under EIP-161, completely empty accounts are omitted from the state trie.
+    if (account.balance == 0 and account.nonce == 0 and account.code_len == 0 and account.slot_count == 0) {
+        account.balance = 1;
     }
     return account;
 }

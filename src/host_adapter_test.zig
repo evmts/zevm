@@ -174,31 +174,96 @@ test "host adapter direct methods propagate errors" {
     try std.testing.expectEqual(@as(?host_adapter.HostAdapter.HostError, null), adapter.getHostError());
 }
 
-test "host adapter distinguishes account existence from emptiness" {
+test "host adapter accountExists follows EIP-161 non-emptiness, not cache presence" {
     var sm = try state_manager.StateManager.init(std.testing.allocator, null);
     defer sm.deinit();
 
     var adapter = host_adapter.HostAdapter{ .state = &sm };
+    const host = adapter.hostInterface();
     const absent = primitives.Address{ .bytes = [_]u8{0x99} ++ [_]u8{0} ** 19 };
-    const empty = primitives.Address{ .bytes = [_]u8{0xaa} ++ [_]u8{0} ** 19 };
-    const non_empty = primitives.Address{ .bytes = [_]u8{0xbb} ++ [_]u8{0} ** 19 };
-    const code_account = primitives.Address{ .bytes = [_]u8{0xcc} ++ [_]u8{0} ** 19 };
+    const touched_empty = primitives.Address{ .bytes = [_]u8{0xaa} ++ [_]u8{0} ** 19 };
+    const with_nonce = primitives.Address{ .bytes = [_]u8{0xbb} ++ [_]u8{0} ** 19 };
+    const with_code = primitives.Address{ .bytes = [_]u8{0xcc} ++ [_]u8{0} ** 19 };
+    const with_balance = primitives.Address{ .bytes = [_]u8{0xdd} ++ [_]u8{0} ** 19 };
+    const storage_only = primitives.Address{ .bytes = [_]u8{0xee} ++ [_]u8{0} ** 19 };
     const code = [_]u8{0x00};
 
     try std.testing.expect(!try adapter.accountExists(absent));
     try std.testing.expect(try adapter.accountIsEmpty(absent));
 
-    try sm.setBalance(empty, 0);
-    try std.testing.expect(try adapter.accountExists(empty));
-    try std.testing.expect(try adapter.accountIsEmpty(empty));
+    // A zero-value write creates a cache entry but not an account.
+    try sm.setBalance(touched_empty, 0);
+    try std.testing.expect(sm.journaled_state.account_cache.has(touched_empty));
+    try std.testing.expect(!try adapter.accountExists(touched_empty));
+    try std.testing.expect(!host.accountExists(touched_empty));
+    try std.testing.expect(try adapter.accountIsEmpty(touched_empty));
 
-    try sm.setNonce(non_empty, 1);
-    try std.testing.expect(try adapter.accountExists(non_empty));
-    try std.testing.expect(!try adapter.accountIsEmpty(non_empty));
+    try sm.setNonce(with_nonce, 1);
+    try std.testing.expect(try adapter.accountExists(with_nonce));
+    try std.testing.expect(!try adapter.accountIsEmpty(with_nonce));
 
-    try sm.setCode(code_account, &code);
-    try std.testing.expect(try adapter.accountExists(code_account));
-    try std.testing.expect(!try adapter.accountIsEmpty(code_account));
+    try sm.setBalance(with_balance, 1);
+    try std.testing.expect(try adapter.accountExists(with_balance));
+
+    try sm.setCode(with_code, &code);
+    try std.testing.expect(try adapter.accountExists(with_code));
+    try std.testing.expect(!try adapter.accountIsEmpty(with_code));
+
+    // Storage or cleared code alone does not make an account exist.
+    try sm.setStorage(storage_only, 1, 2);
+    try sm.setCode(storage_only, &.{});
+    try std.testing.expect(!try adapter.accountExists(storage_only));
+    try std.testing.expectEqual(@as(?host_adapter.HostAdapter.HostError, null), adapter.getHostError());
+}
+
+test "host adapter deleteAccount clears the account and is undone by revert" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    const host = adapter.hostInterface();
+    const doomed = primitives.Address{ .bytes = [_]u8{0x5d} ++ [_]u8{0} ** 19 };
+    const bystander = primitives.Address{ .bytes = [_]u8{0x5e} ++ [_]u8{0} ** 19 };
+    const code = [_]u8{ 0x60, 0x00, 0xff };
+
+    try sm.setBalance(doomed, 1234);
+    try sm.setNonce(doomed, 7);
+    try sm.setCode(doomed, &code);
+    try sm.setStorage(doomed, 1, 0xaaaa);
+    try sm.setStorage(doomed, 2, 0xbbbb);
+    try sm.setBalance(bystander, 55);
+    try sm.setStorage(bystander, 1, 0xcccc);
+
+    try sm.checkpoint();
+    host.deleteAccount(doomed);
+    try std.testing.expectEqual(@as(?host_adapter.HostAdapter.HostError, null), adapter.getHostError());
+
+    try std.testing.expect(!try adapter.accountExists(doomed));
+    try std.testing.expect(try adapter.accountIsEmpty(doomed));
+    try std.testing.expectEqual(@as(u256, 0), try sm.getBalance(doomed));
+    try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(doomed));
+    try std.testing.expectEqual(@as(usize, 0), (try sm.getCode(doomed)).len);
+    try std.testing.expectEqual(@as(u256, 0), try sm.getStorage(doomed, 1));
+    try std.testing.expectEqual(@as(u256, 0), try sm.getStorage(doomed, 2));
+    try std.testing.expectEqual(@as(u256, 55), try sm.getBalance(bystander));
+    try std.testing.expectEqual(@as(u256, 0xcccc), try sm.getStorage(bystander, 1));
+
+    // The enclosing frame reverts: the deletion must be undone in full.
+    sm.revert();
+    try std.testing.expect(try adapter.accountExists(doomed));
+    try std.testing.expectEqual(@as(u256, 1234), try sm.getBalance(doomed));
+    try std.testing.expectEqual(@as(u64, 7), try sm.getNonce(doomed));
+    try std.testing.expectEqualSlices(u8, &code, try sm.getCode(doomed));
+    try std.testing.expectEqual(@as(u256, 0xaaaa), try sm.getStorage(doomed, 1));
+    try std.testing.expectEqual(@as(u256, 0xbbbb), try sm.getStorage(doomed, 2));
+
+    // A committed deletion sticks.
+    try sm.checkpoint();
+    try adapter.deleteAccount(doomed);
+    sm.commit();
+    try std.testing.expect(!try adapter.accountExists(doomed));
+    try std.testing.expectEqual(@as(u256, 0), try sm.getStorage(doomed, 1));
+    try std.testing.expect(!sm.journaled_state.account_cache.has(doomed));
 }
 
 fn expectHostError(adapter: *const host_adapter.HostAdapter, expected: host_adapter.HostAdapter.HostError) !void {

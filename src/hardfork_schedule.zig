@@ -151,6 +151,9 @@ pub const ChainConfig = struct {
     osaka_blob_config: BlobConfig = MAINNET_OSAKA_BLOB_CONFIG,
     /// EIP-7892 BPO entries, consulted only once Osaka is active.
     blob_schedule: BlobSchedule = MAINNET_BLOB_SCHEDULE,
+    /// EIP-6110 deposit contract (`depositContractAddress` in a Geth or Reth
+    /// genesis `config`). Null means mainnet's contract.
+    deposit_contract_address: ?primitives.Address = null,
 
     pub fn hasOsaka(self: ChainConfig) bool {
         return self.osaka_timestamp < std.math.maxInt(u64);
@@ -164,6 +167,58 @@ pub const ChainConfig = struct {
         return self.cancun_timestamp < std.math.maxInt(u64) or self.hasPrague();
     }
 };
+
+pub const ForkOrderError = error{
+    UnorderedBlockForks,
+    UnorderedTimestampForks,
+    BlobScheduleBeforeOsaka,
+};
+
+/// Rejects a schedule whose forks activate out of order. Block-number forks
+/// and timestamp forks must each be non-decreasing in protocol order (equal
+/// values activate together), and every EIP-7892 BPO entry must activate at or
+/// after Osaka. An unordered schedule silently skips a fork: with
+/// `osaka_timestamp < prague_timestamp`, `resolveHardforkWithConfig` never
+/// returns Prague.
+pub fn validateForkOrder(config: ChainConfig) ForkOrderError!void {
+    const block_forks = [_]u64{
+        config.homestead_block,
+        config.dao_block,
+        config.tangerine_whistle_block,
+        config.spurious_dragon_block,
+        config.byzantium_block,
+        config.constantinople_block,
+        config.petersburg_block,
+        config.istanbul_block,
+        config.muir_glacier_block,
+        config.berlin_block,
+        config.london_block,
+        config.arrow_glacier_block,
+        config.gray_glacier_block,
+        config.merge_block,
+    };
+    if (!isNonDecreasing(&block_forks)) return error.UnorderedBlockForks;
+
+    const timestamp_forks = [_]u64{
+        config.shanghai_timestamp,
+        config.cancun_timestamp,
+        config.prague_timestamp,
+        config.osaka_timestamp,
+    };
+    if (!isNonDecreasing(&timestamp_forks)) return error.UnorderedTimestampForks;
+
+    for (config.blob_schedule.entries()) |entry| {
+        if (entry.timestamp < config.osaka_timestamp) return error.BlobScheduleBeforeOsaka;
+    }
+}
+
+fn isNonDecreasing(values: []const u64) bool {
+    if (values.len < 2) return true;
+    for (values[1..], values[0 .. values.len - 1]) |current, previous| {
+        if (current < previous) return false;
+    }
+    return true;
+}
 
 pub fn resolveHardfork(block_number: u64, timestamp: u64) primitives.Hardfork {
     return resolveHardforkWithConfig(MAINNET_CHAIN_CONFIG, block_number, timestamp);
@@ -253,4 +308,34 @@ test "mainnet hardfork schedule transitions Prague to Osaka at 1764798551" {
     try std.testing.expect(cancun_only.hasCancun());
     try std.testing.expect(!cancun_only.hasPrague());
     try std.testing.expect(!cancun_only.hasOsaka());
+}
+
+test "validateForkOrder accepts mainnet and all-genesis schedules" {
+    try validateForkOrder(MAINNET_CHAIN_CONFIG);
+
+    var dev = ChainConfig{};
+    inline for (.{
+        "homestead_block",    "dao_block",            "tangerine_whistle_block", "spurious_dragon_block",
+        "byzantium_block",    "constantinople_block", "petersburg_block",        "istanbul_block",
+        "muir_glacier_block", "berlin_block",         "london_block",            "arrow_glacier_block",
+        "gray_glacier_block", "merge_block",          "shanghai_timestamp",      "cancun_timestamp",
+        "prague_timestamp",   "osaka_timestamp",
+    }) |name| @field(dev, name) = 0;
+    try validateForkOrder(dev);
+}
+
+test "validateForkOrder rejects unordered forks and early BPO entries" {
+    var config = ChainConfig{};
+    config.berlin_block = config.london_block + 1;
+    try std.testing.expectError(error.UnorderedBlockForks, validateForkOrder(config));
+
+    config = ChainConfig{};
+    config.osaka_timestamp = config.prague_timestamp - 1;
+    try std.testing.expectError(error.UnorderedTimestampForks, validateForkOrder(config));
+    // The skipped fork is the consequence the check exists to prevent.
+    try std.testing.expect(resolveHardforkWithConfig(config, config.merge_block, config.prague_timestamp) == .OSAKA);
+
+    config = ChainConfig{};
+    config.osaka_timestamp = MAINNET_BPO1.timestamp + 1;
+    try std.testing.expectError(error.BlobScheduleBeforeOsaka, validateForkOrder(config));
 }

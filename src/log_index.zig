@@ -34,6 +34,9 @@ const BlockRange = struct {
     start: usize,
     end: usize,
     bloom: [4]u64 = .{ 0, 0, 0, 0 },
+    /// Block the range belongs to, so `removeBlocksAbove` can retire the
+    /// by-hash entry of a block that carries no logs.
+    block_number: u64 = 0,
 };
 
 pub const LogIndex = struct {
@@ -41,6 +44,9 @@ pub const LogIndex = struct {
     block_range: std.AutoHashMapUnmanaged(u64, BlockRange),
     block_hash_range: std.AutoHashMapUnmanaged([32]u8, BlockRange),
     block_numbers: std.ArrayListUnmanaged(u64),
+    /// Logs at or past this offset were retired by `removeBlocksAbove`. No
+    /// range references them; the next append or `deinit` frees them.
+    live_len: usize = 0,
 
     pub fn init() LogIndex {
         return .{
@@ -66,8 +72,9 @@ pub const LogIndex = struct {
         var cloned = LogIndex.init();
         errdefer cloned.deinit(allocator);
 
-        try cloned.logs.ensureTotalCapacity(allocator, self.logs.items.len);
-        for (self.logs.items) |entry| {
+        const live_logs = self.logs.items[0..@min(self.live_len, self.logs.items.len)];
+        try cloned.logs.ensureTotalCapacity(allocator, live_logs.len);
+        for (live_logs) |entry| {
             const cloned_log = try cloneEventLog(allocator, entry.log);
             var log_owned = false;
             errdefer if (!log_owned) {
@@ -80,6 +87,7 @@ pub const LogIndex = struct {
             });
             log_owned = true;
         }
+        cloned.live_len = cloned.logs.items.len;
 
         try cloned.block_range.ensureTotalCapacity(allocator, self.block_range.count());
         var range_it = self.block_range.iterator();
@@ -99,6 +107,7 @@ pub const LogIndex = struct {
     }
 
     /// Append all logs from a mined block's receipts. Must be called in ascending block order.
+    /// On error the index is unchanged.
     pub fn appendBlockLogs(
         self: *LogIndex,
         allocator: std.mem.Allocator,
@@ -106,18 +115,24 @@ pub const LogIndex = struct {
         block_hash: [32]u8,
         receipts: []const primitives.Receipt.Receipt,
     ) !void {
-        const start = self.logs.items.len;
-        var bloom = [_]u64{ 0, 0, 0, 0 };
-
-        // Reserve everything up front so the appends below cannot fail and a
-        // failed clone can roll the list back to `start`. Without this, a
-        // mid-block allocation error left orphan logs with no block range.
         var log_count: usize = 0;
-        for (receipts) |receipt| log_count += receipt.logs.len;
+        for (receipts) |receipt| {
+            log_count = std.math.add(usize, log_count, receipt.logs.len) catch return error.OutOfMemory;
+        }
+
+        // Free logs retired by `removeBlocksAbove`; no range references them.
+        self.truncateLogs(allocator, self.live_len);
+
+        // Reserve every container before the first mutation so a failed
+        // allocation cannot leave logs without a range or a range without its
+        // sorted block number.
         try self.logs.ensureUnusedCapacity(allocator, log_count);
         try self.block_range.ensureUnusedCapacity(allocator, 1);
         try self.block_hash_range.ensureUnusedCapacity(allocator, 1);
         try self.block_numbers.ensureUnusedCapacity(allocator, 1);
+
+        const start = self.logs.items.len;
+        var bloom = [_]u64{ 0, 0, 0, 0 };
         errdefer {
             for (self.logs.items[start..]) |entry| {
                 allocator.free(entry.log.topics);
@@ -140,8 +155,10 @@ pub const LogIndex = struct {
             }
         }
 
+        // Infallible from here: capacity is reserved.
         const end = self.logs.items.len;
-        const range = BlockRange{ .start = start, .end = end, .bloom = bloom };
+        self.live_len = end;
+        const range = BlockRange{ .start = start, .end = end, .bloom = bloom, .block_number = block_number };
         const existed = self.block_range.contains(block_number);
         // Capacity was reserved above, so nothing below can fail.
         self.block_range.putAssumeCapacity(block_number, range);
@@ -154,6 +171,51 @@ pub const LogIndex = struct {
                 self.block_numbers.insertAssumeCapacity(pos, block_number);
             }
         }
+    }
+
+    /// Remove every indexed block strictly above `max_block_number` (reorg to
+    /// a shorter or different canonical chain). Lookups by number and by hash
+    /// for the removed blocks return nothing afterwards.
+    ///
+    /// The index stores no allocator, so the removed blocks' log buffers are
+    /// retired here and freed by the next `appendBlockLogs` or by `deinit`.
+    pub fn removeBlocksAbove(self: *LogIndex, max_block_number: u64) void {
+        // `block_numbers` is sorted ascending: drop its tail.
+        const keep = if (max_block_number == std.math.maxInt(u64))
+            self.block_numbers.items.len
+        else
+            lowerBound(self.block_numbers.items, max_block_number + 1);
+        for (self.block_numbers.items[keep..]) |block_number| {
+            _ = self.block_range.remove(block_number);
+        }
+        self.block_numbers.shrinkRetainingCapacity(keep);
+
+        // `removeByPtr` only tombstones the slot, so the iterator stays valid.
+        var hash_it = self.block_hash_range.iterator();
+        while (hash_it.next()) |entry| {
+            if (entry.value_ptr.block_number > max_block_number) {
+                self.block_hash_range.removeByPtr(entry.key_ptr);
+            }
+        }
+
+        // Retire the log tail that no surviving range references. Logs below
+        // the highest surviving range stay in place so every range keeps its
+        // offsets.
+        var live_end: usize = 0;
+        var range_it = self.block_range.valueIterator();
+        while (range_it.next()) |range| live_end = @max(live_end, range.end);
+        var hash_range_it = self.block_hash_range.valueIterator();
+        while (hash_range_it.next()) |range| live_end = @max(live_end, range.end);
+        self.live_len = @min(self.live_len, live_end);
+    }
+
+    fn truncateLogs(self: *LogIndex, allocator: std.mem.Allocator, new_len: usize) void {
+        if (new_len >= self.logs.items.len) return;
+        for (self.logs.items[new_len..]) |entry| {
+            allocator.free(entry.log.topics);
+            allocator.free(entry.log.data);
+        }
+        self.logs.shrinkRetainingCapacity(new_len);
     }
 
     /// Execute a filter query. Returns owned slice of matching logs (caller frees).
@@ -255,8 +317,8 @@ inline fn bloomContains(bloom: [4]u64, bytes: []const u8) bool {
 }
 
 fn bloomMayMatchFilter(bloom: [4]u64, filter: LogFilter) bool {
-    if (filter.addresses) |addrs| {
-        if (addrs.len == 0) return false;
+    // An empty address list is no address constraint (matches Geth).
+    if (filter.addresses) |addrs| if (addrs.len != 0) {
         var any = false;
         for (addrs) |addr| {
             if (bloomContains(bloom, &addr.bytes)) {
@@ -265,7 +327,7 @@ fn bloomMayMatchFilter(bloom: [4]u64, filter: LogFilter) bool {
             }
         }
         if (!any) return false;
-    }
+    };
     if (filter.topics) |topics| {
         for (topics) |maybe_topic_set| {
             if (maybe_topic_set) |topic_set| {
@@ -285,8 +347,8 @@ fn bloomMayMatchFilter(bloom: [4]u64, filter: LogFilter) bool {
 }
 
 fn matchesFilter(entry: IndexedLog, filter: LogFilter) bool {
-    // Address filter
-    if (filter.addresses) |addrs| {
+    // Address filter. An empty list is no address constraint (matches Geth).
+    if (filter.addresses) |addrs| if (addrs.len != 0) {
         var found = false;
         for (addrs) |addr| {
             if (std.mem.eql(u8, &entry.log.address.bytes, &addr.bytes)) {
@@ -295,7 +357,7 @@ fn matchesFilter(entry: IndexedLog, filter: LogFilter) bool {
             }
         }
         if (!found) return false;
-    }
+    };
 
     // Topic filter
     if (filter.topics) |topics| {

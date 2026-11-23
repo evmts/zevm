@@ -13,6 +13,7 @@ pub const default_checkpoints = CheckpointDefaults{
     .mainnet = light_default_checkpoints.mainnet_prefixed,
     .sepolia = light_default_checkpoints.sepolia_prefixed,
     .holesky = light_default_checkpoints.holesky_prefixed,
+    .hoodi = light_default_checkpoints.hoodi_prefixed,
 };
 
 pub const ReleaseTuple = struct {
@@ -27,6 +28,7 @@ pub const CheckpointDefaults = struct {
     mainnet: []const u8,
     sepolia: []const u8,
     holesky: []const u8,
+    hoodi: []const u8,
 };
 
 pub const LightDefaultCheckpoints = struct {
@@ -112,12 +114,9 @@ pub fn generateReleaseMetadataFiles(
     const zevm_revision = try captureGitRevision(allocator, ".");
     defer allocator.free(zevm_revision);
 
-    const manifest = try std.fs.cwd().readFileAlloc(allocator, native_dependencies_filename, 1024 * 1024);
-    defer allocator.free(manifest);
-
-    const voltaire_revision = try captureDependencyRevisionFromManifest(allocator, manifest, "voltaire");
+    const voltaire_revision = try captureDependencyRevision(allocator, "voltaire");
     defer allocator.free(voltaire_revision);
-    const guillotine_mini_revision = try captureDependencyRevisionFromManifest(allocator, manifest, "guillotine-mini");
+    const guillotine_mini_revision = try captureDependencyRevision(allocator, "guillotine-mini");
     defer allocator.free(guillotine_mini_revision);
 
     var generated_release_identifier: ?[]u8 = null;
@@ -182,13 +181,63 @@ fn captureGitRevision(allocator: std.mem.Allocator, cwd: []const u8) ![]u8 {
     return try allocator.dupe(u8, revision);
 }
 
-/// Reads a pinned revision from native-dependencies.json, the manifest
-/// tools/checkout-native.sh uses to materialize the sibling checkouts.
-pub fn captureDependencyRevisionFromManifest(
+fn captureDependencyRevision(allocator: std.mem.Allocator, repo: []const u8) ![]u8 {
+    const cwd = std.fs.cwd();
+    const pins = cwd.readFileAlloc(allocator, "native-dependencies.json", 1024 * 1024) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => return err,
+    };
+    if (pins) |json| {
+        defer allocator.free(json);
+        if (try dependencyRevisionFromPins(allocator, json, repo)) |revision| return revision;
+    }
+
+    const manifest = try cwd.readFileAlloc(allocator, "build.zig.zon", 1024 * 1024);
+    defer allocator.free(manifest);
+    return captureDependencyRevisionFromManifest(allocator, manifest, repo);
+}
+
+fn dependencyRevisionFromPins(
+    allocator: std.mem.Allocator,
+    json: []const u8,
+    repo: []const u8,
+) !?[]u8 {
+    var parsed = try parseJsonValue(allocator, json);
+    defer parsed.deinit();
+    const pins = switch (parsed.value) {
+        .object => |object| object,
+        else => return error.MalformedJson,
+    };
+    const pin = switch (pins.get(repo) orelse return null) {
+        .object => |object| object,
+        else => return error.MalformedJson,
+    };
+    const revision = try getStringField(pin, "revision");
+    if (!isGitRevision(revision)) return error.MalformedGitRevision;
+    return try allocator.dupe(u8, revision);
+}
+
+fn captureDependencyRevisionFromManifest(
     allocator: std.mem.Allocator,
     manifest: []const u8,
     repo: []const u8,
 ) ![]u8 {
+    if (std.mem.indexOf(u8, manifest, "https://github.com/evmts/") != null) {
+        const prefix = try std.fmt.allocPrint(
+            allocator,
+            "https://github.com/evmts/{s}/archive/",
+            .{repo},
+        );
+        defer allocator.free(prefix);
+
+        const start = std.mem.indexOf(u8, manifest, prefix) orelse return error.MissingDependency;
+        const rest = manifest[start + prefix.len ..];
+        const end = std.mem.indexOf(u8, rest, ".tar.gz") orelse return error.MalformedDependencyUrl;
+        const revision = rest[0..end];
+        if (!isGitRevision(revision)) return error.MalformedGitRevision;
+        return try allocator.dupe(u8, revision);
+    }
+
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, manifest, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.MalformedJson,
@@ -279,6 +328,8 @@ pub fn writeLightDefaultCheckpointsJson(
     try writeJsonString(writer, checkpoints.defaults.sepolia);
     try writer.writeAll(",\n    \"holesky\": ");
     try writeJsonString(writer, checkpoints.defaults.holesky);
+    try writer.writeAll(",\n    \"hoodi\": ");
+    try writeJsonString(writer, checkpoints.defaults.hoodi);
     try writer.writeAll("\n  }\n}\n");
 }
 
@@ -382,13 +433,14 @@ pub fn validateLightDefaultCheckpointsJson(
         else => return error.ValueMismatch,
     };
 
-    const default_fields = [_][]const u8{ "mainnet", "sepolia", "holesky" };
+    const default_fields = [_][]const u8{ "mainnet", "sepolia", "holesky", "hoodi" };
     try requireExactFields(defaults_object, default_fields[0..]);
 
     const defaults = CheckpointDefaults{
         .mainnet = try getStringField(defaults_object, "mainnet"),
         .sepolia = try getStringField(defaults_object, "sepolia"),
         .holesky = try getStringField(defaults_object, "holesky"),
+        .hoodi = try getStringField(defaults_object, "hoodi"),
     };
     const actual = LightDefaultCheckpoints{
         .releaseIdentifier = release_identifier,
@@ -398,7 +450,8 @@ pub fn validateLightDefaultCheckpointsJson(
 
     if (!std.mem.eql(u8, defaults.mainnet, expected.defaults.mainnet) or
         !std.mem.eql(u8, defaults.sepolia, expected.defaults.sepolia) or
-        !std.mem.eql(u8, defaults.holesky, expected.defaults.holesky))
+        !std.mem.eql(u8, defaults.holesky, expected.defaults.holesky) or
+        !std.mem.eql(u8, defaults.hoodi, expected.defaults.hoodi))
     {
         return error.ValueMismatch;
     }
@@ -442,6 +495,7 @@ pub fn validateLightDefaultCheckpointsValue(
     if (!isCheckpointHash(checkpoints.defaults.mainnet)) return error.MalformedCheckpointHash;
     if (!isCheckpointHash(checkpoints.defaults.sepolia)) return error.MalformedCheckpointHash;
     if (!isCheckpointHash(checkpoints.defaults.holesky)) return error.MalformedCheckpointHash;
+    if (!isCheckpointHash(checkpoints.defaults.hoodi)) return error.MalformedCheckpointHash;
 }
 
 fn parseJsonValue(
@@ -592,6 +646,26 @@ test "light default checkpoints use shared runtime constants" {
     try std.testing.expectEqualStrings(light_default_checkpoints.mainnet_prefixed, default_checkpoints.mainnet);
     try std.testing.expectEqualStrings(light_default_checkpoints.sepolia_prefixed, default_checkpoints.sepolia);
     try std.testing.expectEqualStrings(light_default_checkpoints.holesky_prefixed, default_checkpoints.holesky);
+    try std.testing.expectEqualStrings(light_default_checkpoints.hoodi_prefixed, default_checkpoints.hoodi);
+}
+
+test "native dependency pins and legacy archive pins require full revisions" {
+    const allocator = std.testing.allocator;
+    const expected = "1111111111111111111111111111111111111111";
+    const pins = "{\"voltaire\":{\"repository\":\"evmts/voltaire\",\"revision\":\"" ++ expected ++ "\"}}";
+    const pinned_revision = (try dependencyRevisionFromPins(allocator, pins, "voltaire")).?;
+    defer allocator.free(pinned_revision);
+    try std.testing.expectEqualStrings(expected, pinned_revision);
+    try std.testing.expect(try dependencyRevisionFromPins(allocator, pins, "guillotine-mini") == null);
+    try std.testing.expectError(
+        error.MalformedGitRevision,
+        dependencyRevisionFromPins(allocator, "{\"voltaire\":{\"revision\":\"main\"}}", "voltaire"),
+    );
+
+    const manifest = ".url = \"https://github.com/evmts/voltaire/archive/" ++ expected ++ ".tar.gz\"";
+    const archive_revision = try captureDependencyRevisionFromManifest(allocator, manifest, "voltaire");
+    defer allocator.free(archive_revision);
+    try std.testing.expectEqualStrings(expected, archive_revision);
 }
 
 test "release tuple validator catches malformed json utf8 duplicate missing and extra fields" {
@@ -657,57 +731,45 @@ test "release tuple validator catches schema identifier and value mismatches" {
 }
 
 test "light default checkpoints validator catches malformed defaults" {
-    try std.testing.expectError(
-        error.MissingField,
-        validateLightDefaultCheckpointsJson(
-            std.testing.allocator,
-            "{" ++ "\"schemaVersion\":\"zevm-light-default-checkpoints.v1\"," ++ "\"releaseIdentifier\":\"commit-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"," ++ "\"defaults\":{\"mainnet\":\"0x9b41a80f58c52068a00e8535b8d6704769c7577a5fd506af5e0c018687991d55\"}" ++ "}",
-            test_checkpoints,
-        ),
-    );
-    try std.testing.expectError(
-        error.DuplicateField,
-        validateLightDefaultCheckpointsJson(
-            std.testing.allocator,
-            "{" ++ "\"schemaVersion\":\"zevm-light-default-checkpoints.v1\"," ++ "\"releaseIdentifier\":\"commit-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"," ++ "\"defaults\":{" ++ "\"mainnet\":\"0x9b41a80f58c52068a00e8535b8d6704769c7577a5fd506af5e0c018687991d55\"," ++ "\"mainnet\":\"0x9b41a80f58c52068a00e8535b8d6704769c7577a5fd506af5e0c018687991d55\"," ++ "\"sepolia\":\"0x4065c2509eaa15dbe60e1f80cff5205a532aa95aaa1d73c1c286f7f8535555d4\"," ++ "\"holesky\":\"0xe1f575f0b691404fe82cce68a09c2c98af197816de14ce53c0fe9f9bd02d2399\"" ++ "}}",
-            test_checkpoints,
-        ),
-    );
-    try std.testing.expectError(
-        error.MalformedCheckpointHash,
-        validateLightDefaultCheckpointsJson(
-            std.testing.allocator,
-            "{" ++ "\"schemaVersion\":\"zevm-light-default-checkpoints.v1\"," ++ "\"releaseIdentifier\":\"commit-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"," ++ "\"defaults\":{" ++ "\"mainnet\":\"0x1\"," ++ "\"sepolia\":\"0x4065c2509eaa15dbe60e1f80cff5205a532aa95aaa1d73c1c286f7f8535555d4\"," ++ "\"holesky\":\"0xe1f575f0b691404fe82cce68a09c2c98af197816de14ce53c0fe9f9bd02d2399\"" ++ "}}",
-            test_checkpoints,
-        ),
-    );
+    const allocator = std.testing.allocator;
+    const json = try generateLightDefaultCheckpointsJson(allocator, test_checkpoints);
+    defer allocator.free(json);
+
+    const cases = [_]struct {
+        find: []const u8,
+        replacement: []const u8,
+        expected_error: ReleaseMetadataError,
+    }{
+        .{ .find = "\"hoodi\"", .replacement = "\"other\"", .expected_error = error.MissingField },
+        .{ .find = "\"hoodi\":", .replacement = "\"hoodi\": null, \"hoodi\":", .expected_error = error.DuplicateField },
+        .{ .find = default_checkpoints.hoodi, .replacement = "0x1", .expected_error = error.MalformedCheckpointHash },
+    };
+    for (cases) |case| {
+        const invalid_json = try std.mem.replaceOwned(u8, allocator, json, case.find, case.replacement);
+        defer allocator.free(invalid_json);
+        try std.testing.expectError(case.expected_error, validateLightDefaultCheckpointsJson(allocator, invalid_json, test_checkpoints));
+    }
 }
 
 test "light default checkpoints validator catches schema identifier and value mismatches" {
-    try std.testing.expectError(
-        error.SchemaVersionMismatch,
-        validateLightDefaultCheckpointsJson(
-            std.testing.allocator,
-            "{" ++ "\"schemaVersion\":\"wrong\"," ++ "\"releaseIdentifier\":\"commit-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"," ++ "\"defaults\":{" ++ "\"mainnet\":\"0x9b41a80f58c52068a00e8535b8d6704769c7577a5fd506af5e0c018687991d55\"," ++ "\"sepolia\":\"0x4065c2509eaa15dbe60e1f80cff5205a532aa95aaa1d73c1c286f7f8535555d4\"," ++ "\"holesky\":\"0xe1f575f0b691404fe82cce68a09c2c98af197816de14ce53c0fe9f9bd02d2399\"" ++ "}}",
-            test_checkpoints,
-        ),
-    );
-    try std.testing.expectError(
-        error.ReleaseIdentifierMismatch,
-        validateLightDefaultCheckpointsJson(
-            std.testing.allocator,
-            "{" ++ "\"schemaVersion\":\"zevm-light-default-checkpoints.v1\"," ++ "\"releaseIdentifier\":\"v1.0.0\"," ++ "\"defaults\":{" ++ "\"mainnet\":\"0x9b41a80f58c52068a00e8535b8d6704769c7577a5fd506af5e0c018687991d55\"," ++ "\"sepolia\":\"0x4065c2509eaa15dbe60e1f80cff5205a532aa95aaa1d73c1c286f7f8535555d4\"," ++ "\"holesky\":\"0xe1f575f0b691404fe82cce68a09c2c98af197816de14ce53c0fe9f9bd02d2399\"" ++ "}}",
-            test_checkpoints,
-        ),
-    );
-    try std.testing.expectError(
-        error.ValueMismatch,
-        validateLightDefaultCheckpointsJson(
-            std.testing.allocator,
-            "{" ++ "\"schemaVersion\":\"zevm-light-default-checkpoints.v1\"," ++ "\"releaseIdentifier\":\"commit-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"," ++ "\"defaults\":{" ++ "\"mainnet\":\"0x4444444444444444444444444444444444444444444444444444444444444444\"," ++ "\"sepolia\":\"0x4065c2509eaa15dbe60e1f80cff5205a532aa95aaa1d73c1c286f7f8535555d4\"," ++ "\"holesky\":\"0xe1f575f0b691404fe82cce68a09c2c98af197816de14ce53c0fe9f9bd02d2399\"" ++ "}}",
-            test_checkpoints,
-        ),
-    );
+    const allocator = std.testing.allocator;
+    const json = try generateLightDefaultCheckpointsJson(allocator, test_checkpoints);
+    defer allocator.free(json);
+
+    const cases = [_]struct {
+        find: []const u8,
+        replacement: []const u8,
+        expected_error: ReleaseMetadataError,
+    }{
+        .{ .find = light_default_checkpoints_schema_version, .replacement = "wrong", .expected_error = error.SchemaVersionMismatch },
+        .{ .find = test_checkpoints.releaseIdentifier, .replacement = "v1.0.0", .expected_error = error.ReleaseIdentifierMismatch },
+        .{ .find = default_checkpoints.hoodi, .replacement = "0x" ++ "4" ** 64, .expected_error = error.ValueMismatch },
+    };
+    for (cases) |case| {
+        const invalid_json = try std.mem.replaceOwned(u8, allocator, json, case.find, case.replacement);
+        defer allocator.free(invalid_json);
+        try std.testing.expectError(case.expected_error, validateLightDefaultCheckpointsJson(allocator, invalid_json, test_checkpoints));
+    }
 }
 
 test "asset name validator catches missing and duplicate required assets" {

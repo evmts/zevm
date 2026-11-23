@@ -403,7 +403,7 @@ fn applyDevnetPremine(allocator: std.mem.Allocator, db: *database.Database) !pri
 
 /// Devnet genesis allocation: funded dev accounts, then the canonical system
 /// contracts that Cancun and Prague block processing calls. Without these
-/// contracts the first Prague or Osaka block fails with `MissingSystemContractCode`.
+/// contracts the first Prague or Osaka block fails with `SystemContractMissingCode`.
 pub fn fillDevnetPremine(allocation: *[DEVNET_PREMINE_LEN]PremineAccount) void {
     for (&DEV_ACCOUNTS, 0..) |*account, index| {
         allocation[index] = .{

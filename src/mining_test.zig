@@ -5,6 +5,12 @@ const blob_fee = @import("blob_fee.zig");
 const hardfork_schedule = @import("hardfork_schedule.zig");
 const primitives = @import("primitives");
 
+test {
+    // Run the inline tests of the modules this file exercises.
+    _ = @import("mining_coordinator.zig");
+    _ = @import("block_builder.zig");
+}
+
 test "MiningConfig default is auto" {
     const config = mining.MiningConfig.default();
     try std.testing.expectEqual(mining.MiningConfigType.auto, std.meta.activeTag(config));

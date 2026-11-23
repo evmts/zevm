@@ -6,6 +6,7 @@ const runtime = @import("../../node/runtime.zig");
 const genesis = @import("../../genesis.zig");
 const blob_fee = @import("../../blob_fee.zig");
 const hardfork_schedule = @import("../../hardfork_schedule.zig");
+const tx_submission = @import("tx_submission.zig");
 
 fn makeBlockSpec(tag: []const u8) jsonrpc.types.BlockSpec {
     return .{ .value = .{ .string = tag } };
@@ -532,4 +533,181 @@ test "eth_blobBaseFee and eth_feeHistory reflect EIP-7892 BPO2 max and EIP-7918 
     try expectQuantityStr(history.base_fee_per_blob_gas.?[0], expected_block1_hex);
     try expectQuantityStr(history.base_fee_per_blob_gas.?[1], expected_next_hex);
     try std.testing.expectApproxEqAbs(@as(f64, 18.0 / 21.0), history.blob_gas_used_ratio.?[0], 1e-12);
+}
+
+fn sendLegacyTransfer(rt: *runtime.NodeRuntime, nonce_hex: []const u8, gas_price_hex: []const u8) !void {
+    var obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try obj.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try obj.put("nonce", .{ .string = nonce_hex });
+    try obj.put("gasPrice", .{ .string = gas_price_hex });
+    try obj.put("value", .{ .string = "0x1" });
+    try obj.put("gas", .{ .string = "0x5208" });
+    _ = try tx_submission.handleSendTransaction(std.testing.allocator, rt, .{
+        .transaction = .{ .value = .{ .object = obj } },
+    });
+}
+
+test "eth_feeHistory reports gas-weighted effective priority fee percentiles" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+    try rt.setMiningConfig(.manual);
+
+    // Two 21000-gas transfers in one block. The first pays 5 gwei, the second
+    // 3 gwei, so the block order differs from the reward order.
+    try sendLegacyTransfer(&rt, "0x0", "0x12a05f200");
+    try sendLegacyTransfer(&rt, "0x1", "0xb2d05e00");
+    try rt.mineBlocks(1, 0);
+
+    const head = rt.head_block_number;
+    const block = (try rt.blockchain.getBlockByNumber(head)) orelse return error.MissingBlock;
+    try std.testing.expectEqual(@as(usize, 2), block.body.transactions.len);
+    const base_fee: u256 = block.header.base_fee_per_gas orelse 0;
+    const low_reward: u256 = 3_000_000_000 - base_fee;
+    const high_reward: u256 = 5_000_000_000 - base_fee;
+
+    const percentiles = [_]f64{ 0, 50, 51, 100 };
+    const result = try eth_read.handleEthFeeHistory(
+        arena.allocator(),
+        &rt,
+        .{
+            .block_count = .{ .value = .{ .string = "0x1" } },
+            .newest_block = makeBlockSpec("latest"),
+            .reward_percentiles = &percentiles,
+        },
+    );
+
+    const reward = result.reward orelse return error.ExpectedReward;
+    try std.testing.expectEqual(@as(usize, 1), reward.len);
+    try std.testing.expectEqual(@as(usize, 4), reward[0].len);
+    const low_hex = try std.fmt.allocPrint(arena.allocator(), "0x{x}", .{low_reward});
+    const high_hex = try std.fmt.allocPrint(arena.allocator(), "0x{x}", .{high_reward});
+    // Half the block's gas belongs to the cheaper transaction, so the 50th
+    // percentile is still the low reward and the 51st is the high reward.
+    try expectQuantityStr(reward[0][0], low_hex);
+    try expectQuantityStr(reward[0][1], low_hex);
+    try expectQuantityStr(reward[0][2], high_hex);
+    try expectQuantityStr(reward[0][3], high_hex);
+
+    // The JSON handler reports the same rewards.
+    const value = try eth_read.handleEthFeeHistoryValue(
+        arena.allocator(),
+        &rt,
+        .{
+            .block_count = .{ .value = .{ .string = "0x1" } },
+            .newest_block = makeBlockSpec("latest"),
+            .reward_percentiles = &percentiles,
+        },
+    );
+    const row = value.object.get("reward").?.array.items[0].array.items;
+    try std.testing.expectEqualStrings(low_hex, row[0].string);
+    try std.testing.expectEqualStrings(high_hex, row[3].string);
+}
+
+test "eth_feeHistory reports zero rewards for a block without transactions" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+    try rt.mineBlocks(1, 0);
+
+    const percentiles = [_]f64{ 10, 90 };
+    const result = try eth_read.handleEthFeeHistory(
+        arena.allocator(),
+        &rt,
+        .{
+            .block_count = .{ .value = .{ .string = "0x1" } },
+            .newest_block = makeBlockSpec("latest"),
+            .reward_percentiles = &percentiles,
+        },
+    );
+    const reward = result.reward orelse return error.ExpectedReward;
+    try expectQuantityStr(reward[0][0], "0x0");
+    try expectQuantityStr(reward[0][1], "0x0");
+}
+
+test "eth_getProof rejects more than MAX_PROOF_KEYS storage keys" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    const address = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+    inline for (.{ eth_read.MAX_PROOF_KEYS, eth_read.MAX_PROOF_KEYS + 1 }) |key_count| {
+        var keys = std.json.Array.init(arena.allocator());
+        for (0..key_count) |_| try keys.append(.{ .string = "0x0" });
+        var params = std.json.Array.init(arena.allocator());
+        try params.append(.{ .string = address });
+        try params.append(.{ .array = keys });
+        try params.append(.{ .string = "latest" });
+
+        const result = eth_read.handleEthGetProofValue(arena.allocator(), &rt, .{ .array = params });
+        if (key_count > eth_read.MAX_PROOF_KEYS) {
+            try std.testing.expectError(error.InvalidParams, result);
+        } else {
+            const proof = try result;
+            try std.testing.expectEqual(key_count, proof.object.get("storageProof").?.array.items.len);
+        }
+    }
+}
+
+// --- Round 2 regressions ---
+
+fn blockHashSelector(
+    allocator: std.mem.Allocator,
+    hash: [32]u8,
+    require_canonical: ?bool,
+) !jsonrpc.types.BlockSpec {
+    const hex = std.fmt.bytesToHex(hash, .lower);
+    var object = std.json.ObjectMap.init(allocator);
+    try object.put("blockHash", .{ .string = try std.fmt.allocPrint(allocator, "0x{s}", .{&hex}) });
+    if (require_canonical) |flag| try object.put("requireCanonical", .{ .bool = flag });
+    return .{ .value = .{ .object = object } };
+}
+
+test "state read by EIP-1898 blockHash does not serve canonical state for a non-canonical block" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+    try rt.mineBlocks(1, 0);
+
+    // A sibling of canonical block 1: stored, but never made canonical.
+    const canonical = (try rt.blockchain.getBlockByNumber(1)).?;
+    var side_header = canonical.header;
+    side_header.timestamp += 1;
+    const body = primitives.BlockBody.init();
+    const side = try primitives.Block.from(&side_header, &body, std.testing.allocator);
+    try rt.blockchain.putBlock(side);
+    try std.testing.expect(!std.mem.eql(u8, &side.hash, &canonical.hash));
+    try std.testing.expectEqualSlices(u8, &canonical.hash, &rt.blockchain.getCanonicalHash(1).?);
+
+    const address = jsonrpc.types.Address{ .bytes = runtime.DEFAULT_DEV_ACCOUNTS[0].bytes };
+
+    try std.testing.expectError(error.BlockUnavailable, eth_read.handleEthGetBalance(
+        arena.allocator(),
+        &rt,
+        .{ .address = address, .block = try blockHashSelector(arena.allocator(), side.hash, null) },
+    ));
+    try std.testing.expectError(error.BlockUnavailable, eth_read.handleEthGetTransactionCount(
+        arena.allocator(),
+        &rt,
+        .{ .address = address, .block = try blockHashSelector(arena.allocator(), side.hash, false) },
+    ));
+    try std.testing.expectError(error.InvalidParams, eth_read.handleEthGetBalance(
+        arena.allocator(),
+        &rt,
+        .{ .address = address, .block = try blockHashSelector(arena.allocator(), side.hash, true) },
+    ));
+
+    // The canonical block's own hash still resolves.
+    const balance = try eth_read.handleEthGetBalance(
+        arena.allocator(),
+        &rt,
+        .{ .address = address, .block = try blockHashSelector(arena.allocator(), canonical.hash, null) },
+    );
+    try expectQuantityStr(balance.value, "0x21e19e0c9bab2400000");
 }

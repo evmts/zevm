@@ -7,6 +7,7 @@ const blob_fee = @import("../../blob_fee.zig");
 const tx_encoding = @import("../../transaction_encoding.zig");
 const tx_processor = @import("../../tx_processor.zig");
 const mining = @import("../../mining.zig");
+const txpool = @import("../../txpool.zig");
 const log = @import("../../log.zig");
 const rpc_parse = @import("../parse.zig");
 const simulation = @import("simulation.zig");
@@ -28,6 +29,13 @@ pub const TxSubmissionError = error{
     /// EIP-7594 / Fusaka: blob transaction exceeds per-tx or block blob limit.
     TooManyBlobs,
     GasPriceBelowMinimum,
+    /// EIP-1559: the fee cap is below the pending block's base fee, so the
+    /// transaction cannot be included.
+    GasPriceBelowBaseFee,
+    /// EIP-3607: the recovered sender has deployed code.
+    SenderNotEOA,
+    /// EIP-2681: a transaction nonce must be below 2^64 - 1.
+    NonceTooHigh,
     InitcodeTooLarge,
     PoolInsertFailed,
     UnmanagedAccount,
@@ -38,6 +46,37 @@ pub const TxSubmissionError = error{
 };
 
 const MAX_INITCODE_SIZE = tx_processor.MAX_INITCODE_SIZE;
+// EIP-4844: version byte of a KZG versioned hash.
+const BLOB_COMMITMENT_VERSION_KZG: u8 = 0x01;
+// EIP-7702: a delegation designator is `0xef0100 || address`.
+const DELEGATION_DESIGNATOR_PREFIX = [_]u8{ 0xef, 0x01, 0x00 };
+const DELEGATION_DESIGNATOR_LEN: usize = DELEGATION_DESIGNATOR_PREFIX.len + 20;
+
+/// EIP-3607: a transaction sender has no code. From Prague, EIP-7702 also
+/// admits a sender whose code is a delegation designator.
+fn senderCodeAllowsTransactions(code: []const u8, hardfork: guillotine_mini.Hardfork) bool {
+    if (code.len == 0) return true;
+    return hardfork.isAtLeast(.PRAGUE) and
+        code.len == DELEGATION_DESIGNATOR_LEN and
+        std.mem.startsWith(u8, code, &DELEGATION_DESIGNATOR_PREFIX);
+}
+
+/// EIP-7623: from Prague, the declared gas limit must cover the calldata floor.
+fn validateCalldataFloor(data: []const u8, gas_limit: u64, hardfork: guillotine_mini.Hardfork) TxSubmissionError!void {
+    const floor = tx_processor.transactionGasFloorForFork(data, hardfork) catch return TxSubmissionError.IntrinsicGasExceedsLimit;
+    if (gas_limit < floor) return TxSubmissionError.IntrinsicGasExceedsLimit;
+}
+
+fn poolInsertError(err: txpool.AddError) TxSubmissionError {
+    return switch (err) {
+        error.OutOfMemory => TxSubmissionError.OutOfMemory,
+        error.ReplacementUnderpriced,
+        error.TxPoolFull,
+        error.SenderLimitExceeded,
+        error.NonceGapTooLarge,
+        => TxSubmissionError.PoolInsertFailed,
+    };
+}
 
 pub fn handleSendRawTransaction(
     allocator: std.mem.Allocator,
@@ -75,7 +114,7 @@ pub fn handleSendRawTransaction(
         error.ChainIdMismatch => error.ChainIdMismatch,
         error.UnsupportedTransactionType => error.UnsupportedTxType,
         error.InitcodeTooLarge => error.InitcodeTooLarge,
-        error.NonceTooLarge => error.NonceMismatch,
+        error.NonceTooLarge => error.NonceTooHigh,
         error.TipExceedsFeeCap => error.DecodeFailed,
         error.GasCostOverflow => error.InsufficientBalance,
         error.TransactionGasLimitExceeded => error.TransactionGasLimitExceeded,
@@ -89,10 +128,26 @@ pub fn handleSendRawTransaction(
         if (hardfork.isAtLeast(.OSAKA) and versioned_hashes.len > tx_encoding.MAX_BLOBS_PER_TRANSACTION) {
             return TxSubmissionError.TooManyBlobs;
         }
+        // EIP-4844: every versioned hash commits to a KZG commitment and
+        // carries version byte 0x01.
+        for (versioned_hashes) |versioned_hash| {
+            if (versioned_hash.bytes[0] != BLOB_COMMITMENT_VERSION_KZG) return TxSubmissionError.DecodeFailed;
+        }
         try validateBlobWrapperForFork(raw_bytes, versioned_hashes, hardfork);
     }
+    if (receipt_type == .eip7702) {
+        // EIP-7702: a set-code transaction names a destination and carries at
+        // least one authorization.
+        if (tx.to == null) return TxSubmissionError.DecodeFailed;
+        if (tx_encoding.envelopeAuthorizationList(decoded).len == 0) return TxSubmissionError.DecodeFailed;
+    }
 
+    // Signature recovery enforces low-s from Homestead onward.
     const sender = tx_encoding.recoverEnvelopeSenderForFork(arena_alloc, decoded, hardfork) catch return TxSubmissionError.SenderRecoveryFailed;
+
+    // EIP-3607: reject a sender with deployed code before it reaches the pool.
+    const sender_code = rt.getCode(sender) catch return TxSubmissionError.StateError;
+    if (!senderCodeAllowsTransactions(sender_code, hardfork)) return TxSubmissionError.SenderNotEOA;
 
     const current_nonce = rt.state.getNonce(sender) catch return TxSubmissionError.StateError;
     if (tx.nonce < current_nonce) return TxSubmissionError.NonceMismatch;
@@ -102,6 +157,17 @@ pub fn handleSendRawTransaction(
     // Balance covers value + max gas cost.
     const max_fee_per_gas = tx_encoding.envelopeMaxFeePerGas(decoded) orelse tx.gas_price;
     const max_priority_fee_per_gas = tx_encoding.envelopeMaxPriorityFeePerGas(decoded) orelse tx.gas_price;
+    // EIP-1559 base-fee floor. A fee cap below the pending base fee can never
+    // be included, so pooling it would let anyone fill the pool at no cost.
+    if (hardfork.isAtLeast(.LONDON) and rt.base_fee > 0 and max_fee_per_gas < rt.base_fee) {
+        return TxSubmissionError.GasPriceBelowBaseFee;
+    }
+    if (receipt_type == .eip4844) {
+        const max_fee_per_blob_gas = tx_encoding.envelopeMaxFeePerBlobGas(decoded) orelse 0;
+        if (rt.blob_base_fee > 0 and max_fee_per_blob_gas < rt.blob_base_fee) {
+            return TxSubmissionError.GasPriceBelowBaseFee;
+        }
+    }
     const max_gas_cost = std.math.mul(u256, max_fee_per_gas, @as(u256, tx.gas_limit)) catch return TxSubmissionError.InsufficientBalance;
     const max_blob_gas_cost = std.math.mul(
         u256,
@@ -137,8 +203,9 @@ pub fn handleSendRawTransaction(
         };
     }
 
-    rt.pool.setNonce(sender, current_nonce) catch return TxSubmissionError.PoolInsertFailed;
-    rt.pool.add(allocator, .{
+    // The pool records the sender's base nonce only when it accepts the
+    // transaction, so a rejected submission leaves no per-sender state.
+    rt.pool.addWithBaseNonce(.{
         .sender = sender,
         .nonce = tx.nonce,
         .gas_limit = tx.gas_limit,
@@ -156,17 +223,16 @@ pub fn handleSendRawTransaction(
         .v = tx.v,
         .r = tx.r,
         .s = tx.s,
-    }) catch |err| switch (err) {
-        error.ReplacementUnderpriced => return TxSubmissionError.PoolInsertFailed,
-        error.OutOfMemory => return TxSubmissionError.OutOfMemory,
+    }, current_nonce) catch |err| return poolInsertError(err);
+    rt.recordPendingTransactionFilterEvent(tx_hash) catch {
+        _ = rt.pool.removeByHash(tx_hash);
+        return TxSubmissionError.OutOfMemory;
     };
-    rt.recordPendingTransactionFilterEvent(tx_hash) catch return TxSubmissionError.OutOfMemory;
 
     logTxAccepted(rt, "sendRawTransaction", sender, tx.nonce, tx.gas_limit, tx_hash);
 
     switch (rt.mining_config) {
-        .auto => if (receipt_type != .eip4844 and tx.nonce == current_nonce)
-            try automine(rt, tx_hash),
+        .auto => if (tx.nonce == current_nonce) try automine(rt, tx_hash),
         .manual, .interval => {},
     }
 
@@ -213,11 +279,23 @@ pub fn handleSendTransaction(
     if (!rt.canSignForAccount(request.from)) return TxSubmissionError.UnmanagedAccount;
 
     const current_nonce = rt.state.getNonce(request.from) catch return TxSubmissionError.StateError;
-    const nonce = request.nonce orelse current_nonce;
+    const nonce = request.nonce orelse rt.pool.pendingNonce(request.from, current_nonce);
     if (nonce < current_nonce) return TxSubmissionError.NonceMismatch;
+
+    // EIP-2681: a transaction nonce must be below 2^64 - 1.
+    if (nonce == std.math.maxInt(u64)) return TxSubmissionError.NonceTooHigh;
+
+    // EIP-3607: reject a sender with deployed code.
+    const sender_code = rt.getCode(request.from) catch return TxSubmissionError.StateError;
+    const hardfork_eoa = rt.pendingHardfork();
+    if (!senderCodeAllowsTransactions(sender_code, hardfork_eoa)) return TxSubmissionError.SenderNotEOA;
 
     const gas_price = request.gas_price orelse rt.gas_price;
     if (gas_price < rt.gas_price) return TxSubmissionError.GasPriceBelowMinimum;
+    const hardfork_for_fee = rt.pendingHardfork();
+    if (hardfork_for_fee.isAtLeast(.LONDON) and rt.base_fee > 0 and gas_price < rt.base_fee) {
+        return TxSubmissionError.GasPriceBelowBaseFee;
+    }
     var tx = primitives.Transaction.LegacyTransaction{
         .nonce = nonce,
         .gas_price = gas_price,
@@ -238,6 +316,7 @@ pub fn handleSendTransaction(
     tx.gas_limit = request.gas orelse try estimateRequestGas(allocator, rt, params.transaction.value);
     try tx_processor.validateTransactionGasLimit(tx.gas_limit, hardfork);
     if (intrinsic > tx.gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
+    try validateCalldataFloor(tx.data, tx.gas_limit, hardfork);
     if (tx.gas_limit > rt.dev_runtime.config.block_gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
 
     const max_gas_cost = std.math.mul(u256, gas_price, @as(u256, tx.gas_limit)) catch return TxSubmissionError.InsufficientBalance;
@@ -253,13 +332,15 @@ pub fn handleSendTransaction(
     defer allocator.free(raw);
     const tx_hash = computeTxHash(raw);
 
-    rt.pool.setNonce(request.from, current_nonce) catch return TxSubmissionError.PoolInsertFailed;
-    rt.pool.add(allocator, .{
+    rt.pool.addWithBaseNonce(.{
         .sender = request.from,
         .nonce = tx.nonce,
         .gas_limit = tx.gas_limit,
         .max_fee_per_gas = tx.gas_price,
-        .max_priority_fee_per_gas = 0,
+        // A legacy transaction pays its whole gas price as fee cap and tip.
+        // A zero tip here would make every replacement fail the pool's
+        // strict tip-increase rule.
+        .max_priority_fee_per_gas = tx.gas_price,
         .hash = tx_hash,
         .to = tx.to,
         .value = tx.value,
@@ -268,11 +349,11 @@ pub fn handleSendTransaction(
         .v = tx.v,
         .r = tx.r,
         .s = tx.s,
-    }) catch |err| switch (err) {
-        error.ReplacementUnderpriced => return TxSubmissionError.PoolInsertFailed,
-        error.OutOfMemory => return TxSubmissionError.OutOfMemory,
+    }, current_nonce) catch |err| return poolInsertError(err);
+    rt.recordPendingTransactionFilterEvent(tx_hash) catch {
+        _ = rt.pool.removeByHash(tx_hash);
+        return TxSubmissionError.OutOfMemory;
     };
-    rt.recordPendingTransactionFilterEvent(tx_hash) catch return TxSubmissionError.OutOfMemory;
 
     logTxAccepted(rt, "sendTransaction", request.from, tx.nonce, tx.gas_limit, tx_hash);
 

@@ -10,6 +10,14 @@ extern fn zevm_light_init(
     beacon_rpc_url: ?[*:0]const u8,
     execution_rpc_url: ?[*:0]const u8,
 ) callconv(.c) ?*anyopaque;
+extern fn zevm_light_init_ex(
+    network: c_int,
+    beacon_rpc_url: ?[*:0]const u8,
+    execution_rpc_url: ?[*:0]const u8,
+    checkpoint: ?[*]const u8,
+    strict_checkpoint_age: c_int,
+) callconv(.c) ?*anyopaque;
+extern fn zevm_light_get_checkpoint(opaque_ptr: ?*anyopaque, out_checkpoint: ?[*]u8) callconv(.c) c_int;
 extern fn zevm_light_shutdown(opaque_ptr: ?*anyopaque) callconv(.c) void;
 extern fn zevm_light_status(opaque_ptr: ?*anyopaque) callconv(.c) c_int;
 extern fn zevm_light_last_error(opaque_ptr: ?*anyopaque) callconv(.c) ?[*:0]const u8;
@@ -75,7 +83,7 @@ fn fuzzCAbiLightAndMetadata(_: void, input: []const u8) anyerror!void {
     const code: c_int = if (input.len > 0) @as(c_int, @as(i8, @bitCast(input[0]))) else 0;
     try std.testing.expect(std.mem.span(zevm_error_message(code)).len > 0);
     const net_name = zevm_light_network_name(code);
-    if (code >= 0 and code <= 2) {
+    if (code >= 0 and code <= 3) {
         try std.testing.expect(net_name != null);
     } else {
         try std.testing.expect(net_name == null);
@@ -92,9 +100,22 @@ fn fuzzCAbiLightAndMetadata(_: void, input: []const u8) anyerror!void {
     const s2 = try toCString(allocator, input[mid..]);
     defer allocator.free(s2);
 
-    const net_id: c_int = if (input.len > 1) @mod(@as(c_int, input[1]), 4) else 0;
+    const net_id: c_int = if (input.len > 1) @mod(@as(c_int, input[1]), 5) else 0;
+    var checkpoint = [_]u8{0} ** 32;
+    const checkpoint_len = @min(input.len, checkpoint.len);
+    @memcpy(checkpoint[0..checkpoint_len], input[0..checkpoint_len]);
+    const use_checkpoint = code & 1 != 0;
+    const extended_handle = zevm_light_init_ex(net_id, s1.ptr, s2.ptr, if (use_checkpoint) &checkpoint else null, code);
+    defer zevm_light_shutdown(extended_handle);
+    var out_checkpoint = [_]u8{0xa5} ** 32;
+    try std.testing.expectEqual(@as(c_int, 1), zevm_light_get_checkpoint(null, &out_checkpoint));
+    try std.testing.expectEqual(@as(c_int, 1), zevm_light_get_checkpoint(extended_handle, null));
+
     const handle = zevm_light_init(net_id, s1.ptr, s2.ptr);
-    if (net_id >= 0 and net_id <= 2) {
+    if (net_id >= 0 and net_id <= 3 and s1.len > 0 and s2.len > 0) {
+        try std.testing.expect(extended_handle != null);
+        try std.testing.expectEqual(@as(c_int, 2), zevm_light_get_checkpoint(extended_handle, &out_checkpoint));
+        try std.testing.expect(std.mem.allEqual(u8, &out_checkpoint, 0xa5));
         try std.testing.expect(handle != null);
         defer zevm_light_shutdown(handle);
 
@@ -126,6 +147,7 @@ fn fuzzCAbiLightAndMetadata(_: void, input: []const u8) anyerror!void {
         try std.testing.expectEqual(@as(c_int, 1), zevm_light_get_code(handle, s1.ptr, 0, null, null));
     } else {
         try std.testing.expect(handle == null);
+        try std.testing.expect(extended_handle == null);
     }
 }
 

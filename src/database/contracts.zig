@@ -27,11 +27,16 @@ pub const Contracts = struct {
 
     /// Store contract bytecode keyed by its code hash.
     pub fn put(self: *Contracts, allocator: std.mem.Allocator, code_hash: primitives.Hash.Hash, bytecode: []const u8) !void {
+        // Allocate the replacement before touching the map. Freeing the old
+        // slice first would leave a dangling entry (and a double free in
+        // `deinit`) when the dupe fails.
+        const owned = try allocator.dupe(u8, bytecode);
+        errdefer allocator.free(owned);
         const result = try self.code.getOrPut(allocator, code_hash);
         if (result.found_existing) {
             allocator.free(result.value_ptr.*);
         }
-        result.value_ptr.* = try allocator.dupe(u8, bytecode);
+        result.value_ptr.* = owned;
     }
 
     /// Remove contract bytecode by its code hash.

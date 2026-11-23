@@ -223,7 +223,7 @@ fn fuzzBeacon(_: void, input: []const u8) !void {
     if (beacon.parseUpdatesResponse(a, input)) |updates| {
         defer a.free(updates);
         const engine = sync.ConsensusSyncEngine.init(sync.NetworkConfig.mainnet(""));
-        for (updates) |update| verifier.verifyUpdate(sync.genericFromLightClientUpdate(update), update.signature_slot, engine.store, engine.config.genesis_validators_root, engine.config.fork_config, a) catch {};
+        for (updates) |*update| verifier.verifyUpdate(sync.genericFromLightClientUpdate(update), update.signature_slot, engine.store, engine.config.genesis_validators_root, engine.config.fork_config, a) catch {};
     } else |_| {}
     _ = beacon.parseFinalityUpdateResponse(a, input) catch {};
     _ = beacon.parseOptimisticUpdateResponse(a, input) catch {};

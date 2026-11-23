@@ -21,6 +21,7 @@ const std = @import("std");
 pub const std_options: std.Options = .{ .log_level = .err };
 const primitives = @import("primitives");
 const consensus_sync = @import("consensus_sync.zig");
+const consensus_verifier = @import("consensus_verifier.zig");
 const light_proof = @import("light_proof.zig");
 
 // Must equal `.version` in build.zig.zon and npm/zevm/package.json; verify-release.cjs and npm-smoke enforce it.
@@ -43,6 +44,9 @@ const ZEVM_STATUS_SYNCED: c_int = 2;
 const ZEVM_NETWORK_MAINNET: c_int = 0;
 const ZEVM_NETWORK_SEPOLIA: c_int = 1;
 const ZEVM_NETWORK_HOLESKY: c_int = 2;
+const ZEVM_NETWORK_HOODI: c_int = 3;
+
+const CHECKPOINT_LEN: usize = 32;
 
 const MAX_ERROR_LEN: usize = 512;
 
@@ -51,6 +55,9 @@ const Handle = struct {
     engine: consensus_sync.ConsensusSyncEngine,
     beacon_url: []u8,
     execution_url: []u8,
+    /// Trusted beacon block root used for the initial bootstrap.
+    startup_checkpoint: [CHECKPOINT_LEN]u8,
+    startup_checkpoint_source: []const u8,
     initial_done: bool,
     error_buf: [MAX_ERROR_LEN]u8,
     error_len: usize,
@@ -86,6 +93,7 @@ fn networkConfig(network: c_int, beacon_url: []const u8) ?consensus_sync.Network
         ZEVM_NETWORK_MAINNET => consensus_sync.NetworkConfig.mainnet(beacon_url),
         ZEVM_NETWORK_SEPOLIA => consensus_sync.NetworkConfig.sepolia(beacon_url),
         ZEVM_NETWORK_HOLESKY => consensus_sync.NetworkConfig.holesky(beacon_url),
+        ZEVM_NETWORK_HOODI => consensus_sync.NetworkConfig.hoodi(beacon_url),
         else => null,
     };
 }
@@ -123,6 +131,7 @@ export fn zevm_light_network_name(network: c_int) callconv(.c) ?[*:0]const u8 {
         ZEVM_NETWORK_MAINNET => "mainnet",
         ZEVM_NETWORK_SEPOLIA => "sepolia",
         ZEVM_NETWORK_HOLESKY => "holesky",
+        ZEVM_NETWORK_HOODI => "hoodi",
         else => return null,
     };
     return name.ptr;
@@ -133,8 +142,24 @@ export fn zevm_light_init(
     beacon_rpc_url: ?[*:0]const u8,
     execution_rpc_url: ?[*:0]const u8,
 ) callconv(.c) ?*anyopaque {
+    return zevm_light_init_ex(network, beacon_rpc_url, execution_rpc_url, null, 0);
+}
+
+export fn zevm_light_init_ex(
+    network: c_int,
+    beacon_rpc_url: ?[*:0]const u8,
+    execution_rpc_url: ?[*:0]const u8,
+    checkpoint: ?[*]const u8,
+    strict_checkpoint_age: c_int,
+) callconv(.c) ?*anyopaque {
     const beacon_span = cstrSliceOrNull(beacon_rpc_url) orelse return null;
     const execution_span = cstrSliceOrNull(execution_rpc_url) orelse return null;
+    if (beacon_span.len == 0 or execution_span.len == 0) return null;
+    // An all-zero root is never a real beacon block; treat it as a caller bug
+    // instead of silently bootstrapping from (and failing against) it.
+    if (checkpoint) |checkpoint_ptr| {
+        if (std.mem.allEqual(u8, checkpoint_ptr[0..CHECKPOINT_LEN], 0)) return null;
+    }
 
     const allocator = std.heap.c_allocator;
 
@@ -151,18 +176,28 @@ export fn zevm_light_init(
         return null;
     };
 
-    const config = networkConfig(network, beacon_copy) orelse {
+    var config = networkConfig(network, beacon_copy) orelse {
         allocator.free(beacon_copy);
         allocator.free(execution_copy);
         allocator.destroy(handle);
         return null;
     };
+    config.strict_checkpoint_age = strict_checkpoint_age != 0;
+
+    var startup_checkpoint = config.default_checkpoint;
+    var startup_checkpoint_source: []const u8 = "c_bindings.default";
+    if (checkpoint) |checkpoint_ptr| {
+        @memcpy(startup_checkpoint[0..], checkpoint_ptr[0..CHECKPOINT_LEN]);
+        startup_checkpoint_source = "c_bindings.custom";
+    }
 
     handle.* = .{
         .allocator = allocator,
         .engine = consensus_sync.ConsensusSyncEngine.init(config),
         .beacon_url = beacon_copy,
         .execution_url = execution_copy,
+        .startup_checkpoint = startup_checkpoint,
+        .startup_checkpoint_source = startup_checkpoint_source,
         .initial_done = false,
         .error_buf = undefined,
         .error_len = 0,
@@ -184,20 +219,73 @@ export fn zevm_light_sync_step(opaque_ptr: ?*anyopaque) callconv(.c) c_int {
     clearError(handle);
 
     if (!handle.initial_done) {
-        const checkpoint = handle.engine.config.default_checkpoint;
-        const ctx = consensus_sync.CheckpointStartupContext{ .source = "c_bindings.default" };
-        handle.engine.sync(handle.allocator, checkpoint, ctx) catch |err| {
+        const ctx = consensus_sync.CheckpointStartupContext{ .source = handle.startup_checkpoint_source };
+        handle.engine.sync(handle.allocator, handle.startup_checkpoint, ctx) catch |err| {
             setError(handle, "initial sync failed: {s}", .{@errorName(err)});
-            return ZEVM_ERR_NETWORK;
+            return classifySyncError(err);
         };
         handle.initial_done = true;
         return ZEVM_OK;
     }
 
     handle.engine.advance(handle.allocator) catch |err| {
-        setError(handle, "advance failed: {s}", .{@errorName(err)});
-        return ZEVM_ERR_NETWORK;
+        setError(handle, "advance failed: {s} (consecutive failures {d}, last verified optimistic slot {d})", .{
+            @errorName(err), handle.engine.consecutive_advance_failures, handle.engine.optimisticSlot(),
+        });
+        return classifySyncError(err);
     };
+    return ZEVM_OK;
+}
+
+/// Maps a consensus sync failure to a ZEVM_* code. Proof and signature
+/// failures mean the beacon node served data that does not verify; a stale or
+/// unknown checkpoint is a caller argument problem; everything else that is
+/// not an allocation failure is a transport or upstream failure.
+fn classifySyncError(err: anyerror) c_int {
+    if (isConsensusVerifierError(err)) return ZEVM_ERR_PROOF;
+    return switch (err) {
+        error.CheckpointRootMismatch,
+        error.CheckpointSlotMismatch,
+        error.ConsensusNetworkMismatch,
+        error.ExtraDataTooLong,
+        error.InvalidArrayLength,
+        => ZEVM_ERR_PROOF,
+        error.CheckpointTooOld,
+        error.CheckpointTimeOverflow,
+        => ZEVM_ERR_INVALID_ARG,
+        error.OutOfMemory => ZEVM_ERR_INTERNAL,
+        else => ZEVM_ERR_NETWORK,
+    };
+}
+
+fn isConsensusVerifierError(err: anyerror) bool {
+    const verifier_errors = @typeInfo(consensus_verifier.ConsensusVerifierError).error_set.?;
+    inline for (verifier_errors) |verifier_error| {
+        if (std.mem.eql(u8, @errorName(err), verifier_error.name)) return true;
+    }
+    return false;
+}
+
+export fn zevm_light_get_checkpoint(
+    opaque_ptr: ?*anyopaque,
+    out_checkpoint: ?[*]u8,
+) callconv(.c) c_int {
+    const handle = handleFromOpaque(opaque_ptr) orelse return ZEVM_ERR_INVALID_ARG;
+    clearError(handle);
+
+    const dst = out_checkpoint orelse {
+        setError(handle, "out_checkpoint is null", .{});
+        return ZEVM_ERR_INVALID_ARG;
+    };
+    if (handle.engine.status != .synced) {
+        setError(handle, "light client is not synced", .{});
+        return ZEVM_ERR_NOT_SYNCED;
+    }
+    const checkpoint = handle.engine.lastCheckpoint() orelse {
+        setError(handle, "no verified checkpoint yet", .{});
+        return ZEVM_ERR_NOT_SYNCED;
+    };
+    @memcpy(dst[0..CHECKPOINT_LEN], checkpoint[0..]);
     return ZEVM_OK;
 }
 
@@ -281,7 +369,10 @@ fn writeStorageHex(value: u256, scratch: []u8) ![]u8 {
 }
 
 fn copyToCStringBuffer(out_hex: ?[*]u8, out_len: ?*usize, source: []const u8, handle: *Handle) c_int {
-    const cap_ptr = out_len orelse return ZEVM_ERR_INVALID_ARG;
+    const cap_ptr = out_len orelse {
+        setError(handle, "out_len is null", .{});
+        return ZEVM_ERR_INVALID_ARG;
+    };
     const cap = cap_ptr.*;
     const required = source.len + 1;
     cap_ptr.* = required;
@@ -289,7 +380,10 @@ fn copyToCStringBuffer(out_hex: ?[*]u8, out_len: ?*usize, source: []const u8, ha
         setError(handle, "output buffer too small (needed {})", .{required});
         return ZEVM_ERR_BUFFER_TOO_SMALL;
     }
-    const dst = out_hex orelse return ZEVM_ERR_INVALID_ARG;
+    const dst = out_hex orelse {
+        setError(handle, "out_hex is null", .{});
+        return ZEVM_ERR_INVALID_ARG;
+    };
     @memcpy(dst[0..source.len], source);
     dst[source.len] = 0;
     return ZEVM_OK;
@@ -301,7 +395,7 @@ fn classifyReadError(err: anyerror) c_int {
         error.BlockUnavailable => ZEVM_ERR_BLOCK_UNAVAILABLE,
         error.InvalidArg => ZEVM_ERR_INVALID_ARG,
         error.MalformedProof, error.ProofVerifyFailed => ZEVM_ERR_PROOF,
-        error.UpstreamRpcFailed, error.InvalidUpstreamRpcResponse => ZEVM_ERR_NETWORK,
+        error.UpstreamRpcFailed, error.UpstreamTimeout, error.InvalidUpstreamRpcResponse, error.ProofResponseTooLarge => ZEVM_ERR_NETWORK,
         else => ZEVM_ERR_INTERNAL,
     };
 }
@@ -316,6 +410,10 @@ export fn zevm_light_get_balance(
     const handle = handleFromOpaque(opaque_ptr) orelse return ZEVM_ERR_INVALID_ARG;
     clearError(handle);
 
+    if (out_len == null) {
+        setError(handle, "out_len is null", .{});
+        return ZEVM_ERR_INVALID_ARG;
+    }
     const address = parseAddress(handle, address_hex) catch return ZEVM_ERR_INVALID_ARG;
 
     const header = resolveHeader(handle, block_number) catch |err| {
@@ -386,7 +484,10 @@ export fn zevm_light_get_code(
     const handle = handleFromOpaque(opaque_ptr) orelse return ZEVM_ERR_INVALID_ARG;
     clearError(handle);
 
-    const cap_ptr = out_len orelse return ZEVM_ERR_INVALID_ARG;
+    const cap_ptr = out_len orelse {
+        setError(handle, "out_len is null", .{});
+        return ZEVM_ERR_INVALID_ARG;
+    };
     const address = parseAddress(handle, address_hex) catch return ZEVM_ERR_INVALID_ARG;
 
     const header = resolveHeader(handle, block_number) catch |err| {
@@ -413,7 +514,10 @@ export fn zevm_light_get_code(
         return ZEVM_ERR_BUFFER_TOO_SMALL;
     }
     if (code.len == 0) return ZEVM_OK;
-    const dst = out_buf orelse return ZEVM_ERR_INVALID_ARG;
+    const dst = out_buf orelse {
+        setError(handle, "out_buf is null", .{});
+        return ZEVM_ERR_INVALID_ARG;
+    };
     @memcpy(dst[0..code.len], code);
     return ZEVM_OK;
 }
@@ -429,6 +533,10 @@ export fn zevm_light_get_storage(
     const handle = handleFromOpaque(opaque_ptr) orelse return ZEVM_ERR_INVALID_ARG;
     clearError(handle);
 
+    if (out_len == null) {
+        setError(handle, "out_len is null", .{});
+        return ZEVM_ERR_INVALID_ARG;
+    }
     const address = parseAddress(handle, address_hex) catch return ZEVM_ERR_INVALID_ARG;
 
     const slot_span = cstrSliceOrNull(slot_hex) orelse {
@@ -474,6 +582,104 @@ fn parseSlotHex(text: []const u8) !u256 {
     return std.fmt.parseInt(u256, slice, 16) catch return error.InvalidSlot;
 }
 
+test "classifySyncError separates proof, argument, transport, and internal failures" {
+    try std.testing.expectEqual(ZEVM_ERR_PROOF, classifySyncError(error.InvalidSignature));
+    try std.testing.expectEqual(ZEVM_ERR_PROOF, classifySyncError(error.InvalidFinalityProof));
+    try std.testing.expectEqual(ZEVM_ERR_PROOF, classifySyncError(error.CheckpointSlotMismatch));
+    try std.testing.expectEqual(ZEVM_ERR_INVALID_ARG, classifySyncError(error.CheckpointTooOld));
+    try std.testing.expectEqual(ZEVM_ERR_NETWORK, classifySyncError(error.ConnectionRefused));
+    try std.testing.expectEqual(ZEVM_ERR_NETWORK, classifySyncError(error.UnexpectedHttpStatus));
+    try std.testing.expectEqual(ZEVM_ERR_NETWORK, classifySyncError(error.UpstreamTimeout));
+    try std.testing.expectEqual(ZEVM_ERR_INTERNAL, classifyReadError(error.OutOfMemory));
+    try std.testing.expectEqual(ZEVM_ERR_NETWORK, classifyReadError(error.UpstreamTimeout));
+    try std.testing.expectEqual(ZEVM_ERR_INTERNAL, classifySyncError(error.OutOfMemory));
+}
+
+test "failed advances report staleness and preserve synced status and checkpoint access" {
+    const ptr = zevm_light_init(ZEVM_NETWORK_MAINNET, "invalid://beacon", "invalid://execution") orelse return error.TestUnexpectedResult;
+    defer zevm_light_shutdown(ptr);
+    const handle = handleFromOpaque(ptr).?;
+    handle.initial_done = true;
+    handle.engine.has_verified_store = true;
+    handle.engine.status = .synced;
+    handle.engine.last_checkpoint = [_]u8{0xa5} ** CHECKPOINT_LEN;
+    handle.engine.store.optimistic_header.beacon.slot = 123;
+
+    for (0..2) |_| try std.testing.expectEqual(ZEVM_ERR_NETWORK, zevm_light_sync_step(ptr));
+    try std.testing.expectEqual(ZEVM_STATUS_SYNCED, zevm_light_status(ptr));
+    const detail = std.mem.span(zevm_light_last_error(ptr).?);
+    try std.testing.expect(std.mem.indexOf(u8, detail, "consecutive failures 2, last verified optimistic slot 123") != null);
+    var checkpoint: [CHECKPOINT_LEN]u8 = undefined;
+    try std.testing.expectEqual(ZEVM_OK, zevm_light_get_checkpoint(ptr, &checkpoint));
+    try std.testing.expectEqual(handle.engine.last_checkpoint.?, checkpoint);
+}
+
+test "zevm_light_init rejects empty URLs and accepts hoodi" {
+    try std.testing.expect(zevm_light_init(ZEVM_NETWORK_MAINNET, "", "http://127.0.0.1:1") == null);
+    try std.testing.expect(zevm_light_init(ZEVM_NETWORK_MAINNET, "http://127.0.0.1:1", "") == null);
+    try std.testing.expect(zevm_light_init(99, "http://127.0.0.1:1", "http://127.0.0.1:1") == null);
+
+    const handle = zevm_light_init(ZEVM_NETWORK_HOODI, "http://127.0.0.1:1", "http://127.0.0.1:1") orelse
+        return error.TestUnexpectedResult;
+    defer zevm_light_shutdown(handle);
+    try std.testing.expectEqualStrings("hoodi", std.mem.span(zevm_light_network_name(ZEVM_NETWORK_HOODI).?));
+}
+
+test "zevm_light_init_ex stores the custom checkpoint and strict age flag" {
+    const custom = [_]u8{0x7c} ** CHECKPOINT_LEN;
+    const opaque_handle = zevm_light_init_ex(ZEVM_NETWORK_SEPOLIA, "http://127.0.0.1:1", "http://127.0.0.1:1", &custom, 1) orelse
+        return error.TestUnexpectedResult;
+    defer zevm_light_shutdown(opaque_handle);
+
+    const handle = handleFromOpaque(opaque_handle).?;
+    try std.testing.expectEqualSlices(u8, custom[0..], handle.startup_checkpoint[0..]);
+    try std.testing.expect(handle.engine.config.strict_checkpoint_age);
+
+    var out: [CHECKPOINT_LEN]u8 = undefined;
+    try std.testing.expectEqual(ZEVM_ERR_NOT_SYNCED, zevm_light_get_checkpoint(opaque_handle, &out));
+    try std.testing.expectEqual(ZEVM_ERR_INVALID_ARG, zevm_light_get_checkpoint(opaque_handle, null));
+}
+
+test "reads reject a null out_len before any network I/O" {
+    const opaque_handle = zevm_light_init(ZEVM_NETWORK_MAINNET, "http://127.0.0.1:1", "http://127.0.0.1:1") orelse
+        return error.TestUnexpectedResult;
+    defer zevm_light_shutdown(opaque_handle);
+    const address = "0x0000000000000000000000000000000000000001";
+
+    // The handle is not synced, so a missing out_len check would surface as
+    // ZEVM_ERR_NOT_SYNCED rather than ZEVM_ERR_INVALID_ARG.
+    try std.testing.expectEqual(ZEVM_ERR_INVALID_ARG, zevm_light_get_balance(opaque_handle, address, 0, null, null));
+    try std.testing.expectEqual(ZEVM_ERR_INVALID_ARG, zevm_light_get_storage(opaque_handle, address, "0x0", 0, null, null));
+    try std.testing.expectEqual(ZEVM_ERR_INVALID_ARG, zevm_light_get_code(opaque_handle, address, 0, null, null));
+    try std.testing.expectEqualStrings("out_len is null", std.mem.span(zevm_light_last_error(opaque_handle).?));
+}
+
+test "zevm_light_init_ex rejects an all-zero custom checkpoint" {
+    const zero = [_]u8{0} ** CHECKPOINT_LEN;
+    try std.testing.expect(zevm_light_init_ex(ZEVM_NETWORK_MAINNET, "http://127.0.0.1:1", "http://127.0.0.1:1", &zero, 0) == null);
+
+    var one_set = zero;
+    one_set[CHECKPOINT_LEN - 1] = 1;
+    const opaque_handle = zevm_light_init_ex(ZEVM_NETWORK_MAINNET, "http://127.0.0.1:1", "http://127.0.0.1:1", &one_set, 0) orelse
+        return error.TestUnexpectedResult;
+    zevm_light_shutdown(opaque_handle);
+}
+
+test "null output buffers set the last error" {
+    const opaque_handle = zevm_light_init(ZEVM_NETWORK_MAINNET, "http://127.0.0.1:1", "http://127.0.0.1:1") orelse
+        return error.TestUnexpectedResult;
+    defer zevm_light_shutdown(opaque_handle);
+    const handle = handleFromOpaque(opaque_handle).?;
+
+    var cap: usize = 16;
+    try std.testing.expectEqual(ZEVM_ERR_INVALID_ARG, copyToCStringBuffer(null, &cap, "0x1", handle));
+    try std.testing.expectEqualStrings("out_hex is null", std.mem.span(zevm_light_last_error(opaque_handle).?));
+
+    clearError(handle);
+    try std.testing.expectEqual(ZEVM_ERR_INVALID_ARG, copyToCStringBuffer(null, null, "0x1", handle));
+    try std.testing.expectEqualStrings("out_len is null", std.mem.span(zevm_light_last_error(opaque_handle).?));
+}
+
 test "parseSlotHex accepts 0x and bare hex" {
     try std.testing.expectEqual(@as(u256, 0x10), try parseSlotHex("0x10"));
     try std.testing.expectEqual(@as(u256, 0xff), try parseSlotHex("ff"));
@@ -491,6 +697,7 @@ export fn zevm_node_create(config_json: ?[*:0]const u8) ?*node_runtime.NodeRunti
     const Config = struct { chain_id: u64 = node_runtime.DEFAULT_CHAIN_ID };
     const parsed = std.json.parseFromSlice(Config, allocator, if (config_json) |json| std.mem.span(json) else "{}", .{}) catch return null;
     defer parsed.deinit();
+    if (parsed.value.chain_id == 0) return null;
     const node = allocator.create(node_runtime.NodeRuntime) catch return null;
     node.* = node_runtime.NodeRuntime.init(allocator, .{ .chain_id = parsed.value.chain_id }) catch {
         allocator.destroy(node);

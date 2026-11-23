@@ -633,10 +633,20 @@ pub fn signLegacyTransaction(
     const signature = try crypto.Crypto.unaudited_signHash(transactionHash(preimage), private_key);
 
     var signed = tx;
-    signed.v = chain_id * 2 + 35 + @as(u64, signature.v - 27);
+    signed.v = try eip155V(chain_id, signature.v - 27);
     std.mem.writeInt(u256, &signed.r, signature.r, .big);
     std.mem.writeInt(u256, &signed.s, signature.s, .big);
     return signed;
+}
+
+/// EIP-155 `v = chain_id * 2 + 35 + y_parity`. Returns `error.Overflow` when
+/// `v` does not fit a u64, which starts at chain id `(maxInt(u64) - 35) / 2`
+/// with `y_parity = 1`.
+pub fn eip155V(chain_id: u64, y_parity: u8) error{ Overflow, InvalidSignatureV }!u64 {
+    if (y_parity > 1) return error.InvalidSignatureV;
+    const doubled = try std.math.mul(u64, chain_id, 2);
+    const base = try std.math.add(u64, doubled, 35);
+    return std.math.add(u64, base, y_parity);
 }
 
 /// Decodes a canonical legacy transaction envelope. The returned `data` slice
@@ -817,49 +827,50 @@ pub fn recoverLegacySender(
     allocator: std.mem.Allocator,
     tx: primitives.Transaction.LegacyTransaction,
 ) !primitives.Address {
-    return recoverLegacySenderWithRule(allocator, tx, false);
+    return recoverLegacySenderForFork(allocator, tx, .SPURIOUS_DRAGON);
 }
 
-fn recoverLegacySenderWithRule(
+/// Fork-aware legacy sender recovery. See `recoverEnvelopeSenderForFork`.
+///
+/// EIP-155 replay protection (`v >= 35`) activates at Spurious Dragon. Before
+/// it only `v == 27` and `v == 28` are valid, so a protected signature is
+/// `error.InvalidSignatureV` on Frontier and Homestead.
+pub fn recoverLegacySenderForFork(
     allocator: std.mem.Allocator,
     tx: primitives.Transaction.LegacyTransaction,
-    allow_high_s: bool,
+    fork: primitives.Hardfork,
 ) !primitives.Address {
+    if (!legacyVIsValidForFork(tx.v, fork)) return error.InvalidSignatureV;
     const signing_hash = try legacySigningHash(allocator, tx);
-    const order = crypto.Crypto.SECP256K1_N;
-    var s = bytes32ToU256(tx.s);
-    var recovery_id = legacyRecoveryId(tx.v);
-    // Frontier permits high-s signatures. The recovery primitive requires
-    // low-s, so use the equivalent signature with the opposite parity.
-    if (allow_high_s and s > order / 2 and s < order) {
-        s = order - s;
-        recovery_id ^= 1;
-    }
-    return crypto.Crypto.unaudited_recoverAddress(signing_hash, .{
-        .r = bytes32ToU256(tx.r),
-        .s = s,
-        .v = recovery_id + 27,
-    });
+    return recoverSignerForFork(signing_hash, legacyRecoveryId(tx.v), tx.r, tx.s, fork);
 }
 
+/// Recovers the sender under Spurious Dragon and later rules: EIP-2 low-s
+/// enforcement and EIP-155 protected legacy signatures. Use
+/// `recoverEnvelopeSenderForFork` when executing Frontier or Homestead blocks.
 pub fn recoverEnvelopeSender(
     allocator: std.mem.Allocator,
     decoded: DecodedEnvelope,
 ) !primitives.Address {
-    return recoverEnvelopeSenderForFork(allocator, decoded, .HOMESTEAD);
+    return recoverEnvelopeSenderForFork(allocator, decoded, .SPURIOUS_DRAGON);
 }
 
+/// Fork-aware sender recovery. From Homestead, EIP-2 rejects signatures with
+/// `s > secp256k1n / 2`. Frontier accepted any `s` in `[1, secp256k1n - 1]`,
+/// so Frontier transactions with a high `s` must still recover. From Spurious
+/// Dragon, EIP-155 legacy signatures (`v >= 35`) are valid; before it they
+/// are `error.InvalidSignatureV`.
 pub fn recoverEnvelopeSenderForFork(
     allocator: std.mem.Allocator,
     decoded: DecodedEnvelope,
     fork: primitives.Hardfork,
 ) !primitives.Address {
     return switch (decoded) {
-        .legacy => |tx| recoverLegacySenderWithRule(allocator, tx, fork.isBefore(.HOMESTEAD)),
-        .eip2930 => |tx| recoverTypedSender(allocator, 0x01, tx.y_parity, tx.r, tx.s, tx),
-        .eip1559 => |tx| recoverTypedSender(allocator, 0x02, tx.y_parity, tx.r, tx.s, tx),
-        .eip4844 => |tx| recoverTypedSender(allocator, 0x03, tx.y_parity, tx.r, tx.s, tx),
-        .eip7702 => |tx| recoverTypedSender(allocator, 0x04, tx.y_parity, tx.r, tx.s, tx),
+        .legacy => |tx| recoverLegacySenderForFork(allocator, tx, fork),
+        .eip2930 => |tx| recoverTypedSender(allocator, 0x01, tx.y_parity, tx.r, tx.s, tx, fork),
+        .eip1559 => |tx| recoverTypedSender(allocator, 0x02, tx.y_parity, tx.r, tx.s, tx, fork),
+        .eip4844 => |tx| recoverTypedSender(allocator, 0x03, tx.y_parity, tx.r, tx.s, tx, fork),
+        .eip7702 => |tx| recoverTypedSender(allocator, 0x04, tx.y_parity, tx.r, tx.s, tx, fork),
     };
 }
 
@@ -870,14 +881,34 @@ fn recoverTypedSender(
     r: [32]u8,
     s: [32]u8,
     tx: anytype,
+    fork: primitives.Hardfork,
 ) !primitives.Address {
     const signing_hash = try typedSigningHash(allocator, tx_type, tx);
-    const sig = crypto.Crypto.Signature{
-        .r = bytes32ToU256(r),
-        .s = bytes32ToU256(s),
-        .v = y_parity + 27,
-    };
-    return crypto.Crypto.unaudited_recoverAddress(signing_hash, sig);
+    return recoverSignerForFork(signing_hash, y_parity, r, s, fork);
+}
+
+fn recoverSignerForFork(
+    signing_hash: [32]u8,
+    recovery_id: u8,
+    r: [32]u8,
+    s: [32]u8,
+    fork: primitives.Hardfork,
+) !primitives.Address {
+    if (recovery_id > 1) return error.InvalidRecoveryId;
+    if (fork.isAtLeast(.HOMESTEAD)) {
+        return crypto.Crypto.unaudited_recoverAddress(signing_hash, .{
+            .r = bytes32ToU256(r),
+            .s = bytes32ToU256(s),
+            .v = recovery_id + 27,
+        });
+    }
+
+    // Frontier: r and s in [1, n-1], no low-s rule.
+    const public_key = try crypto.secp256k1.recoverPubkeyAllowHighS(&signing_hash, &r, &s, recovery_id);
+    const digest = transactionHash(&public_key);
+    var address: primitives.Address = undefined;
+    @memcpy(&address.bytes, digest[12..32]);
+    return address;
 }
 
 fn typedSigningHash(
@@ -919,6 +950,12 @@ pub fn legacyRecoveryId(v: u64) u8 {
 
 fn legacyVIsValid(v: u64) bool {
     return v == 27 or v == 28 or v >= 35;
+}
+
+/// `legacyVIsValid` under `fork`: EIP-155 `v >= 35` needs Spurious Dragon.
+fn legacyVIsValidForFork(v: u64, fork: primitives.Hardfork) bool {
+    if (v >= 35) return fork.isAtLeast(.SPURIOUS_DRAGON);
+    return v == 27 or v == 28;
 }
 
 fn parseRlpItem(input: []const u8, index: *usize) TransactionEncodingError!RlpItem {
@@ -1090,7 +1127,10 @@ fn rlpItemToAuthorizationList(
         const fields = try decodeRlpPayloadFields(6, auth_payload);
         const y_parity = try rlpStringToU8(try rlpItemString(fields[3]));
         try authorizations.append(allocator, .{
-            .chain_id = try rlpStringToU64(try rlpItemString(fields[0])),
+            // EIP-7702 bounds the tuple's chain_id by 2^256, not 2^64. A
+            // value this chain cannot match skips the tuple during
+            // execution; it does not invalidate the transaction.
+            .chain_id = try rlpStringToU256(try rlpItemString(fields[0])),
             .address = try rlpStringToAddress(try rlpItemString(fields[1])),
             .nonce = try rlpStringToU64(try rlpItemString(fields[2])),
             .v = y_parity,
@@ -1460,4 +1500,158 @@ test "legacy envelope rejects noncanonical rlp and invalid signature v" {
     });
     defer std.testing.allocator.free(invalid_v);
     try std.testing.expectError(error.InvalidSignatureV, decodeLegacyEnvelope(invalid_v));
+}
+
+test "eip155V rejects chain ids whose v does not fit u64" {
+    try std.testing.expectEqual(@as(u64, 37), try eip155V(1, 0));
+    try std.testing.expectEqual(@as(u64, 38), try eip155V(1, 1));
+    // Largest chain id whose v fits for both parities: 2c + 36 <= maxInt(u64).
+    const max_chain_id: u64 = (std.math.maxInt(u64) - 36) / 2;
+    try std.testing.expectEqual(@as(u64, std.math.maxInt(u64) - 2), try eip155V(max_chain_id, 0));
+    try std.testing.expectEqual(@as(u64, std.math.maxInt(u64) - 1), try eip155V(max_chain_id, 1));
+    try std.testing.expectEqual(@as(u64, std.math.maxInt(u64)), try eip155V(max_chain_id + 1, 0));
+    try std.testing.expectError(error.Overflow, eip155V(max_chain_id + 1, 1));
+    try std.testing.expectError(error.Overflow, eip155V(max_chain_id + 2, 0));
+    try std.testing.expectError(error.Overflow, eip155V(std.math.maxInt(u64), 1));
+    try std.testing.expectError(error.InvalidSignatureV, eip155V(1, 2));
+
+    var private_key = [_]u8{0} ** 32;
+    private_key[31] = 1;
+    const tx = primitives.Transaction.LegacyTransaction{
+        .nonce = 0,
+        .gas_price = 1,
+        .gas_limit = 21_000,
+        .to = null,
+        .value = 0,
+        .data = &.{},
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+    try std.testing.expectError(error.Overflow, signLegacyTransaction(std.testing.allocator, tx, private_key, std.math.maxInt(u64)));
+    const signed = try signLegacyTransaction(std.testing.allocator, tx, private_key, 1);
+    try std.testing.expectEqual(@as(?u64, 1), legacyChainId(signed));
+}
+
+test "sender recovery enforces EIP-2 low-s from Homestead and allows high-s on Frontier" {
+    var private_key = [_]u8{0} ** 32;
+    private_key[31] = 0x2a;
+    const signer = (try crypto.Crypto.unaudited_getPublicKey(private_key)).toAddress();
+
+    var tx = primitives.Transaction.LegacyTransaction{
+        .nonce = 3,
+        .gas_price = 50,
+        .gas_limit = 21_000,
+        .to = primitives.Address.fromU256(0xbeef),
+        .value = 7,
+        .data = &.{},
+        .v = 27,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+    const signing_hash = try legacySigningHash(std.testing.allocator, tx);
+    const signature = try crypto.Crypto.unaudited_signHash(signing_hash, private_key);
+
+    // Low-s: accepted on every fork.
+    tx.v = signature.v;
+    std.mem.writeInt(u256, &tx.r, signature.r, .big);
+    std.mem.writeInt(u256, &tx.s, signature.s, .big);
+    try std.testing.expectEqualSlices(u8, &signer.bytes, &(try recoverLegacySender(std.testing.allocator, tx)).bytes);
+    try std.testing.expectEqualSlices(u8, &signer.bytes, &(try recoverEnvelopeSenderForFork(std.testing.allocator, .{ .legacy = tx }, .FRONTIER)).bytes);
+    try std.testing.expectEqualSlices(u8, &signer.bytes, &(try recoverEnvelopeSenderForFork(std.testing.allocator, .{ .legacy = tx }, .CANCUN)).bytes);
+
+    // High-s form of the same signature: (r, n - s, flipped parity).
+    tx.v = if (signature.v == 27) 28 else 27;
+    std.mem.writeInt(u256, &tx.s, crypto.Crypto.SECP256K1_N - signature.s, .big);
+    try std.testing.expectEqualSlices(u8, &signer.bytes, &(try recoverEnvelopeSenderForFork(std.testing.allocator, .{ .legacy = tx }, .FRONTIER)).bytes);
+    try std.testing.expectEqualSlices(u8, &signer.bytes, &(try recoverLegacySenderForFork(std.testing.allocator, tx, .FRONTIER)).bytes);
+    if (recoverEnvelopeSenderForFork(std.testing.allocator, .{ .legacy = tx }, .HOMESTEAD)) |_| return error.ExpectedHighSRejection else |_| {}
+    if (recoverEnvelopeSender(std.testing.allocator, .{ .legacy = tx })) |_| return error.ExpectedHighSRejection else |_| {}
+    if (recoverLegacySender(std.testing.allocator, tx)) |_| return error.ExpectedHighSRejection else |_| {}
+
+    // Frontier still rejects s outside [1, n-1].
+    tx.s = [_]u8{0} ** 32;
+    if (recoverLegacySenderForFork(std.testing.allocator, tx, .FRONTIER)) |_| return error.ExpectedInvalidSignature else |_| {}
+    std.mem.writeInt(u256, &tx.s, crypto.Crypto.SECP256K1_N, .big);
+    if (recoverLegacySenderForFork(std.testing.allocator, tx, .FRONTIER)) |_| return error.ExpectedInvalidSignature else |_| {}
+}
+
+test "EIP-155 legacy signatures recover from Spurious Dragon and are rejected before it" {
+    var private_key = [_]u8{0} ** 32;
+    private_key[31] = 0x2a;
+    const signer = (try crypto.Crypto.unaudited_getPublicKey(private_key)).toAddress();
+
+    const unsigned = primitives.Transaction.LegacyTransaction{
+        .nonce = 3,
+        .gas_price = 50,
+        .gas_limit = 21_000,
+        .to = primitives.Address.fromU256(0xbeef),
+        .value = 7,
+        .data = &.{},
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+    const protected = try signLegacyTransaction(std.testing.allocator, unsigned, private_key, 1);
+    try std.testing.expect(protected.v == 37 or protected.v == 38);
+
+    for ([_]primitives.Hardfork{ .FRONTIER, .HOMESTEAD, .DAO, .TANGERINE_WHISTLE }) |fork| {
+        try std.testing.expectError(error.InvalidSignatureV, recoverLegacySenderForFork(std.testing.allocator, protected, fork));
+        try std.testing.expectError(error.InvalidSignatureV, recoverEnvelopeSenderForFork(std.testing.allocator, .{ .legacy = protected }, fork));
+    }
+    for ([_]primitives.Hardfork{ .SPURIOUS_DRAGON, .BYZANTIUM, .CANCUN }) |fork| {
+        try std.testing.expectEqualSlices(u8, &signer.bytes, &(try recoverLegacySenderForFork(std.testing.allocator, protected, fork)).bytes);
+        try std.testing.expectEqualSlices(u8, &signer.bytes, &(try recoverEnvelopeSenderForFork(std.testing.allocator, .{ .legacy = protected }, fork)).bytes);
+    }
+    // The fork-less helpers apply Spurious Dragon and later rules.
+    try std.testing.expectEqualSlices(u8, &signer.bytes, &(try recoverLegacySender(std.testing.allocator, protected)).bytes);
+    try std.testing.expectEqualSlices(u8, &signer.bytes, &(try recoverEnvelopeSender(std.testing.allocator, .{ .legacy = protected })).bytes);
+
+    // A v that is neither 27/28 nor EIP-155 never recovers.
+    var bad_v = protected;
+    bad_v.v = 29;
+    try std.testing.expectError(error.InvalidSignatureV, recoverLegacySenderForFork(std.testing.allocator, bad_v, .CANCUN));
+}
+
+test "eip7702 authorization chain ids decode across the full u256 range" {
+    const allocator = std.testing.allocator;
+
+    const address_item = [_]u8{0x94} ++ [_]u8{0xaa} ** 20;
+    // nonce = 0, y_parity = 0, r = 1, s = 1.
+    const tuple_tail = [_]u8{ 0x80, 0x80, 0x01, 0x01 };
+
+    // chain_id = 2^64: nine big-endian bytes.
+    const wide_payload = [_]u8{ 0x89, 0x01 } ++ [_]u8{0} ** 8 ++ address_item ++ tuple_tail;
+    const wide = [_]u8{0xc0 + wide_payload.len} ++ wide_payload;
+    // chain_id = 2^256 - 1: thirty-two 0xff bytes.
+    const max_payload = [_]u8{0xa0} ++ [_]u8{0xff} ** 32 ++ address_item ++ tuple_tail;
+    const max = [_]u8{ 0xf8, max_payload.len } ++ max_payload;
+
+    const authorization_payload = wide ++ max;
+    const authorization_list = [_]u8{ 0xf8, authorization_payload.len } ++ authorization_payload;
+
+    // chain_id = 1, nonce = 0, tip = 1, fee cap = 2, gas = 21000, to, value,
+    // data, access list, authorizations, y_parity = 0, r = 1, s = 1.
+    const payload = [_]u8{ 0x01, 0x80, 0x01, 0x02, 0x82, 0x52, 0x08 } ++ address_item ++
+        [_]u8{ 0x80, 0x80, 0xc0 } ++ authorization_list ++ [_]u8{ 0x80, 0x01, 0x01 };
+    const raw = [_]u8{ 0x04, 0xf8, payload.len } ++ payload;
+
+    const decoded = try decodeEnvelope(allocator, &raw);
+    defer decoded.deinit(allocator);
+
+    const authorizations = envelopeAuthorizationList(decoded);
+    try std.testing.expectEqual(@as(usize, 2), authorizations.len);
+    try std.testing.expectEqual(@as(u256, 1) << 64, @as(u256, authorizations[0].chain_id));
+    try std.testing.expectEqual(@as(u256, std.math.maxInt(u256)), @as(u256, authorizations[1].chain_id));
+    // The transaction's own chain id keeps its u64 bound.
+    try std.testing.expectEqual(@as(u64, 1), decoded.eip7702.chain_id);
+
+    // A 33-byte chain id is not a u256 and still fails to decode.
+    const oversized_payload = [_]u8{ 0xa1, 0x01 } ++ [_]u8{0} ** 32 ++ address_item ++ tuple_tail;
+    const oversized = [_]u8{ 0xf8, oversized_payload.len } ++ oversized_payload;
+    const oversized_list = [_]u8{ 0xf8, oversized.len } ++ oversized;
+    const oversized_tx_payload = [_]u8{ 0x01, 0x80, 0x01, 0x02, 0x82, 0x52, 0x08 } ++ address_item ++
+        [_]u8{ 0x80, 0x80, 0xc0 } ++ oversized_list ++ [_]u8{ 0x80, 0x01, 0x01 };
+    const oversized_raw = [_]u8{ 0x04, 0xf8, oversized_tx_payload.len } ++ oversized_tx_payload;
+    try std.testing.expectError(error.InvalidLength, decodeEnvelope(allocator, &oversized_raw));
 }

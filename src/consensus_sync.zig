@@ -90,6 +90,12 @@ pub const ConsensusSyncEngine = struct {
     last_checkpoint: ?[32]u8,
     config: NetworkConfig,
     status: SyncStatus,
+    /// True once `sync()` has produced a fully verified store. A failed
+    /// `advance()` keeps serving this store instead of latching `.err`.
+    has_verified_store: bool = false,
+    /// Number of `advance()` calls that failed since the last success.
+    consecutive_advance_failures: u32 = 0,
+    last_advance_slot: ?u64 = null,
 
     pub fn init(config: NetworkConfig) ConsensusSyncEngine {
         return .{
@@ -97,6 +103,8 @@ pub const ConsensusSyncEngine = struct {
             .last_checkpoint = null,
             .config = config,
             .status = .syncing,
+            .has_verified_store = false,
+            .consecutive_advance_failures = 0,
         };
     }
 
@@ -114,6 +122,9 @@ pub const ConsensusSyncEngine = struct {
 
         self.store = std.mem.zeroes(primitives.LightClientUpdate.LightClientStore);
         self.last_checkpoint = null;
+        self.has_verified_store = false;
+        self.consecutive_advance_failures = 0;
+        self.last_advance_slot = null;
 
         const checkpoint_hex = std.fmt.bytesToHex(checkpoint, .lower);
         log.info(.consensus_sync, "light checkpoint resolved checkpoint=0x{s}", .{checkpoint_hex[0..]});
@@ -123,28 +134,21 @@ pub const ConsensusSyncEngine = struct {
         const updates = try self.getUpdates(allocator);
         defer allocator.free(updates);
 
-        for (updates) |update| {
+        for (updates) |*update| {
             const generic_update = genericFromLightClientUpdate(update);
             try self.verifyUpdateWithTelemetry("initial_update", generic_update, allocator);
             self.applyUpdateWithTelemetry("initial_update", generic_update);
         }
 
         const api = beacon_api.BeaconApi{ .endpoint_url = self.config.consensus_rpc };
-        const finality_update = try self.getFinalityUpdateWithTelemetry(allocator, api);
+        try self.processLatestUpdates(allocator, api);
 
-        const generic_finality_update = genericFromFinalityUpdate(finality_update);
-        try self.verifyUpdateWithTelemetry("finality_update", generic_finality_update, allocator);
-        self.applyUpdateWithTelemetry("finality_update", generic_finality_update);
-
-        const optimistic_update = try self.getOptimisticUpdateWithTelemetry(allocator, api);
-        const generic_optimistic_update = genericFromOptimisticUpdate(optimistic_update);
-        try self.verifyUpdateWithTelemetry("optimistic_update", generic_optimistic_update, allocator);
-        self.applyUpdateWithTelemetry("optimistic_update", generic_optimistic_update);
-
+        self.forceUpdateIfTimedOut(self.expectedCurrentSlot());
         if (self.last_checkpoint == null) {
             self.last_checkpoint = checkpoint;
         }
 
+        self.has_verified_store = true;
         self.setStatus(.synced);
     }
 
@@ -155,9 +159,10 @@ pub const ConsensusSyncEngine = struct {
         startup_context: CheckpointStartupContext,
     ) anyerror!void {
         const api = beacon_api.BeaconApi{ .endpoint_url = self.config.consensus_rpc };
-        const age_info = try self.startupCheckpointAgeInfoWithTelemetry(allocator, api, checkpoint);
-        try self.enforceStartupCheckpointAge(checkpoint, startup_context, age_info);
 
+        // Verify the bootstrap first so the checkpoint age is computed from a
+        // slot bound to the checkpoint root, not from an unverified /headers
+        // response.
         const bootstrap_update = try self.getBootstrapWithTelemetry(allocator, api, checkpoint);
 
         try self.verifyBootstrapWithTelemetry(
@@ -166,26 +171,60 @@ pub const ConsensusSyncEngine = struct {
             allocator,
         );
 
+        const age_info = try self.startupCheckpointAgeInfoWithTelemetry(
+            allocator,
+            api,
+            checkpoint,
+            bootstrap_update.header.beacon.slot,
+        );
+        try self.enforceStartupCheckpointAge(checkpoint, startup_context, age_info);
+
         consensus_verifier.applyBootstrap(&self.store, bootstrap_update);
     }
 
+    /// Advances the verified store with the latest finality and optimistic
+    /// updates. A failure leaves every already-verified store mutation in
+    /// place. When a verified store exists the status is not latched to
+    /// `.err`, so reads keep working and the next call retries.
     pub fn advance(self: *ConsensusSyncEngine, allocator: std.mem.Allocator) anyerror!void {
+        const current_slot = self.expectedCurrentSlot();
+        if (self.last_advance_slot == current_slot and self.consecutive_advance_failures == 0) return;
         errdefer |err| {
-            log.warn(.consensus_sync, "sync failed phase=advance error={s}", .{@errorName(err)});
-            self.setStatus(.err);
+            self.consecutive_advance_failures +|= 1;
+            log.warn(.consensus_sync, "sync failed phase=advance error={s} consecutive_failures={} verified_store={}", .{
+                @errorName(err),
+                self.consecutive_advance_failures,
+                self.has_verified_store,
+            });
+            if (!self.has_verified_store) {
+                self.setStatus(.err);
+            }
         }
 
         const api = beacon_api.BeaconApi{ .endpoint_url = self.config.consensus_rpc };
-        const finality_update = try self.getFinalityUpdateWithTelemetry(allocator, api);
+        self.forceUpdateIfTimedOut(current_slot);
 
-        const generic_finality_update = genericFromFinalityUpdate(finality_update);
-        try self.verifyUpdateWithTelemetry("finality_update", generic_finality_update, allocator);
-        self.applyUpdateWithTelemetry("finality_update", generic_finality_update);
+        // Step across sync committee periods missed while the node was idle.
+        // A finality update signed in a period more than one ahead of the
+        // store cannot verify until the committee chain catches up.
+        const store_period = primitives.consensus.calcSyncPeriod(self.store.finalized_header.beacon.slot);
+        const expected_current_period = primitives.consensus.calcSyncPeriod(current_slot);
+        if (expected_current_period > store_period) {
+            const updates = try self.getUpdates(allocator);
+            defer allocator.free(updates);
 
-        const optimistic_update = try self.getOptimisticUpdateWithTelemetry(allocator, api);
-        const generic_optimistic_update = genericFromOptimisticUpdate(optimistic_update);
-        try self.verifyUpdateWithTelemetry("optimistic_update", generic_optimistic_update, allocator);
-        self.applyUpdateWithTelemetry("optimistic_update", generic_optimistic_update);
+            for (updates) |*update| {
+                const generic_update = genericFromLightClientUpdate(update);
+                const verify_res = self.verifyUpdateWithTelemetry("catch_up_update", generic_update, allocator);
+                if (verify_res) |_| {} else |verify_err| {
+                    if (verify_err == error.NotRelevant) continue;
+                    return verify_res;
+                }
+                self.applyUpdateWithTelemetry("catch_up_update", generic_update);
+            }
+        }
+
+        try self.processLatestUpdates(allocator, api);
 
         if (self.store.next_sync_committee_pubkeys == null) {
             const current_period = primitives.consensus.calcSyncPeriod(self.store.finalized_header.beacon.slot);
@@ -193,13 +232,15 @@ pub const ConsensusSyncEngine = struct {
             defer allocator.free(updates);
 
             if (updates.len == 1) {
-                const generic_update = genericFromLightClientUpdate(updates[0]);
+                const generic_update = genericFromLightClientUpdate(&updates[0]);
                 if (self.verifyUpdateWithTelemetry("committee_update", generic_update, allocator)) |_| {
                     self.applyUpdateWithTelemetry("committee_update", generic_update);
                 } else |_| {}
             }
         }
 
+        self.consecutive_advance_failures = 0;
+        self.last_advance_slot = current_slot;
         self.setStatus(.synced);
     }
 
@@ -210,30 +251,23 @@ pub const ConsensusSyncEngine = struct {
         const api = beacon_api.BeaconApi{ .endpoint_url = self.config.consensus_rpc };
 
         const expected_current_period = primitives.consensus.calcSyncPeriod(self.expectedCurrentSlot());
-        var next_update_fetch_period = primitives.consensus.calcSyncPeriod(self.store.finalized_header.beacon.slot);
+        const start_period = primitives.consensus.calcSyncPeriod(self.store.finalized_header.beacon.slot);
 
         var updates = std.array_list.Managed(primitives.LightClientUpdate.LightClientUpdate).init(allocator);
         errdefer updates.deinit();
 
-        if (expected_current_period > next_update_fetch_period and
-            expected_current_period - next_update_fetch_period >= @as(u64, MAX_REQUEST_LIGHT_CLIENT_UPDATES))
-        {
-            while (next_update_fetch_period < expected_current_period) {
-                const remaining_periods = expected_current_period - next_update_fetch_period;
-                const batch_size_u64 = @min(remaining_periods, @as(u64, MAX_REQUEST_LIGHT_CLIENT_UPDATES));
-                const batch_size: u8 = @intCast(batch_size_u64);
+        var cursor = start_period;
+        while (nextUpdatesBatchSize(cursor, expected_current_period)) |batch_size| {
+            const batch_updates = try self.getUpdatesBatchWithTelemetry(allocator, api, cursor, batch_size);
+            defer allocator.free(batch_updates);
 
-                const batch_updates = try self.getUpdatesBatchWithTelemetry(allocator, api, next_update_fetch_period, batch_size);
-                defer allocator.free(batch_updates);
-                try updates.appendSlice(batch_updates);
+            if (batch_updates.len > batch_size) return error.TooManyLightClientUpdates;
+            try updates.appendSlice(batch_updates);
 
-                next_update_fetch_period += batch_size_u64;
-            }
+            // A short page means the beacon node has nothing newer yet.
+            if (batch_updates.len < batch_size) break;
+            cursor += batch_updates.len;
         }
-
-        const final_batch_updates = try self.getUpdatesBatchWithTelemetry(allocator, api, next_update_fetch_period, MAX_REQUEST_LIGHT_CLIENT_UPDATES);
-        defer allocator.free(final_batch_updates);
-        try updates.appendSlice(final_batch_updates);
 
         return updates.toOwnedSlice();
     }
@@ -287,6 +321,32 @@ pub const ConsensusSyncEngine = struct {
         return self.checkpointAgeInfoFromTimes(checkpoint_time_seconds, startup_time_seconds);
     }
 
+    /// Computes checkpoint age from the slot of a bootstrap that already
+    /// verified against `checkpoint`. The `/headers` response must agree with
+    /// that slot and root, and the age uses the trusted network genesis time.
+    pub fn checkpointAgeInfoFromVerifiedBootstrap(
+        self: *const ConsensusSyncEngine,
+        genesis: beacon_api.GenesisInfo,
+        header: beacon_api.BeaconHeaderInfo,
+        checkpoint: [32]u8,
+        verified_bootstrap_slot: u64,
+        startup_time_seconds: u64,
+    ) !CheckpointAgeInfo {
+        if (!std.mem.eql(u8, &genesis.genesis_validators_root, &self.config.genesis_validators_root)) {
+            return error.ConsensusNetworkMismatch;
+        }
+        if (!std.mem.eql(u8, &header.root, &checkpoint)) {
+            return error.CheckpointRootMismatch;
+        }
+        if (header.slot != verified_bootstrap_slot) {
+            return error.CheckpointSlotMismatch;
+        }
+
+        const slot_seconds = std.math.mul(u64, verified_bootstrap_slot, primitives.ConsensusSpec.SECONDS_PER_SLOT) catch return error.CheckpointTimeOverflow;
+        const checkpoint_time_seconds = std.math.add(u64, self.config.genesis_time, slot_seconds) catch return error.CheckpointTimeOverflow;
+        return self.checkpointAgeInfoFromTimes(checkpoint_time_seconds, startup_time_seconds);
+    }
+
     pub fn enforceStartupCheckpointAge(
         self: *const ConsensusSyncEngine,
         checkpoint: [32]u8,
@@ -331,10 +391,17 @@ pub const ConsensusSyncEngine = struct {
         allocator: std.mem.Allocator,
         api: beacon_api.BeaconApi,
         checkpoint: [32]u8,
+        verified_bootstrap_slot: u64,
     ) anyerror!CheckpointAgeInfo {
         const genesis = try api.getGenesis(allocator);
         const header = try api.getHeader(allocator, checkpoint);
-        return self.checkpointAgeInfoFromBeaconData(genesis, header, checkpoint, currentUnixSeconds());
+        return self.checkpointAgeInfoFromVerifiedBootstrap(
+            genesis,
+            header,
+            checkpoint,
+            verified_bootstrap_slot,
+            currentUnixSeconds(),
+        );
     }
 
     fn startupCheckpointAgeInfoWithTelemetry(
@@ -342,13 +409,14 @@ pub const ConsensusSyncEngine = struct {
         allocator: std.mem.Allocator,
         api: beacon_api.BeaconApi,
         checkpoint: [32]u8,
+        verified_bootstrap_slot: u64,
     ) anyerror!CheckpointAgeInfo {
         errdefer |err| log.warn(.consensus_sync, "startup checkpoint age resolution failed error={s}", .{@errorName(err)});
-        return try self.startupCheckpointAgeInfo(allocator, api, checkpoint);
+        return try self.startupCheckpointAgeInfo(allocator, api, checkpoint, verified_bootstrap_slot);
     }
 
     pub fn slotTimestamp(self: *ConsensusSyncEngine, slot: u64) u64 {
-        return slot * primitives.ConsensusSpec.SECONDS_PER_SLOT + self.config.genesis_time;
+        return (slot *| primitives.ConsensusSpec.SECONDS_PER_SLOT) +| self.config.genesis_time;
     }
 
     pub fn lastCheckpoint(self: *const ConsensusSyncEngine) ?[32]u8 {
@@ -411,6 +479,34 @@ pub const ConsensusSyncEngine = struct {
         return try api.getOptimisticUpdate(allocator);
     }
 
+    fn processLatestUpdates(self: *ConsensusSyncEngine, allocator: std.mem.Allocator, api: beacon_api.BeaconApi) !void {
+        const finality = try self.getFinalityUpdateWithTelemetry(allocator, api);
+        const finality_update = genericFromFinalityUpdate(&finality);
+        if (self.verifyUpdateWithTelemetry("finality_update", finality_update, allocator)) |_| {
+            self.applyUpdateWithTelemetry("finality_update", finality_update);
+        } else |err| {
+            // Recovery may have moved beyond the latest finality response.
+            // Discard that update and continue to the optimistic endpoint.
+            const obsolete_period = err == error.InvalidPeriod and finality.signature_slot <= self.finalizedSlot();
+            if (err != error.NotRelevant and !obsolete_period) return err;
+        }
+
+        const optimistic = try self.getOptimisticUpdateWithTelemetry(allocator, api);
+        const update = genericFromOptimisticUpdate(&optimistic);
+        const verification = self.verifyUpdateWithTelemetry("optimistic_update", update, allocator);
+        if (try self.shouldApplyOptimisticUpdate(update.attested_header.beacon.slot, verification)) {
+            self.applyUpdateWithTelemetry("optimistic_update", update);
+        }
+    }
+
+    pub fn shouldApplyOptimisticUpdate(self: *const ConsensusSyncEngine, attested_slot: u64, verification: anyerror!void) !bool {
+        verification catch |err| {
+            if ((err == error.NotRelevant or err == error.InvalidPeriod) and attested_slot <= self.optimisticSlot()) return false;
+            return err;
+        };
+        return attested_slot > self.optimisticSlot();
+    }
+
     fn verifyBootstrapWithTelemetry(
         self: *ConsensusSyncEngine,
         bootstrap_update: primitives.LightClientUpdate.LightClientBootstrap,
@@ -450,14 +546,30 @@ pub const ConsensusSyncEngine = struct {
                 update.signature_slot,
             });
         }
+        const current_slot = self.expectedCurrentSlot();
+        // During catch-up, the following period's update can arrive before
+        // sync() or advance() returns. Recover the committee chain first.
+        const last_known_period = primitives.consensus.calcSyncPeriod(self.finalizedSlot()) +
+            @intFromBool(self.store.next_sync_committee_pubkeys != null);
+        if (update.signature_slot <= current_slot and
+            primitives.consensus.calcSyncPeriod(update.signature_slot) > last_known_period)
+        {
+            self.forceUpdateIfTimedOut(current_slot);
+        }
         try consensus_verifier.verifyUpdate(
             update,
-            self.expectedCurrentSlot(),
+            current_slot,
             self.store,
             self.config.genesis_validators_root,
             self.config.fork_config,
             allocator,
         );
+    }
+
+    fn forceUpdateIfTimedOut(self: *ConsensusSyncEngine, current_slot: u64) void {
+        if (consensus_verifier.processLightClientStoreForceUpdate(&self.store, current_slot)) |checkpoint| {
+            self.last_checkpoint = checkpoint;
+        }
     }
 
     fn applyUpdateWithTelemetry(
@@ -497,6 +609,15 @@ fn statusText(status: SyncStatus) []const u8 {
     };
 }
 
+/// Returns the size of the next `/light_client/updates` page starting at
+/// `cursor`, or null once `cursor` is past `expected_current_period`. Pages
+/// never request periods beyond the expected current period.
+pub fn nextUpdatesBatchSize(cursor: u64, expected_current_period: u64) ?u8 {
+    if (cursor > expected_current_period) return null;
+    const remaining_periods = expected_current_period - cursor +| 1;
+    return @intCast(@min(remaining_periods, @as(u64, MAX_REQUEST_LIGHT_CLIENT_UPDATES)));
+}
+
 fn currentUnixSeconds() u64 {
     const now = std.time.timestamp();
     if (now <= 0) return 0;
@@ -504,7 +625,7 @@ fn currentUnixSeconds() u64 {
 }
 
 pub fn genericFromLightClientUpdate(
-    update: primitives.LightClientUpdate.LightClientUpdate,
+    update: *const primitives.LightClientUpdate.LightClientUpdate,
 ) primitives.LightClientUpdate.GenericUpdate {
     return primitives.LightClientUpdate.GenericUpdate.from(
         update.attested_header,
@@ -520,7 +641,7 @@ pub fn genericFromLightClientUpdate(
 }
 
 pub fn genericFromFinalityUpdate(
-    update: primitives.LightClientUpdate.LightClientFinalityUpdate,
+    update: *const primitives.LightClientUpdate.LightClientFinalityUpdate,
 ) primitives.LightClientUpdate.GenericUpdate {
     return primitives.LightClientUpdate.GenericUpdate.from(
         update.attested_header,
@@ -536,7 +657,7 @@ pub fn genericFromFinalityUpdate(
 }
 
 fn genericFromOptimisticUpdate(
-    update: primitives.LightClientUpdate.LightClientOptimisticUpdate,
+    update: *const primitives.LightClientUpdate.LightClientOptimisticUpdate,
 ) primitives.LightClientUpdate.GenericUpdate {
     return primitives.LightClientUpdate.GenericUpdate.from(
         update.attested_header,
@@ -555,4 +676,85 @@ fn parseHex32(comptime value: []const u8) [32]u8 {
     var bytes: [32]u8 = undefined;
     _ = std.fmt.hexToBytes(&bytes, value) catch unreachable;
     return bytes;
+}
+
+test "nextUpdatesBatchSize pages up to the expected current period and stops" {
+    try std.testing.expectEqual(@as(?u8, 1), nextUpdatesBatchSize(10, 10));
+    try std.testing.expectEqual(@as(?u8, 3), nextUpdatesBatchSize(8, 10));
+    try std.testing.expectEqual(@as(?u8, MAX_REQUEST_LIGHT_CLIENT_UPDATES), nextUpdatesBatchSize(0, 1_000));
+    try std.testing.expectEqual(@as(?u8, null), nextUpdatesBatchSize(11, 10));
+    try std.testing.expectEqual(@as(?u8, MAX_REQUEST_LIGHT_CLIENT_UPDATES), nextUpdatesBatchSize(0, std.math.maxInt(u64)));
+
+    // Paging 300 periods with full pages issues exactly three requests and no
+    // trailing request past the expected period.
+    var cursor: u64 = 0;
+    var requests: usize = 0;
+    while (nextUpdatesBatchSize(cursor, 299)) |batch_size| {
+        requests += 1;
+        cursor += batch_size;
+    }
+    try std.testing.expectEqual(@as(usize, 3), requests);
+    try std.testing.expectEqual(@as(u64, 300), cursor);
+}
+
+test "checkpoint age from verified bootstrap rejects /headers slot mismatch" {
+    var config = NetworkConfig.mainnet("");
+    config.genesis_time = 1_000;
+    config.max_checkpoint_age = 120;
+    const engine = ConsensusSyncEngine.init(config);
+    const checkpoint = [_]u8{0xaa} ** 32;
+    const genesis = beacon_api.GenesisInfo{
+        .genesis_time = 0,
+        .genesis_validators_root = config.genesis_validators_root,
+    };
+
+    try std.testing.expectError(error.CheckpointSlotMismatch, engine.checkpointAgeInfoFromVerifiedBootstrap(
+        genesis,
+        .{ .root = checkpoint, .slot = 6 },
+        checkpoint,
+        5,
+        1_180,
+    ));
+
+    // Age uses the verified slot and the trusted network genesis time, not
+    // the genesis time the beacon node reported.
+    const info = try engine.checkpointAgeInfoFromVerifiedBootstrap(
+        genesis,
+        .{ .root = checkpoint, .slot = 5 },
+        checkpoint,
+        5,
+        1_180,
+    );
+    try std.testing.expectEqual(@as(u64, 1_060), info.checkpoint_time_seconds);
+    try std.testing.expectEqual(@as(u64, 120), info.age_seconds);
+    try std.testing.expect(!info.stale);
+
+    try std.testing.expectError(error.CheckpointTimeOverflow, engine.checkpointAgeInfoFromVerifiedBootstrap(
+        genesis,
+        .{ .root = checkpoint, .slot = std.math.maxInt(u64) },
+        checkpoint,
+        std.math.maxInt(u64),
+        1_180,
+    ));
+}
+
+test "advance failure keeps a verified store synced and recovers on the next call" {
+    // Port 1 on loopback refuses connections, so advance() fails in transport.
+    var engine = ConsensusSyncEngine.init(NetworkConfig.mainnet("http://127.0.0.1:1"));
+    engine.store.finalized_header.beacon.slot = primitives.consensus.expectedCurrentSlot(engine.config.genesis_time);
+    engine.store.optimistic_header = engine.store.finalized_header;
+    engine.has_verified_store = true;
+    engine.status = .synced;
+
+    try std.testing.expect(std.meta.isError(engine.advance(std.testing.allocator)));
+    try std.testing.expectEqual(SyncStatus.synced, engine.status);
+    try std.testing.expectEqual(@as(u32, 1), engine.consecutive_advance_failures);
+
+    try std.testing.expect(std.meta.isError(engine.advance(std.testing.allocator)));
+    try std.testing.expectEqual(SyncStatus.synced, engine.status);
+    try std.testing.expectEqual(@as(u32, 2), engine.consecutive_advance_failures);
+
+    var unsynced = ConsensusSyncEngine.init(NetworkConfig.mainnet("http://127.0.0.1:1"));
+    try std.testing.expect(std.meta.isError(unsynced.advance(std.testing.allocator)));
+    try std.testing.expectEqual(SyncStatus.err, unsynced.status);
 }

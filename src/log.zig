@@ -5,8 +5,66 @@ pub const Level = std.log.Level;
 const default_level: Level = .info;
 var active_level = std.atomic.Value(u8).init(@intFromEnum(default_level));
 
+pub const LEVEL_ENV_VAR = "ZEVM_LOG_LEVEL";
+const STACK_MESSAGE_BYTES = 4096;
+
 pub fn init(level: Level) void {
     active_level.store(@intFromEnum(level), .release);
+}
+
+pub fn currentLevel() Level {
+    return @enumFromInt(active_level.load(.monotonic));
+}
+
+/// Parses `err|error|warn|warning|info|debug` (case-insensitive).
+pub fn parseLevel(text: []const u8) ?Level {
+    const trimmed = std.mem.trim(u8, text, " \t\r\n");
+    if (std.ascii.eqlIgnoreCase(trimmed, "err") or std.ascii.eqlIgnoreCase(trimmed, "error")) return .err;
+    if (std.ascii.eqlIgnoreCase(trimmed, "warn") or std.ascii.eqlIgnoreCase(trimmed, "warning")) return .warn;
+    if (std.ascii.eqlIgnoreCase(trimmed, "info")) return .info;
+    if (std.ascii.eqlIgnoreCase(trimmed, "debug")) return .debug;
+    return null;
+}
+
+/// Applies `ZEVM_LOG_LEVEL` when set and valid, otherwise `fallback`.
+/// Returns false when the variable is set to an unknown value.
+pub fn initFromEnv(fallback: Level) bool {
+    init(fallback);
+    if (std.posix.getenv(LEVEL_ENV_VAR)) |value| {
+        const level = parseLevel(value) orelse return false;
+        init(level);
+    }
+    return true;
+}
+
+/// Writes `scheme://host[:port]` for `url` into `out`, dropping userinfo,
+/// path, query and fragment. RPC providers embed API keys in all of those.
+/// Returns "<redacted>" when `url` has no scheme.
+pub fn redactUrl(out: []u8, url: []const u8) []const u8 {
+    const redacted = "<redacted>";
+    const scheme_end = std.mem.indexOf(u8, url, "://") orelse return redacted;
+    const scheme = url[0..scheme_end];
+    if (scheme.len == 0) return redacted;
+    for (scheme) |char| {
+        if (!(std.ascii.isAlphanumeric(char) or char == '+' or char == '-' or char == '.')) return redacted;
+    }
+
+    const rest = url[scheme_end + 3 ..];
+    const authority_end = std.mem.indexOfAny(u8, rest, "/?#") orelse rest.len;
+    const authority = rest[0..authority_end];
+    const host_port = if (std.mem.lastIndexOfScalar(u8, authority, '@')) |at| authority[at + 1 ..] else authority;
+    if (host_port.len == 0) return redacted;
+
+    return std.fmt.bufPrint(out, "{s}://{s}", .{ scheme, host_port }) catch redacted;
+}
+
+/// Returns a single safe telemetry field for an untrusted RPC method name.
+pub fn sanitizeRpcMethod(method: []const u8) []const u8 {
+    if (method.len == 0 or method.len > 64) return "<invalid>";
+    for (method) |byte| {
+        if (!std.ascii.isAlphanumeric(byte) and byte != '_') return "<invalid>";
+    }
+    return method;
 }
 
 pub fn info(
@@ -44,21 +102,33 @@ pub fn logFn(
 ) void {
     if (!shouldLog(message_level)) return;
 
-    var message = std.Io.Writer.Allocating.init(std.heap.page_allocator);
-    defer message.deinit();
-    message.writer.print(fmt, args) catch return;
+    // Most records fit on the stack; only oversized ones touch the heap.
+    var stack_message: [STACK_MESSAGE_BYTES]u8 = undefined;
+    var fixed = std.Io.Writer.fixed(&stack_message);
+    var heap_message: ?std.Io.Writer.Allocating = null;
+    defer if (heap_message) |*heap| heap.deinit();
+
+    const message: []const u8 = if (fixed.print(fmt, args)) |_|
+        fixed.buffered()
+    else |_| blk: {
+        heap_message = std.Io.Writer.Allocating.init(std.heap.page_allocator);
+        heap_message.?.writer.print(fmt, args) catch return;
+        break :blk heap_message.?.written();
+    };
+
+    var scratch = std.heap.stackFallback(1024, std.heap.page_allocator);
 
     var buffer: [1024]u8 = undefined;
     const stderr = std.debug.lockStderrWriter(&buffer);
     defer std.debug.unlockStderrWriter();
 
     nosuspend writeJsonRecord(
-        std.heap.page_allocator,
+        scratch.get(),
         stderr,
         std.time.timestamp(),
         message_level,
         @tagName(scope),
-        message.written(),
+        message,
     ) catch return;
 }
 
@@ -113,19 +183,26 @@ fn writeJsonRecord(
 fn eventOnlyMessage(message: []const u8) []const u8 {
     const trimmed = std.mem.trim(u8, message, " \t\r\n");
     for (trimmed) |char| {
-        if (std.ascii.isWhitespace(char)) return "";
+        if (std.ascii.isWhitespace(char) or std.ascii.isControl(char)) return "";
     }
     return trimmed;
+}
+
+/// Field tokens are separated by spaces and tabs only. A newline or other
+/// control byte stays inside its token, so an interpolated value cannot start
+/// a forged `key=value` field on a new line; JSON encoding escapes the byte.
+fn isFieldSeparator(char: u8) bool {
+    return char == ' ' or char == '\t';
 }
 
 fn firstFieldTokenStart(message: []const u8) ?usize {
     var index: usize = 0;
     while (index < message.len) {
-        while (index < message.len and std.ascii.isWhitespace(message[index])) : (index += 1) {}
+        while (index < message.len and isFieldSeparator(message[index])) : (index += 1) {}
         if (index >= message.len) return null;
 
         const token_start = index;
-        while (index < message.len and !std.ascii.isWhitespace(message[index])) : (index += 1) {}
+        while (index < message.len and !isFieldSeparator(message[index])) : (index += 1) {}
         const token = message[token_start..index];
         if (fieldTokenParts(token) != null) return token_start;
     }
@@ -167,14 +244,17 @@ fn buildEventName(allocator: std.mem.Allocator, source: []const u8) !?[]u8 {
 fn writeStructuredFields(writer: *std.Io.Writer, message: []const u8) !void {
     var index: usize = 0;
     while (index < message.len) {
-        while (index < message.len and std.ascii.isWhitespace(message[index])) : (index += 1) {}
+        while (index < message.len and isFieldSeparator(message[index])) : (index += 1) {}
         if (index >= message.len) return;
 
         const token_start = index;
-        while (index < message.len and !std.ascii.isWhitespace(message[index])) : (index += 1) {}
+        while (index < message.len and !isFieldSeparator(message[index])) : (index += 1) {}
         const token = message[token_start..index];
         const parts = fieldTokenParts(token) orelse continue;
         if (isReservedField(parts.key)) continue;
+        // First occurrence wins: text interpolated after a field cannot
+        // override it, and the JSON object never carries duplicate keys.
+        if (keyAppearsBefore(message[0..token_start], parts.key)) continue;
 
         try writer.writeAll(",");
         try std.json.Stringify.value(parts.key, .{}, writer);
@@ -207,6 +287,15 @@ fn isValidFieldKey(key: []const u8) bool {
         if (!(std.ascii.isAlphanumeric(char) or char == '_' or char == '-' or char == '.')) return false;
     }
     return true;
+}
+
+fn keyAppearsBefore(prefix: []const u8, key: []const u8) bool {
+    var tokens = std.mem.tokenizeAny(u8, prefix, " \t");
+    while (tokens.next()) |token| {
+        const parts = fieldTokenParts(token) orelse continue;
+        if (std.mem.eql(u8, parts.key, key)) return true;
+    }
+    return false;
 }
 
 fn isReservedField(key: []const u8) bool {
@@ -341,4 +430,69 @@ test "operator log level filtering suppresses lower-priority records" {
     defer std.testing.allocator.free(line);
 
     try std.testing.expect(std.mem.indexOf(u8, line, "\"level\":\"error\"") != null);
+}
+
+test "structured fields keep control bytes inside escaped values" {
+    init(.info);
+
+    const line = (try formatForTest(
+        std.testing.allocator,
+        1,
+        .info,
+        "rpc",
+        "request failed method={s} status=ok",
+        .{"eth_call\nlevel=debug\nstatus=forged"},
+    )).?;
+    defer std.testing.allocator.free(line);
+
+    // One physical line: the record cannot be split by injected newlines.
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, line, "\n"));
+    try std.testing.expect(std.mem.endsWith(u8, line, "}\n"));
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, line, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try std.testing.expectEqualStrings("info", obj.get("level").?.string);
+    try std.testing.expectEqualStrings("eth_call\nlevel=debug\nstatus=forged", obj.get("method").?.string);
+    try std.testing.expectEqualStrings("ok", obj.get("status").?.string);
+}
+
+test "duplicate structured keys keep the first value" {
+    init(.info);
+
+    const line = (try formatForTest(
+        std.testing.allocator,
+        1,
+        .info,
+        "rpc",
+        "event user={s} user=admin",
+        .{"alice"},
+    )).?;
+    defer std.testing.allocator.free(line);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, line, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("alice", parsed.value.object.get("user").?.string);
+}
+
+test "parseLevel accepts documented names" {
+    try std.testing.expectEqual(@as(?Level, .err), parseLevel("error"));
+    try std.testing.expectEqual(@as(?Level, .err), parseLevel("ERR"));
+    try std.testing.expectEqual(@as(?Level, .warn), parseLevel("warning"));
+    try std.testing.expectEqual(@as(?Level, .info), parseLevel(" info\n"));
+    try std.testing.expectEqual(@as(?Level, .debug), parseLevel("Debug"));
+    try std.testing.expect(parseLevel("verbose") == null);
+}
+
+test "redactUrl strips credentials, path, query and fragment" {
+    var buf: [256]u8 = undefined;
+    try std.testing.expectEqualStrings("https://mainnet.infura.io", redactUrl(&buf, "https://mainnet.infura.io/v3/SECRETKEY"));
+    try std.testing.expectEqualStrings("https://rpc.example.org:8545", redactUrl(&buf, "https://user:pass@rpc.example.org:8545/path?apikey=SECRET#frag"));
+    try std.testing.expectEqualStrings("wss://eth.example", redactUrl(&buf, "wss://eth.example?key=SECRET"));
+    try std.testing.expectEqualStrings("http://[::1]:8545", redactUrl(&buf, "http://[::1]:8545"));
+    try std.testing.expectEqualStrings("<redacted>", redactUrl(&buf, "not a url with SECRET"));
+    try std.testing.expectEqualStrings("<redacted>", redactUrl(&buf, "https://user:SECRET@/path"));
+
+    var tiny: [8]u8 = undefined;
+    try std.testing.expectEqualStrings("<redacted>", redactUrl(&tiny, "https://very-long-host.example"));
 }

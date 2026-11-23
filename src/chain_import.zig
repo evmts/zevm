@@ -135,18 +135,33 @@ pub fn importChainBytesWithOptions(
     var stats = ImportStats{};
     var offset: usize = 0;
     while (offset < bytes.len) {
-        var decoded = try decodeNextBlock(allocator, bytes[offset..]);
+        var decoded = try decodeNextBlockWithConfig(allocator, bytes[offset..], options.hardfork_config);
         var owned = false;
         errdefer if (!owned) decoded.deinit(allocator);
+        const block_length = decoded.block.size;
 
-        // Reject an oversized block before it reaches the block store.
-        if (options.hardfork_config) |config| {
-            const hardfork = hardfork_schedule.resolveHardforkWithConfig(
-                config,
-                decoded.block.header.number,
-                decoded.block.header.timestamp,
-            );
-            try validateBlockRlpSize(decoded.block.size, hardfork);
+        // A chain stream is one branch: each block must extend the block
+        // before it. Checked before the block reaches the store, so a
+        // mis-linked block never becomes the canonical head.
+        if (stats.block_count > 0) {
+            try validateBlockLinkage(decoded.block.header, stats.head_hash, stats.head_block_number);
+        } else if (blockchain.getBlockLocal(decoded.block.header.parent_hash)) |parent| {
+            // The first block links to whatever the store already holds.
+            try validateBlockLinkage(decoded.block.header, parent.hash, parent.header.number);
+        } else if (decoded.block.header.number > 0 and blockchain.getHeadBlockNumber() != null) {
+            // The store already has a chain and this block's parent is not in
+            // it: the stream belongs to another chain or skips blocks. Only
+            // an empty store accepts a first block without a parent.
+            return error.MissingParentBlock;
+        }
+
+        // A stream that opens with its own block 0 must name the genesis the
+        // store was configured with. A different block 0 belongs to another
+        // chain and must not replace the canonical genesis.
+        if (stats.block_count == 0 and decoded.block.header.number == 0) {
+            if (try blockchain.getBlockByNumber(0)) |existing_genesis| {
+                if (!std.mem.eql(u8, &existing_genesis.hash, &decoded.block.hash)) return error.GenesisHashMismatch;
+            }
         }
 
         stats.transaction_count += decoded.block.body.transactions.len;
@@ -164,15 +179,35 @@ pub fn importChainBytesWithOptions(
         try blockchain.putBlock(decoded.block);
         try blockchain.setCanonicalHead(decoded.block.hash);
 
-        offset += decodedBlockLength(bytes[offset..]);
+        offset += @intCast(block_length);
         stats.block_count += 1;
     }
     return stats;
 }
 
+/// Requires `header` to be the direct child of the block identified by
+/// `parent_hash` and `parent_number`.
+pub fn validateBlockLinkage(
+    header: primitives.BlockHeader.BlockHeader,
+    parent_hash: [32]u8,
+    parent_number: u64,
+) error{ InvalidParentHash, InvalidBlockNumber }!void {
+    if (!std.mem.eql(u8, &header.parent_hash, &parent_hash)) return error.InvalidParentHash;
+    const expected_number = std.math.add(u64, parent_number, 1) catch return error.InvalidBlockNumber;
+    if (header.number != expected_number) return error.InvalidBlockNumber;
+}
+
 pub fn decodeNextBlock(
     allocator: std.mem.Allocator,
     bytes: []const u8,
+) !DecodedBlock {
+    return decodeNextBlockWithConfig(allocator, bytes, null);
+}
+
+fn decodeNextBlockWithConfig(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    hardfork_config: ?hardfork_schedule.ChainConfig,
 ) !DecodedBlock {
     const span = try itemSpan(bytes, 0);
     if (span.kind != .list) return error.InvalidChainRlp;
@@ -189,6 +224,12 @@ pub fn decodeNextBlock(
 
     const header_bytes = block_bytes[header_span.start..header_span.end];
     var header = try decodeHeaderForImport(allocator, header_bytes);
+    // Enforce fork block-size limits (e.g. Osaka EIP-7934 8 MiB cap) before
+    // allocating decoded transactions, ommers, and withdrawals.
+    if (hardfork_config) |config| {
+        const hardfork = hardfork_schedule.resolveHardforkWithConfig(config, header.number, header.timestamp);
+        try validateBlockRlpSize(block_bytes.len, hardfork);
+    }
     owned_body.requests_hash = try decodeHeaderRequestsHash(allocator, header_bytes);
     owned_body.header_extra_data = try decodeHeaderExtraData(allocator, header_bytes);
     header.extra_data = owned_body.header_extra_data orelse &.{};
@@ -224,7 +265,18 @@ fn decodeHeaderForImport(
 
     const fields = try childSpans(allocator, header_bytes, header_span.payload_start, header_span.payload_end);
     defer allocator.free(fields);
-    if (fields.len < 15 or fields.len > 21) return error.InvalidChainRlp;
+    // Each fork appends whole groups of fields: 15 (Frontier), 16 (London
+    // base fee), 17 (Shanghai withdrawals root), 20 (Cancun blob gas used,
+    // excess blob gas, parent beacon block root), 21 (Prague requests hash).
+    // No fork produces an 18- or 19-field header.
+    switch (fields.len) {
+        15, 16, 17, 20, 21 => {},
+        else => return error.InvalidChainRlp,
+    }
+    if (fields[12].kind != .string) return error.InvalidChainRlp;
+    if (fields[12].payload_end - fields[12].payload_start > primitives.BlockHeader.MAX_EXTRA_DATA_SIZE) {
+        return error.InvalidChainRlp;
+    }
 
     var header = primitives.BlockHeader.BlockHeader{};
     header.parent_hash = try parseRlpHash(header_bytes, fields[0]);
@@ -300,11 +352,6 @@ pub fn freeTransactions(
     if (transactions.len > 0) allocator.free(transactions);
 }
 
-fn decodedBlockLength(bytes: []const u8) usize {
-    const span = itemSpan(bytes, 0) catch unreachable;
-    return span.end;
-}
-
 fn decodeHeaderExtraData(allocator: std.mem.Allocator, header_bytes: []const u8) !?[]u8 {
     const header_span = try itemSpan(header_bytes, 0);
     if (header_span.kind != .list) return error.InvalidChainRlp;
@@ -335,9 +382,19 @@ fn decodeTransactions(
     }
 
     for (tx_spans, 0..) |tx_span, index| {
+        // EIP-2718: a block body holds a legacy transaction as an RLP list
+        // and a typed transaction as an RLP byte string `type || payload`
+        // with `type` in [0x01, 0x7f]. A legacy list wrapped in a byte string
+        // starts with a list prefix (>= 0xc0) and is a different, invalid
+        // encoding of the same fields, not the same transaction.
         const raw = switch (tx_span.kind) {
             .list => block_bytes[tx_span.start..tx_span.end],
-            .string => block_bytes[tx_span.payload_start..tx_span.payload_end],
+            .string => typed: {
+                const envelope = block_bytes[tx_span.payload_start..tx_span.payload_end];
+                if (envelope.len < 2) return error.InvalidChainRlp;
+                if (envelope[0] == 0 or envelope[0] > 0x7f) return error.InvalidChainRlp;
+                break :typed envelope;
+            },
         };
         try tx_encoding.requireCanonicalEnvelope(raw);
         transactions[index] = .{ .raw = try allocator.dupe(u8, raw) };
@@ -643,7 +700,7 @@ test "decodeNextBlock accepts full Hive rpc-compat chain stream" {
         var decoded = try decodeNextBlock(std.testing.allocator, bytes[offset..]);
         defer decoded.deinit(std.testing.allocator);
         last_hash = decoded.block.hash;
-        offset += decodedBlockLength(bytes[offset..]);
+        offset += @intCast(decoded.block.size);
         count += 1;
     }
 

@@ -12,6 +12,8 @@ const rpc_parse = @import("../parse.zig");
 pub const PRUNED_HISTORY_ERROR_CODE: i32 = 4444;
 pub const MAX_FEE_HISTORY_BLOCK_COUNT: u64 = 1024;
 pub const MAX_REWARD_PERCENTILES: usize = 100;
+/// Maximum number of storage keys one eth_getProof request may name.
+pub const MAX_PROOF_KEYS: usize = 256;
 
 pub const FeeHistoryParams = struct {
     block_count: jsonrpc.types.Quantity,
@@ -84,7 +86,7 @@ pub fn handleEthGetBalance(
     rt: *runtime.NodeRuntime,
     params: jsonrpc.eth.GetBalance.Params,
 ) !jsonrpc.eth.GetBalance.Result {
-    const selected = resolveStateReadBlockNumber(rt, params.block) catch return error.InvalidParams;
+    const selected = resolveStateReadBlockNumber(rt, params.block) catch |err| return stateSelectorError(err);
     const read_state = try rt.readStateAtBlock(selected);
     const balance = try read_state.getBalance(.{ .bytes = params.address.bytes });
     return .{ .value = try quantityHexU256(allocator, balance) };
@@ -95,7 +97,7 @@ pub fn handleEthGetCode(
     rt: *runtime.NodeRuntime,
     params: jsonrpc.eth.GetCode.Params,
 ) !jsonrpc.eth.GetCode.Result {
-    const selected = resolveStateReadBlockNumber(rt, params.block) catch return error.InvalidParams;
+    const selected = resolveStateReadBlockNumber(rt, params.block) catch |err| return stateSelectorError(err);
     const read_state = try rt.readStateAtBlock(selected);
     const code = try read_state.getCode(.{ .bytes = params.address.bytes });
     return .{ .value = try dataHexBytes(allocator, code) };
@@ -106,7 +108,7 @@ pub fn handleEthGetStorageAt(
     rt: *runtime.NodeRuntime,
     params: jsonrpc.eth.GetStorageAt.Params,
 ) !jsonrpc.eth.GetStorageAt.Result {
-    const selected = resolveStateReadBlockNumber(rt, params.block) catch return error.InvalidParams;
+    const selected = resolveStateReadBlockNumber(rt, params.block) catch |err| return stateSelectorError(err);
     const slot = parseStorageSlotToU256(params.storage_slot) catch return error.InvalidParams;
     const read_state = try rt.readStateAtBlock(selected);
     const value = try read_state.getStorage(.{ .bytes = params.address.bytes }, slot);
@@ -118,7 +120,7 @@ pub fn handleEthGetTransactionCount(
     rt: *runtime.NodeRuntime,
     params: jsonrpc.eth.GetTransactionCount.Params,
 ) !jsonrpc.eth.GetTransactionCount.Result {
-    const selected = resolveStateReadBlockNumber(rt, params.block) catch return error.InvalidParams;
+    const selected = resolveStateReadBlockNumber(rt, params.block) catch |err| return stateSelectorError(err);
     const read_state = try rt.readStateAtBlock(selected);
     const address = primitives.Address{ .bytes = params.address.bytes };
     const nonce = try read_state.getNonce(address);
@@ -150,7 +152,7 @@ pub fn handleEthGetStorageValuesValue(
     const items = try paramsArrayItems(params);
     if (items.len != 2) return error.InvalidParams;
 
-    const selected = resolveStateReadBlockNumberValue(rt, items[1]) catch return error.InvalidParams;
+    const selected = resolveStateReadBlockNumberValue(rt, items[1]) catch |err| return stateSelectorError(err);
     const read_state = try rt.readStateAtBlock(selected);
 
     const requests = switch (items[0]) {
@@ -206,7 +208,8 @@ pub fn handleEthGetProofValue(
         .array => |array| array.items,
         else => return error.InvalidParams,
     };
-    const selected = resolveStateReadBlockNumberValue(rt, items[2]) catch return error.InvalidParams;
+    if (storage_keys.len > MAX_PROOF_KEYS) return error.InvalidParams;
+    const selected = resolveStateReadBlockNumberValue(rt, items[2]) catch |err| return stateSelectorError(err);
     const read_state = try rt.readStateAtBlock(selected);
 
     const balance = try read_state.getBalance(address);
@@ -358,9 +361,10 @@ pub fn handleEthFeeHistory(
     }
 
     const rewards = if (params.reward_percentiles) |percentiles|
-        try zeroRewards(allocator, range.count, percentiles.len)
+        try feeHistoryRewards(allocator, rt, range, percentiles)
     else
         null;
+    errdefer if (rewards) |rows| freeRewardRows(allocator, rows, rows.len);
 
     return .{
         .oldest_block = try quantityHexU64(allocator, range.oldest),
@@ -414,7 +418,7 @@ pub fn handleEthFeeHistoryValue(
     try putOwnedJsonValue(&obj, allocator, "baseFeePerBlobGas", try feeHistoryBlobBaseFeeArray(allocator, rt, range));
     try putOwnedJsonValue(&obj, allocator, "blobGasUsedRatio", try feeHistoryBlobGasUsedRatioArray(allocator, rt, range));
     if (params.reward_percentiles) |percentiles| {
-        try putOwnedJsonValue(&obj, allocator, "reward", try zeroRewardsValue(allocator, range.count, percentiles.len));
+        try putOwnedJsonValue(&obj, allocator, "reward", try feeHistoryRewardsValue(allocator, rt, range, percentiles));
     }
 
     return .{ .object = obj };
@@ -484,8 +488,141 @@ fn resolveFeeHistoryRange(rt: *runtime.NodeRuntime, params: FeeHistoryParams) !F
 }
 
 fn feeHistoryBaseFee(rt: *runtime.NodeRuntime, block_number: u64) !u256 {
-    const block = (try rt.blockchain.getBlockByNumber(block_number)) orelse return rt.base_fee;
-    return block.header.base_fee_per_gas orelse rt.base_fee;
+    if (try rt.blockchain.getBlockByNumber(block_number)) |block| {
+        if (block.header.base_fee_per_gas) |base_fee| return base_fee;
+        // A pre-London block has no base fee, so the history reports 0. A
+        // London block whose stored header lacks the field (the dev genesis)
+        // falls back to the runtime base fee.
+        if (rt.hardforkAt(block.header.number, block.header.timestamp).isBefore(.LONDON)) return 0;
+        return rt.base_fee;
+    }
+    // The entry after the newest block is the next block's base fee.
+    if (rt.hardforkAt(block_number, rt.pendingBlockTimestamp()).isBefore(.LONDON)) return 0;
+    return rt.base_fee;
+}
+
+const RewardSample = struct {
+    reward: u256,
+    gas_used: u64,
+
+    fn lessThan(_: void, a: RewardSample, b: RewardSample) bool {
+        return a.reward < b.reward;
+    }
+};
+
+/// Fills `out[i]` with the effective priority fee per gas at
+/// `percentiles[i]` of the block's gas, weighted by gas used. Transactions are
+/// ordered by ascending effective priority fee; the reward at percentile `p`
+/// is the fee of the transaction that contains the `p`% point of cumulative
+/// gas. A block without transactions reports 0 for every percentile.
+fn feeHistoryBlockRewards(
+    allocator: std.mem.Allocator,
+    rt: *runtime.NodeRuntime,
+    block_number: u64,
+    percentiles: []const f64,
+    out: []u256,
+) !void {
+    std.debug.assert(out.len == percentiles.len);
+    @memset(out, 0);
+    if (percentiles.len == 0) return;
+    const block = (try rt.blockchain.getBlockByNumber(block_number)) orelse return;
+    const receipts = rt.receipt_index.getByBlockHash(block.hash) orelse return;
+    if (receipts.len == 0) return;
+
+    const base_fee = block.header.base_fee_per_gas orelse 0;
+    const samples = try allocator.alloc(RewardSample, receipts.len);
+    defer allocator.free(samples);
+    var block_gas_used: u64 = 0;
+    for (receipts, samples) |receipt, *sample| {
+        sample.* = .{
+            .reward = receipt.effective_gas_price -| base_fee,
+            .gas_used = std.math.cast(u64, receipt.gas_used) orelse std.math.maxInt(u64),
+        };
+        block_gas_used +|= sample.gas_used;
+    }
+    std.mem.sort(RewardSample, samples, {}, RewardSample.lessThan);
+
+    var tx_index: usize = 0;
+    var cumulative_gas: u64 = samples[0].gas_used;
+    for (percentiles, out) |percentile, *reward| {
+        const threshold = std.math.lossyCast(u64, @as(f64, @floatFromInt(block_gas_used)) * percentile / 100.0);
+        while (cumulative_gas < threshold and tx_index < samples.len - 1) {
+            tx_index += 1;
+            cumulative_gas +|= samples[tx_index].gas_used;
+        }
+        reward.* = samples[tx_index].reward;
+    }
+}
+
+fn freeRewardRows(allocator: std.mem.Allocator, rows: [][]jsonrpc.types.Quantity, initialized: usize) void {
+    for (rows[0..initialized]) |row| {
+        for (row) |reward| allocator.free(reward.value.string);
+        allocator.free(row);
+    }
+    allocator.free(rows);
+}
+
+fn feeHistoryRewards(
+    allocator: std.mem.Allocator,
+    rt: *runtime.NodeRuntime,
+    range: FeeHistoryRange,
+    percentiles: []const f64,
+) ![][]jsonrpc.types.Quantity {
+    var block_rewards: [MAX_REWARD_PERCENTILES]u256 = undefined;
+    const rows = try allocator.alloc([]jsonrpc.types.Quantity, range.count);
+    var rows_initialized: usize = 0;
+    errdefer freeRewardRows(allocator, rows, rows_initialized);
+
+    for (rows, 0..) |*row, index| {
+        const block_number = range.oldest + @as(u64, @intCast(index));
+        try feeHistoryBlockRewards(allocator, rt, block_number, percentiles, block_rewards[0..percentiles.len]);
+
+        const quantities = try allocator.alloc(jsonrpc.types.Quantity, percentiles.len);
+        var quantities_initialized: usize = 0;
+        errdefer {
+            for (quantities[0..quantities_initialized]) |reward| allocator.free(reward.value.string);
+            allocator.free(quantities);
+        }
+        for (quantities, block_rewards[0..percentiles.len]) |*quantity, reward| {
+            quantity.* = try quantityHexU256(allocator, reward);
+            quantities_initialized += 1;
+        }
+        row.* = quantities;
+        rows_initialized += 1;
+    }
+    return rows;
+}
+
+fn feeHistoryRewardsValue(
+    allocator: std.mem.Allocator,
+    rt: *runtime.NodeRuntime,
+    range: FeeHistoryRange,
+    percentiles: []const f64,
+) !std.json.Value {
+    var block_rewards: [MAX_REWARD_PERCENTILES]u256 = undefined;
+    var outer = std.json.Array.init(allocator);
+    errdefer {
+        for (outer.items) |*item| deinitJsonValue(allocator, item);
+        outer.deinit();
+    }
+
+    for (0..range.count) |index| {
+        const block_number = range.oldest + @as(u64, @intCast(index));
+        try feeHistoryBlockRewards(allocator, rt, block_number, percentiles, block_rewards[0..percentiles.len]);
+
+        var inner = std.json.Array.init(allocator);
+        errdefer {
+            for (inner.items) |*item| deinitJsonValue(allocator, item);
+            inner.deinit();
+        }
+        try inner.ensureTotalCapacity(percentiles.len);
+        for (block_rewards[0..percentiles.len]) |reward| {
+            inner.appendAssumeCapacity(try quantityValueHexU256(allocator, reward));
+        }
+        try outer.ensureUnusedCapacity(1);
+        outer.appendAssumeCapacity(.{ .array = inner });
+    }
+    return .{ .array = outer };
 }
 
 fn feeHistoryGasUsedRatio(rt: *runtime.NodeRuntime, block_number: u64) !f64 {
@@ -608,11 +745,24 @@ fn resolveStateReadBlockObject(rt: *runtime.NodeRuntime, object: std.json.Object
     return error.InvalidParams;
 }
 
+/// Resolves an EIP-1898 `blockHash` selector to a canonical block number.
+/// State is stored per canonical height, so a hash that names a
+/// non-canonical block has no state to serve: with `requireCanonical` the
+/// request is invalid, and without it the block is unavailable. Returning the
+/// block's number would answer from the canonical block at that height.
 fn resolveBlockHashSelector(rt: *runtime.NodeRuntime, hash: [32]u8, require_canonical: bool) !u64 {
     const block = (try rt.blockchain.getBlockByHash(hash)) orelse return error.InvalidParams;
     const canonical = rt.blockchain.getCanonicalHash(block.header.number) orelse return error.InvalidParams;
-    if (require_canonical and !std.mem.eql(u8, &canonical, &hash)) return error.InvalidParams;
+    if (!std.mem.eql(u8, &canonical, &hash)) {
+        return if (require_canonical) error.InvalidParams else error.BlockUnavailable;
+    }
     return block.header.number;
+}
+
+/// Keeps `BlockUnavailable` distinct; every other selector failure is a
+/// malformed or out-of-range parameter.
+fn stateSelectorError(err: anyerror) error{ InvalidParams, BlockUnavailable } {
+    return if (err == error.BlockUnavailable) error.BlockUnavailable else error.InvalidParams;
 }
 
 fn resolveTrustedRuntimeBlockSelector(rt: *const runtime.NodeRuntime, value: std.json.Value) !u64 {
@@ -698,21 +848,6 @@ fn validateRewardPercentiles(percentiles: []const f64) !void {
     }
 }
 
-fn zeroRewards(
-    allocator: std.mem.Allocator,
-    block_count: usize,
-    percentile_count: usize,
-) ![][]jsonrpc.types.Quantity {
-    const rewards = try allocator.alloc([]jsonrpc.types.Quantity, block_count);
-    for (rewards) |*block_rewards| {
-        block_rewards.* = try allocator.alloc(jsonrpc.types.Quantity, percentile_count);
-        for (block_rewards.*) |*reward| {
-            reward.* = try quantityHexU256(allocator, 0);
-        }
-    }
-    return rewards;
-}
-
 pub fn currentBlobBaseFee(rt: *const runtime.NodeRuntime) u256 {
     if (rt.dev_runtime.config.blob_base_fee) |override| return override;
 
@@ -790,10 +925,26 @@ fn storageProofValue(
         array.deinit();
     }
 
+    // Collect and RLP-encode the account's storage entries once for the whole
+    // request instead of once per requested key.
+    var trie_keys = std.ArrayList([]const u8){};
+    defer {
+        for (trie_keys.items) |key| allocator.free(key);
+        trie_keys.deinit(allocator);
+    }
+    var trie_values = std.ArrayList([]const u8){};
+    defer {
+        for (trie_values.items) |value| allocator.free(value);
+        trie_values.deinit(allocator);
+    }
+    try collectStorageTrieEntries(allocator, sm, address, &trie_keys, &trie_values);
+
     for (keys) |key_value| {
         const slot = try parseProofStorageKey(key_value);
         const value = try sm.getStorage(address, slot);
-        var proof = try storageTrieProof(allocator, sm, address, slot);
+        var slot_bytes: [32]u8 = undefined;
+        std.mem.writeInt(u256, &slot_bytes, slot, .big);
+        var proof = try mpt_proof.secureProof(allocator, trie_keys.items, trie_values.items, &slot_bytes);
         defer proof.deinit(allocator);
 
         var entry = std.json.ObjectMap.init(allocator);
@@ -831,30 +982,6 @@ fn accountProofValue(
     defer proof.deinit(allocator);
 
     return proofNodesValue(allocator, proof.nodes);
-}
-
-fn storageTrieProof(
-    allocator: std.mem.Allocator,
-    sm: *state_manager.StateManager,
-    address: primitives.Address,
-    slot: u256,
-) !mpt_proof.Proof {
-    var keys = std.ArrayList([]const u8){};
-    defer {
-        for (keys.items) |key| allocator.free(key);
-        keys.deinit(allocator);
-    }
-    var values = std.ArrayList([]const u8){};
-    defer {
-        for (values.items) |value| allocator.free(value);
-        values.deinit(allocator);
-    }
-
-    try collectStorageTrieEntries(allocator, sm, address, &keys, &values);
-
-    var slot_bytes: [32]u8 = undefined;
-    std.mem.writeInt(u256, &slot_bytes, slot, .big);
-    return mpt_proof.secureProof(allocator, keys.items, values.items, &slot_bytes);
 }
 
 fn proofNodesValue(allocator: std.mem.Allocator, nodes: []const []const u8) !std.json.Value {
@@ -969,8 +1096,14 @@ fn computeAccountStorageRootForProof(
         values.deinit(allocator);
     }
 
+    // No cached slots means storage was never loaded or written here, so the
+    // account's recorded root still stands.
+    if (sm.journaled_state.storage_cache.cache.getPtr(address) == null) return normalizedStorageRoot(fallback_root);
+
     try collectStorageTrieEntries(allocator, sm, address, &keys, &values);
-    if (keys.items.len == 0) return normalizedStorageRoot(fallback_root);
+    // Cached slots that are all zero mean the storage was cleared. The
+    // recorded root is stale; the trie is empty (matches block_builder).
+    if (keys.items.len == 0) return primitives.State.EMPTY_TRIE_ROOT;
     return primitives.TrieHash.secure_trie_root(allocator, keys.items, values.items);
 }
 
@@ -1107,40 +1240,6 @@ fn ratioValue(value: f64) std.json.Value {
     return .{ .float = value };
 }
 
-fn zeroRewardsValue(
-    allocator: std.mem.Allocator,
-    block_count: usize,
-    percentile_count: usize,
-) !std.json.Value {
-    var outer = std.json.Array.init(allocator);
-    errdefer {
-        for (outer.items) |*item| {
-            deinitJsonValue(allocator, item);
-        }
-        outer.deinit();
-    }
-
-    for (0..block_count) |_| {
-        try outer.append(try zeroRewardRowValue(allocator, percentile_count));
-    }
-    return .{ .array = outer };
-}
-
-fn zeroRewardRowValue(allocator: std.mem.Allocator, percentile_count: usize) !std.json.Value {
-    var inner = std.json.Array.init(allocator);
-    errdefer {
-        for (inner.items) |*item| {
-            deinitJsonValue(allocator, item);
-        }
-        inner.deinit();
-    }
-
-    for (0..percentile_count) |_| {
-        try inner.append(try quantityValueHexU256(allocator, 0));
-    }
-    return .{ .array = inner };
-}
-
 fn putOwnedJson(
     obj: *std.json.ObjectMap,
     allocator: std.mem.Allocator,
@@ -1186,4 +1285,39 @@ fn deinitJsonValue(allocator: std.mem.Allocator, value: *std.json.Value) void {
         },
         else => {},
     }
+}
+
+test "account proof storage root: recorded root without cached slots, empty root once slots are cleared" {
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    const recorded_root = [_]u8{0x11} ** 32;
+
+    // Storage never loaded: the account's recorded root stands.
+    const untouched = primitives.Address{ .bytes = [_]u8{0xa1} ** 20 };
+    try std.testing.expectEqualSlices(
+        u8,
+        &recorded_root,
+        &(try computeAccountStorageRootForProof(std.testing.allocator, &rt.state, untouched, recorded_root)),
+    );
+    try std.testing.expectEqualSlices(
+        u8,
+        &primitives.State.EMPTY_TRIE_ROOT,
+        &(try computeAccountStorageRootForProof(std.testing.allocator, &rt.state, untouched, primitives.Hash.ZERO)),
+    );
+
+    // Every cached slot is zero: the storage was cleared, so the recorded
+    // root is stale and the trie is empty.
+    const cleared = primitives.Address{ .bytes = [_]u8{0xa2} ** 20 };
+    try rt.state.setStorage(cleared, 1, 5);
+    const populated = try computeAccountStorageRootForProof(std.testing.allocator, &rt.state, cleared, recorded_root);
+    try std.testing.expect(!std.mem.eql(u8, &populated, &recorded_root));
+    try std.testing.expect(!std.mem.eql(u8, &populated, &primitives.State.EMPTY_TRIE_ROOT));
+
+    try rt.state.setStorage(cleared, 1, 0);
+    try std.testing.expectEqualSlices(
+        u8,
+        &primitives.State.EMPTY_TRIE_ROOT,
+        &(try computeAccountStorageRootForProof(std.testing.allocator, &rt.state, cleared, recorded_root)),
+    );
 }

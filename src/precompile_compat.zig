@@ -42,7 +42,9 @@ fn executeEcrecover(
 
     const r = input_buf[64..96];
     const s = input_buf[96..128];
-    const pubkey = crypto.secp256k1.recoverPubkey(hash, r, s, @intCast(v_word)) catch {
+    // Yellow Paper Appendix E: ECRECOVER accepts any s in [1, n-1]. EIP-2's
+    // low-s rule restricts transaction signatures only, never precompile 0x01.
+    const pubkey = crypto.secp256k1.recoverPubkeyAllowHighS(hash, r, s, @intCast(v_word)) catch {
         return emptyEcrecoverOutput(allocator);
     };
 

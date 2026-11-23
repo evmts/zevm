@@ -9,6 +9,7 @@ const tx_submission = @import("tx_submission.zig");
 const txpool_handlers = @import("txpool.zig");
 const tx_encoding = @import("../../transaction_encoding.zig");
 const tx_processor = @import("../../tx_processor.zig");
+const txpool = @import("../../txpool.zig");
 const jsonrpc = @import("jsonrpc");
 const dispatcher = @import("../dispatcher.zig");
 const dispatch_wiring = @import("../dispatch_wiring.zig");
@@ -295,10 +296,30 @@ test "eth_sendRawTransaction enforces replacement pricing" {
         tx_submission.handleSendRawTransaction(std.testing.allocator, &rt, makeRawTxParams(same_price_hex)),
     );
 
-    const replacement = try signTestLegacyTx(
+    // A 1 wei nudge is below the 10% replacement bump.
+    const nudge = try signTestLegacyTx(
         std.testing.allocator,
         0,
         runtime.DEFAULT_GAS_PRICE + 1,
+        21_000,
+        runtime.DEFAULT_DEV_ACCOUNTS[1],
+        1000,
+        runtime.DEFAULT_CHAIN_ID,
+        genesis.DEV_ACCOUNTS[0].private_key,
+    );
+    defer std.testing.allocator.free(nudge);
+    const nudge_hex = try bytesToHexAlloc(std.testing.allocator, nudge);
+    defer std.testing.allocator.free(nudge_hex);
+    try std.testing.expectError(
+        tx_submission.TxSubmissionError.PoolInsertFailed,
+        tx_submission.handleSendRawTransaction(std.testing.allocator, &rt, makeRawTxParams(nudge_hex)),
+    );
+
+    const replacement_price = runtime.DEFAULT_GAS_PRICE + runtime.DEFAULT_GAS_PRICE / 10;
+    const replacement = try signTestLegacyTx(
+        std.testing.allocator,
+        0,
+        replacement_price,
         21_000,
         runtime.DEFAULT_DEV_ACCOUNTS[1],
         1000,
@@ -314,7 +335,7 @@ test "eth_sendRawTransaction enforces replacement pricing" {
 
     try std.testing.expectEqual(@as(usize, 1), rt.pool.pendingCount());
     try std.testing.expect(!std.mem.eql(u8, &first_hash, &replacement_hash));
-    try std.testing.expectEqual(runtime.DEFAULT_GAS_PRICE + 1, rt.pool.items()[0].max_fee_per_gas);
+    try std.testing.expectEqual(replacement_price, rt.pool.items()[0].max_fee_per_gas);
     try std.testing.expectEqualSlices(u8, &replacement_hash, &rt.pool.items()[0].hash);
 }
 
@@ -442,26 +463,11 @@ test "eth_sendTransaction managed account signs and returns hash" {
 }
 
 test "eth_sendTransaction uses runtime hardfork policy for intrinsic gas" {
+    var pre_shanghai_cfg = runtime.DEFAULT_DEV_HARDFORK_CONFIG;
+    pre_shanghai_cfg.shanghai_timestamp = std.math.maxInt(u64);
+    pre_shanghai_cfg.cancun_timestamp = std.math.maxInt(u64);
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, .{
-        .hardfork_config = .{
-            .homestead_block = 0,
-            .dao_block = 0,
-            .tangerine_whistle_block = 0,
-            .spurious_dragon_block = 0,
-            .byzantium_block = 0,
-            .petersburg_block = 0,
-            .istanbul_block = 0,
-            .muir_glacier_block = 0,
-            .berlin_block = 0,
-            .london_block = 0,
-            .arrow_glacier_block = 0,
-            .gray_glacier_block = 0,
-            .merge_block = 0,
-            .shanghai_timestamp = std.math.maxInt(u64),
-            .cancun_timestamp = std.math.maxInt(u64),
-            .prague_timestamp = std.math.maxInt(u64),
-            .osaka_timestamp = std.math.maxInt(u64),
-        },
+        .hardfork_config = pre_shanghai_cfg,
     });
     defer rt.deinit();
     try rt.setMiningConfig(.manual);
@@ -985,7 +991,10 @@ test "eth_sendTransaction rejects chainId field" {
 }
 
 test "EIP-7825 submission and signing return exact JSON error without changing state" {
-    var rt = try runtime.NodeRuntime.init(std.testing.allocator, .{ .hardfork_config = .{ .osaka_timestamp = 0 } });
+    var osaka_cfg = runtime.DEFAULT_DEV_HARDFORK_CONFIG;
+    osaka_cfg.prague_timestamp = 0;
+    osaka_cfg.osaka_timestamp = 0;
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, .{ .hardfork_config = osaka_cfg });
     defer rt.deinit();
     try rt.setMiningConfig(.manual);
     var handlers = dispatcher.HandlerRegistry{};
@@ -1028,7 +1037,10 @@ test "EIP-7825 raw admission follows pending timestamp and permits exact cap" {
         .{ .timestamp = 99, .gas_limit = 16_777_217 },
         .{ .timestamp = 100, .gas_limit = 16_777_216 },
     }) |case| {
-        var rt = try runtime.NodeRuntime.init(std.testing.allocator, .{ .hardfork_config = .{ .prague_timestamp = 0, .osaka_timestamp = 100 } });
+        var osaka_100_cfg = runtime.DEFAULT_DEV_HARDFORK_CONFIG;
+        osaka_100_cfg.prague_timestamp = 0;
+        osaka_100_cfg.osaka_timestamp = 100;
+        var rt = try runtime.NodeRuntime.init(std.testing.allocator, .{ .hardfork_config = osaka_100_cfg });
         defer rt.deinit();
         try rt.setMiningConfig(.manual);
         rt.setNextBlockTimestamp(case.timestamp);
@@ -1088,6 +1100,7 @@ test "EIP-7594 admission gates v0/v1 wrappers, verifies KZG proofs, upgrades sid
 
     var rt = try makeRuntime();
     defer rt.deinit();
+    try rt.setMiningConfig(.manual);
 
     // Pre-Osaka: v1 rejected, v0 verified via c-kzg and pooled.
     try std.testing.expectError(error.BlobWrapperVersionMismatch, tx_submission.handleSendRawTransaction(temp, &rt, v1_params));
@@ -1095,6 +1108,7 @@ test "EIP-7594 admission gates v0/v1 wrappers, verifies KZG proofs, upgrades sid
     try std.testing.expect(rt.pool.items()[0].blob_sidecars[0].proofs == .blob);
 
     // Activate Osaka: v0 rejected, tampered v1 rejected by c-kzg cell batch verify, valid v1 upgrades sidecar.
+    rt.hardfork_config.prague_timestamp = 0;
     rt.hardfork_config.osaka_timestamp = 0;
     try std.testing.expectError(error.BlobWrapperVersionMismatch, tx_submission.handleSendRawTransaction(temp, &rt, v0_params));
 
@@ -1252,4 +1266,240 @@ test "automine failure fails eth_sendTransaction and evicts the transaction (#56
     _ = try tx_submission.handleSendTransaction(std.testing.allocator, &rt, params);
     try std.testing.expectEqual(@as(u64, 1), rt.head_block_number);
     try std.testing.expectEqual(@as(u64, 1), try rt.getNonce(runtime.DEFAULT_DEV_ACCOUNTS[0]));
+}
+
+test "eth_sendTransaction with gasPrice=maxInt(u256) returns InsufficientBalance instead of overflowing" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    try rt.setMiningConfig(.manual);
+
+    var obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try obj.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try obj.put("gasPrice", .{ .string = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" });
+    try obj.put("gas", .{ .string = "0x5208" });
+
+    const params = jsonrpc.eth.SendTransaction.Params{
+        .transaction = .{ .value = .{ .object = obj } },
+    };
+
+    try std.testing.expectError(
+        tx_submission.TxSubmissionError.InsufficientBalance,
+        tx_submission.handleSendTransaction(std.testing.allocator, &rt, params),
+    );
+    try std.testing.expectEqual(@as(usize, 0), rt.pool.items().len);
+}
+
+test "eth_sendTransaction value plus gas cost overflow returns InsufficientBalance" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    try rt.setMiningConfig(.manual);
+
+    var obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try obj.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try obj.put("value", .{ .string = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" });
+    try obj.put("gas", .{ .string = "0x5208" });
+
+    const params = jsonrpc.eth.SendTransaction.Params{
+        .transaction = .{ .value = .{ .object = obj } },
+    };
+
+    try std.testing.expectError(
+        tx_submission.TxSubmissionError.InsufficientBalance,
+        tx_submission.handleSendTransaction(std.testing.allocator, &rt, params),
+    );
+}
+
+fn sendLegacyRequest(rt: *runtime.NodeRuntime, gas_price_hex: []const u8, value_hex: []const u8) tx_submission.TxSubmissionError!jsonrpc.eth.SendTransaction.Result {
+    var obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try obj.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try obj.put("nonce", .{ .string = "0x0" });
+    try obj.put("gasPrice", .{ .string = gas_price_hex });
+    try obj.put("value", .{ .string = value_hex });
+    try obj.put("gas", .{ .string = "0x5208" });
+    return tx_submission.handleSendTransaction(std.testing.allocator, rt, .{
+        .transaction = .{ .value = .{ .object = obj } },
+    });
+}
+
+test "eth_sendTransaction legacy replacement succeeds with a 10% gas price bump" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    try rt.setMiningConfig(.manual);
+
+    // 0x77359400 = 2 gwei (the runtime minimum), 0x83215600 = 2.2 gwei.
+    const first = try sendLegacyRequest(&rt, "0x77359400", "0x1");
+    try std.testing.expectEqual(runtime.DEFAULT_GAS_PRICE, rt.pool.items()[0].max_priority_fee_per_gas);
+
+    // Same price with a different payload is not a replacement.
+    try std.testing.expectError(
+        tx_submission.TxSubmissionError.PoolInsertFailed,
+        sendLegacyRequest(&rt, "0x77359400", "0x2"),
+    );
+
+    const replacement = try sendLegacyRequest(&rt, "0x83215600", "0x2");
+    try std.testing.expect(!std.mem.eql(u8, &first.value.bytes, &replacement.value.bytes));
+    try std.testing.expectEqual(@as(usize, 1), rt.pool.items().len);
+    try std.testing.expectEqualSlices(u8, &replacement.value.bytes, &rt.pool.items()[0].hash);
+    try std.testing.expectEqual(@as(u256, 2_200_000_000), rt.pool.items()[0].max_fee_per_gas);
+}
+
+test "eth_sendRawTransaction rejects a priority fee above the fee cap" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    try rt.setMiningConfig(.manual);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const temp = arena.allocator();
+
+    var tx = primitives.Transaction.Eip1559Transaction{
+        .chain_id = runtime.DEFAULT_CHAIN_ID,
+        .nonce = 0,
+        .max_priority_fee_per_gas = runtime.DEFAULT_GAS_PRICE + 1,
+        .max_fee_per_gas = runtime.DEFAULT_GAS_PRICE,
+        .gas_limit = 21_000,
+        .to = runtime.DEFAULT_DEV_ACCOUNTS[1],
+        .value = 0,
+        .data = &.{},
+        .access_list = &.{},
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+    const unsigned = try primitives.Transaction.encodeEip1559ForSigning(temp, tx);
+    const sig = try crypto.Crypto.unaudited_signHash(tx_encoding.transactionHash(unsigned), genesis.DEV_ACCOUNTS[0].private_key);
+    tx.y_parity = sig.v - 27;
+    std.mem.writeInt(u256, &tx.r, sig.r, .big);
+    std.mem.writeInt(u256, &tx.s, sig.s, .big);
+    const signed = try primitives.Transaction.encodeEip1559ForSigning(temp, tx);
+
+    try std.testing.expectError(
+        tx_submission.TxSubmissionError.DecodeFailed,
+        tx_submission.handleSendRawTransaction(std.testing.allocator, &rt, makeRawTxParams(try bytesToHexAlloc(temp, signed))),
+    );
+    try std.testing.expectEqual(@as(usize, 0), rt.pool.items().len);
+}
+
+// --- Round 2 admission regressions ---
+
+fn submitSignedLegacy(
+    rt: *runtime.NodeRuntime,
+    nonce: u64,
+    gas_price: u256,
+) tx_submission.TxSubmissionError!jsonrpc.eth.SendRawTransaction.Result {
+    const allocator = std.testing.allocator;
+    const encoded = signTestLegacyTx(
+        allocator,
+        nonce,
+        gas_price,
+        21_000,
+        runtime.DEFAULT_DEV_ACCOUNTS[1],
+        1,
+        runtime.DEFAULT_CHAIN_ID,
+        genesis.DEV_ACCOUNTS[0].private_key,
+    ) catch return tx_submission.TxSubmissionError.SigningFailed;
+    defer allocator.free(encoded);
+    const hex = bytesToHexAlloc(allocator, encoded) catch return tx_submission.TxSubmissionError.OutOfMemory;
+    defer allocator.free(hex);
+    return tx_submission.handleSendRawTransaction(allocator, rt, makeRawTxParams(hex));
+}
+
+test "eth_sendRawTransaction rejects a fee cap below the pending base fee" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    try rt.setMiningConfig(.manual);
+    try std.testing.expect(rt.pendingHardfork().isAtLeast(.LONDON));
+
+    rt.base_fee = runtime.DEFAULT_GAS_PRICE + 1;
+    try std.testing.expectError(
+        tx_submission.TxSubmissionError.GasPriceBelowBaseFee,
+        submitSignedLegacy(&rt, 0, runtime.DEFAULT_GAS_PRICE),
+    );
+    try std.testing.expectEqual(@as(usize, 0), rt.pool.items().len);
+    try std.testing.expectEqual(@as(u32, 0), rt.pool.base_nonces.count());
+
+    // A fee cap equal to the base fee is includable, and a zero base fee
+    // disables the floor.
+    rt.base_fee = runtime.DEFAULT_GAS_PRICE;
+    _ = try submitSignedLegacy(&rt, 0, runtime.DEFAULT_GAS_PRICE);
+    rt.base_fee = 0;
+    _ = try submitSignedLegacy(&rt, 1, 1);
+    try std.testing.expectEqual(@as(usize, 2), rt.pool.items().len);
+}
+
+test "eth_sendRawTransaction keeps no sender state for a pool-rejected transaction and prunes it on removal" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    try rt.setMiningConfig(.manual);
+
+    // The pool rejects a nonce beyond the gap limit. Before the fix the base
+    // nonce was recorded first and the entry was never released.
+    try std.testing.expectError(
+        tx_submission.TxSubmissionError.PoolInsertFailed,
+        submitSignedLegacy(&rt, txpool.MAX_NONCE_GAP + 1, runtime.DEFAULT_GAS_PRICE),
+    );
+    try std.testing.expectEqual(@as(usize, 0), rt.pool.items().len);
+    try std.testing.expectEqual(@as(u32, 0), rt.pool.base_nonces.count());
+
+    const accepted = try submitSignedLegacy(&rt, 0, runtime.DEFAULT_GAS_PRICE);
+    try std.testing.expectEqual(@as(usize, 1), rt.pool.pendingCount());
+    try std.testing.expectEqual(@as(u32, 1), rt.pool.base_nonces.count());
+
+    try std.testing.expect(rt.pool.removeByHash(accepted.value.bytes));
+    try std.testing.expectEqual(@as(u32, 0), rt.pool.base_nonces.count());
+}
+
+test "eth_sendRawTransaction enforces EIP-3607 on the recovered sender" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    try rt.setMiningConfig(.manual);
+    const sender = runtime.DEFAULT_DEV_ACCOUNTS[0];
+
+    try rt.setCode(sender, &[_]u8{ 0x60, 0x00 });
+    try std.testing.expectError(
+        tx_submission.TxSubmissionError.SenderNotEOA,
+        submitSignedLegacy(&rt, 0, runtime.DEFAULT_GAS_PRICE),
+    );
+    try std.testing.expectEqual(@as(usize, 0), rt.pool.items().len);
+
+    // A 23-byte 0xef0100 delegation designator is an EOA from Prague on.
+    const delegation = [_]u8{ 0xef, 0x01, 0x00 } ++ [_]u8{0x11} ** 20;
+    try rt.setCode(sender, &delegation);
+    const delegated = submitSignedLegacy(&rt, 0, runtime.DEFAULT_GAS_PRICE);
+    if (rt.pendingHardfork().isAtLeast(.PRAGUE)) {
+        _ = try delegated;
+        try std.testing.expectEqual(@as(usize, 1), rt.pool.items().len);
+    } else {
+        try std.testing.expectError(tx_submission.TxSubmissionError.SenderNotEOA, delegated);
+    }
+
+    // The prefix alone does not make arbitrary code a delegation.
+    var rt_long = try makeRuntime();
+    defer rt_long.deinit();
+    try rt_long.setMiningConfig(.manual);
+    const not_delegation = [_]u8{ 0xef, 0x01, 0x00 } ++ [_]u8{0x11} ** 21;
+    try rt_long.setCode(sender, &not_delegation);
+    try std.testing.expectError(
+        tx_submission.TxSubmissionError.SenderNotEOA,
+        submitSignedLegacy(&rt_long, 0, runtime.DEFAULT_GAS_PRICE),
+    );
+}
+
+test "eth_sendRawTransaction rejects the EIP-2681 maximum nonce" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    try rt.setMiningConfig(.manual);
+
+    try std.testing.expectError(
+        tx_submission.TxSubmissionError.NonceTooHigh,
+        submitSignedLegacy(&rt, std.math.maxInt(u64), runtime.DEFAULT_GAS_PRICE),
+    );
+    try std.testing.expectEqual(@as(usize, 0), rt.pool.items().len);
+    try std.testing.expectEqual(@as(u32, 0), rt.pool.base_nonces.count());
 }

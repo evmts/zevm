@@ -1,6 +1,7 @@
 const std = @import("std");
 const primitives = @import("primitives");
 const consensus_sync = @import("consensus_sync.zig");
+const consensus_verifier = @import("consensus_verifier.zig");
 
 fn parseHex32(comptime value: []const u8) [32]u8 {
     var bytes: [32]u8 = undefined;
@@ -40,6 +41,50 @@ test "expectedCurrentSlot matches primitives consensus calculation" {
 
     const expected = primitives.consensus.expectedCurrentSlot(engine.config.genesis_time);
     try std.testing.expectEqual(expected, engine.expectedCurrentSlot());
+}
+
+test "advance skips a successful slot and retries a failed slot" {
+    var config = testConfig(std.math.maxInt(u64), 0); // The expected slot is always zero.
+    config.consensus_rpc = "";
+    var engine = consensus_sync.ConsensusSyncEngine.init(config);
+    engine.last_advance_slot = 0;
+    try engine.advance(std.testing.allocator);
+    try std.testing.expectEqual(@as(u32, 0), engine.consecutive_advance_failures);
+
+    engine.config.genesis_time = 0;
+    for (1..3) |failures| {
+        try std.testing.expectError(error.InvalidEndpointUrl, engine.advance(std.testing.allocator));
+        try std.testing.expectEqual(@as(?u64, 0), engine.last_advance_slot);
+        try std.testing.expectEqual(@as(u32, @intCast(failures)), engine.consecutive_advance_failures);
+    }
+}
+
+test "advance recovers the next committee from a timed-out verified update before fetching" {
+    var config = testConfig(0, 0);
+    config.consensus_rpc = "";
+    var engine = consensus_sync.ConsensusSyncEngine.init(config);
+    const period_slots = primitives.ConsensusSpec.SLOTS_PER_SYNC_COMMITTEE_PERIOD;
+    engine.store.finalized_header.beacon.slot = 32;
+    engine.store.next_sync_committee_pubkeys = [_][48]u8{[_]u8{1} ** 48} ** 512;
+    engine.store.next_sync_committee_aggregate_pubkey = [_]u8{2} ** 48;
+
+    var update = std.mem.zeroes(primitives.LightClientUpdate.GenericUpdate);
+    update.attested_header.beacon.slot = period_slots;
+    update.signature_slot = period_slots + 1;
+    @memset(&update.sync_committee_bits, 0xff);
+    _ = consensus_verifier.applyUpdate(&engine.store, update);
+    try std.testing.expect(consensus_verifier.processLightClientStoreForceUpdate(&engine.store, 32 + period_slots) == null);
+    try std.testing.expect(engine.store.best_valid_update != null);
+    try std.testing.expectEqual(@as(u64, 32), engine.finalizedSlot());
+
+    // A fetch failure leaves the already applied recovery in place.
+    try std.testing.expectError(error.InvalidEndpointUrl, engine.advance(std.testing.allocator));
+    try std.testing.expectEqual(@as(u64, period_slots), engine.finalizedSlot());
+    try std.testing.expectEqual(engine.finalizedSlot(), engine.optimisticSlot());
+    try std.testing.expectEqual(@as(u8, 1), engine.store.current_sync_committee_pubkeys[0][0]);
+    try std.testing.expectEqual([_]u8{2} ** 48, engine.store.current_sync_committee_aggregate_pubkey);
+    try std.testing.expect(engine.store.best_valid_update == null);
+    try std.testing.expectEqual(consensus_verifier.beaconHeaderRoot(update.attested_header.beacon), engine.lastCheckpoint().?);
 }
 
 test "isValidCheckpoint returns true for a recent slot" {
@@ -214,7 +259,7 @@ test "genericFromFinalityUpdate preserves the real finality branch length" {
         8_000_001,
     );
 
-    const generic = consensus_sync.genericFromFinalityUpdate(finality_update);
+    const generic = consensus_sync.genericFromFinalityUpdate(&finality_update);
     try std.testing.expect(generic.finality_branch != null);
     try std.testing.expectEqual(@as(usize, 6), generic.finality_branch.?.len);
 }
@@ -239,7 +284,7 @@ test "genericFromLightClientUpdate preserves real branch lengths" {
         8_000_001,
     );
 
-    const generic = consensus_sync.genericFromLightClientUpdate(update);
+    const generic = consensus_sync.genericFromLightClientUpdate(&update);
     try std.testing.expect(generic.next_sync_committee_branch != null);
     try std.testing.expectEqual(@as(usize, 5), generic.next_sync_committee_branch.?.len);
     try std.testing.expect(generic.finality_branch != null);
@@ -285,4 +330,14 @@ test "baked default checkpoints are distinct per network" {
         try std.testing.expectEqual(@as(usize, 64), a.len);
         for (roots[i + 1 ..]) |b| try std.testing.expect(!std.mem.eql(u8, a, b));
     }
+}
+
+test "a newer finalized header supersedes the optimistic response" {
+    var engine = consensus_sync.ConsensusSyncEngine.init(testConfig(0, 0));
+    engine.store.finalized_header.beacon.slot = 32;
+    engine.store.optimistic_header = engine.store.finalized_header;
+    try std.testing.expect(!try engine.shouldApplyOptimisticUpdate(31, error.NotRelevant));
+    try std.testing.expect(!try engine.shouldApplyOptimisticUpdate(32, {}));
+    try std.testing.expectError(error.InvalidSignature, engine.shouldApplyOptimisticUpdate(31, error.InvalidSignature));
+    try std.testing.expect(try engine.shouldApplyOptimisticUpdate(33, {}));
 }

@@ -98,12 +98,30 @@ fn poolStream(_: void, input: []const u8) !void {
             const h = hash(if (slot.*) |e| e.id else 0);
             if (op == 12) {
                 pool.removeMined(&.{h});
-                if (slot.* != null) model.base[sender] = @max(model.base[sender], @as(usize, nonce) + 1);
+                if (slot.* != null) {
+                    model.base[sender] = @max(model.base[sender], @as(usize, nonce) + 1);
+                }
+                for (0..model.slots.len) |s| {
+                    for (0..@min(model.base[s], model.slots[s].len)) |stale_nonce| {
+                        model.slots[s][stale_nonce] = null;
+                    }
+                }
             } else try std.testing.expectEqual(slot.* != null, pool.removeByHash(h));
             slot.* = null;
         } else {
-            const old = slot.* orelse Entry{ .id = 0, .kind = 0, .cap = 10, .tip = 1, .blob_fee = 1 };
-            var e = Entry{ .id = i + 1, .kind = op % 4, .cap = old.cap + @intFromBool(op != 4), .tip = old.tip + @intFromBool(op != 5), .blob_fee = old.blob_fee + @intFromBool(op != 6) };
+            const old = slot.* orelse Entry{ .id = 0, .kind = 0, .cap = 100, .tip = 10, .blob_fee = 10 };
+            const is_old_blob = old.kind >= 2;
+            const pct: u64 = if (is_old_blob) 100 else 10;
+            const cap_bump: u64 = @max(@as(u64, 1), (old.cap * pct + 99) / 100);
+            const tip_bump: u64 = @max(@as(u64, 1), (old.tip * pct + 99) / 100);
+            const blob_bump: u64 = @max(@as(u64, 1), (old.blob_fee * pct + 99) / 100);
+            var e = Entry{
+                .id = i + 1,
+                .kind = op % 4,
+                .cap = if (op == 4) old.cap else old.cap + cap_bump,
+                .tip = if (op == 5) old.tip else old.tip + tip_bump,
+                .blob_fee = if (op == 6) old.blob_fee else old.blob_fee + blob_bump,
+            };
             const duplicate = slot.* != null and op >= 8;
             if (duplicate) {
                 e = old;
@@ -130,7 +148,12 @@ fn poolStream(_: void, input: []const u8) !void {
                 .blob_versioned_hashes = if (e.kind >= 2) &.{h} else &.{},
                 .blob_sidecars = if (e.kind >= 2 and !(duplicate and op == 10)) &sides else &.{},
             });
-            if (slot.* != null and !duplicate and (e.cap <= old.cap or e.tip <= old.tip or (old.kind >= 2 and (e.kind < 2 or e.blob_fee <= old.blob_fee)))) {
+            const is_new_blob = e.kind >= 2;
+            const bad_replacement = slot.* != null and !duplicate and (is_old_blob != is_new_blob or
+                e.cap < old.cap + cap_bump or
+                e.tip < old.tip + tip_bump or
+                (is_old_blob and e.blob_fee < old.blob_fee + blob_bump));
+            if (bad_replacement) {
                 try std.testing.expectError(error.ReplacementUnderpriced, result);
             } else {
                 try result;

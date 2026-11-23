@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 export const ZEVM_NETWORK_MAINNET = 0;
 export const ZEVM_NETWORK_SEPOLIA = 1;
 export const ZEVM_NETWORK_HOLESKY = 2;
+export const ZEVM_NETWORK_HOODI = 3;
 export const ZEVM_STATUS_NOT_SYNCED = 0;
 export const ZEVM_STATUS_SYNCING = 1;
 export const ZEVM_STATUS_SYNCED = 2;
@@ -34,32 +35,30 @@ function nativePackageKey() {
     const libc = glibc ? "gnu" : "musl";
     return `${process.platform}-${process.arch}-${libc}`;
 }
-function isMissingPlatformPackage(err, packageName) {
-    const code = err.code;
-    const message = err instanceof Error ? err.message : "";
-    return code === "MODULE_NOT_FOUND" && message.includes(packageName);
-}
 function loadNative() {
     const override = process.env.ZEVM_NATIVE_PATH;
     if (override) {
         return require(override);
     }
-    const here = dirname(fileURLToPath(import.meta.url));
-    const localAddon = join(here, "..", "native", "zevm.node");
-    if (existsSync(localAddon)) {
-        return require(localAddon);
-    }
+    // Published platform packages win over a stray local build so installs
+    // always load the prebuild that matches this package version.
     const packageKey = nativePackageKey();
     const packageNames = platformPackages[packageKey] ?? [];
     for (const packageName of packageNames) {
         try {
-            return require(packageName);
+            require.resolve(packageName + "/package.json");
         }
         catch (err) {
-            if (!isMissingPlatformPackage(err, packageName)) {
-                throw err;
-            }
+            if (err.code === "MODULE_NOT_FOUND") continue;
+            throw err;
         }
+        return require(packageName);
+    }
+    // Development fallback: a locally staged addon (not shipped in the tarball).
+    const here = dirname(fileURLToPath(import.meta.url));
+    const localAddon = join(here, "..", "native", "zevm.node");
+    if (existsSync(localAddon)) {
+        return require(localAddon);
     }
     throw new Error(`No ZEVM native addon found for ${packageKey}. Supported prebuilds: ${Object.keys(platformPackages).join(", ")}`);
 }
@@ -70,11 +69,71 @@ if (typeof native.nodeCreate !== "function" || typeof native.nodeRpc !== "functi
 export const abiVersion = native.abiVersion;
 export const version = native.version;
 export const errorMessage = native.errorMessage;
-export const networkName = native.networkName;
+const INT32_MIN = -2147483648;
+const INT32_MAX = 2147483647;
+/**
+ * Rejects NaN, Infinity, fractions, and out-of-int32 values that the native
+ * layer would otherwise coerce (NaN -> 0 selects mainnet).
+ */
+function assertNetwork(network) {
+    if (typeof network !== "number" || !Number.isInteger(network) || network < INT32_MIN || network > INT32_MAX) {
+        throw new TypeError("network must be an integer ZEVM_NETWORK_* value");
+    }
+    return network;
+}
+export function networkName(network) {
+    return native.networkName(assertNetwork(network));
+}
+const ZERO_CHECKPOINT_HEX = `0x${"0".repeat(64)}`;
+function checkpointToHex(checkpoint) {
+    let hex;
+    if (typeof checkpoint === "string") {
+        if (!/^0x[0-9a-fA-F]{64}$/.test(checkpoint)) {
+            throw new TypeError("checkpoint must be a 0x-prefixed 32-byte hex string");
+        }
+        hex = checkpoint;
+    }
+    else if (checkpoint instanceof Uint8Array) {
+        if (checkpoint.length !== 32) {
+            throw new TypeError("checkpoint must be 32 bytes");
+        }
+        hex = `0x${Buffer.from(checkpoint).toString("hex")}`;
+    }
+    else {
+        throw new TypeError("checkpoint must be a hex string or Uint8Array");
+    }
+    if (hex.toLowerCase() === ZERO_CHECKPOINT_HEX) {
+        throw new TypeError("checkpoint must not be all zeros");
+    }
+    return hex;
+}
 export class LightClient {
     #handle;
-    constructor(network, beaconRpcUrl, executionRpcUrl) {
-        this.#handle = native.lightInit(network, beaconRpcUrl, executionRpcUrl);
+    /**
+     * @param {number} network one of ZEVM_NETWORK_*
+     * @param {string} beaconRpcUrl non-empty consensus-layer RPC URL
+     * @param {string} executionRpcUrl non-empty execution-layer RPC URL
+     * @param {{ checkpoint?: string | Uint8Array, strictCheckpointAge?: boolean } | null} [options]
+     *   checkpoint: trusted 32-byte beacon block root (defaults to the network's built-in checkpoint);
+     *   strictCheckpointAge: fail the first syncStep when the checkpoint is too old
+     */
+    constructor(network, beaconRpcUrl, executionRpcUrl, options = undefined) {
+        assertNetwork(network);
+        if (options == null) {
+            this.#handle = native.lightInit(network, beaconRpcUrl, executionRpcUrl);
+            return;
+        }
+        if (typeof native.lightInitEx !== "function") {
+            throw new Error("ZEVM addon does not support light client options; rebuild the native addon");
+        }
+        const checkpoint = options.checkpoint === undefined || options.checkpoint === null
+            ? null
+            : checkpointToHex(options.checkpoint);
+        this.#handle = native.lightInitEx(network, beaconRpcUrl, executionRpcUrl, checkpoint, options.strictCheckpointAge ? 1 : 0);
+    }
+    /** Latest verified finalized checkpoint as a 0x-prefixed hex string. */
+    getCheckpoint() {
+        return native.lightGetCheckpoint(this.#requiredHandle());
     }
     close() {
         const handle = this.#handle;

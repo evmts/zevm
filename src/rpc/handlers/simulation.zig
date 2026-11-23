@@ -16,7 +16,11 @@ pub const MODE_UNSUPPORTED_MESSAGE = "mode-unsupported";
 const MAX_RPC_ERROR_DATA_HEX_BYTES: usize = 32 * 1024;
 const MAX_SIMULATION_RPC_ERROR_MESSAGE_BYTES: usize = 1024;
 const SIMULATE_DEFAULT_GAS_CAP: u64 = 50_000_000;
-const SIMULATE_MAX_BLOCK_STATE_CALLS: usize = 256;
+/// Upper bound on blocks one eth_simulateV1 request may produce, counting the
+/// empty blocks synthesized to fill a `blockOverrides.number` gap.
+const MAX_SIMULATE_BLOCKS: usize = 256;
+/// Upper bound on live tracer allocations for one debug_traceCall request.
+const MAX_TRACE_BYTES: usize = 32 * 1024 * 1024;
 const SIMULATE_BLOCK_TIME_INCREMENT: u64 = 12;
 
 threadlocal var last_execution_error_data_buf: [MAX_RPC_ERROR_DATA_HEX_BYTES]u8 = undefined;
@@ -60,7 +64,7 @@ const TransactionRequest = struct {
 
 const ParsedCallParams = struct {
     tx: TransactionRequest,
-    block: std.json.Value,
+    block: ?std.json.Value = null,
     state_overrides: ?std.json.Value = null,
 
     fn deinit(self: *ParsedCallParams, allocator: std.mem.Allocator) void {
@@ -99,12 +103,14 @@ const ExecutionResult = struct {
 
 const ExecuteOptions = struct {
     tracer: ?*guillotine_mini.trace.Tracer = null,
+    inspector: ?guillotine_mini.Inspector = null,
     allow_failure: bool = false,
     persist_state: bool = false,
     increment_nonce: bool = false,
     /// Record Hardhat console.log calldata in the node buffer. Gas-estimation
     /// probes turn this off so one request records each log once.
     capture_console_logs: bool = true,
+    extra_precompile_overrides: []const guillotine_mini.PrecompileOverride = &.{},
 };
 
 pub const EstimateOptions = struct {
@@ -246,12 +252,16 @@ pub fn handleEthCall(
     params: ?std.json.Value,
 ) !std.json.Value {
     clearLastExecutionErrorData();
+    clearLastSimulationRpcError();
     // NodeRuntime mode gating lives in dispatch_wiring so light mode can return
     // JSON-RPC -32010 before the trusted simulation path is entered.
     var parsed = try parseCallParams(allocator, params);
     defer parsed.deinit(allocator);
 
-    const selected_block_number = try resolveTrustedBlockSelector(rt, parsed.block);
+    const selected_block_number = if (parsed.block) |block|
+        try resolveTrustedBlockSelector(rt, block)
+    else
+        rt.head_block_number;
     try ensureCurrentStateSelector(rt, selected_block_number);
     var recent_block_hashes: [256][32]u8 = undefined;
     const block_ctx = try blockContext(rt, selected_block_number, &recent_block_hashes);
@@ -259,11 +269,20 @@ pub fn handleEthCall(
     try rt.state.checkpoint();
     defer rt.state.revert();
 
+    var precompile_moves = PrecompileMoveState{};
+    defer precompile_moves.deinit(allocator);
+    const fork = rt.hardforkForBlockContext(block_ctx);
+
     if (parsed.state_overrides) |overrides| {
-        try applyStateOverrides(allocator, rt, overrides, null, null);
+        try applyStateOverrides(allocator, rt, overrides, &precompile_moves, fork);
     }
 
-    var result = try executeOnce(allocator, rt, parsed.tx, block_ctx, gasLimit(parsed.tx, block_ctx));
+    var prepared_overrides = try preparePrecompileOverrides(allocator, precompile_moves.moves.items, fork);
+    defer prepared_overrides.deinit(allocator);
+
+    var result = try executeOnceWithOptions(allocator, rt, parsed.tx, block_ctx, gasLimit(parsed.tx, block_ctx), .{
+        .extra_precompile_overrides = prepared_overrides.overrides,
+    });
     defer result.deinit(allocator);
 
     return hexBytes(allocator, result.output);
@@ -279,7 +298,8 @@ pub fn handleDebugTraceCall(allocator: std.mem.Allocator, rt: *runtime.NodeRunti
     try ensureCurrentStateSelector(rt, selected);
     var hashes: [256][32]u8 = undefined;
     const ctx = try blockContext(rt, selected, &hashes);
-    var tracer = guillotine_mini.trace.Tracer.init(allocator);
+    var trace_budget = TraceBudgetAllocator{ .parent = allocator, .remaining = MAX_TRACE_BYTES };
+    var tracer = guillotine_mini.trace.Tracer.init(trace_budget.allocator());
     defer tracer.deinit();
     tracer.max_entries = 100_000;
     if (items.len == 3) {
@@ -289,12 +309,18 @@ pub fn handleDebugTraceCall(allocator: std.mem.Allocator, rt: *runtime.NodeRunti
             if (entry.value_ptr.* != .bool) return error.InvalidParams;
             const enabled = entry.value_ptr.bool;
             const key = entry.key_ptr.*;
-            if (std.mem.eql(u8, key, "disableStack")) tracer.config.disable_stack = enabled else if (std.mem.eql(u8, key, "enableMemory")) tracer.config.enable_memory = enabled else if (std.mem.eql(u8, key, "enableReturnData")) tracer.config.enable_return_data = enabled else if (std.mem.eql(u8, key, "disableStorage") and enabled) tracer.config.disable_storage = true else return error.InvalidParams;
+            if (std.mem.eql(u8, key, "disableStack")) tracer.config.disable_stack = enabled else if (std.mem.eql(u8, key, "enableMemory")) tracer.config.enable_memory = enabled else if (std.mem.eql(u8, key, "enableReturnData")) tracer.config.enable_return_data = enabled else if (std.mem.eql(u8, key, "disableStorage")) tracer.config.disable_storage = enabled else return error.InvalidParams;
         }
     }
     tracer.enable();
-    var result = try executeOnceWithOptions(allocator, rt, tx, ctx, gasLimit(tx, ctx), .{ .tracer = &tracer, .allow_failure = true });
+    var result = executeOnceWithOptions(allocator, rt, tx, ctx, gasLimit(tx, ctx), .{ .tracer = &tracer, .allow_failure = true }) catch |err| {
+        if (trace_budget.exhausted) return traceBudgetExceeded();
+        return err;
+    };
     defer result.deinit(allocator);
+    // A step the tracer could not store leaves the trace incomplete, so the
+    // request fails instead of returning a silently truncated struct log.
+    if (trace_budget.exhausted) return traceBudgetExceeded();
     const payload = TraceResponse{ .tracer = &tracer, .result = result };
     const json = try std.json.Stringify.valueAlloc(allocator, payload, .{});
     defer allocator.free(json);
@@ -303,6 +329,80 @@ pub fn handleDebugTraceCall(allocator: std.mem.Allocator, rt: *runtime.NodeRunti
     // ResponseEnvelope frees number_string and serializes it as a JSON number.
     return std.json.parseFromSliceLeaky(std.json.Value, allocator, json, .{ .allocate = .alloc_always, .parse_numbers = false });
 }
+
+fn traceBudgetExceeded() error{SimulationRpcError} {
+    setSimulationRpcErrorStatic(-32000, "trace exceeds the 32 MiB memory budget; disable stack, memory, or return data capture");
+    return error.SimulationRpcError;
+}
+
+/// Allocator that caps the tracer's live bytes. The tracer copies the stack,
+/// memory, and return data on every step, so an unbounded tracer lets one
+/// request allocate gigabytes.
+const TraceBudgetAllocator = struct {
+    parent: std.mem.Allocator,
+    remaining: usize,
+    exhausted: bool = false,
+
+    fn allocator(self: *TraceBudgetAllocator) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{
+            .alloc = alloc,
+            .resize = resize,
+            .remap = remap,
+            .free = free,
+        } };
+    }
+
+    fn reserve(self: *TraceBudgetAllocator, bytes: usize) bool {
+        if (bytes > self.remaining) {
+            self.exhausted = true;
+            return false;
+        }
+        self.remaining -= bytes;
+        return true;
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const self: *TraceBudgetAllocator = @ptrCast(@alignCast(ctx));
+        if (!self.reserve(len)) return null;
+        const out = self.parent.rawAlloc(len, alignment, ret_addr);
+        if (out == null) self.remaining += len;
+        return out;
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        const self: *TraceBudgetAllocator = @ptrCast(@alignCast(ctx));
+        if (new_len <= memory.len) {
+            if (!self.parent.rawResize(memory, alignment, new_len, ret_addr)) return false;
+            self.remaining += memory.len - new_len;
+            return true;
+        }
+        const growth = new_len - memory.len;
+        if (!self.reserve(growth)) return false;
+        if (self.parent.rawResize(memory, alignment, new_len, ret_addr)) return true;
+        self.remaining += growth;
+        return false;
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const self: *TraceBudgetAllocator = @ptrCast(@alignCast(ctx));
+        if (new_len <= memory.len) {
+            const out = self.parent.rawRemap(memory, alignment, new_len, ret_addr) orelse return null;
+            self.remaining += memory.len - new_len;
+            return out;
+        }
+        const growth = new_len - memory.len;
+        if (!self.reserve(growth)) return null;
+        const out = self.parent.rawRemap(memory, alignment, new_len, ret_addr);
+        if (out == null) self.remaining += growth;
+        return out;
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+        const self: *TraceBudgetAllocator = @ptrCast(@alignCast(ctx));
+        self.parent.rawFree(memory, alignment, ret_addr);
+        self.remaining += memory.len;
+    }
+};
 
 const TraceResponse = struct {
     tracer: *const guillotine_mini.trace.Tracer,
@@ -392,6 +492,7 @@ pub fn handleEthEstimateGasWithOptions(
     options: EstimateOptions,
 ) !std.json.Value {
     clearLastExecutionErrorData();
+    clearLastSimulationRpcError();
     // NodeRuntime mode gating lives in dispatch_wiring so light mode can return
     // JSON-RPC -32010 before the trusted simulation path is entered.
     var parsed = try parseEstimateParams(allocator, params);
@@ -408,11 +509,21 @@ pub fn handleEthEstimateGasWithOptions(
     try rt.state.checkpoint();
     defer rt.state.revert();
 
+    var precompile_moves = PrecompileMoveState{};
+    defer precompile_moves.deinit(allocator);
+    const fork = rt.hardforkForBlockContext(block_ctx);
+
     if (parsed.state_overrides) |overrides| {
-        try applyStateOverrides(allocator, rt, overrides, null, null);
+        try applyStateOverrides(allocator, rt, overrides, &precompile_moves, fork);
     }
 
-    const estimate = try estimateGas(allocator, rt, parsed.tx, block_ctx, options.capture_console_logs);
+    var prepared_overrides = try preparePrecompileOverrides(allocator, precompile_moves.moves.items, fork);
+    defer prepared_overrides.deinit(allocator);
+
+    const estimate = try estimateGasWithOptions(allocator, rt, parsed.tx, block_ctx, .{
+        .extra_precompile_overrides = prepared_overrides.overrides,
+        .capture_console_logs = options.capture_console_logs,
+    });
     return hexQuantity(allocator, estimate);
 }
 
@@ -422,6 +533,12 @@ pub fn handleEthCreateAccessList(
     params: ?std.json.Value,
 ) !std.json.Value {
     clearLastExecutionErrorData();
+    // Execution failures are reported in the result's `error` field, so no
+    // thread-local error may outlive this call.
+    defer {
+        clearLastExecutionErrorData();
+        clearLastSimulationRpcError();
+    }
     var parsed = try parseCreateAccessListParams(allocator, params);
     defer parsed.deinit(allocator);
 
@@ -438,26 +555,93 @@ pub fn handleEthCreateAccessList(
 
     // TEVM drains console logs only after methods that return execution output,
     // so an access list estimate records none.
-    var gas_used = intrinsicGas(rt, parsed.tx, block_ctx);
+    // Seed the initial candidate with owned copies of the caller-supplied
+    // access list so `freeAccessListEntries` never double-frees `parsed.tx`.
+    var current_entries: []guillotine_mini.tracers.AccessListEntry = blk: {
+        if (parsed.tx.access_list.len == 0) break :blk &.{};
+        const seed = try allocator.alloc(guillotine_mini.tracers.AccessListEntry, parsed.tx.access_list.len);
+        var built: usize = 0;
+        errdefer {
+            for (seed[0..built]) |entry| allocator.free(entry.storage_keys);
+            allocator.free(seed);
+        }
+        for (parsed.tx.access_list, 0..) |item, i| {
+            const keys_copy = try allocator.dupe([32]u8, item.storage_keys);
+            seed[i] = .{ .address = item.address, .storage_keys = keys_copy };
+            built += 1;
+        }
+        break :blk seed;
+    };
+    defer guillotine_mini.tracers.freeAccessListEntries(allocator, current_entries);
+    var gas_used: u64 = intrinsicGas(rt, parsed.tx, block_ctx);
     var execution_error = false;
-    if (estimateGas(allocator, rt, parsed.tx, block_ctx, false)) |estimate| {
-        gas_used = estimate;
-    } else |_| {
-        if (executeOnceWithOptions(allocator, rt, parsed.tx, block_ctx, gasLimit(parsed.tx, block_ctx), .{ .capture_console_logs = false })) |result| {
-            var owned_result = result;
-            defer owned_result.deinit(allocator);
-            gas_used = owned_result.gas_used;
-        } else |_| {
-            execution_error = true;
+
+    // Iteratively execute with an AccessListInspector, collecting accessed
+    // addresses/slots, then re-execute with that list warmed. Repeat until the
+    // list stabilizes or the iteration cap is reached (Geth pattern).
+    const max_iterations: usize = 8;
+    for (0..max_iterations) |_| {
+        try rt.state.checkpoint();
+        var checkpoint_open = true;
+        defer if (checkpoint_open) rt.state.revert();
+
+        // Warm the EVM with the current candidate access list and charge the
+        // exact EIP-2930 intrinsic counts for that candidate list.
+        var tx_copy = parsed.tx;
+        const processor_al = try convertAccessListForProcessor(allocator, current_entries);
+        defer allocator.free(processor_al);
+        tx_copy.processor_access_list = processor_al;
+        tx_copy.access_list_addresses = current_entries.len;
+        var candidate_slots: usize = 0;
+        for (current_entries) |entry| candidate_slots += entry.storage_keys.len;
+        tx_copy.access_list_storage_keys = candidate_slots;
+
+        var access_inspector = guillotine_mini.AccessListInspector.init(allocator, .{});
+        defer access_inspector.deinit();
+        var result = executeOnceWithOptions(allocator, rt, tx_copy, block_ctx, gasLimit(tx_copy, block_ctx), .{
+            .inspector = access_inspector.inspector(),
+            .allow_failure = true,
+            .capture_console_logs = false,
+        }) catch |err| switch (err) {
+            error.ExecutionFailed => {
+                execution_error = true;
+                break;
+            },
+            else => return err,
+        };
+        defer result.deinit(allocator);
+        gas_used = result.gas_used;
+        execution_error = !result.success;
+
+        rt.state.revert();
+        checkpoint_open = false;
+
+        const new_entries = try access_inspector.toOwnedEntries(allocator);
+        if (accessListEqual(current_entries, new_entries)) {
+            guillotine_mini.tracers.freeAccessListEntries(allocator, new_entries);
+            break;
+        }
+        guillotine_mini.tracers.freeAccessListEntries(allocator, current_entries);
+        current_entries = new_entries;
+    }
+
+    // Recompute intrinsic gas with the final access list so the returned
+    // `gasUsed` reflects the exact cost of including this access list.
+    var final_intrinsic = tx_processor.intrinsicGasForFork(parsed.tx.data, parsed.tx.to == null, rt.hardforkForBlockContext(block_ctx));
+    if (rt.hardforkForBlockContext(block_ctx).isAtLeast(.BERLIN)) {
+        for (current_entries) |entry| {
+            final_intrinsic +|= 2400;
+            final_intrinsic +|= @as(u64, @intCast(entry.storage_keys.len)) *| 1900;
         }
     }
+    if (gas_used < final_intrinsic) gas_used = final_intrinsic;
 
     var obj = std.json.ObjectMap.init(allocator);
     errdefer {
         var cleanup = std.json.Value{ .object = obj };
         deinitJsonValue(allocator, &cleanup);
     }
-    try putOwnedJsonValue(&obj, allocator, "accessList", .{ .array = std.json.Array.init(allocator) });
+    try putOwnedJsonValue(&obj, allocator, "accessList", try accessListToJson(allocator, current_entries));
     try putOwnedJsonValue(&obj, allocator, "gasUsed", try hexQuantity(allocator, gas_used));
     if (execution_error) {
         try putOwnedJsonValue(&obj, allocator, "error", .{ .string = try allocator.dupe(u8, "execution reverted") });
@@ -491,7 +675,7 @@ pub fn handleEthSimulateV1(
         .array => |array| array.items,
         else => return error.InvalidParams,
     };
-    if (block_state_calls.len > SIMULATE_MAX_BLOCK_STATE_CALLS) {
+    if (block_state_calls.len > MAX_SIMULATE_BLOCKS) {
         setSimulationRpcErrorStatic(-38026, "too many blocks");
         return error.SimulationRpcError;
     }
@@ -559,7 +743,7 @@ pub fn handleEthSimulateV1(
         };
     var next_ctx = try nextSimulatedBlockContext(rt, parent_ctx, parent_header, options.validation);
     next_ctx.block_hashes = appendRecentBlockHash(&recent_block_hashes, parent_ctx.block_hashes, parent_hash);
-    var remaining_default_gas: u64 = SIMULATE_DEFAULT_GAS_CAP;
+    var remaining_request_gas: u64 = SIMULATE_DEFAULT_GAS_CAP;
     var nonce_tracker = std.ArrayList(SimulatedNonceState){};
     defer nonce_tracker.deinit(allocator);
     var precompile_moves = PrecompileMoveState{};
@@ -583,15 +767,19 @@ pub fn handleEthSimulateV1(
             BlockOverrides{};
         var target_ctx = next_ctx;
         if (block_overrides.number) |number| target_ctx.block_number = number;
+        // Reject the request before synthesizing gap blocks: an attacker-chosen
+        // `number` would otherwise drive an unbounded loop of empty blocks.
+        const gap_blocks = target_ctx.block_number -| next_ctx.block_number;
+        if (gap_blocks >= MAX_SIMULATE_BLOCKS or blocks.items.len + @as(usize, @intCast(gap_blocks)) + 1 > MAX_SIMULATE_BLOCKS) {
+            setSimulationRpcErrorStatic(-38026, "too many blocks");
+            return error.SimulationRpcError;
+        }
         while (target_ctx.block_number > next_ctx.block_number) {
-            var empty_calls = std.json.Array.init(allocator);
-            var simulated = try simulateBlock(allocator, rt, next_ctx, parent_header, null, parent_hash, null, &[_]std.json.Value{}, options, &empty_calls, &remaining_default_gas, &nonce_tracker, &precompile_moves);
-            defer simulated.deinit(allocator);
-            try blocks.append(try simulatedBlockValue(allocator, simulated.data, empty_calls, simulated.transactions, options.return_full_transactions));
-            parent_hash = simulated.data.block_hash;
-            parent_header = headerFromSimulatedBlock(simulated.data);
-            next_ctx = try nextSimulatedBlockContext(rt, simulated.data.block_ctx, parent_header, options.validation);
-            next_ctx.block_hashes = appendRecentBlockHash(&recent_block_hashes, simulated.data.block_ctx.block_hashes, simulated.data.block_hash);
+            const gap_data = try appendSimulatedBlock(allocator, rt, &blocks, next_ctx, parent_header, null, parent_hash, null, &[_]std.json.Value{}, options, &remaining_request_gas, &nonce_tracker, &precompile_moves);
+            parent_hash = gap_data.block_hash;
+            parent_header = headerFromSimulatedBlock(gap_data);
+            next_ctx = try nextSimulatedBlockContext(rt, gap_data.block_ctx, parent_header, options.validation);
+            next_ctx.block_hashes = appendRecentBlockHash(&recent_block_hashes, gap_data.block_ctx.block_hashes, gap_data.block_hash);
         }
         target_ctx = next_ctx;
         if (block_overrides.number) |number| target_ctx.block_number = number;
@@ -610,10 +798,10 @@ pub fn handleEthSimulateV1(
         else
             &[_]std.json.Value{};
 
-        var call_results = std.json.Array.init(allocator);
-        var simulated = try simulateBlock(
+        const block_data = try appendSimulatedBlock(
             allocator,
             rt,
+            &blocks,
             target_ctx,
             parent_header,
             block_overrides.blob_base_fee,
@@ -621,20 +809,52 @@ pub fn handleEthSimulateV1(
             block_request.get("stateOverrides"),
             calls,
             options,
-            &call_results,
-            &remaining_default_gas,
+            &remaining_request_gas,
             &nonce_tracker,
             &precompile_moves,
         );
-        defer simulated.deinit(allocator);
-        try blocks.append(try simulatedBlockValue(allocator, simulated.data, call_results, simulated.transactions, options.return_full_transactions));
-        parent_hash = simulated.data.block_hash;
-        parent_header = headerFromSimulatedBlock(simulated.data);
-        next_ctx = try nextSimulatedBlockContext(rt, simulated.data.block_ctx, parent_header, options.validation);
-        next_ctx.block_hashes = appendRecentBlockHash(&recent_block_hashes, simulated.data.block_ctx.block_hashes, simulated.data.block_hash);
+        parent_hash = block_data.block_hash;
+        parent_header = headerFromSimulatedBlock(block_data);
+        next_ctx = try nextSimulatedBlockContext(rt, block_data.block_ctx, parent_header, options.validation);
+        next_ctx.block_hashes = appendRecentBlockHash(&recent_block_hashes, block_data.block_ctx.block_hashes, block_data.block_hash);
     }
 
     return .{ .array = blocks };
+}
+
+/// Simulates one block and appends its JSON value to `blocks`. Every
+/// intermediate value is released on failure, including the call results that
+/// `simulateBlock` produced before a later step failed.
+fn appendSimulatedBlock(
+    allocator: std.mem.Allocator,
+    rt: *runtime.NodeRuntime,
+    blocks: *std.json.Array,
+    context: guillotine_mini.BlockContext,
+    parent_header: primitives.BlockHeader.BlockHeader,
+    blob_fee_override: ?u256,
+    parent_hash: [32]u8,
+    state_overrides: ?std.json.Value,
+    calls: []const std.json.Value,
+    options: SimulateOptions,
+    remaining_request_gas: *u64,
+    nonce_tracker: *std.ArrayList(SimulatedNonceState),
+    precompile_moves: *PrecompileMoveState,
+) !SimulatedBlockData {
+    var call_results = std.json.Array.init(allocator);
+    var call_results_owned = true;
+    errdefer if (call_results_owned) {
+        for (call_results.items) |*item| deinitJsonValue(allocator, item);
+        call_results.deinit();
+    };
+
+    var simulated = try simulateBlock(allocator, rt, context, parent_header, blob_fee_override, parent_hash, state_overrides, calls, options, &call_results, remaining_request_gas, nonce_tracker, precompile_moves);
+    defer simulated.deinit(allocator);
+
+    try blocks.ensureUnusedCapacity(1);
+    var block_value = try simulatedBlockValue(allocator, simulated.data, &call_results, &call_results_owned, simulated.transactions, options.return_full_transactions);
+    errdefer deinitJsonValue(allocator, &block_value);
+    blocks.appendAssumeCapacity(block_value);
+    return simulated.data;
 }
 
 pub fn takeLastExecutionErrorData() ?[]const u8 {
@@ -657,7 +877,7 @@ fn clearLastSimulationRpcError() void {
     last_simulation_rpc_error = null;
 }
 
-fn setSimulationRpcErrorStatic(code: i32, message: []const u8) void {
+pub fn setSimulationRpcErrorStatic(code: i32, message: []const u8) void {
     const len = @min(message.len, last_simulation_rpc_error_message_buf.len);
     @memcpy(last_simulation_rpc_error_message_buf[0..len], message[0..len]);
     last_simulation_rpc_error = .{
@@ -666,18 +886,18 @@ fn setSimulationRpcErrorStatic(code: i32, message: []const u8) void {
     };
 }
 
-fn setSimulationRpcErrorFmt(code: i32, comptime fmt: []const u8, args: anytype) void {
+pub fn setSimulationRpcErrorFmt(code: i32, comptime fmt: []const u8, args: anytype) void {
     const message = std.fmt.bufPrint(&last_simulation_rpc_error_message_buf, fmt, args) catch "simulation error";
     last_simulation_rpc_error = .{ .code = code, .message = message };
 }
 
 fn parseCallParams(allocator: std.mem.Allocator, params: ?std.json.Value) !ParsedCallParams {
     const items = try paramsArrayItems(params);
-    if (items.len != 2 and items.len != 3) return error.InvalidParams;
+    if (items.len < 1 or items.len > 3) return error.InvalidParams;
 
     return .{
         .tx = try parseTransactionRequest(allocator, items[0]),
-        .block = items[1],
+        .block = if (items.len >= 2) items[1] else null,
         .state_overrides = if (items.len == 3) items[2] else null,
     };
 }
@@ -809,8 +1029,11 @@ fn parseAccessList(allocator: std.mem.Allocator, value: std.json.Value, tx: *Tra
     const entries = try arrayItemsValue(value);
     if (tx.access_list.len != 0) return error.InvalidParams;
     const access_list = try allocator.alloc(primitives.Transaction.AccessListItem, entries.len);
+    // Only the first `initialized` entries own a storage-key slice; the rest
+    // of the allocation is undefined until the loop below fills it.
+    var initialized: usize = 0;
     errdefer {
-        for (access_list) |entry| allocator.free(entry.storage_keys);
+        for (access_list[0..initialized]) |entry| allocator.free(entry.storage_keys);
         allocator.free(access_list);
     }
     const processor_access_list = try allocator.alloc(primitives.AccessList.AccessListEntry, entries.len);
@@ -833,6 +1056,7 @@ fn parseAccessList(allocator: std.mem.Allocator, value: std.json.Value, tx: *Tra
         tx.access_list_storage_keys += @intCast(storage_keys.len);
         access_list[i] = .{ .address = address, .storage_keys = keys };
         processor_access_list[i] = .{ .address = address, .storage_keys = keys };
+        initialized = i + 1;
     }
     tx.access_list = access_list;
     tx.processor_access_list = processor_access_list;
@@ -957,6 +1181,12 @@ fn applyStateOverrides(
             else => return error.InvalidParams,
         };
 
+        // `state` replaces the account's storage and `stateDiff` patches it;
+        // a request naming both has no defined result.
+        if (account_override.contains("state") and account_override.contains("stateDiff")) {
+            return error.InvalidParams;
+        }
+
         var fields = account_override.iterator();
         while (fields.next()) |field| {
             const field_name = field.key_ptr.*;
@@ -973,7 +1203,7 @@ fn applyStateOverrides(
             } else if (std.mem.eql(u8, field_name, "storage")) {
                 try applyStorageOverrides(rt, address, field_value);
             } else if (std.mem.eql(u8, field_name, "state")) {
-                try clearAccountStorage(rt, address);
+                try clearAccountStorage(allocator, rt, address);
                 try applyStorageOverrides(rt, address, field_value);
             } else if (std.mem.eql(u8, field_name, "stateDiff")) {
                 try applyStorageOverrides(rt, address, field_value);
@@ -1021,16 +1251,25 @@ fn applyStorageOverrides(
 }
 
 fn clearAccountStorage(
+    allocator: std.mem.Allocator,
     rt: *runtime.NodeRuntime,
     address: primitives.Address,
 ) !void {
-    if (rt.state.journaled_state.storage_cache.cache.fetchRemove(address)) |entry| {
-        var slots = entry.value;
-        slots.deinit();
+    // Zero each known slot through the journaled setter. Removing the slot map
+    // from the cache directly bypasses the journal, so a revert that does not
+    // restore the whole cache would leave the live contract without storage.
+    var keys = std.ArrayList(u256){};
+    defer keys.deinit(allocator);
+    if (rt.state.journaled_state.storage_cache.cache.getPtr(address)) |slots| {
+        try keys.ensureTotalCapacity(allocator, slots.count());
+        var it = slots.keyIterator();
+        while (it.next()) |key| keys.appendAssumeCapacity(key.*);
     }
+    for (keys.items) |key| try rt.state.setStorage(address, key, 0);
+
     var account = rt.state.journaled_state.account_cache.get(address) orelse return;
     account.storage_root = primitives.State.EMPTY_TRIE_ROOT;
-    try rt.state.journaled_state.account_cache.put(address, account);
+    try rt.state.journaled_state.putAccount(address, account);
 }
 
 fn appendRecentBlockHash(
@@ -1144,7 +1383,7 @@ fn simulateBlock(
     calls: []const std.json.Value,
     options: SimulateOptions,
     call_results: *std.json.Array,
-    remaining_default_gas: *u64,
+    remaining_request_gas: *u64,
     nonce_tracker: *std.ArrayList(SimulatedNonceState),
     precompile_moves: *PrecompileMoveState,
 ) !SimulateBlockResult {
@@ -1170,11 +1409,14 @@ fn simulateBlock(
     if (fork.isAtLeast(.PRAGUE)) {
         try block_builder.applyHistoricalBlockHashSystemCall(&rt.state, block_ctx.block_number, parent_hash);
     }
-    var preserved_empty_accounts = if (fork.isAtLeast(.BYZANTIUM))
+    // EIP-161 state clearing activates at Spurious Dragon.
+    var preserved_empty_accounts = if (fork.isAtLeast(.SPURIOUS_DRAGON))
         try block_builder.collectEmptyAccounts(allocator, &rt.state)
     else
         null;
     defer if (preserved_empty_accounts) |*accounts| accounts.deinit();
+    var touched_accounts = std.AutoHashMap(primitives.Address, void).init(allocator);
+    defer touched_accounts.deinit();
 
     var adapter = host_adapter.HostAdapter{ .state = &rt.state, .console_logs = &rt.console_logs };
     const host = adapter.hostInterface();
@@ -1210,35 +1452,42 @@ fn simulateBlock(
         defer request.deinit(allocator);
 
         const remaining_block_gas = if (gas_used >= block_ctx.block_gas_limit) 0 else block_ctx.block_gas_limit - gas_used;
-        const call_gas = request.gas orelse @min(remaining_default_gas.*, remaining_block_gas);
-        if (call_gas > remaining_block_gas) {
+        const requested_gas = request.gas orelse @min(remaining_request_gas.*, remaining_block_gas);
+        if (requested_gas > remaining_block_gas) {
             setSimulationRpcErrorStatic(-38015, "block gas limit exceeded");
             return error.SimulationRpcError;
         }
+        // The request-wide gas budget binds every call, including calls that
+        // name their own gas and blocks that raise `blockOverrides.gasLimit`.
+        if (remaining_request_gas.* == 0) {
+            setSimulationRpcErrorStatic(-38015, "request gas cap exceeded (50000000)");
+            return error.SimulationRpcError;
+        }
+        const call_gas = @min(requested_gas, remaining_request_gas.*);
 
         var simulated_tx = try buildSimulatedTransaction(allocator, rt, request, block_ctx, call_gas, options, nonce_tracker);
         errdefer simulated_tx.deinit(allocator);
 
         var output: []u8 = &.{};
+        var output_owned = true;
+        errdefer if (output_owned) allocator.free(output);
         var balance_changes = std.ArrayList(host_adapter.HostAdapter.BalanceChange){};
         defer balance_changes.deinit(allocator);
         if (options.trace_transfers) {
             adapter.balance_change_allocator = allocator;
             adapter.balance_changes = &balance_changes;
         }
-        var receipt = processSimulatedTransaction(allocator, rt, &adapter, host, simulated_tx, block_ctx, options, prepared_precompile_overrides.overrides, &output) catch |err| switch (err) {
+        var receipt = processSimulatedTransaction(allocator, rt, &adapter, host, simulated_tx, block_ctx, options, prepared_precompile_overrides.overrides, &output, if (preserved_empty_accounts != null) &touched_accounts else null) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.SimulationRpcError => return error.SimulationRpcError,
             else => return err,
         };
         adapter.balance_change_allocator = null;
         adapter.balance_changes = null;
-        errdefer {
-            adapter.balance_change_allocator = null;
-            adapter.balance_changes = null;
-            receipt.deinit(allocator);
-            allocator.free(output);
-        }
+        // `receipts` owns the receipt once it is appended; freeing it here as
+        // well would double-free it when the list is released.
+        var receipt_owned = true;
+        errdefer if (receipt_owned) receipt.deinit(allocator);
 
         const tx_gas_used = std.math.cast(u64, receipt.gas_used) orelse return error.InvalidParams;
         gas_used = std.math.add(u64, gas_used, tx_gas_used) catch {
@@ -1257,7 +1506,7 @@ fn simulateBlock(
                 return error.SimulationRpcError;
             }
         }
-        remaining_default_gas.* = if (remaining_default_gas.* > tx_gas_used) remaining_default_gas.* - tx_gas_used else 0;
+        remaining_request_gas.* -|= tx_gas_used;
 
         receipt.transaction_hash = simulated_tx.hash;
         receipt.transaction_index = @intCast(receipts.items.len);
@@ -1276,64 +1525,78 @@ fn simulateBlock(
             try simulatedTransfersFromBalanceChanges(allocator, balance_changes.items)
         else
             try allocator.alloc(SimulatedTransfer, 0);
-        var transfers_owned = true;
-        errdefer if (transfers_owned) allocator.free(transfers);
+        errdefer allocator.free(transfers);
 
-        try raw_txs.append(allocator, .{ .raw = simulated_tx.raw });
-        try outputs.append(allocator, output);
-        output = &.{};
-        try receipts.append(allocator, receipt);
-        try transfer_sets.append(allocator, transfers);
-        transfers_owned = false;
-        try transactions.append(allocator, simulated_tx);
+        // Reserve every slot first so the ownership transfers below cannot
+        // fail halfway and leave a value owned by both a list and an errdefer.
+        try raw_txs.ensureUnusedCapacity(allocator, 1);
+        try outputs.ensureUnusedCapacity(allocator, 1);
+        try receipts.ensureUnusedCapacity(allocator, 1);
+        try transfer_sets.ensureUnusedCapacity(allocator, 1);
+        try transactions.ensureUnusedCapacity(allocator, 1);
+        raw_txs.appendAssumeCapacity(.{ .raw = simulated_tx.raw });
+        outputs.appendAssumeCapacity(output);
+        output_owned = false;
+        receipts.appendAssumeCapacity(receipt);
+        receipt_owned = false;
+        transfer_sets.appendAssumeCapacity(transfers);
+        transactions.appendAssumeCapacity(simulated_tx);
     }
 
     const receipts_root = try block_builder.computeReceiptsRoot(allocator, receipts.items);
     const transactions_root = try block_builder.computeRawTransactionsRoot(allocator, raw_txs.items);
     const logs_bloom = block_builder.aggregateLogsBloom(receipts.items);
-    if (preserved_empty_accounts) |*accounts| {
-        try block_builder.pruneNewEmptyAccounts(allocator, &rt.state, accounts);
-    }
-    var system_requests = if (fork.isAtLeast(.PRAGUE))
-        try block_builder.collectPragueRequestsSystemCalls(
+    const builder_fork = block_builder.hardforkFromEvm(fork);
+    // EIP-7685: the commitment covers the EIP-6110 deposits in the block's
+    // receipt logs and the EIP-7002/7251 system-call outputs. A simulated
+    // block carries no withdrawals, so the system calls follow the
+    // transactions directly.
+    var requests_hash: ?[32]u8 = null;
+    if (fork.isAtLeast(.PRAGUE)) {
+        const execution_requests = try block_builder.collectBlockExecutionRequestsFrom(
             allocator,
             &rt.state,
-            host,
+            receipts.items,
+            builder_fork,
             block_ctx,
-            fork,
-        )
-    else
-        block_builder.PragueSystemRequests{};
-    defer system_requests.deinit(allocator);
-    const builder_fork = block_builder.hardforkFromEvm(fork);
+            rt.hardfork_config.deposit_contract_address orelse block_builder.DEPOSIT_CONTRACT_ADDRESS,
+        );
+        defer block_builder.freeExecutionRequests(allocator, execution_requests);
+        const request_views = try allocator.alloc([]const u8, execution_requests.len);
+        defer allocator.free(request_views);
+        for (request_views, execution_requests) |*view, request| view.* = request;
+        requests_hash = try block_builder.computeRequestsHashFromRawRequests(allocator, request_views);
+    }
+    // EIP-161 clearing runs after withdrawals and system calls, so neither
+    // can leave a new empty account in the state trie.
+    if (preserved_empty_accounts) |*accounts| {
+        try block_builder.pruneEmptyAccounts(allocator, &rt.state, accounts, &touched_accounts);
+    }
     if (fork.isBefore(.MERGE)) {
         try block_builder.applyMinerReward(&rt.state, block_ctx.block_coinbase, builder_fork);
     }
     const state_root = try block_builder.computeStateRootForFork(allocator, &rt.state, builder_fork);
-    const requests_hash = if (fork.isAtLeast(.PRAGUE))
-        block_builder.computeRequestsHash(.{
-            .withdrawals = system_requests.withdrawals orelse &.{},
-            .consolidations = system_requests.consolidations orelse &.{},
-        })
-    else
-        null;
 
     const header = simulatedHeader(block_ctx, parent_hash, state_root, transactions_root, receipts_root, logs_bloom, gas_used, blob_gas_used, excess_blob_gas, fork);
     const block_hash = try block_builder.computeHeaderHashWithRequestsHash(allocator, &header, requests_hash);
+    // Receipts are in transaction order, so one running counter yields each
+    // log's block-wide index.
+    var block_log_index: u32 = 0;
     for (receipts.items) |*receipt| {
         receipt.block_hash = block_hash;
-        var global_log_index: u32 = 0;
-        for (receipts.items[0..receipt.transaction_index]) |prior| {
-            global_log_index += @intCast(prior.logs.len);
-        }
         const mutable_logs = @constCast(receipt.logs);
-        for (mutable_logs, 0..) |*event_log, offset| {
-            event_log.log_index = global_log_index + @as(u32, @intCast(offset));
+        for (mutable_logs) |*event_log| {
+            event_log.log_index = block_log_index;
+            block_log_index += 1;
         }
     }
 
+    // Block-wide log index. Synthetic transfer logs occupy indexes too, so the
+    // counter advances past them before the next transaction's logs.
+    var next_log_index: u32 = 0;
     for (receipts.items, outputs.items, transactions.items, transfer_sets.items) |receipt, output, tx, transfers| {
-        try call_results.append(try simulateCallValueFromReceipt(allocator, receipt, output, tx, transfers, options, block_ctx.block_timestamp));
+        try call_results.ensureUnusedCapacity(1);
+        call_results.appendAssumeCapacity(try simulateCallValueFromReceipt(allocator, receipt, output, tx, transfers, options, block_ctx.block_timestamp, &next_log_index));
     }
 
     const size = try simulatedBlockSize(allocator, header, requests_hash, raw_txs.items, fork);
@@ -1369,6 +1632,7 @@ fn processSimulatedTransaction(
     options: SimulateOptions,
     precompile_overrides: []const guillotine_mini.PrecompileOverride,
     output: *[]u8,
+    touched_accounts: ?*std.AutoHashMap(primitives.Address, void),
 ) !primitives.Receipt.Receipt {
     _ = adapter;
     const legacy_tx = primitives.Transaction.LegacyTransaction{
@@ -1413,6 +1677,7 @@ fn processSimulatedTransaction(
         .skip_fee_balance_check = !options.validation,
         .skip_nonce_state_increment = false,
         .capture_output = output,
+        .touched_accounts = touched_accounts,
     };
     return tx_processor.processTransactionWithOptions(
         allocator,
@@ -1478,6 +1743,12 @@ fn buildSimulatedTransaction(
     const from = request.from orelse primitives.Address.ZERO_ADDRESS;
     const nonce = try nextSimulatedNonce(allocator, rt, nonce_tracker, from, request.nonce, options.validation);
     const tx_type = request.tx_type orelse inferredSimulatedTxType(request);
+    if (request.chain_id) |requested_chain_id| {
+        if (requested_chain_id != rt.chain_id) {
+            setSimulationRpcErrorFmt(-32000, "chainId does not match node's (have={d}, want={d})", .{ requested_chain_id, rt.chain_id });
+            return error.SimulationRpcError;
+        }
+    }
     const chain_id = if (tx_type == 0) request.chain_id else request.chain_id orelse rt.chain_id;
     const max_fee = request.max_fee_per_gas orelse request.gas_price orelse 0;
     const max_priority = request.max_priority_fee_per_gas orelse 0;
@@ -1619,81 +1890,71 @@ fn encodeSimulatedTransactionEnvelope(
     max_fee_per_blob_gas: u256,
     blob_hashes: []const [32]u8,
 ) ![]u8 {
-    return switch (tx_type) {
-        0 => encodeLegacyEnvelopeUnsigned(allocator, nonce, gas_price, gas, to, value, data, chain_id),
-        1 => encodeTypedEnvelope(allocator, 1, &.{
-            try primitives.Rlp.encode(allocator, chain_id orelse 0),
-            try primitives.Rlp.encode(allocator, nonce),
-            try primitives.Rlp.encode(allocator, gas_price),
-            try primitives.Rlp.encode(allocator, gas),
-            try encodeOptionalAddressForRlp(allocator, to),
-            try primitives.Rlp.encode(allocator, value),
-            try primitives.Rlp.encodeBytes(allocator, data),
-            try primitives.Transaction.encodeAccessList(allocator, access_list),
-            try primitives.Rlp.encode(allocator, @as(u8, 0)),
-            try primitives.Rlp.encode(allocator, @as(u8, 0)),
-            try primitives.Rlp.encode(allocator, @as(u8, 0)),
-        }),
-        2 => encodeTypedEnvelope(allocator, 2, &.{
-            try primitives.Rlp.encode(allocator, chain_id orelse 0),
-            try primitives.Rlp.encode(allocator, nonce),
-            try primitives.Rlp.encode(allocator, max_priority_fee_per_gas),
-            try primitives.Rlp.encode(allocator, max_fee_per_gas),
-            try primitives.Rlp.encode(allocator, gas),
-            try encodeOptionalAddressForRlp(allocator, to),
-            try primitives.Rlp.encode(allocator, value),
-            try primitives.Rlp.encodeBytes(allocator, data),
-            try primitives.Transaction.encodeAccessList(allocator, access_list),
-            try primitives.Rlp.encode(allocator, @as(u8, 0)),
-            try primitives.Rlp.encode(allocator, @as(u8, 0)),
-            try primitives.Rlp.encode(allocator, @as(u8, 0)),
-        }),
-        3 => encodeTypedEnvelope(allocator, 3, &.{
-            try primitives.Rlp.encode(allocator, chain_id orelse 0),
-            try primitives.Rlp.encode(allocator, nonce),
-            try primitives.Rlp.encode(allocator, max_priority_fee_per_gas),
-            try primitives.Rlp.encode(allocator, max_fee_per_gas),
-            try primitives.Rlp.encode(allocator, gas),
-            try encodeRequiredAddressForRlp(allocator, to),
-            try primitives.Rlp.encode(allocator, value),
-            try primitives.Rlp.encodeBytes(allocator, data),
-            try primitives.Transaction.encodeAccessList(allocator, access_list),
-            try primitives.Rlp.encode(allocator, max_fee_per_blob_gas),
-            try encodeHashListForRlp(allocator, blob_hashes),
-            try primitives.Rlp.encode(allocator, @as(u8, 0)),
-            try primitives.Rlp.encode(allocator, @as(u8, 0)),
-            try primitives.Rlp.encode(allocator, @as(u8, 0)),
-        }),
-        else => error.InvalidParams,
-    };
-}
+    var fields = RlpFields{};
+    defer fields.deinit(allocator);
 
-fn encodeLegacyEnvelopeUnsigned(
-    allocator: std.mem.Allocator,
-    nonce: u64,
-    gas_price: u256,
-    gas: u64,
-    to: ?primitives.Address,
-    value: u256,
-    data: []const u8,
-    chain_id: ?u64,
-) ![]u8 {
-    const v: u64 = if (chain_id) |id| id * 2 + 35 else 27;
-    return encodeRlpListOwned(allocator, &.{
-        try primitives.Rlp.encode(allocator, nonce),
-        try primitives.Rlp.encode(allocator, gas_price),
-        try primitives.Rlp.encode(allocator, gas),
-        try encodeOptionalAddressForRlp(allocator, to),
-        try primitives.Rlp.encode(allocator, value),
-        try primitives.Rlp.encodeBytes(allocator, data),
-        try primitives.Rlp.encode(allocator, v),
-        try primitives.Rlp.encode(allocator, @as(u8, 0)),
-        try primitives.Rlp.encode(allocator, @as(u8, 0)),
-    });
-}
+    switch (tx_type) {
+        0 => {
+            // EIP-155 `v` is `chainId * 2 + 35`; a chain ID near maxInt(u64)
+            // must fail the request instead of overflowing.
+            const v: u64 = if (chain_id) |id|
+                std.math.add(u64, std.math.mul(u64, id, 2) catch return error.InvalidParams, 35) catch return error.InvalidParams
+            else
+                27;
+            try fields.push(allocator, primitives.Rlp.encode(allocator, nonce));
+            try fields.push(allocator, primitives.Rlp.encode(allocator, gas_price));
+            try fields.push(allocator, primitives.Rlp.encode(allocator, gas));
+            try fields.push(allocator, encodeOptionalAddressForRlp(allocator, to));
+            try fields.push(allocator, primitives.Rlp.encode(allocator, value));
+            try fields.push(allocator, primitives.Rlp.encodeBytes(allocator, data));
+            try fields.push(allocator, primitives.Rlp.encode(allocator, v));
+            try fields.push(allocator, primitives.Rlp.encode(allocator, @as(u8, 0)));
+            try fields.push(allocator, primitives.Rlp.encode(allocator, @as(u8, 0)));
+            return encodeRlpList(allocator, fields.items.items);
+        },
+        1 => {
+            try fields.push(allocator, primitives.Rlp.encode(allocator, chain_id orelse 0));
+            try fields.push(allocator, primitives.Rlp.encode(allocator, nonce));
+            try fields.push(allocator, primitives.Rlp.encode(allocator, gas_price));
+            try fields.push(allocator, primitives.Rlp.encode(allocator, gas));
+            try fields.push(allocator, encodeOptionalAddressForRlp(allocator, to));
+            try fields.push(allocator, primitives.Rlp.encode(allocator, value));
+            try fields.push(allocator, primitives.Rlp.encodeBytes(allocator, data));
+            try fields.push(allocator, primitives.Transaction.encodeAccessList(allocator, access_list));
+        },
+        2 => {
+            try fields.push(allocator, primitives.Rlp.encode(allocator, chain_id orelse 0));
+            try fields.push(allocator, primitives.Rlp.encode(allocator, nonce));
+            try fields.push(allocator, primitives.Rlp.encode(allocator, max_priority_fee_per_gas));
+            try fields.push(allocator, primitives.Rlp.encode(allocator, max_fee_per_gas));
+            try fields.push(allocator, primitives.Rlp.encode(allocator, gas));
+            try fields.push(allocator, encodeOptionalAddressForRlp(allocator, to));
+            try fields.push(allocator, primitives.Rlp.encode(allocator, value));
+            try fields.push(allocator, primitives.Rlp.encodeBytes(allocator, data));
+            try fields.push(allocator, primitives.Transaction.encodeAccessList(allocator, access_list));
+        },
+        3 => {
+            try fields.push(allocator, primitives.Rlp.encode(allocator, chain_id orelse 0));
+            try fields.push(allocator, primitives.Rlp.encode(allocator, nonce));
+            try fields.push(allocator, primitives.Rlp.encode(allocator, max_priority_fee_per_gas));
+            try fields.push(allocator, primitives.Rlp.encode(allocator, max_fee_per_gas));
+            try fields.push(allocator, primitives.Rlp.encode(allocator, gas));
+            try fields.push(allocator, encodeRequiredAddressForRlp(allocator, to));
+            try fields.push(allocator, primitives.Rlp.encode(allocator, value));
+            try fields.push(allocator, primitives.Rlp.encodeBytes(allocator, data));
+            try fields.push(allocator, primitives.Transaction.encodeAccessList(allocator, access_list));
+            try fields.push(allocator, primitives.Rlp.encode(allocator, max_fee_per_blob_gas));
+            try fields.push(allocator, encodeHashListForRlp(allocator, blob_hashes));
+        },
+        else => return error.InvalidParams,
+    }
 
-fn encodeTypedEnvelope(allocator: std.mem.Allocator, tx_type: u8, fields: []const []u8) ![]u8 {
-    const payload = try encodeRlpListOwned(allocator, fields);
+    // Unsigned zeroed signature: yParity, r, s.
+    try fields.push(allocator, primitives.Rlp.encode(allocator, @as(u8, 0)));
+    try fields.push(allocator, primitives.Rlp.encode(allocator, @as(u8, 0)));
+    try fields.push(allocator, primitives.Rlp.encode(allocator, @as(u8, 0)));
+
+    const payload = try encodeRlpList(allocator, fields.items.items);
     defer allocator.free(payload);
     const out = try allocator.alloc(u8, payload.len + 1);
     out[0] = tx_type;
@@ -1701,26 +1962,24 @@ fn encodeTypedEnvelope(allocator: std.mem.Allocator, tx_type: u8, fields: []cons
     return out;
 }
 
-fn encodeRlpListOwned(allocator: std.mem.Allocator, fields: []const []u8) ![]u8 {
-    defer {
-        for (fields) |field| allocator.free(field);
-    }
-    var total_len: usize = 0;
-    for (fields) |field| total_len = try std.math.add(usize, total_len, field.len);
+/// Owns encoded RLP items until the enclosing list is assembled. Each item is
+/// freed by `deinit`, so a failure while encoding a later item leaks nothing.
+const RlpFields = struct {
+    items: std.ArrayList([]const u8) = .{},
 
-    var out = std.ArrayList(u8){};
-    defer out.deinit(allocator);
-    if (total_len < 56) {
-        try out.append(allocator, 0xc0 + @as(u8, @intCast(total_len)));
-    } else {
-        const len_bytes = try primitives.Rlp.encodeLength(allocator, total_len);
-        defer allocator.free(len_bytes);
-        try out.append(allocator, 0xf7 + @as(u8, @intCast(len_bytes.len)));
-        try out.appendSlice(allocator, len_bytes);
+    fn deinit(self: *RlpFields, allocator: std.mem.Allocator) void {
+        for (self.items.items) |item| allocator.free(item);
+        self.items.deinit(allocator);
     }
-    for (fields) |field| try out.appendSlice(allocator, field);
-    return out.toOwnedSlice(allocator);
-}
+
+    /// Takes ownership of `encoded`. Accepts the encoder's error union so each
+    /// call site stays a single statement.
+    fn push(self: *RlpFields, allocator: std.mem.Allocator, encoded: anytype) !void {
+        const item: []u8 = try encoded;
+        errdefer allocator.free(item);
+        try self.items.append(allocator, item);
+    }
+};
 
 fn encodeOptionalAddressForRlp(allocator: std.mem.Allocator, to: ?primitives.Address) ![]u8 {
     return if (to) |address| primitives.Rlp.encodeBytes(allocator, &address.bytes) else primitives.Rlp.encodeBytes(allocator, &.{});
@@ -1732,10 +1991,10 @@ fn encodeRequiredAddressForRlp(allocator: std.mem.Allocator, to: ?primitives.Add
 }
 
 fn encodeHashListForRlp(allocator: std.mem.Allocator, hashes: []const [32]u8) ![]u8 {
-    const fields = try allocator.alloc([]u8, hashes.len);
-    defer allocator.free(fields);
-    for (hashes, 0..) |hash, i| fields[i] = try primitives.Rlp.encodeBytes(allocator, &hash);
-    return encodeRlpListOwned(allocator, fields);
+    var fields = RlpFields{};
+    defer fields.deinit(allocator);
+    for (hashes) |hash| try fields.push(allocator, primitives.Rlp.encodeBytes(allocator, &hash));
+    return encodeRlpList(allocator, fields.items.items);
 }
 
 fn estimateGas(
@@ -1745,25 +2004,41 @@ fn estimateGas(
     block_ctx: guillotine_mini.BlockContext,
     capture_console_logs: bool,
 ) !u64 {
-    const intrinsic = intrinsicGas(rt, tx, block_ctx);
+    return estimateGasWithOptions(allocator, rt, tx, block_ctx, .{ .capture_console_logs = capture_console_logs });
+}
+
+fn estimateGasWithOptions(
+    allocator: std.mem.Allocator,
+    rt: *runtime.NodeRuntime,
+    tx: TransactionRequest,
+    block_ctx: guillotine_mini.BlockContext,
+    options: ExecuteOptions,
+) !u64 {
+    const fork = rt.hardforkForBlockContext(block_ctx);
+    // EIP-7623: a transaction must declare at least the calldata floor, so an
+    // estimate below it names a gas limit that admission rejects.
+    const calldata_floor = tx_processor.transactionGasFloorForFork(tx.data, fork) catch return error.ExecutionFailed;
+    const intrinsic = @max(intrinsicGas(rt, tx, block_ctx), calldata_floor);
     var high = gasLimit(tx, block_ctx);
     if (high < intrinsic or high > block_ctx.block_gas_limit) return error.ExecutionFailed;
     // EIP-7825: an estimate above the Osaka transaction cap names a gas limit
     // no transaction may declare, so the search never looks past the cap. A
     // call that needs more fails here instead of at submission.
-    if (rt.hardforkForBlockContext(block_ctx).isAtLeast(.OSAKA)) {
+    if (fork.isAtLeast(.OSAKA)) {
         high = @min(high, tx_processor.MAX_TRANSACTION_GAS_LIMIT);
         if (high < intrinsic) return error.ExecutionFailed;
     }
 
     // Only the full-gas run may record console logs; the search probes never do.
-    var high_result = try executeOnceWithOptions(allocator, rt, tx, block_ctx, high, .{ .capture_console_logs = capture_console_logs });
+    var high_result = try executeOnceWithOptions(allocator, rt, tx, block_ctx, high, options);
     high_result.deinit(allocator);
 
+    var probe_options = options;
+    probe_options.capture_console_logs = false;
     var low = intrinsic;
     while (low < high) {
         const mid = low + (high - low) / 2;
-        var attempt = executeOnceWithOptions(allocator, rt, tx, block_ctx, mid, .{ .capture_console_logs = false }) catch |err| switch (err) {
+        var attempt = executeOnceWithOptions(allocator, rt, tx, block_ctx, mid, probe_options) catch |err| switch (err) {
             error.ExecutionFailed => {
                 low = mid + 1;
                 continue;
@@ -1774,6 +2049,10 @@ fn estimateGas(
         high = mid;
     }
 
+    // The search ends on a failed probe whenever the last step raised `low`.
+    // The estimate itself succeeded, so that probe's error must not surface.
+    clearLastExecutionErrorData();
+    clearLastSimulationRpcError();
     return high;
 }
 
@@ -1796,7 +2075,7 @@ fn executeOnceWithOptions(
     options: ExecuteOptions,
 ) !ExecutionResult {
     clearLastExecutionErrorData();
-    last_simulation_rpc_error = null;
+    clearLastSimulationRpcError();
     const intrinsic = intrinsicGas(rt, tx, block_ctx);
     if (intrinsic > gas_limit or gas_limit > block_ctx.block_gas_limit) return error.ExecutionFailed;
     const execution_gas = gas_limit - intrinsic;
@@ -1805,7 +2084,7 @@ fn executeOnceWithOptions(
     var checkpoint_open = true;
     errdefer if (checkpoint_open) rt.state.revert();
 
-    const caller = tx.from orelse rt.coinbase;
+    const caller = tx.from orelse primitives.Address.ZERO_ADDRESS;
     const current_nonce = rt.state.getNonce(caller) catch return error.ExecutionFailed;
     if (tx.nonce) |nonce| {
         if (current_nonce != nonce) return error.ExecutionFailed;
@@ -1823,15 +2102,21 @@ fn executeOnceWithOptions(
     var execution_block_ctx = block_ctx;
     if (!tx.has_fee_fields) execution_block_ctx.block_base_fee = 0;
 
+    const fork = rt.hardforkForBlockContext(execution_block_ctx);
+    // Pass caller-supplied precompile overrides directly without adding an
+    // implicit 0x01 entry (voltaire's native ECRECOVER already accepts high-s,
+    // and an implicit override would shadow moves or let 0x01 bytecode win).
+    const precompile_overrides = options.extra_precompile_overrides;
+
     const EvmType = guillotine_mini.Evm(.{});
     var evm: EvmType = undefined;
     evm.init(
         allocator,
         host,
-        rt.hardforkForBlockContext(execution_block_ctx),
+        fork,
         execution_block_ctx,
         caller,
-        tx.gas_price orelse 0,
+        effectiveGasPrice(tx, execution_block_ctx.block_base_fee),
         null,
     ) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -1839,9 +2124,27 @@ fn executeOnceWithOptions(
     };
     defer evm.deinit();
     if (options.tracer) |tracer| evm.setTracer(tracer);
-    // Nested CALL/STATICCALL to the Hardhat console address records calldata.
-    const console_overrides = [_]guillotine_mini.PrecompileOverride{rt.console_logs.precompileOverride()};
-    if (adapter.console_logs != null) evm.precompile_overrides = &console_overrides;
+    if (options.inspector) |insp| evm.setInspector(insp);
+    // Combine caller-supplied precompile overrides with the Hardhat console.log
+    // capture override when active.
+    var override_buf: [17]guillotine_mini.PrecompileOverride = undefined;
+    const effective_overrides: []const guillotine_mini.PrecompileOverride = blk: {
+        if (adapter.console_logs != null) {
+            const n = precompile_overrides.len;
+            if (n < override_buf.len) {
+                @memcpy(override_buf[0..n], precompile_overrides);
+                override_buf[n] = rt.console_logs.precompileOverride();
+                break :blk override_buf[0 .. n + 1];
+            }
+        }
+        break :blk precompile_overrides;
+    };
+    evm.precompile_overrides = effective_overrides;
+    // EIP-2930: the declared access list is charged in `intrinsicGas`, so its
+    // entries must be warm during execution.
+    evm.setAccessList(if (tx.processor_access_list.len == 0) null else tx.processor_access_list);
+    // EIP-4844: BLOBHASH reads the request's versioned hashes.
+    if (tx.blob_versioned_hashes.len != 0) evm.setBlobVersionedHashes(tx.blob_versioned_hashes);
 
     var result: ExecutionResult = if (tx.to) |to|
         try executeCall(allocator, &evm, &adapter, caller, to, tx, execution_gas, intrinsic, options.allow_failure)
@@ -1856,7 +2159,23 @@ fn executeOnceWithOptions(
         rt.state.revert();
     }
     checkpoint_open = false;
+    // A successful execution leaves no error for the dispatcher to attach.
+    clearLastExecutionErrorData();
+    clearLastSimulationRpcError();
     return result;
+}
+
+/// Price GASPRICE reports. EIP-1559: `min(maxFeePerGas, baseFee + tip)`,
+/// saturating because the tip is caller-chosen. Legacy: the gas price.
+fn effectiveGasPrice(tx: TransactionRequest, base_fee: u256) u256 {
+    if (tx.max_fee_per_gas) |max_fee| {
+        return @min(max_fee, base_fee +| (tx.max_priority_fee_per_gas orelse 0));
+    }
+    return tx.gas_price orelse 0;
+}
+
+fn warmingError(err: anyerror) error{ OutOfMemory, ExecutionFailed } {
+    return if (err == error.OutOfMemory) error.OutOfMemory else error.ExecutionFailed;
 }
 
 fn executeCall(
@@ -1912,7 +2231,15 @@ fn executeCreate(
     intrinsic: u64,
     allow_failure: bool,
 ) !ExecutionResult {
-    try evm.initTransactionState(null);
+    try evm.initTransactionState(if (tx.blob_versioned_hashes.len == 0) null else tx.blob_versioned_hashes);
+    // `inner_create` skips the transaction prologue that `call` runs, so the
+    // EIP-2929 warm set (origin, coinbase, precompiles) and the EIP-2930
+    // access list are installed here. The zero target warms no extra address;
+    // creation warms the new contract address itself.
+    evm.preWarmTransaction(primitives.Address{ .bytes = [_]u8{0} ** 20 }) catch |err| return warmingError(err);
+    if (tx.processor_access_list.len != 0) {
+        evm.access_list_manager.pre_warm_from_access_list(tx.processor_access_list) catch |err| return warmingError(err);
+    }
 
     const result = evm.inner_create(tx.value, tx.data, execution_gas, null) catch return error.ExecutionFailed;
     if (adapter.takeHostError() != null) return error.ExecutionFailed;
@@ -2053,6 +2380,7 @@ fn simulateCallValueFromReceipt(
     transfers: []const SimulatedTransfer,
     options: SimulateOptions,
     block_timestamp: u64,
+    next_log_index: *u32,
 ) !std.json.Value {
     var obj = std.json.ObjectMap.init(allocator);
     errdefer {
@@ -2061,7 +2389,7 @@ fn simulateCallValueFromReceipt(
     }
     const success = if (receipt.status) |status| status.success else true;
     try putOwnedJsonValue(&obj, allocator, "returnData", try hexBytes(allocator, if (success) output else &.{}));
-    try putOwnedJsonValue(&obj, allocator, "logs", try simulateLogsValue(allocator, receipt, tx, transfers, options, block_timestamp));
+    try putOwnedJsonValue(&obj, allocator, "logs", try simulateLogsValue(allocator, receipt, tx, transfers, options, block_timestamp, next_log_index));
     try putOwnedJsonValue(&obj, allocator, "gasUsed", try hexQuantityU256(allocator, receipt.gas_used));
     try putOwnedJsonValue(&obj, allocator, "maxUsedGas", try hexQuantityU256(allocator, receipt.gas_used));
     try putOwnedJsonValue(&obj, allocator, "status", .{ .string = try allocator.dupe(u8, if (success) "0x1" else "0x0") });
@@ -2194,8 +2522,10 @@ fn simulateLogsValue(
     transfers: []const SimulatedTransfer,
     options: SimulateOptions,
     block_timestamp: u64,
+    next_log_index: *u32,
 ) !std.json.Value {
-    var array = switch (try logsValue(allocator, receipt.logs, receipt.block_hash, block_timestamp)) {
+    const first_log_index = next_log_index.*;
+    var array = switch (try logsValue(allocator, receipt.logs, receipt.block_hash, block_timestamp, first_log_index)) {
         .array => |array| array,
         else => unreachable,
     };
@@ -2208,7 +2538,7 @@ fn simulateLogsValue(
     if (options.trace_transfers and success) {
         for (transfers) |transfer| {
             if (transfer.value == 0) continue;
-            const synthetic_log_index = receipt.transaction_index + @as(u32, @intCast(array.items.len));
+            const synthetic_log_index = first_log_index + @as(u32, @intCast(array.items.len));
             try array.append(try traceTransferLogValue(
                 allocator,
                 transfer.from,
@@ -2225,7 +2555,7 @@ fn simulateLogsValue(
     }
     if (options.trace_transfers and success and transfers.len == 0 and tx.value > 0) {
         if (tx.to) |to| {
-            const synthetic_log_index = receipt.transaction_index + @as(u32, @intCast(array.items.len));
+            const synthetic_log_index = first_log_index + @as(u32, @intCast(array.items.len));
             try array.append(try traceTransferLogValue(
                 allocator,
                 tx.from,
@@ -2241,6 +2571,7 @@ fn simulateLogsValue(
         }
     }
 
+    next_log_index.* = first_log_index + @as(u32, @intCast(array.items.len));
     return .{ .array = array };
 }
 
@@ -2293,7 +2624,10 @@ fn paddedAddressTopic(address: primitives.Address) [32]u8 {
 fn simulatedBlockValue(
     allocator: std.mem.Allocator,
     block: SimulatedBlockData,
-    calls: std.json.Array,
+    // Moved into the returned value; `calls_owned` is cleared at that point so
+    // the caller's cleanup does not free the array a second time.
+    calls: *std.json.Array,
+    calls_owned: *bool,
     transactions: []const SimulatedTransaction,
     return_full_transactions: bool,
 ) !std.json.Value {
@@ -2330,7 +2664,7 @@ fn simulatedBlockValue(
     }
     if (block.fork.isAtLeast(.CANCUN)) {
         try putOwnedJsonValue(&obj, allocator, "blobGasUsed", try hexQuantity(allocator, block.blob_gas_used));
-        try putOwnedJsonValue(&obj, allocator, "excessBlobGas", .{ .string = try allocator.dupe(u8, "0x0") });
+        try putOwnedJsonValue(&obj, allocator, "excessBlobGas", try hexQuantity(allocator, block.excess_blob_gas));
     }
     if (block.requests_hash) |requests_hash| try putOwnedJsonValue(&obj, allocator, "requestsHash", try hashValue(allocator, requests_hash));
     try putOwnedJsonValue(&obj, allocator, "size", try hexQuantity(allocator, block.size));
@@ -2340,7 +2674,8 @@ fn simulatedBlockValue(
         try putOwnedJsonValue(&obj, allocator, "withdrawals", .{ .array = std.json.Array.init(allocator) });
         try putOwnedJsonValue(&obj, allocator, "withdrawalsRoot", try hashValue(allocator, primitives.BlockHeader.EMPTY_WITHDRAWALS_ROOT));
     }
-    try putOwnedJsonValue(&obj, allocator, "calls", .{ .array = calls });
+    try putOwnedJsonValue(&obj, allocator, "calls", .{ .array = calls.* });
+    calls_owned.* = false;
     return .{ .object = obj };
 }
 
@@ -2407,13 +2742,14 @@ fn logsValue(
     logs: []const primitives.EventLog.EventLog,
     block_hash: [32]u8,
     block_timestamp: u64,
+    first_log_index: u32,
 ) !std.json.Value {
     var array = std.json.Array.init(allocator);
     errdefer {
         for (array.items) |*item| deinitJsonValue(allocator, item);
         array.deinit();
     }
-    for (logs) |event_log| {
+    for (logs, 0..) |event_log, log_offset| {
         var obj = std.json.ObjectMap.init(allocator);
         errdefer {
             var cleanup = std.json.Value{ .object = obj };
@@ -2427,7 +2763,7 @@ fn logsValue(
         try putOwnedJsonValue(&obj, allocator, "transactionIndex", try hexQuantity(allocator, event_log.transaction_index orelse 0));
         try putOwnedJsonValue(&obj, allocator, "blockHash", try hashValue(allocator, block_hash));
         try putOwnedJsonValue(&obj, allocator, "blockTimestamp", try hexQuantity(allocator, block_timestamp));
-        try putOwnedJsonValue(&obj, allocator, "logIndex", try hexQuantity(allocator, event_log.log_index orelse 0));
+        try putOwnedJsonValue(&obj, allocator, "logIndex", try hexQuantity(allocator, first_log_index + @as(u32, @intCast(log_offset))));
         try putOwnedJsonValue(&obj, allocator, "removed", .{ .bool = event_log.removed });
         try array.append(.{ .object = obj });
     }
@@ -2528,13 +2864,13 @@ fn simulatedBlockSize(
     defer allocator.free(header_encoded);
     const txs_encoded = try encodeTransactionsListForBlock(allocator, raw_txs);
     defer allocator.free(txs_encoded);
-    const ommers_encoded = try encodeRlpListNoFree(allocator, &.{});
+    const ommers_encoded = try encodeRlpList(allocator, &.{});
     defer allocator.free(ommers_encoded);
     const outer = if (fork.isAtLeast(.SHANGHAI)) blk: {
-        const withdrawals_encoded = try encodeRlpListNoFree(allocator, &.{});
+        const withdrawals_encoded = try encodeRlpList(allocator, &.{});
         defer allocator.free(withdrawals_encoded);
-        break :blk try encodeRlpListNoFree(allocator, &.{ header_encoded, txs_encoded, ommers_encoded, withdrawals_encoded });
-    } else try encodeRlpListNoFree(allocator, &.{ header_encoded, txs_encoded, ommers_encoded });
+        break :blk try encodeRlpList(allocator, &.{ header_encoded, txs_encoded, ommers_encoded, withdrawals_encoded });
+    } else try encodeRlpList(allocator, &.{ header_encoded, txs_encoded, ommers_encoded });
     defer allocator.free(outer);
     return @intCast(outer.len);
 }
@@ -2545,42 +2881,53 @@ fn encodeHeaderForSimulatedBlock(
     requests_hash: ?[32]u8,
 ) ![]u8 {
     if (requests_hash == null) return primitives.BlockHeader.rlpEncode(&header, allocator);
-    return encodeRlpListOwned(allocator, &.{
-        try primitives.Rlp.encodeBytes(allocator, &header.parent_hash),
-        try primitives.Rlp.encodeBytes(allocator, &header.ommers_hash),
-        try primitives.Rlp.encodeBytes(allocator, &header.beneficiary.bytes),
-        try primitives.Rlp.encodeBytes(allocator, &header.state_root),
-        try primitives.Rlp.encodeBytes(allocator, &header.transactions_root),
-        try primitives.Rlp.encodeBytes(allocator, &header.receipts_root),
-        try primitives.Rlp.encodeBytes(allocator, &header.logs_bloom),
-        try primitives.Rlp.encode(allocator, header.difficulty),
-        try primitives.Rlp.encode(allocator, header.number),
-        try primitives.Rlp.encode(allocator, header.gas_limit),
-        try primitives.Rlp.encode(allocator, header.gas_used),
-        try primitives.Rlp.encode(allocator, header.timestamp),
-        try primitives.Rlp.encodeBytes(allocator, header.extra_data),
-        try primitives.Rlp.encodeBytes(allocator, &header.mix_hash),
-        try primitives.Rlp.encodeBytes(allocator, &header.nonce),
-        try primitives.Rlp.encode(allocator, header.base_fee_per_gas orelse 0),
-        try primitives.Rlp.encodeBytes(allocator, &(header.withdrawals_root orelse primitives.BlockHeader.EMPTY_WITHDRAWALS_ROOT)),
-        try primitives.Rlp.encode(allocator, header.blob_gas_used orelse 0),
-        try primitives.Rlp.encode(allocator, header.excess_blob_gas orelse 0),
-        try primitives.Rlp.encodeBytes(allocator, &(header.parent_beacon_block_root orelse primitives.Hash.ZERO)),
-        try primitives.Rlp.encodeBytes(allocator, &(requests_hash.?)),
-    });
+    var fields = RlpFields{};
+    defer fields.deinit(allocator);
+    try fields.push(allocator, primitives.Rlp.encodeBytes(allocator, &header.parent_hash));
+    try fields.push(allocator, primitives.Rlp.encodeBytes(allocator, &header.ommers_hash));
+    try fields.push(allocator, primitives.Rlp.encodeBytes(allocator, &header.beneficiary.bytes));
+    try fields.push(allocator, primitives.Rlp.encodeBytes(allocator, &header.state_root));
+    try fields.push(allocator, primitives.Rlp.encodeBytes(allocator, &header.transactions_root));
+    try fields.push(allocator, primitives.Rlp.encodeBytes(allocator, &header.receipts_root));
+    try fields.push(allocator, primitives.Rlp.encodeBytes(allocator, &header.logs_bloom));
+    try fields.push(allocator, primitives.Rlp.encode(allocator, header.difficulty));
+    try fields.push(allocator, primitives.Rlp.encode(allocator, header.number));
+    try fields.push(allocator, primitives.Rlp.encode(allocator, header.gas_limit));
+    try fields.push(allocator, primitives.Rlp.encode(allocator, header.gas_used));
+    try fields.push(allocator, primitives.Rlp.encode(allocator, header.timestamp));
+    try fields.push(allocator, primitives.Rlp.encodeBytes(allocator, header.extra_data));
+    try fields.push(allocator, primitives.Rlp.encodeBytes(allocator, &header.mix_hash));
+    try fields.push(allocator, primitives.Rlp.encodeBytes(allocator, &header.nonce));
+    try fields.push(allocator, primitives.Rlp.encode(allocator, header.base_fee_per_gas orelse 0));
+    try fields.push(allocator, primitives.Rlp.encodeBytes(allocator, &(header.withdrawals_root orelse primitives.BlockHeader.EMPTY_WITHDRAWALS_ROOT)));
+    try fields.push(allocator, primitives.Rlp.encode(allocator, header.blob_gas_used orelse 0));
+    try fields.push(allocator, primitives.Rlp.encode(allocator, header.excess_blob_gas orelse 0));
+    try fields.push(allocator, primitives.Rlp.encodeBytes(allocator, &(header.parent_beacon_block_root orelse primitives.Hash.ZERO)));
+    try fields.push(allocator, primitives.Rlp.encodeBytes(allocator, &(requests_hash.?)));
+    return encodeRlpList(allocator, fields.items.items);
 }
 
+/// Encodes the block body's transaction list. A legacy transaction is already
+/// an RLP list and is embedded as-is; a typed EIP-2718 envelope is embedded as
+/// an RLP byte string.
 fn encodeTransactionsListForBlock(
     allocator: std.mem.Allocator,
     raw_txs: []const primitives.BlockBody.TransactionData,
 ) ![]u8 {
-    const fields = try allocator.alloc([]u8, raw_txs.len);
-    defer allocator.free(fields);
-    for (raw_txs, 0..) |tx, i| fields[i] = try primitives.Rlp.encodeBytes(allocator, tx.raw);
-    return encodeRlpListOwned(allocator, fields);
+    var fields = RlpFields{};
+    defer fields.deinit(allocator);
+    for (raw_txs) |tx| {
+        if (tx.raw.len != 0 and tx.raw[0] >= 0xc0) {
+            try fields.push(allocator, allocator.dupe(u8, tx.raw));
+        } else {
+            try fields.push(allocator, primitives.Rlp.encodeBytes(allocator, tx.raw));
+        }
+    }
+    return encodeRlpList(allocator, fields.items.items);
 }
 
-fn encodeRlpListNoFree(allocator: std.mem.Allocator, fields: []const []const u8) ![]u8 {
+/// Wraps already-encoded RLP items in a list header. Borrows `fields`.
+fn encodeRlpList(allocator: std.mem.Allocator, fields: []const []const u8) ![]u8 {
     var total_len: usize = 0;
     for (fields) |field| total_len = try std.math.add(usize, total_len, field.len);
     var out = std.ArrayList(u8){};
@@ -2676,6 +3023,62 @@ fn deinitJsonValue(allocator: std.mem.Allocator, value: *std.json.Value) void {
         },
         else => {},
     }
+}
+
+fn accessListEqual(a: []const guillotine_mini.tracers.AccessListEntry, b: []const guillotine_mini.tracers.AccessListEntry) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |ea, eb| {
+        if (!ea.address.equals(eb.address)) return false;
+        if (ea.storage_keys.len != eb.storage_keys.len) return false;
+        for (ea.storage_keys, eb.storage_keys) |ka, kb| {
+            if (!std.mem.eql(u8, &ka, &kb)) return false;
+        }
+    }
+    return true;
+}
+
+fn accessListToJson(allocator: std.mem.Allocator, entries: []const guillotine_mini.tracers.AccessListEntry) !std.json.Value {
+    var array = std.json.Array.init(allocator);
+    errdefer {
+        for (array.items) |*item| deinitJsonValue(allocator, item);
+        array.deinit();
+    }
+    for (entries) |entry| {
+        var entry_obj = std.json.ObjectMap.init(allocator);
+        var entry_transferred = false;
+        errdefer if (!entry_transferred) {
+            var cleanup = std.json.Value{ .object = entry_obj };
+            deinitJsonValue(allocator, &cleanup);
+        };
+        try putOwnedJsonValue(&entry_obj, allocator, "address", try addressValue(allocator, entry.address));
+        var keys_array = std.json.Array.init(allocator);
+        var keys_transferred = false;
+        errdefer if (!keys_transferred) {
+            for (keys_array.items) |*item| deinitJsonValue(allocator, item);
+            keys_array.deinit();
+        };
+        for (entry.storage_keys) |key| {
+            const hex_val = try fixedBytesValue(allocator, &key);
+            errdefer {
+                var tmp = hex_val;
+                deinitJsonValue(allocator, &tmp);
+            }
+            try keys_array.append(hex_val);
+        }
+        keys_transferred = true;
+        try putOwnedJsonValue(&entry_obj, allocator, "storageKeys", .{ .array = keys_array });
+        try array.append(.{ .object = entry_obj });
+        entry_transferred = true;
+    }
+    return .{ .array = array };
+}
+
+fn convertAccessListForProcessor(allocator: std.mem.Allocator, entries: []const guillotine_mini.tracers.AccessListEntry) ![]primitives.AccessList.AccessListEntry {
+    const result = try allocator.alloc(primitives.AccessList.AccessListEntry, entries.len);
+    for (entries, result) |src, *dst| {
+        dst.* = .{ .address = src.address, .storage_keys = src.storage_keys };
+    }
+    return result;
 }
 
 fn writeHexLower(out: []u8, bytes: []const u8) void {

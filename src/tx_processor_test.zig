@@ -6,6 +6,8 @@ const tx_processor = @import("tx_processor.zig");
 const host_adapter = @import("host_adapter.zig");
 const hardfork_schedule = @import("hardfork_schedule.zig");
 const tx_encoding = @import("transaction_encoding.zig");
+const evm_backend = @import("evm_backend.zig");
+const crypto = @import("crypto");
 
 fn makeLegacyTx(params: struct {
     to: ?primitives.Address,
@@ -1044,4 +1046,863 @@ test "dynamic fee caps near u256 max return an error instead of overflowing (#55
     try std.testing.expectError(tx_processor.TxError.InsufficientBalance, result);
     try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(sender));
     try std.testing.expectEqual(@as(u256, max), try sm.getBalance(sender));
+}
+
+const r1_sender = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
+const r1_recipient = primitives.Address{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 19 };
+const r1_sender_balance: u256 = 1_000_000_000_000_000_000;
+
+/// Runs one transaction from a funded sender against fresh state and asserts
+/// that a rejected transaction leaves the sender untouched.
+fn expectRejectedWithoutStateChange(
+    expected: tx_processor.TxError,
+    tx: primitives.Transaction.LegacyTransaction,
+    block_ctx: guillotine_mini.BlockContext,
+    options: tx_processor.ProcessTransactionOptions,
+) !void {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    try sm.setBalance(r1_sender, r1_sender_balance);
+
+    try std.testing.expectError(expected, tx_processor.processTransactionWithOptions(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        r1_sender,
+        tx,
+        block_ctx,
+        options,
+    ));
+    try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(r1_sender));
+    try std.testing.expectEqual(r1_sender_balance, try sm.getBalance(r1_sender));
+    try std.testing.expectEqual(@as(usize, 0), sm.journaled_state.account_cache.checkpoints.items.len);
+}
+
+test "effective gas price does not overflow for a maximal priority fee" {
+    var block_ctx = defaultBlockContext();
+    block_ctx.block_base_fee = 10;
+    const max = std.math.maxInt(u256);
+    const tx = makeLegacyTx(.{ .to = r1_recipient, .value = 0, .data = &.{}, .gas_limit = 21_000, .gas_price = 100, .nonce = 0 });
+
+    // Validating path: base_fee + tip used to overflow u256 (a panic in safe
+    // builds). The transaction is now rejected for its unaffordable fee cap.
+    try expectRejectedWithoutStateChange(
+        tx_processor.TxError.InsufficientBalance,
+        tx,
+        block_ctx,
+        .{ .receipt_type = .eip1559, .max_fee_per_gas = max, .max_priority_fee_per_gas = max },
+    );
+
+    // Non-validating path: the tip may exceed the fee cap; the price saturates at the cap.
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    try sm.setBalance(r1_sender, r1_sender_balance);
+    var receipt = try tx_processor.processTransactionWithOptions(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        r1_sender,
+        tx,
+        block_ctx,
+        .{ .receipt_type = .eip1559, .max_fee_per_gas = 100, .max_priority_fee_per_gas = max, .skip_fee_validation = true },
+    );
+    defer receipt.deinit(std.testing.allocator);
+    try std.testing.expect(receipt.status.?.success);
+    try std.testing.expectEqual(@as(u256, 100), receipt.effective_gas_price);
+    try std.testing.expectEqual(r1_sender_balance - 100 * 21_000, try sm.getBalance(r1_sender));
+    // 90 wei per gas of tip reaches the coinbase; 10 wei per gas of base fee burns.
+    try std.testing.expectEqual(@as(u256, 90 * 21_000), try sm.getBalance(block_ctx.block_coinbase));
+}
+
+test "transactionGasFloorForFork is exported and fork-aware" {
+    const data = [_]u8{ 0x01, 0x00, 0x02 };
+    try std.testing.expectEqual(@as(u64, 0), try tx_processor.transactionGasFloorForFork(&data, .CANCUN));
+    // 2 nonzero bytes * 4 tokens + 1 zero byte * 1 token = 9 tokens * 10 gas.
+    try std.testing.expectEqual(@as(u64, 21_000 + 90), try tx_processor.transactionGasFloorForFork(&data, .PRAGUE));
+    try std.testing.expectEqual(@as(u64, 21_000), try tx_processor.transactionGasFloorForFork(&.{}, .OSAKA));
+    try std.testing.expectEqual(@as(usize, 49_152), tx_processor.MAX_INITCODE_SIZE);
+}
+
+test "creation surcharge applies from Homestead, not Frontier" {
+    try std.testing.expectEqual(@as(u64, 21_000), tx_processor.intrinsicGasForFork(&.{}, true, .FRONTIER));
+    try std.testing.expectEqual(@as(u64, 53_000), tx_processor.intrinsicGasForFork(&.{}, true, .HOMESTEAD));
+    try std.testing.expectEqual(@as(u64, 21_000), tx_processor.intrinsicGasForFork(&.{}, false, .FRONTIER));
+
+    // A Frontier creation with exactly 21,000 gas is valid; on Homestead it is not.
+    const create = makeLegacyTx(.{ .to = null, .value = 0, .data = &.{}, .gas_limit = 21_000, .gas_price = 1, .nonce = 0 });
+    try expectRejectedWithoutStateChange(tx_processor.TxError.IntrinsicGasExceedsLimit, create, defaultBlockContext(), .{ .hardfork_override = .HOMESTEAD });
+
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    try sm.setBalance(r1_sender, r1_sender_balance);
+    var receipt = try tx_processor.processTransactionWithOptions(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        r1_sender,
+        create,
+        defaultBlockContext(),
+        .{ .hardfork_override = .FRONTIER },
+    );
+    defer receipt.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u256, 21_000), receipt.gas_used);
+}
+
+test "remaining_block_gas bounds the transaction gas limit" {
+    const tx = makeLegacyTx(.{ .to = r1_recipient, .value = 1, .data = &.{}, .gas_limit = 21_000, .gas_price = 1, .nonce = 0 });
+    try expectRejectedWithoutStateChange(tx_processor.TxError.BlockGasLimitExceeded, tx, defaultBlockContext(), .{ .remaining_block_gas = 20_999 });
+
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    try sm.setBalance(r1_sender, r1_sender_balance);
+    var receipt = try tx_processor.processTransactionWithOptions(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        r1_sender,
+        tx,
+        defaultBlockContext(),
+        .{ .remaining_block_gas = 21_000 },
+    );
+    defer receipt.deinit(std.testing.allocator);
+    try std.testing.expect(receipt.status.?.success);
+}
+
+test "EIP-3860 rejects oversized creation init code before any state change" {
+    const oversized = try std.testing.allocator.alloc(u8, tx_processor.MAX_INITCODE_SIZE + 1);
+    defer std.testing.allocator.free(oversized);
+    @memset(oversized, 0);
+
+    const too_large = makeLegacyTx(.{ .to = null, .value = 0, .data = oversized, .gas_limit = 1_000_000, .gas_price = 1, .nonce = 0 });
+    for ([_]guillotine_mini.Hardfork{ .SHANGHAI, .CANCUN, .PRAGUE }) |fork| {
+        try expectRejectedWithoutStateChange(tx_processor.TxError.InitcodeTooLarge, too_large, defaultBlockContext(), .{ .hardfork_override = fork });
+    }
+
+    // The limit is inclusive, applies to creations only, and starts at Shanghai.
+    const cases = [_]struct { tx: primitives.Transaction.LegacyTransaction, fork: guillotine_mini.Hardfork }{
+        .{ .tx = makeLegacyTx(.{ .to = null, .value = 0, .data = oversized[0..tx_processor.MAX_INITCODE_SIZE], .gas_limit = 1_000_000, .gas_price = 1, .nonce = 0 }), .fork = .SHANGHAI },
+        .{ .tx = makeLegacyTx(.{ .to = r1_recipient, .value = 0, .data = oversized, .gas_limit = 1_000_000, .gas_price = 1, .nonce = 0 }), .fork = .SHANGHAI },
+        .{ .tx = too_large, .fork = .LONDON },
+    };
+    for (cases) |case| {
+        var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+        defer sm.deinit();
+        var adapter = host_adapter.HostAdapter{ .state = &sm };
+        try sm.setBalance(r1_sender, r1_sender_balance);
+        var receipt = try tx_processor.processTransactionWithOptions(
+            std.testing.allocator,
+            &sm,
+            adapter.hostInterface(),
+            r1_sender,
+            case.tx,
+            defaultBlockContext(),
+            .{ .hardfork_override = case.fork },
+        );
+        defer receipt.deinit(std.testing.allocator);
+        try std.testing.expectEqual(@as(u64, 1), try sm.getNonce(r1_sender));
+    }
+}
+
+test "EIP-4844 requires a recipient and well-formed blob versioned hashes" {
+    const call = makeLegacyTx(.{ .to = r1_recipient, .value = 0, .data = &.{}, .gas_limit = 21_000, .gas_price = 1, .nonce = 0 });
+    const create = makeLegacyTx(.{ .to = null, .value = 0, .data = &.{}, .gas_limit = 100_000, .gas_price = 1, .nonce = 0 });
+    const good_hash = [_]u8{0x01} ++ [_]u8{0xab} ** 31;
+    const bad_hash = [_]u8{0x02} ++ [_]u8{0xab} ** 31;
+    const blob_gas: u256 = primitives.Blob.BLOB_GAS_PER_BLOB;
+
+    var options = tx_processor.ProcessTransactionOptions{
+        .receipt_type = .eip4844,
+        .max_fee_per_gas = 1,
+        .max_priority_fee_per_gas = 1,
+        .blob_gas_used = blob_gas,
+        .blob_gas_price = 1,
+        .max_fee_per_blob_gas = 1,
+    };
+
+    try expectRejectedWithoutStateChange(tx_processor.TxError.EmptyBlobHashes, call, defaultBlockContext(), options);
+    options.blob_versioned_hashes = &.{};
+    try expectRejectedWithoutStateChange(tx_processor.TxError.EmptyBlobHashes, call, defaultBlockContext(), options);
+    options.blob_versioned_hashes = &[_][32]u8{ good_hash, bad_hash };
+    try expectRejectedWithoutStateChange(tx_processor.TxError.InvalidBlobVersionedHash, call, defaultBlockContext(), options);
+    options.blob_versioned_hashes = &[_][32]u8{good_hash};
+    try expectRejectedWithoutStateChange(tx_processor.TxError.ContractCreationNotAllowed, create, defaultBlockContext(), options);
+
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    try sm.setBalance(r1_sender, r1_sender_balance);
+    var receipt = try tx_processor.processTransactionWithOptions(std.testing.allocator, &sm, adapter.hostInterface(), r1_sender, call, defaultBlockContext(), options);
+    defer receipt.deinit(std.testing.allocator);
+    try std.testing.expect(receipt.status.?.success);
+    try std.testing.expectEqual(@as(?u256, blob_gas), receipt.blob_gas_used);
+}
+
+test "EIP-7702 requires a recipient and a non-empty authorization list" {
+    const call = makeLegacyTx(.{ .to = r1_recipient, .value = 0, .data = &.{}, .gas_limit = 100_000, .gas_price = 1, .nonce = 0 });
+    const create = makeLegacyTx(.{ .to = null, .value = 0, .data = &.{}, .gas_limit = 100_000, .gas_price = 1, .nonce = 0 });
+    var options = tx_processor.ProcessTransactionOptions{
+        .receipt_type = .eip7702,
+        .max_fee_per_gas = 1,
+        .max_priority_fee_per_gas = 1,
+        .hardfork_override = .PRAGUE,
+    };
+
+    try expectRejectedWithoutStateChange(tx_processor.TxError.EmptyAuthorizationList, call, defaultBlockContext(), options);
+    options.authorization_list = &.{};
+    try expectRejectedWithoutStateChange(tx_processor.TxError.EmptyAuthorizationList, call, defaultBlockContext(), options);
+    try expectRejectedWithoutStateChange(tx_processor.TxError.ContractCreationNotAllowed, create, defaultBlockContext(), options);
+}
+
+test "receipt uses canonical_tx_hash when provided" {
+    const canonical = [_]u8{0x7e} ** 32;
+    const tx = makeLegacyTx(.{ .to = r1_recipient, .value = 0, .data = &.{}, .gas_limit = 21_000, .gas_price = 1, .nonce = 0 });
+
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    try sm.setBalance(r1_sender, r1_sender_balance);
+
+    var typed = try tx_processor.processTransactionWithOptions(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        r1_sender,
+        tx,
+        defaultBlockContext(),
+        .{ .receipt_type = .eip1559, .max_fee_per_gas = 1, .max_priority_fee_per_gas = 1, .canonical_tx_hash = canonical },
+    );
+    defer typed.deinit(std.testing.allocator);
+    try std.testing.expectEqualSlices(u8, &canonical, &typed.transaction_hash);
+
+    // Without it the legacy envelope hash is the fallback.
+    var next = tx;
+    next.nonce = 1;
+    var legacy = try tx_processor.processTransaction(std.testing.allocator, &sm, adapter.hostInterface(), r1_sender, next, defaultBlockContext());
+    defer legacy.deinit(std.testing.allocator);
+    const encoded = try tx_encoding.encodeLegacyTransactionEnvelope(std.testing.allocator, next);
+    defer std.testing.allocator.free(encoded);
+    try std.testing.expectEqualSlices(u8, &tx_encoding.transactionHash(encoded), &legacy.transaction_hash);
+}
+
+const R1ExternalProbe = struct {
+    calls: usize = 0,
+    fail_with_oom: bool = false,
+    write_storage: bool = false,
+
+    fn execute(
+        context: ?*anyopaque,
+        allocator: std.mem.Allocator,
+        request: evm_backend.ExecutionRequest,
+    ) evm_backend.ExecuteError!evm_backend.ExecutionResult {
+        const self: *R1ExternalProbe = @ptrCast(@alignCast(context.?));
+        self.calls += 1;
+        if (self.write_storage) request.host.setStorage(request.to.?, 1, 99);
+        if (self.fail_with_oom) return error.OutOfMemory;
+        return evm_backend.ExecutionResult.initOwned(allocator, .{
+            .success = true,
+            .gas_left = request.gas - 1_000,
+            .output = &[_]u8{ 0xca, 0xfe },
+        });
+    }
+};
+
+test "external EVM backend executes the message behind the same settlement" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    try sm.setBalance(r1_sender, r1_sender_balance);
+
+    var probe = R1ExternalProbe{ .write_storage = true };
+    var out: []u8 = &.{};
+    defer std.testing.allocator.free(out);
+    var receipt = try tx_processor.processTransactionWithOptions(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        r1_sender,
+        makeLegacyTx(.{ .to = r1_recipient, .value = 0, .data = &.{}, .gas_limit = 50_000, .gas_price = 2, .nonce = 0 }),
+        defaultBlockContext(),
+        .{ .backend = .{ .external = .{ .context = &probe, .execute = R1ExternalProbe.execute } }, .capture_output = &out },
+    );
+    defer receipt.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), probe.calls);
+    try std.testing.expect(receipt.status.?.success);
+    try std.testing.expectEqual(@as(u256, 22_000), receipt.gas_used);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0xca, 0xfe }, out);
+    try std.testing.expectEqual(@as(u256, 99), try sm.getStorage(r1_recipient, 1));
+    try std.testing.expectEqual(r1_sender_balance - 2 * 22_000, try sm.getBalance(r1_sender));
+    try std.testing.expectEqual(@as(u64, 1), try sm.getNonce(r1_sender));
+}
+
+test "backend OutOfMemory propagates and unwinds exactly the transaction's checkpoints" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    try sm.setBalance(r1_sender, r1_sender_balance);
+
+    // The caller's own checkpoint and pending write must survive the failure.
+    try sm.checkpoint();
+    try sm.setBalance(r1_recipient, 5);
+
+    var probe = R1ExternalProbe{ .fail_with_oom = true, .write_storage = true };
+    try std.testing.expectError(tx_processor.TxError.OutOfMemory, tx_processor.processTransactionWithOptions(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        r1_sender,
+        makeLegacyTx(.{ .to = r1_recipient, .value = 0, .data = &.{}, .gas_limit = 50_000, .gas_price = 2, .nonce = 0 }),
+        defaultBlockContext(),
+        .{ .backend = .{ .external = .{ .context = &probe, .execute = R1ExternalProbe.execute } } },
+    ));
+
+    try std.testing.expectEqual(@as(usize, 1), probe.calls);
+    try std.testing.expectEqual(@as(usize, 1), sm.journaled_state.account_cache.checkpoints.items.len);
+    try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(r1_sender));
+    try std.testing.expectEqual(r1_sender_balance, try sm.getBalance(r1_sender));
+    try std.testing.expectEqual(@as(u256, 0), try sm.getStorage(r1_recipient, 1));
+    try std.testing.expectEqual(@as(u256, 5), try sm.getBalance(r1_recipient));
+    sm.revert();
+    try std.testing.expectEqual(@as(u256, 0), try sm.getBalance(r1_recipient));
+}
+
+test "pre-Spurious creation resets the created nonce inside the EVM checkpoint" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    try sm.setBalance(r1_sender, r1_sender_balance);
+
+    try sm.checkpoint();
+    // Init code: PUSH1 1, PUSH1 0, RETURN deploys the single byte 0x00 (STOP).
+    const init_code = [_]u8{ 0x60, 0x01, 0x60, 0x00, 0xf3 };
+    var receipt = try tx_processor.processTransactionWithOptions(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        r1_sender,
+        makeLegacyTx(.{ .to = null, .value = 0, .data = &init_code, .gas_limit = 200_000, .gas_price = 1, .nonce = 0 }),
+        defaultBlockContext(),
+        .{ .hardfork_override = .HOMESTEAD },
+    );
+    defer receipt.deinit(std.testing.allocator);
+
+    try std.testing.expect(receipt.status.?.success);
+    const created = receipt.contract_address.?;
+    try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(created));
+    try std.testing.expectEqual(@as(usize, 1), (try sm.getCode(created)).len);
+    // Both transaction checkpoints are closed; only the caller's remains.
+    try std.testing.expectEqual(@as(usize, 1), sm.journaled_state.account_cache.checkpoints.items.len);
+    sm.revert();
+    try std.testing.expectEqual(@as(usize, 0), (try sm.getCode(created)).len);
+    try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(r1_sender));
+}
+
+test "ECRECOVER precompile accepts a high-s signature through processTransaction" {
+    var private_key = [_]u8{0} ** 32;
+    private_key[31] = 0x2a;
+    const signer = (try crypto.Crypto.unaudited_getPublicKey(private_key)).toAddress();
+
+    const message_hash = [_]u8{0x3c} ** 32;
+    const low_s = try crypto.Crypto.unaudited_signHash(message_hash, private_key);
+    try std.testing.expect(low_s.s <= crypto.Crypto.SECP256K1_N >> 1);
+
+    // (r, n - s, v ^ 1) is the same signature in its malleable high-s form.
+    const high_s: u256 = crypto.Crypto.SECP256K1_N - low_s.s;
+    try std.testing.expect(high_s > crypto.Crypto.SECP256K1_N >> 1);
+    const flipped_v: u8 = if (low_s.v == 27) 28 else 27;
+
+    var input = [_]u8{0} ** 128;
+    @memcpy(input[0..32], &message_hash);
+    input[63] = flipped_v;
+    std.mem.writeInt(u256, input[64..96], low_s.r, .big);
+    std.mem.writeInt(u256, input[96..128], high_s, .big);
+
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    try sm.setBalance(r1_sender, r1_sender_balance);
+
+    var out: []u8 = &.{};
+    defer std.testing.allocator.free(out);
+    var receipt = try tx_processor.processTransactionWithOptions(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        r1_sender,
+        makeLegacyTx(.{ .to = primitives.Address.fromU256(1), .value = 0, .data = &input, .gas_limit = 100_000, .gas_price = 1, .nonce = 0 }),
+        defaultBlockContext(),
+        .{ .capture_output = &out },
+    );
+    defer receipt.deinit(std.testing.allocator);
+
+    try std.testing.expect(receipt.status.?.success);
+    try std.testing.expectEqual(@as(usize, 32), out.len);
+    try std.testing.expectEqualSlices(u8, &([_]u8{0} ** 12), out[0..12]);
+    try std.testing.expectEqualSlices(u8, &signer.bytes, out[12..32]);
+}
+
+test "EIP-7702 warms a recovered authority whose tuple is skipped for a nonce mismatch" {
+    var private_key = [_]u8{0} ** 32;
+    private_key[31] = 0x2a;
+    const authority = (try crypto.Crypto.unaudited_getPublicKey(private_key)).toAddress();
+    const delegate = primitives.Address{ .bytes = [_]u8{0xde} ++ [_]u8{0} ** 19 };
+    const probe = primitives.Address{ .bytes = [_]u8{0xc0} ++ [_]u8{0} ** 19 };
+    try std.testing.expect(!authority.equals(r1_sender));
+    try std.testing.expect(!authority.equals(probe));
+
+    // The authority's account nonce is 0, so a tuple signed for nonce 5 is
+    // skipped at EIP-7702 step 6. Step 4 has already warmed the authority.
+    const authorizations = [_]primitives.Authorization.Authorization{
+        try primitives.Authorization.createAuthorization(std.testing.allocator, 1, delegate, 5, private_key),
+    };
+    try std.testing.expect((try authorizations[0].authority()).equals(authority));
+
+    const probe_code = balanceProbeBytecode(authority);
+    const intrinsic: u256 = 21_000 + 25_000; // base + one authorization tuple
+    const push20_gas: u256 = 3;
+
+    for ([_]guillotine_mini.Hardfork{ .PRAGUE, .OSAKA }) |fork| {
+        var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+        defer sm.deinit();
+        var adapter = host_adapter.HostAdapter{ .state = &sm };
+        try sm.setBalance(r1_sender, r1_sender_balance);
+        try sm.setCode(probe, &probe_code);
+
+        var receipt = try tx_processor.processTransactionWithOptions(
+            std.testing.allocator,
+            &sm,
+            adapter.hostInterface(),
+            r1_sender,
+            makeLegacyTx(.{ .to = probe, .value = 0, .data = &.{}, .gas_limit = 100_000, .gas_price = 1, .nonce = 0 }),
+            defaultBlockContext(),
+            .{
+                .receipt_type = .eip7702,
+                .max_fee_per_gas = 1,
+                .max_priority_fee_per_gas = 1,
+                .authorization_list = &authorizations,
+                .hardfork_override = fork,
+            },
+        );
+        defer receipt.deinit(std.testing.allocator);
+
+        try std.testing.expect(receipt.status.?.success);
+        // BALANCE(authority) costs 100 (warm), not 2600 (cold).
+        try std.testing.expectEqual(intrinsic + push20_gas + 100, receipt.gas_used);
+        // The skipped tuple changed nothing on the authority.
+        try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(authority));
+        try std.testing.expectEqual(@as(usize, 0), (try sm.getCode(authority)).len);
+    }
+}
+
+test "EIP-7702 leaves an address cold when no authorization recovers to it" {
+    const cold = primitives.Address{ .bytes = [_]u8{0xab} ++ [_]u8{0} ** 19 };
+    const probe = primitives.Address{ .bytes = [_]u8{0xc0} ++ [_]u8{0} ** 19 };
+    var private_key = [_]u8{0} ** 32;
+    private_key[31] = 0x2a;
+    const authorizations = [_]primitives.Authorization.Authorization{
+        try primitives.Authorization.createAuthorization(std.testing.allocator, 1, probe, 5, private_key),
+    };
+
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    try sm.setBalance(r1_sender, r1_sender_balance);
+    const probe_code = balanceProbeBytecode(cold);
+    try sm.setCode(probe, &probe_code);
+
+    var receipt = try tx_processor.processTransactionWithOptions(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        r1_sender,
+        makeLegacyTx(.{ .to = probe, .value = 0, .data = &.{}, .gas_limit = 100_000, .gas_price = 1, .nonce = 0 }),
+        defaultBlockContext(),
+        .{
+            .receipt_type = .eip7702,
+            .max_fee_per_gas = 1,
+            .max_priority_fee_per_gas = 1,
+            .authorization_list = &authorizations,
+            .hardfork_override = .PRAGUE,
+        },
+    );
+    defer receipt.deinit(std.testing.allocator);
+
+    try std.testing.expect(receipt.status.?.success);
+    try std.testing.expectEqual(@as(u256, 21_000 + 25_000 + 3 + 2_600), receipt.gas_used);
+}
+
+/// A caller-supplied override that succeeds, uses no gas and returns nothing.
+fn noopPrecompileOverride(
+    _: ?*anyopaque,
+    _: std.mem.Allocator,
+    _: []const u8,
+    _: u64,
+) anyerror!guillotine_mini.PrecompileOutput {
+    return .{ .output = &.{}, .gas_used = 0, .success = true };
+}
+
+test "precompile self-transfer with value does not mint balance" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+
+    // Sender and recipient are both the ECRECOVER address 0x01.
+    const ecrecover = primitives.Address.fromU256(1);
+    const start_balance: u256 = 1_000_000;
+    const value: u256 = 1_000;
+    try sm.setBalance(ecrecover, start_balance);
+
+    // With and without a caller-supplied override: the override path settles
+    // the value in tx_processor, the native path in the EVM.
+    const overrides = [_]guillotine_mini.PrecompileOverride{.{ .address = ecrecover, .execute = noopPrecompileOverride }};
+    var overridden = try tx_processor.processTransactionWithOptions(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        ecrecover,
+        makeLegacyTx(.{ .to = ecrecover, .value = value, .data = &.{}, .gas_limit = 100_000, .gas_price = 1, .nonce = 0 }),
+        defaultBlockContext(),
+        .{ .precompile_overrides = &overrides },
+    );
+    defer overridden.deinit(std.testing.allocator);
+    try std.testing.expect(overridden.status.?.success);
+    try std.testing.expectEqual(start_balance - overridden.gas_used, try sm.getBalance(ecrecover));
+    try sm.setBalance(ecrecover, start_balance);
+
+    var receipt = try tx_processor.processTransaction(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        ecrecover,
+        makeLegacyTx(.{ .to = ecrecover, .value = value, .data = &.{}, .gas_limit = 100_000, .gas_price = 1, .nonce = 1 }),
+        defaultBlockContext(),
+    );
+    defer receipt.deinit(std.testing.allocator);
+
+    try std.testing.expect(receipt.status.?.success);
+    // Only gas leaves the account; before the fix it also gained `value`.
+    try std.testing.expectEqual(start_balance - receipt.gas_used, try sm.getBalance(ecrecover));
+}
+
+test "precompile self-transfer above the balance is still rejected" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+
+    const ecrecover = primitives.Address.fromU256(1);
+    try sm.setBalance(ecrecover, 1_000_000);
+
+    const overrides = [_]guillotine_mini.PrecompileOverride{.{ .address = ecrecover, .execute = noopPrecompileOverride }};
+    try std.testing.expectError(tx_processor.TxError.InsufficientBalance, tx_processor.processTransactionWithOptions(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        ecrecover,
+        makeLegacyTx(.{ .to = ecrecover, .value = 2_000_000, .data = &.{}, .gas_limit = 100_000, .gas_price = 1, .nonce = 0 }),
+        defaultBlockContext(),
+        .{ .precompile_overrides = &overrides },
+    ));
+    try std.testing.expectEqual(@as(u256, 1_000_000), try sm.getBalance(ecrecover));
+
+    try std.testing.expectError(tx_processor.TxError.InsufficientBalance, tx_processor.processTransaction(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        ecrecover,
+        makeLegacyTx(.{ .to = ecrecover, .value = 2_000_000, .data = &.{}, .gas_limit = 100_000, .gas_price = 1, .nonce = 0 }),
+        defaultBlockContext(),
+    ));
+    try std.testing.expectEqual(@as(u256, 1_000_000), try sm.getBalance(ecrecover));
+}
+
+/// Sign an EIP-7702 tuple for any u256 chain id, as
+/// `primitives.Authorization.createAuthorization` does for a chain id it can
+/// take as an argument.
+fn signAuthorizationForChain(
+    chain_id: u256,
+    delegate: primitives.Address,
+    nonce: u64,
+    private_key: [32]u8,
+) !primitives.Authorization.Authorization {
+    var auth = primitives.Authorization.Authorization{
+        .chain_id = chain_id,
+        .address = delegate,
+        .nonce = nonce,
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+    const signature = try crypto.Crypto.unaudited_signHash(try auth.signingHash(), private_key);
+    auth.v = if (signature.v >= 27) signature.v - 27 else signature.v;
+    std.mem.writeInt(u256, &auth.r, signature.r, .big);
+    std.mem.writeInt(u256, &auth.s, signature.s, .big);
+    return auth;
+}
+
+test "EIP-7702 skips a tuple whose chain id is at or above 2^64 and keeps the transaction valid" {
+    var private_key = [_]u8{0} ** 32;
+    private_key[31] = 0x2a;
+    const authority = (try crypto.Crypto.unaudited_getPublicKey(private_key)).toAddress();
+    const delegate = primitives.Address{ .bytes = [_]u8{0xde} ++ [_]u8{0} ** 19 };
+    const recipient = primitives.Address{ .bytes = [_]u8{0xc0} ++ [_]u8{0} ** 19 };
+
+    const Case = struct { chain_id: u256, applied: bool };
+    const cases = [_]Case{
+        .{ .chain_id = @as(u256, 1) << 64, .applied = false },
+        .{ .chain_id = std.math.maxInt(u256), .applied = false },
+        // Control: the same signer and nonce apply once the chain id matches.
+        .{ .chain_id = 0, .applied = true },
+        .{ .chain_id = 1, .applied = true },
+    };
+
+    for (cases) |case| {
+        // Each tuple is validly signed for the authority's current nonce, so
+        // the chain id is the only reason to skip it.
+        const authorizations = [_]primitives.Authorization.Authorization{
+            try signAuthorizationForChain(case.chain_id, delegate, 0, private_key),
+        };
+        try std.testing.expect((try authorizations[0].authority()).equals(authority));
+
+        var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+        defer sm.deinit();
+        var adapter = host_adapter.HostAdapter{ .state = &sm };
+        try sm.setBalance(r1_sender, r1_sender_balance);
+        try sm.setBalance(recipient, 1);
+
+        var receipt = try tx_processor.processTransactionWithOptions(
+            std.testing.allocator,
+            &sm,
+            adapter.hostInterface(),
+            r1_sender,
+            makeLegacyTx(.{ .to = recipient, .value = 0, .data = &.{}, .gas_limit = 100_000, .gas_price = 1, .nonce = 0 }),
+            defaultBlockContext(),
+            .{
+                .receipt_type = .eip7702,
+                .max_fee_per_gas = 1,
+                .max_priority_fee_per_gas = 1,
+                .authorization_list = &authorizations,
+                .hardfork_override = .PRAGUE,
+            },
+        );
+        defer receipt.deinit(std.testing.allocator);
+
+        // The transaction is valid and executes either way, and the tuple's
+        // intrinsic gas is charged whether or not it applies.
+        try std.testing.expect(receipt.status.?.success);
+        try std.testing.expectEqual(@as(u256, 21_000 + 25_000), receipt.gas_used);
+        try std.testing.expectEqual(@as(u64, 1), try sm.getNonce(r1_sender));
+
+        if (case.applied) {
+            try std.testing.expectEqual(@as(u64, 1), try sm.getNonce(authority));
+            try std.testing.expectEqual(@as(usize, 23), (try sm.getCode(authority)).len);
+        } else {
+            try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(authority));
+            try std.testing.expectEqual(@as(usize, 0), (try sm.getCode(authority)).len);
+        }
+    }
+}
+
+test "EIP-161 deletes an empty beneficiary that a zero-tip transaction touches" {
+    const recipient = primitives.Address{ .bytes = [_]u8{0xc0} ++ [_]u8{0} ** 19 };
+    const untouched_empty = primitives.Address{ .bytes = [_]u8{0xE1} ++ [_]u8{0} ** 19 };
+
+    const Case = struct { fork: guillotine_mini.Hardfork, base_fee: u256, gas_price: u256, deleted: bool };
+    const cases = [_]Case{
+        // Post-London: the transaction pays exactly the base fee.
+        .{ .fork = .MERGE, .base_fee = 7, .gas_price = 7, .deleted = true },
+        // Spurious Dragon: a zero gas price pays the miner nothing.
+        .{ .fork = .SPURIOUS_DRAGON, .base_fee = 0, .gas_price = 0, .deleted = true },
+        // Before EIP-161 a touched empty account stays.
+        .{ .fork = .HOMESTEAD, .base_fee = 0, .gas_price = 0, .deleted = false },
+    };
+
+    for (cases) |case| {
+        var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+        defer sm.deinit();
+        var adapter = host_adapter.HostAdapter{ .state = &sm };
+        var block_ctx = defaultBlockContext();
+        block_ctx.block_base_fee = case.base_fee;
+        const beneficiary = block_ctx.block_coinbase;
+
+        try sm.setBalance(r1_sender, r1_sender_balance);
+        try sm.setBalance(recipient, 1);
+        try sm.initAccount(beneficiary, 0);
+        try sm.initAccount(untouched_empty, 0);
+
+        var touched = std.AutoHashMap(primitives.Address, void).init(std.testing.allocator);
+        defer touched.deinit();
+
+        var receipt = try tx_processor.processTransactionWithOptions(
+            std.testing.allocator,
+            &sm,
+            adapter.hostInterface(),
+            r1_sender,
+            makeLegacyTx(.{ .to = recipient, .value = 1, .data = &.{}, .gas_limit = 21_000, .gas_price = case.gas_price, .nonce = 0 }),
+            block_ctx,
+            .{ .hardfork_override = case.fork, .touched_accounts = &touched },
+        );
+        defer receipt.deinit(std.testing.allocator);
+
+        try std.testing.expect(receipt.status.?.success);
+        try std.testing.expectEqual(@as(u256, 0), try sm.getBalance(beneficiary));
+        try std.testing.expectEqual(!case.deleted, sm.journaled_state.account_cache.has(beneficiary));
+        // An empty account nothing touched is never deleted.
+        try std.testing.expect(sm.journaled_state.account_cache.has(untouched_empty));
+
+        try std.testing.expect(touched.contains(r1_sender));
+        try std.testing.expect(touched.contains(beneficiary));
+        try std.testing.expect(touched.contains(recipient));
+        try std.testing.expect(!touched.contains(untouched_empty));
+    }
+}
+
+test "a rejected transaction adds nothing to the EIP-161 touch set" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    const recipient = primitives.Address{ .bytes = [_]u8{0xc0} ++ [_]u8{0} ** 19 };
+    try sm.setBalance(r1_sender, r1_sender_balance);
+
+    var touched = std.AutoHashMap(primitives.Address, void).init(std.testing.allocator);
+    defer touched.deinit();
+
+    try std.testing.expectError(tx_processor.TxError.NonceMismatch, tx_processor.processTransactionWithOptions(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        r1_sender,
+        makeLegacyTx(.{ .to = recipient, .value = 0, .data = &.{}, .gas_limit = 21_000, .gas_price = 1, .nonce = 9 }),
+        defaultBlockContext(),
+        .{ .touched_accounts = &touched },
+    ));
+    try std.testing.expectEqual(@as(u32, 0), touched.count());
+}
+
+test "bytecode at 0x01 does not shadow native ECRECOVER (R4-M1)" {
+    var private_key = [_]u8{0} ** 32;
+    private_key[31] = 0x2a;
+    const signer = (try crypto.Crypto.unaudited_getPublicKey(private_key)).toAddress();
+
+    const message_hash = [_]u8{0x3c} ** 32;
+    const signature = try crypto.Crypto.unaudited_signHash(message_hash, private_key);
+    var input = [_]u8{0} ** 128;
+    @memcpy(input[0..32], &message_hash);
+    input[63] = signature.v;
+    std.mem.writeInt(u256, input[64..96], signature.r, .big);
+    std.mem.writeInt(u256, input[96..128], signature.s, .big);
+
+    const ecrecover = primitives.Address.fromU256(1);
+    const caller_contract = primitives.Address{ .bytes = [_]u8{0xc0} ++ [_]u8{0} ** 19 };
+
+    // Returns the 32-byte word 0xaa: what a CALL to 0x01 would yield if the
+    // account bytecode ran instead of the precompile.
+    const shadow_code = [_]u8{
+        0x60, 0xaa, // PUSH1 0xaa
+        0x60, 0x00, // PUSH1 0
+        0x52, // MSTORE
+        0x60, 0x20, // PUSH1 32
+        0x60, 0x00, // PUSH1 0
+        0xf3, // RETURN
+    };
+    // Forwards calldata to 0x01 and returns the 32-byte result.
+    const forwarder_code = [_]u8{
+        0x36, // CALLDATASIZE
+        0x60, 0x00, // PUSH1 0
+        0x60, 0x00, // PUSH1 0
+        0x37, // CALLDATACOPY
+        0x60, 0x20, // PUSH1 32 (ret size)
+        0x60, 0x80, // PUSH1 0x80 (ret offset)
+        0x36, // CALLDATASIZE (args size)
+        0x60, 0x00, // PUSH1 0 (args offset)
+        0x60, 0x00, // PUSH1 0 (value)
+        0x60, 0x01, // PUSH1 1 (address)
+        0x5a, // GAS
+        0xf1, // CALL
+        0x50, // POP
+        0x60, 0x20, // PUSH1 32
+        0x60, 0x80, // PUSH1 0x80
+        0xf3, // RETURN
+    };
+
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    try sm.setBalance(r1_sender, r1_sender_balance);
+    try sm.setCode(ecrecover, &shadow_code);
+    try sm.setCode(caller_contract, &forwarder_code);
+
+    var out: []u8 = &.{};
+    defer std.testing.allocator.free(out);
+    var receipt = try tx_processor.processTransactionWithOptions(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        r1_sender,
+        makeLegacyTx(.{ .to = caller_contract, .value = 0, .data = &input, .gas_limit = 200_000, .gas_price = 1, .nonce = 0 }),
+        defaultBlockContext(),
+        .{ .capture_output = &out },
+    );
+    defer receipt.deinit(std.testing.allocator);
+
+    try std.testing.expect(receipt.status.?.success);
+    try std.testing.expectEqual(@as(usize, 32), out.len);
+    try std.testing.expectEqualSlices(u8, &([_]u8{0} ** 12), out[0..12]);
+    try std.testing.expectEqualSlices(u8, &signer.bytes, out[12..32]);
+}
+
+test "EIP-7702 credits the refund for an authority that exists and is empty (R4-03)" {
+    var private_key = [_]u8{0} ** 32;
+    private_key[31] = 0x2a;
+    const authority = (try crypto.Crypto.unaudited_getPublicKey(private_key)).toAddress();
+    const delegate = primitives.Address{ .bytes = [_]u8{0xde} ++ [_]u8{0} ** 19 };
+    const recipient = primitives.Address{ .bytes = [_]u8{0xc0} ++ [_]u8{0} ** 19 };
+
+    const authorizations = [_]primitives.Authorization.Authorization{
+        try primitives.Authorization.createAuthorization(std.testing.allocator, 1, delegate, 0, private_key),
+    };
+    try std.testing.expect((try authorizations[0].authority()).equals(authority));
+
+    // intrinsic = 21_000 + 25_000. The 12_500 refund is capped at a fifth of
+    // the gas used (9_200).
+    const Case = struct { authority_in_state: bool, gas_used: u256 };
+    const cases = [_]Case{
+        .{ .authority_in_state = false, .gas_used = 46_000 },
+        .{ .authority_in_state = true, .gas_used = 46_000 - 9_200 },
+    };
+
+    for (cases) |case| {
+        var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+        defer sm.deinit();
+        var adapter = host_adapter.HostAdapter{ .state = &sm };
+        try sm.setBalance(r1_sender, r1_sender_balance);
+        try sm.setBalance(recipient, 1);
+        // In the state with zero nonce, zero balance and no code.
+        if (case.authority_in_state) try sm.setBalance(authority, 0);
+
+        var receipt = try tx_processor.processTransactionWithOptions(
+            std.testing.allocator,
+            &sm,
+            adapter.hostInterface(),
+            r1_sender,
+            makeLegacyTx(.{ .to = recipient, .value = 0, .data = &.{}, .gas_limit = 100_000, .gas_price = 1, .nonce = 0 }),
+            defaultBlockContext(),
+            .{
+                .receipt_type = .eip7702,
+                .max_fee_per_gas = 1,
+                .max_priority_fee_per_gas = 1,
+                .authorization_list = &authorizations,
+                .hardfork_override = .PRAGUE,
+            },
+        );
+        defer receipt.deinit(std.testing.allocator);
+
+        try std.testing.expect(receipt.status.?.success);
+        try std.testing.expectEqual(case.gas_used, receipt.gas_used);
+        try std.testing.expectEqual(@as(u64, 1), try sm.getNonce(authority));
+        try std.testing.expectEqual(@as(usize, 23), (try sm.getCode(authority)).len);
+    }
 }

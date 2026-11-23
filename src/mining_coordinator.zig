@@ -47,6 +47,7 @@ pub const MiningBlockOptions = struct {
     parent_hash: ?[32]u8 = null,
     dev_runtime: ?*dev_runtime.DevRuntime = null,
     skip_invalid_transactions: bool = false,
+    require_system_contracts: bool = false,
 };
 
 pub fn resolveHardfork(block_number: u64, timestamp: u64) primitives.Hardfork {
@@ -297,7 +298,13 @@ pub const MiningCoordinator = struct {
             var adapter = host_adapter.HostAdapter{ .state = sm };
             // mineBlock returns a caller-owned BlockResult (the coordinator keeps an
             // independent clone in mined_blocks). Free the discarded value here.
-            var result = try self.mineBlock(allocator, sm, adapter.hostInterface());
+            // A failed automine reverts state and keeps pending_txs intact, so
+            // drop the tx this call appended; otherwise every later block would
+            // retry a tx the caller was told failed.
+            var result = self.mineBlock(allocator, sm, adapter.hostInterface()) catch |err| {
+                _ = self.pending_txs.pop();
+                return err;
+            };
             result.deinit(allocator);
         }
     }
@@ -337,6 +344,15 @@ pub const MiningCoordinator = struct {
         const block_base_fee = block_ctx.block_base_fee;
         const empty_withdrawals: []const primitives.BlockBody.Withdrawal = &.{};
 
+        // Do every fallible step before the coordinator or the caller-visible
+        // state moves: reserve the history slot, build under a checkpoint, and
+        // clone the result. A failure then leaves height, pending
+        // transactions, and state exactly as they were.
+        try self.mined_blocks.ensureUnusedCapacity(allocator, 1);
+        try sm.checkpoint();
+        var state_committed = false;
+        errdefer if (!state_committed) sm.revert();
+
         var result = try block_builder.buildBlockWithOptions(
             allocator,
             sm,
@@ -351,9 +367,19 @@ pub const MiningCoordinator = struct {
                 .withdrawals = if (active_hardfork.isAtLeast(.SHANGHAI)) empty_withdrawals else null,
                 .parent_beacon_block_root = if (active_hardfork.isAtLeast(.CANCUN)) primitives.Hash.ZERO else null,
                 .skip_invalid_transactions = options.skip_invalid_transactions,
+                .require_system_contracts = options.require_system_contracts,
             },
         );
         errdefer result.deinit(allocator);
+
+        // Store an independent deep clone in mined_blocks (owned and freed by the
+        // coordinator in deinit). The returned BlockResult is owned by the caller,
+        // who may safely `defer result.deinit(allocator)`. Without this clone the
+        // stored copy would alias the returned value's heap slices, causing a
+        // double-free if the caller deinits the value it owns.
+        const stored = try cloneBlockResult(allocator, result);
+        sm.commit();
+        state_committed = true;
 
         self.pending_txs.clearRetainingCapacity();
         // Retain actual parent inputs so interval mining or timestamp overrides
@@ -378,17 +404,7 @@ pub const MiningCoordinator = struct {
         self.current_block_number += 1;
         self.current_timestamp = block_ctx.block_timestamp +| 1;
 
-        // Store an independent deep clone in mined_blocks (owned and freed by the
-        // coordinator in deinit). The returned BlockResult is owned by the caller,
-        // who may safely `defer result.deinit(allocator)`. Without this clone the
-        // stored copy would alias the returned value's heap slices, causing a
-        // double-free if the caller deinits the value it owns.
-        const stored = try cloneBlockResult(allocator, result);
-        errdefer {
-            var stored_mut = stored;
-            stored_mut.deinit(allocator);
-        }
-        try self.mined_blocks.append(allocator, stored);
+        self.mined_blocks.appendAssumeCapacity(stored);
 
         return result;
     }
@@ -416,7 +432,10 @@ pub const MiningCoordinator = struct {
         var i: u64 = 0;
         while (i < count) : (i += 1) {
             if (i > 0 and interval > 0) {
-                self.current_timestamp += interval - 1;
+                // `interval` comes straight from RPC parameters: a checked add
+                // turns an out-of-range request into an error, not a trap.
+                self.current_timestamp = std.math.add(u64, self.current_timestamp, interval - 1) catch
+                    return error.TimestampOverflow;
             }
             // mineBlockWithOptions returns a caller-owned BlockResult (the
             // coordinator keeps its own independent clone in mined_blocks). Since
@@ -502,7 +521,8 @@ fn cloneReceipt(
 }
 
 /// Deep-clone a BlockResult so the clone owns independent copies of its heap
-/// slices (`receipts`, including each receipt's logs, and `included_tx_indexes`).
+/// slices (`receipts`, including each receipt's logs, `included_tx_indexes`, and
+/// `execution_requests`).
 /// The returned clone must be freed with
 /// `block_builder.BlockResult.deinit(allocator)`. On error the caller owns nothing
 /// (any partially-cloned receipts are freed here).
@@ -524,10 +544,25 @@ fn cloneBlockResult(
     }
 
     const included_tx_indexes = try allocator.dupe(usize, source.included_tx_indexes);
+    errdefer allocator.free(included_tx_indexes);
+
+    // EIP-7685 requests are owned by the result: clone each `[type || payload]`.
+    const execution_requests = try allocator.alloc([]u8, source.execution_requests.len);
+    var cloned_requests: usize = 0;
+    errdefer {
+        for (execution_requests[0..cloned_requests]) |request| allocator.free(request);
+        allocator.free(execution_requests);
+    }
+    for (source.execution_requests, 0..) |request, i| {
+        execution_requests[i] = try allocator.dupe(u8, request);
+        cloned_requests += 1;
+    }
 
     var result = source;
     result.receipts = receipts;
     result.included_tx_indexes = included_tx_indexes;
+    result.execution_requests = execution_requests;
+    result.computed_requests_hash = source.computed_requests_hash;
     return result;
 }
 
@@ -805,4 +840,64 @@ test "MiningCoordinator setIntervalMining toggles modes" {
     mc.setIntervalMining(0);
     try std.testing.expectEqual(MiningMode.manual, mc.mode);
     try std.testing.expectEqual(@as(u64, 0), mc.interval_seconds);
+}
+
+test "MiningCoordinator mineBlocks reports an interval that overflows the timestamp" {
+    var mc = MiningCoordinator.init();
+    defer mc.deinit(std.testing.allocator);
+    mc.setMode(.manual);
+
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+
+    // The first block needs no advance; the second adds `interval - 1` to a
+    // timestamp that cannot hold it. This used to trap on `+=`.
+    try std.testing.expectError(
+        error.TimestampOverflow,
+        mc.mineBlocks(std.testing.allocator, &sm, adapter.hostInterface(), 2, std.math.maxInt(u64)),
+    );
+    try std.testing.expectEqual(@as(usize, 1), mc.mined_blocks.items.len);
+}
+
+test "cloneBlockResult deep-copies execution requests and the computed requests hash" {
+    const allocator = std.testing.allocator;
+
+    const requests = try block_builder.encodeExecutionRequests(allocator, .{ .deposits = "deposit", .consolidations = "c" });
+    var source = block_builder.BlockResult{
+        .receipts = try allocator.alloc(primitives.Receipt.Receipt, 0),
+        .included_tx_indexes = try allocator.alloc(usize, 0),
+        .total_gas_used = 0,
+        .block_number = 7,
+        .transactions_root = primitives.BlockHeader.EMPTY_TRANSACTIONS_ROOT,
+        .receipts_root = primitives.BlockHeader.EMPTY_RECEIPTS_ROOT,
+        .withdrawals_root = null,
+        .state_root = primitives.State.EMPTY_TRIE_ROOT,
+        .logs_bloom = [_]u8{0} ** 256,
+        .blob_gas_used = 0,
+        .requests_hash = [_]u8{0x5a} ** 32,
+        .execution_requests = requests,
+        .computed_requests_hash = [_]u8{0x5a} ** 32,
+    };
+    defer source.deinit(allocator);
+
+    var cloned = try cloneBlockResult(allocator, source);
+    defer cloned.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), cloned.execution_requests.len);
+    try std.testing.expect(cloned.execution_requests.ptr != source.execution_requests.ptr);
+    for (source.execution_requests, cloned.execution_requests) |original, copy| {
+        try std.testing.expect(original.ptr != copy.ptr);
+        try std.testing.expectEqualSlices(u8, original, copy);
+    }
+    try std.testing.expectEqualSlices(u8, &source.computed_requests_hash.?, &cloned.computed_requests_hash.?);
+
+    // Every allocation failure inside the clone frees what it already copied.
+    const Harness = struct {
+        fn run(failing: std.mem.Allocator, original: block_builder.BlockResult) !void {
+            var copy = try cloneBlockResult(failing, original);
+            copy.deinit(failing);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(allocator, Harness.run, .{source});
 }

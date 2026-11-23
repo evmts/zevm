@@ -536,3 +536,49 @@ test "eth_getLogs filter: rejects malformed selectors and mixed blockHash ranges
         try std.testing.expectError(error.InvalidParams, filterFromJson(arena.allocator(), &ctx, text));
     }
 }
+
+test "rpcFilterToInternal: malformed filter frees address and topic allocations" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var state = try setupCtx(allocator);
+    defer state.deinit(allocator);
+    var ctx = state.getCtx();
+
+    // Each filter allocates at least one slice before the parser reaches the
+    // malformed field. std.testing.allocator fails the test on any leak.
+    const malformed = [_][]const u8{
+        // Valid address list, then a malformed topic inside the second set.
+        \\{"address":["0x0000000000000000000000000000000000000001"],"topics":[["0x0000000000000000000000000000000000000000000000000000000000000001"],["0xzz"]]}
+        ,
+        // Valid address and topics, then an unknown field.
+        \\{"address":"0x0000000000000000000000000000000000000001","topics":[null,"0x0000000000000000000000000000000000000000000000000000000000000002"],"bogus":true}
+        ,
+        // Valid topics, then a malformed address inside the list.
+        \\{"topics":[["0x0000000000000000000000000000000000000000000000000000000000000003"]],"address":["0x0000000000000000000000000000000000000001","0x12"]}
+        ,
+        // Valid fields, then an inverted block range rejected after the loop.
+        \\{"address":"0x0000000000000000000000000000000000000001","topics":[["0x0000000000000000000000000000000000000000000000000000000000000004"]],"fromBlock":"0x5","toBlock":"0x1"}
+        ,
+        // A topic position that is neither null, a hash, nor a list.
+        \\{"topics":["0x0000000000000000000000000000000000000000000000000000000000000005",7]}
+        ,
+    };
+    for (malformed) |filter_json| {
+        const parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), filter_json, .{});
+        try std.testing.expectError(
+            error.InvalidParams,
+            block_query_handlers.rpcFilterToInternal(allocator, &ctx, .{ .value = parsed }),
+        );
+    }
+
+    // A well-formed filter still parses and is owned by the caller.
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(),
+        \\{"address":["0x0000000000000000000000000000000000000001"],"topics":[null,["0x0000000000000000000000000000000000000000000000000000000000000006"]]}
+    , .{});
+    var filter = try block_query_handlers.rpcFilterToInternal(allocator, &ctx, .{ .value = parsed });
+    defer log_index_mod.deinitLogFilter(allocator, &filter);
+    try std.testing.expectEqual(@as(usize, 1), filter.addresses.?.len);
+    try std.testing.expectEqual(@as(usize, 2), filter.topics.?.len);
+}

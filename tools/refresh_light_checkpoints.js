@@ -7,9 +7,10 @@
 //   GET /eth/v1/beacon/genesis           -> must match the network's genesis_validators_root
 //   GET /eth/v2/beacon/blocks/finalized  -> finalized block slot
 //   GET /eth/v1/beacon/blocks/finalized/root -> finalized block root (32 bytes)
-// The newest finalized slot wins. Two endpoints reporting different roots for
-// the same slot abort the run. holesky is frozen: its public endpoints are
-// gone, so its baked root is kept for backwards compatibility only.
+//   GET /eth/v1/beacon/headers/<root>    -> verify the root belongs to that slot
+// Choose the newest slot and root confirmed by at least two distinct hosts.
+// Conflicting roots for the same slot abort the run. Holesky is frozen for
+// backwards compatibility because its public endpoints are retired.
 //
 // Modes:
 //   (default)      fetch and print the fresh checkpoints as JSON; write nothing
@@ -20,6 +21,7 @@
 //   --file <path>  operate on another copy of the checkpoint file
 //   --now <unix>   override the clock for --check (tests, reproducibility)
 
+import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +32,7 @@ const SECONDS_PER_SLOT = 12;
 const SLOTS_PER_EPOCH = 32;
 const DEFAULT_MAX_AGE_DAYS = 14;
 const REQUEST_TIMEOUT_MS = 20_000;
+const MIN_QUORUM = 2;
 
 export const NETWORKS = {
     mainnet: {
@@ -38,7 +41,7 @@ export const NETWORKS = {
         endpoints: [
             "https://sync-mainnet.beaconcha.in",
             "https://mainnet-checkpoint-sync.attestant.io",
-            "https://beaconstate.info",
+            "https://beaconstate.ethstaker.cc",
         ],
         refresh: true,
     },
@@ -47,8 +50,7 @@ export const NETWORKS = {
         genesisValidatorsRoot: "0xd8ea171f3c94aea21ebc42a1ed61052acf3f9209c00e4efbaaddac09ed9b8078",
         endpoints: [
             "https://checkpoint-sync.sepolia.ethpandaops.io",
-            "https://sepolia-checkpoint-sync.attestant.io",
-            "https://sync-sepolia.beaconcha.in",
+            "https://beaconstate-sepolia.chainsafe.io",
         ],
         refresh: true,
     },
@@ -64,6 +66,7 @@ export const NETWORKS = {
         endpoints: [
             "https://checkpoint-sync.hoodi.ethpandaops.io",
             "https://hoodi-checkpoint-sync.attestant.io",
+            "https://beaconstate-hoodi.chainsafe.io",
         ],
         refresh: true,
     },
@@ -160,38 +163,54 @@ async function getJson(url) {
     const response = await fetch(url, {
         headers: { accept: "application/json", "user-agent": "zevm-checkpoint-refresh" },
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        redirect: "error",
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response.json();
 }
 
-async function queryEndpoint(net, endpoint) {
-    const genesis = await getJson(`${endpoint}/eth/v1/beacon/genesis`);
+async function queryEndpoint(net, endpoint, request = getJson) {
+    const genesis = await request(`${endpoint}/eth/v1/beacon/genesis`);
     const gvr = genesis?.data?.genesis_validators_root?.toLowerCase();
     if (gvr !== NETWORKS[net].genesisValidatorsRoot) {
         throw new Error(`genesis_validators_root ${gvr} is not ${net}`);
     }
-    const block = await getJson(`${endpoint}/eth/v2/beacon/blocks/finalized`);
+    const [block, rootResponse] = await Promise.all([
+        request(`${endpoint}/eth/v2/beacon/blocks/finalized`),
+        request(`${endpoint}/eth/v1/beacon/blocks/finalized/root`),
+    ]);
     const slot = Number(block?.data?.message?.slot);
     if (!Number.isSafeInteger(slot) || slot <= 0) throw new Error("finalized block has no slot");
-    const rootResponse = await getJson(`${endpoint}/eth/v1/beacon/blocks/finalized/root`);
     const hex = normalizeRoot(rootResponse?.data?.root);
-    // Re-read the slot so a finality advance between the two calls is caught.
-    const blockAgain = await getJson(`${endpoint}/eth/v2/beacon/blocks/finalized`);
-    if (Number(blockAgain?.data?.message?.slot) !== slot) throw new Error("finality advanced mid-query; retry");
+    const header = await request(`${endpoint}/eth/v1/beacon/headers/0x${hex}`);
+    if (normalizeRoot(header?.data?.root) !== hex) throw new Error("block header root does not match finalized root");
+    if (Number(header?.data?.header?.message?.slot) !== slot) {
+        throw new Error("block header slot does not match finalized block slot");
+    }
     return { hex, slot, epoch: Math.floor(slot / SLOTS_PER_EPOCH), source: endpoint };
 }
 
 export function pickCheckpoint(net, successes) {
-    if (successes.length === 0) throw new Error(`${net}: no endpoint returned a finalized checkpoint`);
-    for (const a of successes) {
-        for (const b of successes) {
-            if (a.slot === b.slot && a.hex !== b.hex) {
-                throw new Error(`${net}: ${a.source} and ${b.source} disagree on slot ${a.slot} (${a.hex} vs ${b.hex})`);
-            }
+    const bySlot = new Map();
+    for (const checkpoint of successes) {
+        const { slot, hex, source } = checkpoint;
+        const host = new URL(source).hostname.replace(/\.$/, "");
+        const vote = bySlot.get(slot);
+        if (!vote) {
+            bySlot.set(slot, { checkpoint, hosts: new Set([host]) });
+            continue;
         }
+        if (vote.checkpoint.hex !== hex) {
+            throw new Error(`${net}: ${vote.checkpoint.source} and ${source} disagree on slot ${slot} (${vote.checkpoint.hex} vs ${hex})`);
+        }
+        vote.hosts.add(host);
     }
-    return successes.reduce((best, next) => (next.slot > best.slot ? next : best));
+    let best = null;
+    for (const { checkpoint, hosts } of bySlot.values()) {
+        if (hosts.size >= MIN_QUORUM && (!best || checkpoint.slot > best.slot)) best = checkpoint;
+    }
+    if (!best) throw new Error(`${net}: no finalized checkpoint reached quorum of ${MIN_QUORUM} independent endpoints`);
+    return best;
 }
 
 async function fetchNetwork(net) {
@@ -215,10 +234,7 @@ async function fetchNetwork(net) {
     return pickCheckpoint(net, outcomes.filter((o) => o.ok).map((o) => o.value));
 }
 
-function selfTest() {
-    const assert = (cond, message) => {
-        if (!cond) throw new Error(`self-test failed: ${message}`);
-    };
+async function selfTest() {
     const a = "a".repeat(64);
     const b = "b".repeat(64);
     const entries = {
@@ -258,20 +274,30 @@ function selfTest() {
     assert(stale.length === 1 && stale[0].startsWith("hoodi:"), "stale hoodi detected");
     const missingMeta = checkFreshness({ ...fresh, sepolia: { hex: b, slot: null } }, now, 14);
     assert(missingMeta.length === 1 && missingMeta[0].startsWith("sepolia:"), "missing metadata detected");
-    threw = false;
-    try {
-        pickCheckpoint("mainnet", [
-            { hex: a, slot: 5, source: "p" },
-            { hex: b, slot: 5, source: "q" },
-        ]);
-    } catch {
-        threw = true;
-    }
-    assert(threw, "conflicting roots rejected");
-    assert(pickCheckpoint("mainnet", [
-        { hex: a, slot: 5, source: "p" },
-        { hex: b, slot: 9, source: "q" },
-    ]).hex === b, "newest slot wins");
+    const first = { hex: a, slot: 5, source: "https://first.example" };
+    const second = { ...first, source: "https://second.example" };
+    const newer = { hex: b, slot: 9, source: "https://third.example" };
+    assert.throws(() => pickCheckpoint("mainnet", [first]), /quorum/);
+    assert.throws(() => pickCheckpoint("mainnet", [first, { ...first, source: `${first.source}/other` }]), /quorum/);
+    assert.throws(() => pickCheckpoint("mainnet", [first, newer]), /quorum/);
+    assert.throws(() => pickCheckpoint("mainnet", [first, second, { ...newer, slot: 5 }]), /disagree/);
+    assert.equal(pickCheckpoint("mainnet", [first, second, newer]), first);
+    assert.equal(pickCheckpoint("mainnet", [first, second, newer, { ...newer, source: "https://fourth.example" }]), newer);
+
+    const endpoint = first.source;
+    const header = { root: `0x${a}`, header: { message: { slot: "5" } } };
+    const responses = new Map([
+        [`${endpoint}/eth/v1/beacon/genesis`, { genesis_validators_root: NETWORKS.mainnet.genesisValidatorsRoot }],
+        [`${endpoint}/eth/v2/beacon/blocks/finalized`, { message: { slot: "5" } }],
+        [`${endpoint}/eth/v1/beacon/blocks/finalized/root`, { root: `0x${a}` }],
+        [`${endpoint}/eth/v1/beacon/headers/0x${a}`, header],
+    ]);
+    const request = async (url) => ({ data: responses.get(url) });
+    assert.deepEqual(await queryEndpoint("mainnet", endpoint, request), { ...first, epoch: 0 });
+    header.header.message.slot = "6";
+    await assert.rejects(queryEndpoint("mainnet", endpoint, request), /header slot/);
+    header.root = `0x${b}`;
+    await assert.rejects(queryEndpoint("mainnet", endpoint, request), /header root/);
     process.stdout.write("self-test ok\n");
 }
 
@@ -298,7 +324,7 @@ async function main(argv) {
     }
 
     if (mode === "self-test") {
-        selfTest();
+        await selfTest();
         return 0;
     }
 

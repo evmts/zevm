@@ -313,6 +313,14 @@ fn parseBlockHashString(s: []const u8) ?[32]u8 {
 // eth_getLogs
 // ============================================================================
 
+/// Most blocks one log filter may span. A wider range is rejected instead of
+/// scanned, so a single request cannot walk the whole chain.
+pub const MAX_LOG_BLOCK_RANGE: u64 = 10_000;
+/// Most logs one log query may return.
+pub const MAX_GET_LOGS_RESULTS: usize = 10_000;
+/// A log carries at most four topics (LOG0 through LOG4).
+const MAX_LOG_FILTER_TOPICS: usize = 4;
+
 pub fn handleGetLogs(
     allocator: std.mem.Allocator,
     ctx: *const BlockQueryContext,
@@ -330,6 +338,7 @@ pub fn handleGetLogs(
         else => return err,
     };
     defer allocator.free(internal);
+    if (internal.len > MAX_GET_LOGS_RESULTS) return error.InvalidParams;
 
     const rpc_logs = try allocator.alloc(jsonrpc.types.LogEntry, internal.len);
     for (internal, 0..) |resp, i| {
@@ -364,6 +373,7 @@ pub fn handleGetLogsFilterValue(
         error.InvalidFilter => return error.InvalidParams,
         else => return err,
     };
+    if (internal.len > MAX_GET_LOGS_RESULTS) return error.InvalidParams;
 
     var array = std.json.Array.init(allocator);
     for (internal) |resp| {
@@ -401,17 +411,42 @@ pub fn handleGetTransactionByHashValue(
     var scratch = std.heap.ArenaAllocator.init(allocator);
     defer scratch.deinit();
 
-    const internal = try block_queries.getTransactionByHash(
-        scratch.allocator(),
-        ctx.blockchain,
-        ctx.receipt_index,
-        params.transaction_hash.bytes,
-    );
-    if (internal) |tx| return try transactionResponseValue(allocator, tx);
+    // Fast path 1: O(1) mined receipt lookup.
+    if (ctx.receipt_index.getByTxHash(params.transaction_hash.bytes) != null) {
+        const internal = try block_queries.getTransactionByHash(
+            scratch.allocator(),
+            ctx.blockchain,
+            ctx.receipt_index,
+            params.transaction_hash.bytes,
+        );
+        if (internal) |tx| return try transactionResponseValue(allocator, tx);
+    }
+    // Fast path 2: pending transaction pool lookup (avoids O(chain) keccak scan
+    // on every wallet poll for an unmined transaction).
     for (ctx.rt.pool.items()) |pooled| {
         if (std.mem.eql(u8, &pooled.hash, &params.transaction_hash.bytes)) {
             return txpool_handlers.transactionObject(allocator, pooled);
         }
+    }
+    // Fallback: imported blocks whose transactions were not receipt-indexed.
+    // Skip the O(chain) Keccak scan when the receipt index already covers the
+    // head block — every canonical transaction is indexed, so a miss above is
+    // authoritative.
+    const head_indexed = if (ctx.blockchain.getHeadBlockNumber()) |head_num|
+        if (ctx.blockchain.getCanonicalHash(head_num)) |head_hash|
+            ctx.receipt_index.getByBlockHash(head_hash) != null
+        else
+            false
+    else
+        true;
+    if (!head_indexed) {
+        const internal = try block_queries.getTransactionByHash(
+            scratch.allocator(),
+            ctx.blockchain,
+            ctx.receipt_index,
+            params.transaction_hash.bytes,
+        );
+        if (internal) |tx| return try transactionResponseValue(allocator, tx);
     }
     return .null;
 }
@@ -635,11 +670,23 @@ fn blockResponseValue(
 }
 
 fn requestsHashForBlock(ctx: *const BlockQueryContext, resp: block_queries.BlockResponse) ?[32]u8 {
-    for (ctx.rt.owned_block_bodies.items) |owned| {
-        if (std.mem.eql(u8, &owned.block_hash, &resp.hash)) return owned.requests_hash;
+    return requestsHashForHeader(ctx.rt, resp.hash, resp.number, resp.timestamp);
+}
+
+/// EIP-7685 `requests_hash` of a canonical block header, or null before
+/// Prague. An engine-imported block stores the hash with its body; a locally
+/// built Prague block commits to the empty request list.
+pub fn requestsHashForHeader(
+    rt: *const runtime.NodeRuntime,
+    block_hash: [32]u8,
+    number: u64,
+    timestamp: u64,
+) ?[32]u8 {
+    for (rt.owned_block_bodies.items) |owned| {
+        if (std.mem.eql(u8, &owned.block_hash, &block_hash)) return owned.requests_hash;
     }
 
-    if (ctx.rt.hardforkAt(resp.number, resp.timestamp).isAtLeast(.PRAGUE)) {
+    if (rt.hardforkAt(number, timestamp).isAtLeast(.PRAGUE)) {
         var empty: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(&.{}, &empty, .{});
         return empty;
@@ -1060,6 +1107,8 @@ pub fn rpcFilterToInternal(
     };
 
     var result: log_index_mod.LogFilter = .{};
+    // A later field can fail after `address` or `topics` allocated. Callers
+    // that pass a long-lived allocator would otherwise leak both slices.
     errdefer log_index_mod.deinitLogFilter(allocator, &result);
     var saw_from_block = false;
     var saw_to_block = false;
@@ -1096,6 +1145,13 @@ pub fn rpcFilterToInternal(
     }
     if (result.from_block != null and result.to_block != null and result.from_block.? > result.to_block.?) {
         return error.InvalidParams;
+    }
+    // Blocks above the head hold no logs, so the span is measured to the head.
+    if (result.from_block) |from| {
+        if (result.to_block) |to| {
+            const last = @min(to, ctx.blockchain.getHeadBlockNumber() orelse 0);
+            if (last >= from and last - from >= MAX_LOG_BLOCK_RANGE) return error.InvalidParams;
+        }
     }
 
     return result;
@@ -1165,11 +1221,16 @@ fn parseTopicsFilter(
         .array => |array| array.items,
         else => return error.InvalidParams,
     };
+    if (items.len > MAX_LOG_FILTER_TOPICS) return error.InvalidParams;
 
     const topics = try allocator.alloc(?[]const [32]u8, items.len);
-    @memset(topics, null);
+    // Only the first `populated` positions hold a value; the rest of the
+    // allocation is undefined until the loop fills it.
+    var populated: usize = 0;
     errdefer {
-        for (topics) |set| if (set) |hashes| allocator.free(hashes);
+        for (topics[0..populated]) |maybe_topic_set| {
+            if (maybe_topic_set) |topic_set| allocator.free(topic_set);
+        }
         allocator.free(topics);
     }
     for (items, 0..) |item, i| {
@@ -1177,18 +1238,21 @@ fn parseTopicsFilter(
             .null => topics[i] = null,
             .string => {
                 const hashes = try allocator.alloc([32]u8, 1);
-                topics[i] = hashes;
+                errdefer allocator.free(hashes);
                 hashes[0] = try parseHashValue(item);
+                topics[i] = hashes;
             },
             .array => |array| {
                 const hashes = try allocator.alloc([32]u8, array.items.len);
-                topics[i] = hashes;
+                errdefer allocator.free(hashes);
                 for (array.items, 0..) |hash_value, j| {
                     hashes[j] = try parseHashValue(hash_value);
                 }
+                topics[i] = hashes;
             },
             else => return error.InvalidParams,
         }
+        populated = i + 1;
     }
     return topics;
 }

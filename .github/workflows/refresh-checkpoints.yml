@@ -1,12 +1,10 @@
 name: Refresh Light Checkpoints
 
-# Light-mode default checkpoints must stay inside the 14-day default
-# maxCheckpointAgeSeconds window. GitHub cron has no "every 14 days", so run on
-# the 1st and 15th of each month (gap <= 16 days; the runtime only warns on a
-# stale baked default unless strictCheckpointAge is set).
+# Refresh weekly to leave time for quorum retries and PR review inside the
+# 14-day default maxCheckpointAgeSeconds window.
 on:
   schedule:
-    - cron: "23 6 1,15 * *"
+    - cron: "23 6 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -34,7 +32,7 @@ jobs:
       - name: Self-test refresh script
         run: node tools/refresh_light_checkpoints.js --self-test
 
-      - name: Fetch fresh finalized checkpoints
+      - name: Fetch finalized checkpoints with endpoint quorum
         run: node tools/refresh_light_checkpoints.js --write
 
       - name: Verify freshness
@@ -59,10 +57,12 @@ jobs:
             Automated refresh of `src/light_default_checkpoints.zig` by
             `tools/refresh_light_checkpoints.js --write`.
 
-            Each root is the finalized beacon block root reported by public
-            Checkpointz servers after checking `genesis_validators_root`. The
-            slot, epoch, fetch time, and source endpoint are recorded above
-            each constant. `holesky` stays frozen for backwards compatibility.
+            Each root and slot pair is confirmed by at least two independent
+            Beacon API endpoints. Each endpoint must match the network's
+            `genesis_validators_root` and return a header that matches the
+            finalized root and slot. The slot, epoch, fetch time, and one
+            confirming endpoint are recorded above each constant. `holesky`
+            stays frozen for backwards compatibility.
 
             The release `light-default-checkpoints.json` asset picks these
             values up automatically through `src/release_metadata.zig`.

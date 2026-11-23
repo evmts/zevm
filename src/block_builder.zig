@@ -15,11 +15,19 @@ const BASE_FEE_CHANGE_DENOMINATOR: u256 = 8;
 const GAS_LIMIT_ELASTICITY_MULTIPLIER: u64 = 2;
 const WEI_PER_GWEI: u256 = 1_000_000_000;
 const WEI_PER_ETHER: u256 = 1_000_000_000_000_000_000;
-const HISTORY_BUFFER_LENGTH: u64 = 8191;
 const SYSTEM_CALL_GAS_LIMIT: u64 = 30_000_000;
 const DEPOSIT_REQUEST_TYPE: u8 = 0x00;
 const WITHDRAWAL_REQUEST_TYPE: u8 = 0x01;
 const CONSOLIDATION_REQUEST_TYPE: u8 = 0x02;
+/// Lowest block gas limit a header may carry (Yellow Paper eq. 47).
+const MIN_GAS_LIMIT: u64 = 5000;
+const GAS_LIMIT_ADJUSTMENT_FACTOR: u64 = 1024;
+
+/// EIP-6110 size of one deposit request: pubkey (48) || withdrawal
+/// credentials (32) || amount (8) || signature (96) || index (8).
+pub const DEPOSIT_REQUEST_SIZE: usize = 192;
+/// EIP-6110 size of the ABI-encoded `DepositEvent` log data.
+pub const DEPOSIT_EVENT_DATA_SIZE: usize = 576;
 
 /// EIP-7934 block size bound shared with the consensus gossip limit.
 pub const MAX_BLOCK_SIZE: usize = 10_485_760;
@@ -41,9 +49,24 @@ pub const WITHDRAWAL_REQUESTS_ADDRESS = system_contracts.WITHDRAWAL_REQUESTS_ADD
 pub const CONSOLIDATION_REQUESTS_ADDRESS = system_contracts.CONSOLIDATION_REQUESTS_ADDRESS;
 pub const SYSTEM_ADDRESS = system_contracts.SYSTEM_ADDRESS;
 
+/// EIP-6110 mainnet deposit contract, 0x00000000219ab540356cBB839Cbe05303d7705Fa.
+pub const DEPOSIT_CONTRACT_ADDRESS = primitives.Address{ .bytes = .{
+    0x00, 0x00, 0x00, 0x00, 0x21, 0x9a, 0xb5, 0x40, 0x35, 0x6c,
+    0xbb, 0x83, 0x9c, 0xbe, 0x05, 0x30, 0x3d, 0x77, 0x05, 0xfa,
+} };
+
+/// keccak256("DepositEvent(bytes,bytes,bytes,bytes,bytes)"), topic 0 of the
+/// deposit contract's only event (EIP-6110 `DEPOSIT_EVENT_SIGNATURE_HASH`).
+pub const DEPOSIT_EVENT_TOPIC: [32]u8 = .{
+    0x64, 0x9b, 0xbc, 0x62, 0xd0, 0xe3, 0x13, 0x42, 0xaf, 0xea, 0x4e, 0x5c, 0xd8, 0x2d, 0x40, 0x49,
+    0xe7, 0xe1, 0xee, 0x91, 0x2f, 0xc0, 0x88, 0x9a, 0xa7, 0x90, 0x80, 0x3b, 0xe3, 0x90, 0x38, 0xc5,
+};
+
 pub const Hardfork = enum(u8) {
     frontier,
     homestead,
+    /// EIP-161 state clearing activates here, not at Byzantium.
+    spurious_dragon,
     byzantium,
     constantinople,
     istanbul,
@@ -62,15 +85,33 @@ pub const RequestsByType = struct {
     consolidations: []const u8 = &.{},
 };
 
+/// Request payloads produced by executing a Prague block. A null field means
+/// its source produced nothing: no deposit log, or no code at the predeploy.
 pub const PragueSystemRequests = struct {
+    /// EIP-6110 deposits extracted from receipt logs.
+    deposits: ?[]u8 = null,
     withdrawals: ?[]u8 = null,
     consolidations: ?[]u8 = null,
 
     pub fn deinit(self: *PragueSystemRequests, allocator: std.mem.Allocator) void {
+        if (self.deposits) |bytes| allocator.free(bytes);
         if (self.withdrawals) |bytes| allocator.free(bytes);
         if (self.consolidations) |bytes| allocator.free(bytes);
         self.* = .{};
     }
+};
+
+/// Request payloads of a Prague block: `PragueSystemRequests` under the name
+/// the shared `collectPragueRequestsWithOptions` contract uses.
+pub const PragueRequests = PragueSystemRequests;
+
+pub const PragueRequestsOptions = struct {
+    /// EIP-6110 deposit contract whose `DepositEvent` logs become deposits.
+    deposit_contract_address: primitives.Address = DEPOSIT_CONTRACT_ADDRESS,
+    /// True makes an EIP-7002 or EIP-7251 predeploy without code an error
+    /// (`error.SystemContractMissingCode`), as both EIPs require. False keeps
+    /// the no-op that chains without the predeploys (dev chains) rely on.
+    require_system_contracts: bool = false,
 };
 
 pub const BuildBlockOptions = struct {
@@ -88,6 +129,29 @@ pub const BuildBlockOptions = struct {
     /// hold the raw envelopes pass exact sizes; when null the builder derives
     /// the sizes from the execution transactions (`executionTxRlpSize`).
     transaction_rlp_sizes: ?[]const usize = null,
+    /// EIP-7934: exact RLP size of the block header (`headerRlpSize`), when
+    /// the caller already knows the header. Null uses the conservative
+    /// `MAX_HEADER_RLP_SIZE` bound, which suits candidate selection but can
+    /// reject a supplied block within about 150 bytes of the cap.
+    header_rlp_size: ?usize = null,
+    /// EIP-6110 deposit contract whose `DepositEvent` logs become deposit
+    /// requests. Chains other than mainnet deploy it at their own address.
+    /// Null falls back to `hardfork_config.deposit_contract_address`, then
+    /// to mainnet's `DEPOSIT_CONTRACT_ADDRESS`.
+    deposit_contract_address: ?primitives.Address = null,
+    /// Prague+: reject the block with `error.SystemContractMissingCode` when
+    /// the EIP-7002 or EIP-7251 predeploy has no code. Replay of a real
+    /// chain sets this; dev chains without the predeploys leave it false.
+    require_system_contracts: bool = false,
+
+    /// The deposit contract this build reads EIP-6110 logs from.
+    pub fn effectiveDepositContractAddress(self: BuildBlockOptions) primitives.Address {
+        if (self.deposit_contract_address) |address| return address;
+        if (self.hardfork_config) |config| {
+            if (config.deposit_contract_address) |address| return address;
+        }
+        return DEPOSIT_CONTRACT_ADDRESS;
+    }
 };
 
 pub const BlockCommitments = struct {
@@ -116,6 +180,12 @@ pub const BlockResult = struct {
     /// Upper bound of the RLP-encoded execution block built from the included
     /// transactions (EIP-7934 accounting). Never below the encoded size.
     rlp_size_upper_bound: usize = 0,
+    /// EIP-7685 requests produced by the block, in ascending type order. Each
+    /// element is `[type_byte || payload]`; empty payloads are omitted. Owned.
+    execution_requests: [][]u8 = &.{},
+    /// Prague+: SHA-256 commitment over `execution_requests` (EIP-6110
+    /// deposit logs, EIP-7002 withdrawals, EIP-7251 consolidations).
+    computed_requests_hash: ?[32]u8 = null,
 
     pub fn deinit(self: *BlockResult, allocator: std.mem.Allocator) void {
         for (self.receipts) |receipt| {
@@ -123,6 +193,8 @@ pub const BlockResult = struct {
         }
         allocator.free(self.receipts);
         allocator.free(self.included_tx_indexes);
+        freeExecutionRequests(allocator, self.execution_requests);
+        self.execution_requests = &.{};
     }
 };
 
@@ -137,7 +209,16 @@ pub const BlockValidationInput = struct {
     receipts: []const primitives.Receipt.Receipt = &.{},
     withdrawals: ?[]const primitives.BlockBody.Withdrawal = null,
     state_root: ?[32]u8 = null,
+    /// The requests hash the block commits to (the header's claim).
     requests_hash: ?[32]u8 = null,
+    /// The requests hash recomputed from execution. On Prague+ a non-null
+    /// value must equal `requests_hash`, else `error.InvalidRequestsHash`.
+    computed_requests_hash: ?[32]u8 = null,
+    /// Hash of `parent_header`. When set, `header.parent_hash` must equal it.
+    parent_hash: ?[32]u8 = null,
+    /// keccak256 of the RLP-encoded ommers list of the block body. When set,
+    /// `header.ommers_hash` must equal it.
+    ommers_hash: ?[32]u8 = null,
 };
 
 pub fn buildBlock(
@@ -185,7 +266,7 @@ pub fn buildBlockWithOptions(
 
     // EIP-7934: account for the encoded block while packing. The payload
     // starts with everything that is not a transaction.
-    const block_rlp_payload_size: usize = blockRlpFixedPayloadSize(options.withdrawals);
+    const block_rlp_payload_size: usize = blockRlpFixedPayloadSize(options.withdrawals, options.header_rlp_size);
     var transactions_rlp_payload_size: usize = 0;
     if (osaka_rules and !options.skip_invalid_transactions) {
         // A supplied transaction list is the block: reject it whole, before
@@ -203,47 +284,31 @@ pub fn buildBlockWithOptions(
     var block_committed = false;
     errdefer if (!block_committed) sm.revert();
 
-    if (options.parent_beacon_block_root) |root| {
-        if (!atLeast(effective_fork, .cancun)) return error.BeaconRootBeforeCancun;
-        if ((try sm.getCode(BEACON_ROOTS_ADDRESS)).len > 0) {
-            const output = try runSystemContractCall(
-                allocator,
-                sm,
-                host_iface,
-                effective_block_ctx,
-                evmHardforkFromBlockBuilderFork(effective_fork),
-                BEACON_ROOTS_ADDRESS,
-                &root,
-            );
-            allocator.free(output);
-        } else {
-            try applyBeaconRootsSystemCall(sm, effective_block_ctx.block_timestamp, root);
-        }
-    }
-
-    if (atLeast(effective_fork, .prague)) {
-        const parent_hash = options.parent_hash orelse return error.MissingParentHash;
-        if (effective_block_ctx.block_number > 0 and (try sm.getCode(HISTORY_STORAGE_ADDRESS)).len > 0) {
-            const output = try runSystemContractCall(
-                allocator,
-                sm,
-                host_iface,
-                effective_block_ctx,
-                evmHardforkFromBlockBuilderFork(effective_fork),
-                HISTORY_STORAGE_ADDRESS,
-                &parent_hash,
-            );
-            allocator.free(output);
-        } else {
-            try applyHistoricalBlockHashSystemCall(sm, effective_block_ctx.block_number, parent_hash);
-        }
-    }
-
-    var preserved_empty_accounts = if (atLeast(effective_fork, .byzantium))
+    // EIP-161 (Spurious Dragon): remember which accounts were already empty
+    // before anything in this block runs, system calls included, so every
+    // empty account the block creates is cleared at the end.
+    var preserved_empty_accounts = if (atLeast(effective_fork, .spurious_dragon))
         try collectEmptyAccounts(allocator, sm)
     else
         null;
     defer if (preserved_empty_accounts) |*accounts| accounts.deinit();
+
+    // EIP-161 also deletes an account that was already empty once a
+    // transaction touches it. Only transactions that complete add to the set.
+    var touched_accounts = std.AutoHashMap(primitives.Address, void).init(allocator);
+    defer touched_accounts.deinit();
+
+    const system_call_fork = evmHardforkFromBlockBuilderFork(effective_fork);
+
+    if (options.parent_beacon_block_root) |root| {
+        if (!atLeast(effective_fork, .cancun)) return error.BeaconRootBeforeCancun;
+        try applyBeaconRootsSystemCallWithContext(allocator, sm, host_iface, effective_block_ctx, system_call_fork, root);
+    }
+
+    if (atLeast(effective_fork, .prague)) {
+        const parent_hash = options.parent_hash orelse return error.MissingParentHash;
+        try applyHistoricalBlockHashSystemCallWithContext(allocator, sm, host_iface, effective_block_ctx, system_call_fork, parent_hash);
+    }
 
     var receipts = std.array_list.Managed(primitives.Receipt.Receipt).init(allocator);
     errdefer {
@@ -265,27 +330,32 @@ pub fn buildBlockWithOptions(
         null;
 
     for (transactions, 0..) |item, tx_index| {
-        if (total_gas_used >= effective_block_ctx.block_gas_limit) {
-            break;
-        }
-
-        const remaining = effective_block_ctx.block_gas_limit - total_gas_used;
+        // A transaction that does not fit the remaining gas or blob gas makes
+        // a supplied block invalid. Only candidate selection
+        // (`skip_invalid_transactions`) may leave it out.
+        const remaining = effective_block_ctx.block_gas_limit -| total_gas_used;
         if (item.tx.gas_limit > remaining) {
+            if (!options.skip_invalid_transactions) return error.InvalidIncludedTransaction;
+            if (remaining == 0) break;
             continue;
         }
 
         const item_blob_gas_used = try executionTxBlobGasUsed(item);
         if (blob_gas_cap) |cap| {
-            if (item_blob_gas_used > cap) continue;
-            if (total_blob_gas_used > cap - item_blob_gas_used) continue;
+            if (item_blob_gas_used > cap or total_blob_gas_used > cap - item_blob_gas_used) {
+                if (!options.skip_invalid_transactions) return error.InvalidIncludedTransaction;
+                continue;
+            }
         }
 
         // EIP-7934: leave out a transaction that would push the encoded block
         // past the cap. Smaller transactions later in the list may still fit.
+        // A supplied list was already checked whole above.
         const item_rlp_size = transactionRlpSize(options, item, tx_index, effective_block_ctx.chain_id);
         if (osaka_rules and
             blockRlpSize(block_rlp_payload_size, transactions_rlp_payload_size +| item_rlp_size) > MAX_RLP_BLOCK_SIZE)
         {
+            if (!options.skip_invalid_transactions) return error.BlockRlpSizeExceeded;
             continue;
         }
 
@@ -303,7 +373,16 @@ pub fn buildBlockWithOptions(
                 tx_processor.resolveHardforkWithConfig(config, effective_block_ctx)
             else
                 null,
+            .remaining_block_gas = remaining,
+            .canonical_tx_hash = item.tx_hash,
+            .touched_accounts = if (preserved_empty_accounts != null) &touched_accounts else null,
         };
+
+        // Reserve both list slots before executing: once the receipt exists,
+        // storing it and its index cannot fail, so no error path can free a
+        // receipt the list already owns.
+        try receipts.ensureUnusedCapacity(1);
+        try included_tx_indexes.ensureUnusedCapacity(1);
 
         var receipt = tx_processor.processTransactionWithOptions(
             allocator,
@@ -320,9 +399,15 @@ pub fn buildBlockWithOptions(
             tx_processor.TxError.IntrinsicGasExceedsLimit,
             tx_processor.TxError.InitcodeTooLarge,
             tx_processor.TxError.TransactionGasLimitExceeded,
+            tx_processor.TxError.BlockGasLimitExceeded,
             tx_processor.TxError.InsufficientBalance,
             tx_processor.TxError.GasPriceBelowBaseFee,
             tx_processor.TxError.TipExceedsFeeCap,
+            tx_processor.TxError.TooManyBlobs,
+            tx_processor.TxError.EmptyBlobHashes,
+            tx_processor.TxError.InvalidBlobVersionedHash,
+            tx_processor.TxError.EmptyAuthorizationList,
+            tx_processor.TxError.ContractCreationNotAllowed,
             => {
                 if (options.skip_invalid_transactions) continue;
                 return error.InvalidIncludedTransaction;
@@ -330,36 +415,37 @@ pub fn buildBlockWithOptions(
             else => return err,
         };
 
-        var receipt_appended = false;
-        errdefer if (!receipt_appended) receipt.deinit(allocator);
-
-        const gas_used_u64 = std.math.cast(u64, receipt.gas_used) orelse return error.GasOverflow;
-        total_gas_used = std.math.add(u64, total_gas_used, gas_used_u64) catch return error.GasOverflow;
-        total_blob_gas_used = std.math.add(u64, total_blob_gas_used, try receiptBlobGasUsed(receipt)) catch return error.BlobGasOverflow;
+        // The receipt is owned locally until the infallible append below.
+        {
+            errdefer receipt.deinit(allocator);
+            const gas_used_u64 = std.math.cast(u64, receipt.gas_used) orelse return error.GasOverflow;
+            const next_gas_used = std.math.add(u64, total_gas_used, gas_used_u64) catch return error.GasOverflow;
+            const next_blob_gas_used = std.math.add(u64, total_blob_gas_used, try receiptBlobGasUsed(receipt)) catch
+                return error.BlobGasOverflow;
+            if (receipts.items.len > std.math.maxInt(u32)) return error.TooManyTransactions;
+            // Before Byzantium (EIP-658) a receipt commits to the state
+            // root right after its transaction instead of a status code.
+            // From Spurious Dragon the transaction's EIP-161 clearing comes
+            // first, so the root excludes the empty accounts it touched.
+            if (!atLeast(effective_fork, .byzantium)) {
+                if (preserved_empty_accounts) |*accounts| {
+                    try pruneEmptyAccounts(allocator, sm, accounts, &touched_accounts);
+                }
+                receipt.status = null;
+                receipt.root = try computeStateRootForFork(allocator, sm, effective_fork);
+            }
+            total_gas_used = next_gas_used;
+            total_blob_gas_used = next_blob_gas_used;
+        }
         receipt.cumulative_gas_used = @as(u256, total_gas_used);
         receipt.transaction_index = @as(u32, @intCast(receipts.items.len));
-        try receipts.append(receipt);
-        try included_tx_indexes.append(tx_index);
-        receipt_appended = true;
+        receipts.appendAssumeCapacity(receipt);
+        included_tx_indexes.appendAssumeCapacity(tx_index);
         transactions_rlp_payload_size +|= item_rlp_size;
     }
 
-    if (preserved_empty_accounts) |*accounts| {
-        try pruneNewEmptyAccounts(allocator, sm, accounts);
-    }
-
-    var system_requests = if (atLeast(effective_fork, .prague))
-        try collectPragueRequestsSystemCalls(
-            allocator,
-            sm,
-            host_iface,
-            effective_block_ctx,
-            evmHardforkFromBlockBuilderFork(effective_fork),
-        )
-    else
-        PragueSystemRequests{};
-    defer system_requests.deinit(allocator);
-
+    // Execution-specs `apply_body` order: transactions, withdrawals (EIP-4895),
+    // then general purpose requests (EIP-7685).
     var withdrawals_root: ?[32]u8 = null;
     if (atLeast(effective_fork, .shanghai)) {
         const withdrawals = options.withdrawals orelse return error.MissingWithdrawals;
@@ -367,6 +453,32 @@ pub fn buildBlockWithOptions(
         withdrawals_root = try computeWithdrawalsRoot(allocator, withdrawals);
     } else if (options.withdrawals != null) {
         return error.WithdrawalsBeforeShanghai;
+    }
+
+    const prague_rules = atLeast(effective_fork, .prague);
+    var system_requests = PragueSystemRequests{};
+    defer system_requests.deinit(allocator);
+    if (prague_rules) {
+        system_requests = try collectPragueSystemCallRequests(
+            allocator,
+            sm,
+            host_iface,
+            effective_block_ctx,
+            system_call_fork,
+            options.require_system_contracts,
+        );
+        system_requests.deposits = try extractDepositRequestsFrom(
+            allocator,
+            receipts.items,
+            options.effectiveDepositContractAddress(),
+        );
+    }
+
+    // EIP-161 clearing runs after withdrawals and system calls, so neither
+    // can leave a new empty account in the state trie. It also deletes the
+    // already-empty accounts a transaction touched.
+    if (preserved_empty_accounts) |*accounts| {
+        try pruneEmptyAccounts(allocator, sm, accounts, &touched_accounts);
     }
 
     if (!atLeast(effective_fork, .paris)) {
@@ -377,28 +489,35 @@ pub fn buildBlockWithOptions(
     const receipts_root = try computeReceiptsRoot(allocator, receipts.items);
     const logs_bloom = aggregateLogsBloom(receipts.items);
     const effective_requests = requestsWithPragueSystemOutputs(options.requests, system_requests);
-    const requests_hash = if (atLeast(effective_fork, .prague) or hasAnyRequests(effective_requests))
+    const requests_hash = if (prague_rules or hasAnyRequests(effective_requests))
         computeRequestsHash(effective_requests)
     else
         null;
+    var execution_requests: [][]u8 = &.{};
+    errdefer freeExecutionRequests(allocator, execution_requests);
+    if (prague_rules) execution_requests = try encodeExecutionRequests(allocator, effective_requests);
+
     const state_root = try computeStateRootForFork(allocator, sm, effective_fork);
     if (options.state_root) |expected_state_root| {
         if (!std.mem.eql(u8, &state_root, &expected_state_root)) return error.InvalidStateRoot;
     }
 
-    sm.commit();
-    block_committed = true;
-
-    if (options.dev_runtime) |runtime| {
-        runtime.clearNextBlockOverrides();
-    }
-
+    // Take ownership of the result slices before committing: a failure after
+    // `sm.commit()` would report a failed build with the state already moved.
     const owned_receipts = try receipts.toOwnedSlice();
     errdefer {
         for (owned_receipts) |receipt| receipt.deinit(allocator);
         allocator.free(owned_receipts);
     }
     const owned_included_tx_indexes = try included_tx_indexes.toOwnedSlice();
+
+    // Nothing below can fail.
+    sm.commit();
+    block_committed = true;
+
+    if (options.dev_runtime) |runtime| {
+        runtime.clearNextBlockOverrides();
+    }
 
     return BlockResult{
         .receipts = owned_receipts,
@@ -413,6 +532,8 @@ pub fn buildBlockWithOptions(
         .blob_gas_used = total_blob_gas_used,
         .requests_hash = requests_hash,
         .rlp_size_upper_bound = blockRlpSize(block_rlp_payload_size, transactions_rlp_payload_size),
+        .execution_requests = execution_requests,
+        .computed_requests_hash = if (prague_rules) requests_hash else null,
     };
 }
 
@@ -478,10 +599,14 @@ fn transactionRlpSize(
     return executionTxRlpSize(item, chain_id);
 }
 
-/// Payload of the block list excluding transactions: header bound, empty
-/// ommers list, and the withdrawals list when the block carries one.
-fn blockRlpFixedPayloadSize(withdrawals: ?[]const primitives.BlockBody.Withdrawal) usize {
-    var size: usize = MAX_HEADER_RLP_SIZE + 1;
+/// Payload of the block list excluding transactions: the header (exact size
+/// when known, else the upper bound), empty ommers list, and the withdrawals
+/// list when the block carries one.
+fn blockRlpFixedPayloadSize(
+    withdrawals: ?[]const primitives.BlockBody.Withdrawal,
+    header_rlp_size: ?usize,
+) usize {
+    var size: usize = (header_rlp_size orelse MAX_HEADER_RLP_SIZE) +| 1;
     if (withdrawals) |items| {
         var payload: usize = 0;
         for (items) |withdrawal| {
@@ -495,6 +620,62 @@ fn blockRlpFixedPayloadSize(withdrawals: ?[]const primitives.BlockBody.Withdrawa
 
 fn blockRlpSize(fixed_payload_size: usize, transactions_payload_size: usize) usize {
     return rlpItemSize(fixed_payload_size +| rlpItemSize(transactions_payload_size));
+}
+
+/// Exact size of the canonical RLP encoding of `header`; performs no
+/// allocation. From Prague the encoding carries the EIP-7685 requests hash as
+/// its 21st field: pass the hash kept beside the header in `requests_hash`
+/// when `header.requests_hash` is null.
+pub fn headerRlpSize(
+    header: *const primitives.BlockHeader.BlockHeader,
+    fork: Hardfork,
+    requests_hash: ?[32]u8,
+) usize {
+    const hash_size: usize = 33;
+    var payload: usize = hash_size * 2 + 21 + hash_size * 3 + rlpItemSize(256) +
+        rlpUintSize(header.difficulty) + rlpUintSize(header.number) +
+        rlpUintSize(header.gas_limit) + rlpUintSize(header.gas_used) +
+        rlpUintSize(header.timestamp) + rlpBytesSize(header.extra_data) +
+        hash_size + 9;
+    if (header.base_fee_per_gas) |base_fee| payload += rlpUintSize(base_fee);
+    if (header.withdrawals_root != null) payload += hash_size;
+    if (header.blob_gas_used) |blob_gas_used| payload += rlpUintSize(blob_gas_used);
+    if (header.excess_blob_gas) |excess_blob_gas| payload += rlpUintSize(excess_blob_gas);
+    if (header.parent_beacon_block_root != null) payload += hash_size;
+    if (atLeast(fork, .prague) and (header.requests_hash != null or requests_hash != null)) payload += hash_size;
+    return rlpItemSize(payload);
+}
+
+/// EIP-7934 size of a block whose measured encoding left the Prague
+/// requests hash out of the header (the hash travelled beside the header, as
+/// in an Engine payload). Returns `measured_size` unchanged when the header
+/// already carries the hash, when there is none, or before Prague.
+pub fn blockRlpSizeWithRequestsHash(
+    measured_size: usize,
+    header: *const primitives.BlockHeader.BlockHeader,
+    fork: Hardfork,
+    requests_hash: ?[32]u8,
+) usize {
+    if (!atLeast(fork, .prague) or requests_hash == null or header.requests_hash != null) return measured_size;
+
+    const header_without = headerRlpSize(header, fork, null);
+    const header_with = headerRlpSize(header, fork, requests_hash);
+    const measured_payload = rlpItemPayloadSize(measured_size) orelse return measured_size +| (header_with - header_without);
+    return rlpItemSize(measured_payload +| (header_with - header_without));
+}
+
+/// Inverse of `rlpItemSize`: the payload length of a list whose whole
+/// encoding is `item_size` bytes, or null when no payload has that size.
+fn rlpItemPayloadSize(item_size: usize) ?usize {
+    if (item_size == 0) return null;
+    if (item_size <= 56) return item_size - 1;
+    var length_bytes: usize = 1;
+    while (length_bytes <= @sizeOf(usize)) : (length_bytes += 1) {
+        if (item_size <= 1 + length_bytes) return null;
+        const payload = item_size - 1 - length_bytes;
+        if (payload >= 56 and rlpItemSize(payload) == item_size) return payload;
+    }
+    return null;
 }
 
 fn accessListRlpSize(access_list: primitives.AccessList.AccessList) usize {
@@ -548,6 +729,17 @@ pub fn blockContextWithEnvironmentOverrides(
 pub fn validateBlock(allocator: std.mem.Allocator, input: BlockValidationInput) !BlockCommitments {
     try validateHeader(input.header, input.parent_header, input.fork);
 
+    if (input.parent_hash) |parent_hash| {
+        if (!std.mem.eql(u8, &input.header.parent_hash, &parent_hash)) return error.InvalidParentHash;
+    }
+    if (input.ommers_hash) |ommers_hash| {
+        if (!std.mem.eql(u8, &input.header.ommers_hash, &ommers_hash)) return error.InvalidOmmersHash;
+    }
+    // EIP-4788: a Cancun block without a parent beacon block root is invalid.
+    if (atLeast(input.fork, .cancun) and input.header.parent_beacon_block_root == null) {
+        return error.MissingParentBeaconBlockRoot;
+    }
+
     // EIP-7825: an Osaka block holding a transaction above the cap is invalid
     // whatever its roots say.
     for (input.execution_transactions) |item| {
@@ -593,7 +785,7 @@ pub fn validateBlock(allocator: std.mem.Allocator, input: BlockValidationInput) 
         input.fork,
         input.hardfork_config orelse hardfork_schedule.MAINNET_CHAIN_CONFIG,
     );
-    const requests_hash = input.requests_hash;
+    const requests_hash = try validateRequestsHash(input);
 
     return .{
         .transactions_root = transactions_root,
@@ -607,13 +799,68 @@ pub fn validateBlock(allocator: std.mem.Allocator, input: BlockValidationInput) 
     };
 }
 
+/// EIP-7685: on Prague+ the hash the block commits to must equal the hash
+/// recomputed from execution. Returns the committed hash.
+///
+/// The header field does not exist before Prague and is mandatory from
+/// Prague: a hash committed earlier, or a Prague+ block without one, is
+/// invalid.
+fn validateRequestsHash(input: BlockValidationInput) error{InvalidRequestsHash}!?[32]u8 {
+    const committed = input.requests_hash orelse input.header.requests_hash;
+    if (!atLeast(input.fork, .prague)) {
+        if (committed != null) return error.InvalidRequestsHash;
+        return null;
+    }
+    if (committed == null) return error.InvalidRequestsHash;
+
+    if (input.requests_hash) |claimed| {
+        if (input.header.requests_hash) |header_hash| {
+            if (!std.mem.eql(u8, &claimed, &header_hash)) return error.InvalidRequestsHash;
+        }
+    }
+    if (input.computed_requests_hash) |computed| {
+        const claimed = committed orelse return error.InvalidRequestsHash;
+        if (!std.mem.eql(u8, &computed, &claimed)) return error.InvalidRequestsHash;
+    }
+    return committed;
+}
+
+/// Gas limit rule of the header validity function, without overflow: the
+/// limit must move by less than `parent / 1024` and stay at or above 5000.
+/// On the first London block the parent limit is first multiplied by the
+/// EIP-1559 elasticity multiplier.
+pub fn validateGasLimit(
+    header: *const primitives.BlockHeader.BlockHeader,
+    parent: *const primitives.BlockHeader.BlockHeader,
+    fork: Hardfork,
+) error{InvalidGasLimitDelta}!void {
+    // A parent without a base fee is pre-London, which makes `header` the
+    // London fork block (the same test `expectedBaseFeePerGas` uses).
+    const london_fork_block = atLeast(fork, .london) and parent.base_fee_per_gas == null;
+    const parent_gas_limit = if (london_fork_block)
+        parent.gas_limit *| GAS_LIMIT_ELASTICITY_MULTIPLIER
+    else
+        parent.gas_limit;
+
+    const max_delta = parent_gas_limit / GAS_LIMIT_ADJUSTMENT_FACTOR;
+    const delta = if (header.gas_limit > parent_gas_limit)
+        header.gas_limit - parent_gas_limit
+    else
+        parent_gas_limit - header.gas_limit;
+    if (delta >= max_delta) return error.InvalidGasLimitDelta;
+    if (header.gas_limit < MIN_GAS_LIMIT) return error.InvalidGasLimitDelta;
+}
+
+/// Header validity against the parent header. `validateBlock` adds the
+/// checks that need more than the two headers: parent hash, ommers hash,
+/// the Cancun parent beacon block root, and the Prague requests hash.
 pub fn validateHeader(
     header: *const primitives.BlockHeader.BlockHeader,
     parent: *const primitives.BlockHeader.BlockHeader,
     fork: Hardfork,
 ) !void {
     if (header.gas_used > header.gas_limit) return error.HeaderGasUsedExceedsLimit;
-    primitives.BlockHeader.validateGasLimitDelta(header, parent) catch return error.InvalidGasLimitDelta;
+    try validateGasLimit(header, parent, fork);
     primitives.BlockHeader.validateTimestampStrictlyGreater(header, parent) catch return error.InvalidTimestamp;
     if (parent.number == std.math.maxInt(u64)) return error.InvalidBlockNumber;
     if (header.number != parent.number + 1) return error.InvalidBlockNumber;
@@ -639,6 +886,9 @@ pub fn validateHeader(
     if (!atLeast(fork, .cancun) and (header.blob_gas_used != null or header.excess_blob_gas != null or header.parent_beacon_block_root != null)) {
         return error.BlobFieldsBeforeCancun;
     }
+    // EIP-7685. The Prague+ presence check lives in `validateBlock`, because
+    // callers may keep the hash beside the header (`BlockValidationInput.requests_hash`).
+    if (!atLeast(fork, .prague) and header.requests_hash != null) return error.InvalidRequestsHash;
 }
 
 pub fn expectedBaseFeePerGas(parent: *const primitives.BlockHeader.BlockHeader) !u256 {
@@ -681,7 +931,10 @@ pub fn computeTransactionsRoot(
 
     for (transactions, 0..) |item, i| {
         keys[i] = try primitives.Rlp.encode(arena_alloc, @as(u64, @intCast(i)));
-        values[i] = try tx_encoding.encodeLegacyTransactionEnvelope(arena_alloc, item.tx);
+        // The trie commits to the signed EIP-2718 envelope. Re-encoding as
+        // legacy is correct only for a legacy transaction, so it is the
+        // fallback for callers that carry no canonical bytes.
+        values[i] = item.raw orelse try tx_encoding.encodeLegacyTransactionEnvelope(arena_alloc, item.tx);
     }
 
     return primitives.TrieHash.trie_root(arena_alloc, keys, values);
@@ -707,28 +960,21 @@ pub fn computeRawTransactionsRoot(
     allocator: std.mem.Allocator,
     transactions: []const primitives.BlockBody.TransactionData,
 ) ![32]u8 {
-    const keys = try allocator.alloc([]const u8, transactions.len);
-    defer allocator.free(keys);
-    const values = try allocator.alloc([]const u8, transactions.len);
-    defer allocator.free(values);
+    // One arena owns every key: a single free on both the success and the
+    // error path, so no key can be freed twice or leaked.
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
 
-    var initialized: usize = 0;
-    errdefer {
-        var i: usize = 0;
-        while (i < initialized) : (i += 1) allocator.free(keys[i]);
-    }
-    defer {
-        var i: usize = 0;
-        while (i < initialized) : (i += 1) allocator.free(keys[i]);
-    }
+    const keys = try arena_alloc.alloc([]const u8, transactions.len);
+    const values = try arena_alloc.alloc([]const u8, transactions.len);
 
     for (transactions, 0..) |item, i| {
-        keys[i] = try primitives.Rlp.encode(allocator, @as(u64, @intCast(i)));
+        keys[i] = try primitives.Rlp.encode(arena_alloc, @as(u64, @intCast(i)));
         values[i] = item.raw;
-        initialized += 1;
     }
 
-    return primitives.TrieHash.trie_root(allocator, keys, values);
+    return primitives.TrieHash.trie_root(arena_alloc, keys, values);
 }
 
 pub fn computeReceiptsRoot(
@@ -837,10 +1083,26 @@ pub fn collectEmptyAccounts(
     return preserved;
 }
 
+/// Delete every empty account the block created. Accounts in `preserved`
+/// (empty before the block) survive, touched or not; callers that track
+/// touches use `pruneEmptyAccounts`.
 pub fn pruneNewEmptyAccounts(
     allocator: std.mem.Allocator,
     sm: *state_manager.StateManager,
     preserved: *const std.AutoHashMap(primitives.Address, void),
+) !void {
+    return pruneEmptyAccounts(allocator, sm, preserved, null);
+}
+
+/// EIP-161 state clearing. Deletes an empty account when the block created
+/// it (it is not in `preserved`) or when a transaction touched it (it is in
+/// `touched`). An account that was empty before the block and that nothing
+/// touched stays in the state trie.
+pub fn pruneEmptyAccounts(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+    preserved: *const std.AutoHashMap(primitives.Address, void),
+    touched: ?*const std.AutoHashMap(primitives.Address, void),
 ) !void {
     var addresses = std.AutoHashMap(primitives.Address, void).init(allocator);
     defer addresses.deinit();
@@ -861,14 +1123,10 @@ pub fn pruneNewEmptyAccounts(
     var address_it = addresses.keyIterator();
     while (address_it.next()) |address_ptr| {
         const address = address_ptr.*;
-        if (preserved.contains(address) or !cachedAccountIsEmpty(sm, address)) continue;
-
-        _ = sm.journaled_state.account_cache.delete(address);
-        _ = sm.journaled_state.contract_cache.delete(address);
-        if (sm.journaled_state.storage_cache.cache.fetchRemove(address)) |entry| {
-            var slots = entry.value;
-            slots.deinit();
-        }
+        if (!cachedAccountIsEmpty(sm, address)) continue;
+        const was_touched = if (touched) |set| set.contains(address) else false;
+        if (preserved.contains(address) and !was_touched) continue;
+        removeCachedAccount(sm, address);
     }
 }
 
@@ -902,34 +1160,21 @@ pub fn computeWithdrawalsRoot(
     allocator: std.mem.Allocator,
     withdrawals: []const primitives.BlockBody.Withdrawal,
 ) ![32]u8 {
-    const keys = try allocator.alloc([]const u8, withdrawals.len);
-    defer allocator.free(keys);
-    const values = try allocator.alloc([]const u8, withdrawals.len);
-    defer allocator.free(values);
+    // One arena owns every key and value: a single free on both the success
+    // and the error path, so nothing can be freed twice or leaked.
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
 
-    var initialized: usize = 0;
-    errdefer {
-        var i: usize = 0;
-        while (i < initialized) : (i += 1) {
-            allocator.free(keys[i]);
-            allocator.free(values[i]);
-        }
-    }
-    defer {
-        var i: usize = 0;
-        while (i < initialized) : (i += 1) {
-            allocator.free(keys[i]);
-            allocator.free(values[i]);
-        }
-    }
+    const keys = try arena_alloc.alloc([]const u8, withdrawals.len);
+    const values = try arena_alloc.alloc([]const u8, withdrawals.len);
 
     for (withdrawals, 0..) |withdrawal, i| {
-        keys[i] = try primitives.Rlp.encode(allocator, @as(u64, @intCast(i)));
-        values[i] = try encodeWithdrawal(allocator, withdrawal);
-        initialized += 1;
+        keys[i] = try primitives.Rlp.encode(arena_alloc, @as(u64, @intCast(i)));
+        values[i] = try encodeWithdrawal(arena_alloc, withdrawal);
     }
 
-    return primitives.TrieHash.trie_root(allocator, keys, values);
+    return primitives.TrieHash.trie_root(arena_alloc, keys, values);
 }
 
 pub fn aggregateLogsBloom(receipts: []const primitives.Receipt.Receipt) [256]u8 {
@@ -947,6 +1192,10 @@ pub fn applyWithdrawals(
     withdrawals: []const primitives.BlockBody.Withdrawal,
 ) !void {
     for (withdrawals) |withdrawal| {
+        // EIP-4895: a zero-amount withdrawal changes no balance. Writing the
+        // unchanged balance would create an empty account for a recipient
+        // that does not exist, and that account would enter the state trie.
+        if (withdrawal.amount == 0) continue;
         const credit = std.math.mul(u256, @as(u256, withdrawal.amount), WEI_PER_GWEI) catch return error.WithdrawalAmountOverflow;
         const balance = try sm.getBalance(withdrawal.address);
         const new_balance = std.math.add(u256, balance, credit) catch return error.BalanceOverflow;
@@ -954,29 +1203,126 @@ pub fn applyWithdrawals(
     }
 }
 
+/// EIP-4788 with only a timestamp to go on. Builds its own host adapter over
+/// `sm`, a block context carrying `timestamp`, and allocates EVM scratch from
+/// the state manager's allocator. Callers that hold the block context should
+/// use `applyBeaconRootsSystemCallWithContext`.
 pub fn applyBeaconRootsSystemCall(
     sm: *state_manager.StateManager,
     timestamp: u64,
     parent_beacon_block_root: [32]u8,
 ) !void {
-    const slot = timestamp % HISTORY_BUFFER_LENGTH;
-    const root_value = std.mem.readInt(u256, &parent_beacon_block_root, .big);
-    try sm.setStorage(BEACON_ROOTS_ADDRESS, @as(u256, slot), @as(u256, timestamp));
-    try sm.setStorage(BEACON_ROOTS_ADDRESS, @as(u256, slot + HISTORY_BUFFER_LENGTH), root_value);
+    var adapter = host_adapter.HostAdapter{ .state = sm };
+    var block_ctx = systemCallBlockContext();
+    block_ctx.block_timestamp = timestamp;
+    try applyBeaconRootsSystemCallWithContext(
+        sm.allocator,
+        sm,
+        adapter.hostInterface(),
+        block_ctx,
+        .CANCUN,
+        parent_beacon_block_root,
+    );
 }
 
+/// EIP-4788: call `BEACON_ROOTS_ADDRESS` as `SYSTEM_ADDRESS` with the parent
+/// beacon block root as calldata and 30M gas. An address without code makes
+/// the call a no-op: nothing is written, so a chain that never deployed the
+/// contract gets no phantom storage. A reverting call is ignored, as the EIP
+/// specifies; only a host failure is an error.
+pub fn applyBeaconRootsSystemCallWithContext(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+    host_iface: guillotine_mini.HostInterface,
+    block_ctx: guillotine_mini.BlockContext,
+    hardfork: guillotine_mini.Hardfork,
+    parent_beacon_block_root: [32]u8,
+) !void {
+    const output = try runSystemContractCallWithMode(
+        allocator,
+        sm,
+        host_iface,
+        block_ctx,
+        hardfork,
+        BEACON_ROOTS_ADDRESS,
+        &parent_beacon_block_root,
+        .unchecked,
+        false,
+    );
+    if (output) |bytes| allocator.free(bytes);
+}
+
+/// EIP-2935 with only a block number to go on. See
+/// `applyBeaconRootsSystemCall` for the adapter, context, and allocator used.
 pub fn applyHistoricalBlockHashSystemCall(
     sm: *state_manager.StateManager,
     block_number: u64,
     parent_hash: [32]u8,
 ) !void {
-    if (block_number == 0) return;
-
-    const slot = (block_number - 1) % HISTORY_BUFFER_LENGTH;
-    const parent_hash_value = std.mem.readInt(u256, &parent_hash, .big);
-    try sm.setStorage(HISTORY_STORAGE_ADDRESS, @as(u256, slot), parent_hash_value);
+    var adapter = host_adapter.HostAdapter{ .state = sm };
+    var block_ctx = systemCallBlockContext();
+    block_ctx.block_number = block_number;
+    try applyHistoricalBlockHashSystemCallWithContext(
+        sm.allocator,
+        sm,
+        adapter.hostInterface(),
+        block_ctx,
+        .PRAGUE,
+        parent_hash,
+    );
 }
 
+/// EIP-2935: call `HISTORY_STORAGE_ADDRESS` as `SYSTEM_ADDRESS` with the
+/// parent hash as calldata and 30M gas. Same empty-code and failure rules as
+/// `applyBeaconRootsSystemCallWithContext`. The genesis block has no parent.
+pub fn applyHistoricalBlockHashSystemCallWithContext(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+    host_iface: guillotine_mini.HostInterface,
+    block_ctx: guillotine_mini.BlockContext,
+    hardfork: guillotine_mini.Hardfork,
+    parent_hash: [32]u8,
+) !void {
+    if (block_ctx.block_number == 0) return;
+
+    const output = try runSystemContractCallWithMode(
+        allocator,
+        sm,
+        host_iface,
+        block_ctx,
+        hardfork,
+        HISTORY_STORAGE_ADDRESS,
+        &parent_hash,
+        .unchecked,
+        false,
+    );
+    if (output) |bytes| allocator.free(bytes);
+}
+
+/// Block context for a system call made by a caller that knows only one
+/// block field. The system contracts read `TIMESTAMP` (EIP-4788) or `NUMBER`
+/// (EIP-2935) and nothing else from the environment.
+fn systemCallBlockContext() guillotine_mini.BlockContext {
+    return .{
+        .chain_id = 1,
+        .block_number = 0,
+        .block_timestamp = 0,
+        .block_difficulty = 0,
+        .block_prevrandao = 0,
+        .block_coinbase = primitives.Address{ .bytes = [_]u8{0} ** 20 },
+        .block_gas_limit = SYSTEM_CALL_GAS_LIMIT,
+        .block_base_fee = 0,
+        .blob_base_fee = 0,
+    };
+}
+
+/// EIP-7002 and EIP-7251 system calls. A predeploy without code yields a
+/// null field and changes no state.
+///
+/// This departs from the EIPs, which make a Prague block invalid when either
+/// predeploy has no code. Chains that never deployed the contracts (dev
+/// chains) need the no-op to produce blocks at all; a chain that has them
+/// deployed is unaffected.
 pub fn collectPragueRequestsSystemCalls(
     allocator: std.mem.Allocator,
     sm: *state_manager.StateManager,
@@ -984,10 +1330,24 @@ pub fn collectPragueRequestsSystemCalls(
     block_ctx: guillotine_mini.BlockContext,
     hardfork: guillotine_mini.Hardfork,
 ) !PragueSystemRequests {
+    return collectPragueSystemCallRequests(allocator, sm, host_iface, block_ctx, hardfork, false);
+}
+
+/// The EIP-7002 and EIP-7251 system calls. With `require_system_contracts` a
+/// predeploy without code is `error.SystemContractMissingCode`; without it
+/// the call is a no-op that yields a null field.
+fn collectPragueSystemCallRequests(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+    host_iface: guillotine_mini.HostInterface,
+    block_ctx: guillotine_mini.BlockContext,
+    hardfork: guillotine_mini.Hardfork,
+    require_system_contracts: bool,
+) !PragueSystemRequests {
     var requests = PragueSystemRequests{};
     errdefer requests.deinit(allocator);
 
-    requests.withdrawals = try runSystemContractCall(
+    requests.withdrawals = try runSystemContractCallWithMode(
         allocator,
         sm,
         host_iface,
@@ -995,8 +1355,10 @@ pub fn collectPragueRequestsSystemCalls(
         hardfork,
         WITHDRAWAL_REQUESTS_ADDRESS,
         &.{},
+        .checked,
+        require_system_contracts,
     );
-    requests.consolidations = try runSystemContractCall(
+    requests.consolidations = try runSystemContractCallWithMode(
         allocator,
         sm,
         host_iface,
@@ -1004,16 +1366,316 @@ pub fn collectPragueRequestsSystemCalls(
         hardfork,
         CONSOLIDATION_REQUESTS_ADDRESS,
         &.{},
+        .checked,
+        require_system_contracts,
     );
     return requests;
 }
 
-/// Executes `to` as `SYSTEM_ADDRESS` with the 30M system-call gas limit and
-/// returns its output. The call consumes no block gas and pays no fees.
+/// EIP-7685 request payloads of a Prague block with default options: the
+/// mainnet deposit contract and a no-op for a predeploy without code.
+pub fn collectPragueRequests(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+    host_iface: guillotine_mini.HostInterface,
+    block_ctx: guillotine_mini.BlockContext,
+    hardfork: guillotine_mini.Hardfork,
+    logs: []const primitives.EventLog.EventLog,
+) !PragueRequests {
+    return collectPragueRequestsWithOptions(allocator, sm, host_iface, block_ctx, hardfork, logs, .{});
+}
+
+/// EIP-7685 request payloads of a Prague block: EIP-6110 deposits from the
+/// block's `logs`, in log order, then the EIP-7002 withdrawal and EIP-7251
+/// consolidation system calls, which mutate `sm`. The caller owns the result
+/// and frees it with `deinit`.
 ///
-/// EIP-7002 and EIP-7251: a block is invalid when the contract has no code or
-/// the call fails, so both cases are errors here. A node-owned genesis
-/// carries the code (`system_contracts.installGenesis`).
+/// `options.require_system_contracts` selects between the EIP rule (a
+/// predeploy without code is `error.SystemContractMissingCode`) and the
+/// dev-chain no-op (a null field, no state change).
+pub fn collectPragueRequestsWithOptions(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+    host_iface: guillotine_mini.HostInterface,
+    block_ctx: guillotine_mini.BlockContext,
+    hardfork: guillotine_mini.Hardfork,
+    logs: []const primitives.EventLog.EventLog,
+    options: PragueRequestsOptions,
+) !PragueRequests {
+    var requests = try collectPragueSystemCallRequests(
+        allocator,
+        sm,
+        host_iface,
+        block_ctx,
+        hardfork,
+        options.require_system_contracts,
+    );
+    errdefer requests.deinit(allocator);
+    requests.deposits = try extractDepositRequestsFromLogs(allocator, logs, options.deposit_contract_address);
+    return requests;
+}
+
+/// EIP-6110: concatenate the deposit requests logged by the deposit contract
+/// in `receipts`, in log order. Returns null when no receipt carries a
+/// deposit log. Caller owns the result.
+///
+/// A log from the deposit contract with the `DepositEvent` topic whose data
+/// is not the fixed 576-byte layout makes the block invalid
+/// (`error.InvalidDepositEventLayout`).
+pub fn extractDepositRequests(
+    allocator: std.mem.Allocator,
+    receipts: []const primitives.Receipt.Receipt,
+) !?[]u8 {
+    return extractDepositRequestsFrom(allocator, receipts, DEPOSIT_CONTRACT_ADDRESS);
+}
+
+/// `extractDepositRequests` for a chain whose deposit contract lives at
+/// `deposit_contract_address`.
+pub fn extractDepositRequestsFrom(
+    allocator: std.mem.Allocator,
+    receipts: []const primitives.Receipt.Receipt,
+    deposit_contract_address: primitives.Address,
+) !?[]u8 {
+    var deposits = std.ArrayList(u8){};
+    errdefer deposits.deinit(allocator);
+
+    for (receipts) |receipt| {
+        try appendDepositRequests(allocator, &deposits, receipt.logs, deposit_contract_address);
+    }
+
+    if (deposits.items.len == 0) {
+        deposits.deinit(allocator);
+        return null;
+    }
+    return try deposits.toOwnedSlice(allocator);
+}
+
+/// `extractDepositRequestsFrom` over a flat list of the block's logs.
+pub fn extractDepositRequestsFromLogs(
+    allocator: std.mem.Allocator,
+    logs: []const primitives.EventLog.EventLog,
+    deposit_contract_address: primitives.Address,
+) !?[]u8 {
+    var deposits = std.ArrayList(u8){};
+    errdefer deposits.deinit(allocator);
+
+    try appendDepositRequests(allocator, &deposits, logs, deposit_contract_address);
+
+    if (deposits.items.len == 0) {
+        deposits.deinit(allocator);
+        return null;
+    }
+    return try deposits.toOwnedSlice(allocator);
+}
+
+fn appendDepositRequests(
+    allocator: std.mem.Allocator,
+    deposits: *std.ArrayList(u8),
+    logs: []const primitives.EventLog.EventLog,
+    deposit_contract_address: primitives.Address,
+) !void {
+    for (logs) |event_log| {
+        if (!event_log.address.equals(deposit_contract_address)) continue;
+        if (event_log.topics.len == 0) continue;
+        if (!std.mem.eql(u8, &event_log.topics[0], &DEPOSIT_EVENT_TOPIC)) continue;
+
+        const request = try parseDepositEventData(event_log.data);
+        try deposits.appendSlice(allocator, &request);
+    }
+}
+
+/// Decode one ABI-encoded `DepositEvent(bytes,bytes,bytes,bytes,bytes)` into
+/// the 192-byte EIP-6110 request. The layout is fixed: five head offsets,
+/// then each field as a 32-byte length word followed by padded data.
+fn parseDepositEventData(data: []const u8) error{InvalidDepositEventLayout}![DEPOSIT_REQUEST_SIZE]u8 {
+    if (data.len != DEPOSIT_EVENT_DATA_SIZE) return error.InvalidDepositEventLayout;
+
+    const Field = struct { offset: usize, size: usize };
+    // pubkey, withdrawal_credentials, amount, signature, index.
+    const fields = [_]Field{
+        .{ .offset = 160, .size = 48 },
+        .{ .offset = 256, .size = 32 },
+        .{ .offset = 320, .size = 8 },
+        .{ .offset = 384, .size = 96 },
+        .{ .offset = 512, .size = 8 },
+    };
+
+    var request: [DEPOSIT_REQUEST_SIZE]u8 = undefined;
+    var written: usize = 0;
+    for (fields, 0..) |field, index| {
+        const head = std.mem.readInt(u256, data[index * 32 ..][0..32], .big);
+        if (head != field.offset) return error.InvalidDepositEventLayout;
+        const size = std.mem.readInt(u256, data[field.offset..][0..32], .big);
+        if (size != field.size) return error.InvalidDepositEventLayout;
+
+        @memcpy(request[written..][0..field.size], data[field.offset + 32 ..][0..field.size]);
+        written += field.size;
+    }
+    std.debug.assert(written == DEPOSIT_REQUEST_SIZE);
+    return request;
+}
+
+/// EIP-7685 requests of a Prague+ block: EIP-6110 deposits from the logs in
+/// `receipts`, then the EIP-7002 withdrawal and EIP-7251 consolidation system
+/// calls, which mutate `sm`. Returns `[type || payload]` elements in ascending
+/// type order with empty payloads omitted, or an empty slice before Prague.
+/// Free with `freeExecutionRequests`.
+///
+/// The calls run through a host adapter built over `sm`. A predeploy without
+/// code contributes nothing (see `collectPragueRequestsSystemCalls`).
+pub fn collectBlockExecutionRequests(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+    receipts: []const primitives.Receipt.Receipt,
+    hardfork: Hardfork,
+    block_ctx: guillotine_mini.BlockContext,
+) ![][]u8 {
+    return collectBlockExecutionRequestsFrom(allocator, sm, receipts, hardfork, block_ctx, DEPOSIT_CONTRACT_ADDRESS);
+}
+
+/// `collectBlockExecutionRequests` for a chain whose EIP-6110 deposit contract
+/// lives at `deposit_contract_address`.
+pub fn collectBlockExecutionRequestsFrom(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+    receipts: []const primitives.Receipt.Receipt,
+    hardfork: Hardfork,
+    block_ctx: guillotine_mini.BlockContext,
+    deposit_contract_address: primitives.Address,
+) ![][]u8 {
+    return collectBlockExecutionRequestsWithOptions(allocator, sm, receipts, hardfork, block_ctx, .{
+        .deposit_contract_address = deposit_contract_address,
+        .require_system_contracts = false,
+    });
+}
+
+/// `collectBlockExecutionRequests` with the full `PragueRequestsOptions`:
+/// the deposit contract address, and whether an EIP-7002 or EIP-7251
+/// predeploy without code is `error.SystemContractMissingCode`
+/// (`require_system_contracts`) or a no-op.
+pub fn collectBlockExecutionRequestsWithOptions(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+    receipts: []const primitives.Receipt.Receipt,
+    hardfork: Hardfork,
+    block_ctx: guillotine_mini.BlockContext,
+    options: PragueRequestsOptions,
+) ![][]u8 {
+    if (!atLeast(hardfork, .prague)) return try allocator.alloc([]u8, 0);
+
+    var log_count: usize = 0;
+    for (receipts) |receipt| log_count += receipt.logs.len;
+    const logs = try allocator.alloc(primitives.EventLog.EventLog, log_count);
+    defer allocator.free(logs);
+    var log_index: usize = 0;
+    for (receipts) |receipt| {
+        @memcpy(logs[log_index..][0..receipt.logs.len], receipt.logs);
+        log_index += receipt.logs.len;
+    }
+
+    var adapter = host_adapter.HostAdapter{ .state = sm };
+    var requests = try collectPragueRequestsWithOptions(
+        allocator,
+        sm,
+        adapter.hostInterface(),
+        block_ctx,
+        evmHardforkFromBlockBuilderFork(hardfork),
+        logs,
+        options,
+    );
+    defer requests.deinit(allocator);
+
+    return encodeExecutionRequests(allocator, requestsWithPragueSystemOutputs(.{}, requests));
+}
+
+/// Encode each non-empty request type as an owned `[type || payload]` slice,
+/// in ascending type order. Free with `freeExecutionRequests`.
+pub fn encodeExecutionRequests(allocator: std.mem.Allocator, requests: RequestsByType) ![][]u8 {
+    const typed = [_]struct { request_type: u8, payload: []const u8 }{
+        .{ .request_type = DEPOSIT_REQUEST_TYPE, .payload = requests.deposits },
+        .{ .request_type = WITHDRAWAL_REQUEST_TYPE, .payload = requests.withdrawals },
+        .{ .request_type = CONSOLIDATION_REQUEST_TYPE, .payload = requests.consolidations },
+    };
+
+    var count: usize = 0;
+    for (typed) |entry| {
+        if (entry.payload.len != 0) count += 1;
+    }
+
+    const out = try allocator.alloc([]u8, count);
+    var written: usize = 0;
+    errdefer {
+        for (out[0..written]) |request| allocator.free(request);
+        allocator.free(out);
+    }
+    for (typed) |entry| {
+        if (entry.payload.len == 0) continue;
+        const request = try allocator.alloc(u8, 1 + entry.payload.len);
+        request[0] = entry.request_type;
+        @memcpy(request[1..], entry.payload);
+        out[written] = request;
+        written += 1;
+    }
+    return out;
+}
+
+/// Free a list returned by `collectBlockExecutionRequests` or
+/// `encodeExecutionRequests`.
+pub fn freeExecutionRequests(allocator: std.mem.Allocator, requests: [][]u8) void {
+    for (requests) |request| allocator.free(request);
+    allocator.free(requests);
+}
+
+/// EIP-7685 commitment over raw `[type || payload]` requests:
+/// `sha256(sha256(r_0) ++ sha256(r_1) ++ ...)` taken in ascending type order,
+/// skipping every request with an empty payload. Equal to
+/// `computeRequestsHash` of the same requests.
+pub fn computeRequestsHashFromRawRequests(
+    allocator: std.mem.Allocator,
+    requests: []const []const u8,
+) ![32]u8 {
+    const order = try allocator.alloc(usize, requests.len);
+    defer allocator.free(order);
+    for (order, 0..) |*slot, index| slot.* = index;
+
+    // Stable, so requests that share a type keep their given order.
+    const Context = struct {
+        requests: []const []const u8,
+
+        fn typeOf(self: @This(), index: usize) u8 {
+            const request = self.requests[index];
+            return if (request.len == 0) 0 else request[0];
+        }
+
+        fn lessThan(self: @This(), lhs: usize, rhs: usize) bool {
+            return self.typeOf(lhs) < self.typeOf(rhs);
+        }
+    };
+    std.mem.sort(usize, order, Context{ .requests = requests }, Context.lessThan);
+
+    var outer = std.crypto.hash.sha2.Sha256.init(.{});
+    for (order) |index| {
+        const request = requests[index];
+        // A lone type byte carries no request data and is not committed.
+        if (request.len <= 1) continue;
+        var digest: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(request, &digest, .{});
+        outer.update(&digest);
+    }
+
+    var out: [32]u8 = undefined;
+    outer.final(&out);
+    return out;
+}
+
+/// Executes `to` as `SYSTEM_ADDRESS` with the 30M system-call gas limit and
+/// returns its output, owned by the caller. The call consumes no block gas
+/// and pays no fees.
+///
+/// This is the strict EIP-7002 / EIP-7251 form: a contract without code is
+/// `error.SystemContractMissingCode` and a failing call is
+/// `error.SystemContractCallFailed`. A node-owned genesis carries the code
+/// (`system_contracts.installGenesis`).
 pub fn runSystemContractCall(
     allocator: std.mem.Allocator,
     sm: *state_manager.StateManager,
@@ -1023,15 +1685,60 @@ pub fn runSystemContractCall(
     to: primitives.Address,
     input: []const u8,
 ) ![]u8 {
+    return (try runSystemContractCallWithMode(
+        allocator,
+        sm,
+        host_iface,
+        block_ctx,
+        hardfork,
+        to,
+        input,
+        .checked,
+        true,
+    )) orelse error.SystemContractMissingCode;
+}
+
+const SystemCallMode = enum {
+    /// EIP-7002 / EIP-7251: a failing call invalidates the block.
+    checked,
+    /// EIP-4788 / EIP-2935: a failing call is ignored and leaves no trace.
+    unchecked,
+};
+
+/// Execute a system contract as `SYSTEM_ADDRESS` with `SYSTEM_CALL_GAS_LIMIT`
+/// gas and return its output, owned by the caller.
+///
+/// Returns null without touching state when `to` has no code, and, in
+/// `.unchecked` mode, when the call fails (its state changes are reverted).
+/// A `.checked` call with `require_system_contracts` instead fails with
+/// `error.SystemContractMissingCode` when `to` has no code.
+fn runSystemContractCallWithMode(
+    allocator: std.mem.Allocator,
+    sm: *state_manager.StateManager,
+    host_iface: guillotine_mini.HostInterface,
+    block_ctx: guillotine_mini.BlockContext,
+    hardfork: guillotine_mini.Hardfork,
+    to: primitives.Address,
+    input: []const u8,
+    mode: SystemCallMode,
+    require_system_contracts: bool,
+) !?[]u8 {
     const code = try sm.getCode(to);
-    if (code.len == 0) return error.MissingSystemContractCode;
+    if (code.len == 0) {
+        // EIP-7002 / EIP-7251: a Prague block is invalid when the predeploy
+        // has no code. Dev chains that never deployed it opt out.
+        if (mode == .checked and require_system_contracts) return error.SystemContractMissingCode;
+        return null;
+    }
 
     const adapter = host_adapter.HostAdapter.fromHostInterface(host_iface);
     if (adapter) |a| a.clearHostError();
 
+    const system_account_existed = accountIsCached(sm, SYSTEM_ADDRESS);
+
     try sm.checkpoint();
-    var committed = false;
-    errdefer if (!committed) sm.revert();
+    var settled = false;
+    errdefer if (!settled) sm.revert();
 
     const EvmType = guillotine_mini.Evm(.{});
     var evm: EvmType = undefined;
@@ -1059,12 +1766,46 @@ pub fn runSystemContractCall(
     if (adapter) |a| {
         if (a.takeHostError() != null) return error.SystemContractHostError;
     }
-    if (!result.success) return error.SystemContractCallFailed;
+    if (!result.success) {
+        // guillotine-mini reports allocation failure as a failed call tagged
+        // with the error name. That is a node fault: it must neither
+        // invalidate the block (`.checked`) nor be dropped (`.unchecked`).
+        if (result.error_info) |info| {
+            if (std.mem.eql(u8, info, @errorName(error.OutOfMemory))) return error.OutOfMemory;
+        }
+        if (mode == .checked) return error.SystemContractCallFailed;
+        sm.revert();
+        settled = true;
+        return null;
+    }
 
     const output = try allocator.dupe(u8, result.output);
     sm.commit();
-    committed = true;
+    settled = true;
+
+    // A system call must not leave its caller behind. If executing the call
+    // created an empty SYSTEM_ADDRESS account, EIP-161 deletes it; without
+    // this an importer that snapshots empty accounts after the call would
+    // keep it in the state trie.
+    if (!system_account_existed and cachedAccountIsEmpty(sm, SYSTEM_ADDRESS)) {
+        removeCachedAccount(sm, SYSTEM_ADDRESS);
+    }
     return output;
+}
+
+fn accountIsCached(sm: *state_manager.StateManager, address: primitives.Address) bool {
+    return sm.journaled_state.account_cache.has(address) or
+        sm.journaled_state.contract_cache.cache.contains(address) or
+        sm.journaled_state.storage_cache.cache.contains(address);
+}
+
+fn removeCachedAccount(sm: *state_manager.StateManager, address: primitives.Address) void {
+    _ = sm.journaled_state.account_cache.delete(address);
+    _ = sm.journaled_state.contract_cache.delete(address);
+    if (sm.journaled_state.storage_cache.cache.fetchRemove(address)) |entry| {
+        var slots = entry.value;
+        slots.deinit();
+    }
 }
 
 pub fn computeRequestsHash(requests: RequestsByType) [32]u8 {
@@ -1108,7 +1849,7 @@ fn appendRequestTypeHash(hashes: *[96]u8, len: *usize, request_type: u8, request
 
 pub fn blockRewardWei(fork: Hardfork) ?u256 {
     return switch (fork) {
-        .frontier, .homestead => 5 * WEI_PER_ETHER,
+        .frontier, .homestead, .spurious_dragon => 5 * WEI_PER_ETHER,
         .byzantium => 3 * WEI_PER_ETHER,
         .constantinople, .istanbul, .berlin, .london => 2 * WEI_PER_ETHER,
         .paris, .shanghai, .cancun, .prague, .osaka => null,
@@ -1131,10 +1872,13 @@ pub fn applyBlockRewards(
     try addBalance(sm, beneficiary, std.math.add(u256, reward, inclusion_reward) catch return error.BalanceOverflow);
 
     for (ommers) |ommer| {
-        if (ommer.number >= block_number or block_number > ommer.number + 8) {
-            return error.InvalidOmmerReward;
-        }
-        const numerator: u256 = 8 + ommer.number - block_number;
+        // Subtract instead of adding to `ommer.number`: `ommer.number + 8`
+        // overflows u64 near the top of the range. The Yellow Paper limits
+        // an ommer to six generations.
+        if (ommer.number >= block_number) return error.InvalidOmmerReward;
+        const distance = block_number - ommer.number;
+        if (distance > 6) return error.InvalidOmmerReward;
+        const numerator: u256 = 8 - distance;
         const ommer_reward = (reward * numerator) / 8;
         try addBalance(sm, ommer.beneficiary, ommer_reward);
     }
@@ -1571,9 +2315,11 @@ fn hasAnyRequests(requests: RequestsByType) bool {
     return requests.deposits.len != 0 or requests.withdrawals.len != 0 or requests.consolidations.len != 0;
 }
 
+/// Requests produced by execution take precedence. A caller-supplied payload
+/// is used only for a type execution produced nothing for.
 fn requestsWithPragueSystemOutputs(base: RequestsByType, system: PragueSystemRequests) RequestsByType {
     return .{
-        .deposits = base.deposits,
+        .deposits = if (system.deposits) |bytes| bytes else base.deposits,
         .withdrawals = if (system.withdrawals) |bytes| bytes else base.withdrawals,
         .consolidations = if (system.consolidations) |bytes| bytes else base.consolidations,
     };
@@ -1590,6 +2336,7 @@ fn evmHardforkFromBlockBuilderFork(fork: Hardfork) guillotine_mini.Hardfork {
     return switch (fork) {
         .frontier => .FRONTIER,
         .homestead => .HOMESTEAD,
+        .spurious_dragon => .SPURIOUS_DRAGON,
         .byzantium => .BYZANTIUM,
         .constantinople => .CONSTANTINOPLE,
         .istanbul => .ISTANBUL,
@@ -1615,10 +2362,627 @@ pub fn hardforkFromEvm(fork: guillotine_mini.Hardfork) Hardfork {
     if (fork.isAtLeast(.ISTANBUL)) return .istanbul;
     if (fork.isAtLeast(.CONSTANTINOPLE)) return .constantinople;
     if (fork.isAtLeast(.BYZANTIUM)) return .byzantium;
+    if (fork.isAtLeast(.SPURIOUS_DRAGON)) return .spurious_dragon;
     if (fork.isAtLeast(.HOMESTEAD)) return .homestead;
     return .frontier;
 }
 
 fn atLeast(fork: Hardfork, minimum: Hardfork) bool {
     return @intFromEnum(fork) >= @intFromEnum(minimum);
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+fn testReceipt(logs: []const primitives.EventLog.EventLog) primitives.Receipt.Receipt {
+    return .{
+        .transaction_hash = [_]u8{0x11} ** 32,
+        .transaction_index = 0,
+        .block_hash = primitives.Hash.ZERO,
+        .block_number = 1,
+        .sender = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 },
+        .to = null,
+        .cumulative_gas_used = 21_000,
+        .gas_used = 21_000,
+        .contract_address = null,
+        .logs = logs,
+        .logs_bloom = [_]u8{0} ** 256,
+        .status = .{ .success = true, .gas_used = 21_000 },
+        .root = null,
+        .effective_gas_price = 1,
+        .type = .legacy,
+        .blob_gas_used = null,
+        .blob_gas_price = null,
+    };
+}
+
+fn testLog(address: primitives.Address, topics: []const [32]u8, data: []const u8) primitives.EventLog.EventLog {
+    return .{
+        .address = address,
+        .topics = topics,
+        .data = data,
+        .block_number = null,
+        .transaction_hash = null,
+        .transaction_index = null,
+        .log_index = null,
+        .removed = false,
+    };
+}
+
+/// A well-formed `DepositEvent` payload whose five fields are filled with
+/// `seed`, `seed + 1`, ... so each one is recognisable in the request.
+fn testDepositEventData(seed: u8) [DEPOSIT_EVENT_DATA_SIZE]u8 {
+    var data = [_]u8{0} ** DEPOSIT_EVENT_DATA_SIZE;
+    const offsets = [_]usize{ 160, 256, 320, 384, 512 };
+    const sizes = [_]usize{ 48, 32, 8, 96, 8 };
+    for (offsets, sizes, 0..) |offset, size, index| {
+        std.mem.writeInt(u256, data[index * 32 ..][0..32], offset, .big);
+        std.mem.writeInt(u256, data[offset..][0..32], size, .big);
+        @memset(data[offset + 32 ..][0..size], seed + @as(u8, @intCast(index)));
+    }
+    return data;
+}
+
+fn testHeaders() struct { parent: primitives.BlockHeader.BlockHeader, child: primitives.BlockHeader.BlockHeader } {
+    const parent = primitives.BlockHeader.BlockHeader{
+        .ommers_hash = primitives.BlockHeader.EMPTY_OMMERS_HASH,
+        .transactions_root = primitives.BlockHeader.EMPTY_TRANSACTIONS_ROOT,
+        .receipts_root = primitives.BlockHeader.EMPTY_RECEIPTS_ROOT,
+        .number = 10,
+        .gas_limit = 30_000_000,
+        .gas_used = 15_000_000,
+        .timestamp = 1000,
+        .base_fee_per_gas = 1_000_000_000,
+    };
+    var child = parent;
+    child.number = 11;
+    child.gas_used = 0;
+    child.timestamp = 1001;
+    return .{ .parent = parent, .child = child };
+}
+
+test "DEPOSIT_EVENT_TOPIC is the keccak256 of the event signature" {
+    var expected: [32]u8 = undefined;
+    std.crypto.hash.sha3.Keccak256.hash("DepositEvent(bytes,bytes,bytes,bytes,bytes)", &expected, .{});
+    try std.testing.expectEqualSlices(u8, &expected, &DEPOSIT_EVENT_TOPIC);
+
+    const address = try primitives.Address.fromHex("0x00000000219ab540356cBB839Cbe05303d7705Fa");
+    try std.testing.expectEqualSlices(u8, &address.bytes, &DEPOSIT_CONTRACT_ADDRESS.bytes);
+}
+
+test "extractDepositRequests reads deposit contract logs in order and ignores other logs" {
+    const allocator = std.testing.allocator;
+    const first = testDepositEventData(0x10);
+    const second = testDepositEventData(0x20);
+    const topics = [_][32]u8{DEPOSIT_EVENT_TOPIC};
+    const other_topics = [_][32]u8{[_]u8{0x99} ** 32};
+    const other_address = primitives.Address{ .bytes = [_]u8{0xab} ** 20 };
+
+    const logs_a = [_]primitives.EventLog.EventLog{
+        // Same topic from another contract, and another event from the
+        // deposit contract: neither is a deposit.
+        testLog(other_address, &topics, &first),
+        testLog(DEPOSIT_CONTRACT_ADDRESS, &other_topics, &first),
+        testLog(DEPOSIT_CONTRACT_ADDRESS, &topics, &first),
+    };
+    const logs_b = [_]primitives.EventLog.EventLog{testLog(DEPOSIT_CONTRACT_ADDRESS, &topics, &second)};
+    const receipts = [_]primitives.Receipt.Receipt{ testReceipt(&logs_a), testReceipt(&logs_b) };
+
+    const deposits = (try extractDepositRequests(allocator, &receipts)).?;
+    defer allocator.free(deposits);
+    try std.testing.expectEqual(2 * DEPOSIT_REQUEST_SIZE, deposits.len);
+
+    // pubkey || withdrawal_credentials || amount || signature || index.
+    const expected_first = [_]u8{0x10} ** 48 ++ [_]u8{0x11} ** 32 ++ [_]u8{0x12} ** 8 ++ [_]u8{0x13} ** 96 ++ [_]u8{0x14} ** 8;
+    try std.testing.expectEqualSlices(u8, &expected_first, deposits[0..DEPOSIT_REQUEST_SIZE]);
+    try std.testing.expectEqual(@as(u8, 0x20), deposits[DEPOSIT_REQUEST_SIZE]);
+    try std.testing.expectEqual(@as(u8, 0x24), deposits[deposits.len - 1]);
+
+    const none = [_]primitives.Receipt.Receipt{testReceipt(logs_a[0..2])};
+    try std.testing.expectEqual(@as(?[]u8, null), try extractDepositRequests(allocator, &none));
+}
+
+test "extractDepositRequests rejects a deposit log with a malformed layout" {
+    const allocator = std.testing.allocator;
+    const topics = [_][32]u8{DEPOSIT_EVENT_TOPIC};
+
+    var wrong_offset = testDepositEventData(0x10);
+    wrong_offset[31] = 0xa1;
+    var wrong_size = testDepositEventData(0x10);
+    wrong_size[160 + 31] = 49;
+    const good = testDepositEventData(0x10);
+
+    for ([_][]const u8{ &wrong_offset, &wrong_size, good[0 .. good.len - 1] }) |data| {
+        const logs = [_]primitives.EventLog.EventLog{testLog(DEPOSIT_CONTRACT_ADDRESS, &topics, data)};
+        const receipts = [_]primitives.Receipt.Receipt{testReceipt(&logs)};
+        try std.testing.expectError(error.InvalidDepositEventLayout, extractDepositRequests(allocator, &receipts));
+    }
+}
+
+test "computeRequestsHashFromRawRequests sorts by type and skips empty requests" {
+    const allocator = std.testing.allocator;
+    const expected = computeRequestsHash(.{ .deposits = "a", .consolidations = "c" });
+
+    const unsorted = [_][]const u8{ &.{ 0x02, 'c' }, &.{}, &.{0x01}, &.{ 0x00, 'a' } };
+    try std.testing.expectEqualSlices(u8, &expected, &(try computeRequestsHashFromRawRequests(allocator, &unsorted)));
+
+    const encoded = try encodeExecutionRequests(allocator, .{ .deposits = "a", .consolidations = "c" });
+    defer freeExecutionRequests(allocator, encoded);
+    try std.testing.expectEqual(@as(usize, 2), encoded.len);
+    try std.testing.expectEqualSlices(u8, &.{ 0x00, 'a' }, encoded[0]);
+    try std.testing.expectEqualSlices(u8, &.{ 0x02, 'c' }, encoded[1]);
+    try std.testing.expectEqualSlices(u8, &expected, &(try computeRequestsHashFromRawRequests(allocator, encoded)));
+
+    // No requests commits to sha256("").
+    var empty: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash("", &empty, .{});
+    try std.testing.expectEqualSlices(u8, &empty, &(try computeRequestsHashFromRawRequests(allocator, &.{})));
+}
+
+test "system calls write nothing when the system address has no code" {
+    const allocator = std.testing.allocator;
+    var sm = try state_manager.StateManager.init(allocator, null);
+    defer sm.deinit();
+
+    const funded = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
+    try sm.setBalance(funded, 1);
+    const root_before = try computeStateRoot(allocator, &sm);
+
+    const word = [_]u8{0x42} ** 32;
+    try applyBeaconRootsSystemCall(&sm, 8193, word);
+    try applyHistoricalBlockHashSystemCall(&sm, 8193, word);
+
+    const requests = try collectBlockExecutionRequests(allocator, &sm, &.{}, .prague, systemCallBlockContext());
+    defer freeExecutionRequests(allocator, requests);
+    try std.testing.expectEqual(@as(usize, 0), requests.len);
+
+    // No phantom account or storage entered the state trie.
+    try std.testing.expectEqualSlices(u8, &root_before, &(try computeStateRoot(allocator, &sm)));
+    try std.testing.expectEqual(@as(u256, 0), try sm.getStorage(BEACON_ROOTS_ADDRESS, 8193 % 8191));
+    try std.testing.expectEqual(@as(u256, 0), try sm.getStorage(HISTORY_STORAGE_ADDRESS, 8192 % 8191));
+}
+
+test "system calls execute deployed code as SYSTEM_ADDRESS" {
+    const allocator = std.testing.allocator;
+    var sm = try state_manager.StateManager.init(allocator, null);
+    defer sm.deinit();
+
+    // sstore(0, calldataload(0)); sstore(1, caller()); stop
+    const store_input = [_]u8{ 0x60, 0x00, 0x35, 0x60, 0x00, 0x55, 0x33, 0x60, 0x01, 0x55, 0x00 };
+    // sstore(0, 1); revert(0, 0)
+    const reverting = [_]u8{ 0x60, 0x01, 0x60, 0x00, 0x55, 0x60, 0x00, 0x60, 0x00, 0xfd };
+    // mstore8(0, 0xaa); return(0, 1)
+    const one_byte = [_]u8{ 0x60, 0xaa, 0x60, 0x00, 0x53, 0x60, 0x01, 0x60, 0x00, 0xf3 };
+
+    const word = [_]u8{0x42} ** 32;
+    try sm.setCode(BEACON_ROOTS_ADDRESS, &store_input);
+    try applyBeaconRootsSystemCall(&sm, 8193, word);
+    try std.testing.expectEqual(std.mem.readInt(u256, &word, .big), try sm.getStorage(BEACON_ROOTS_ADDRESS, 0));
+    try std.testing.expectEqual(
+        @as(u256, std.mem.readInt(u160, &SYSTEM_ADDRESS.bytes, .big)),
+        try sm.getStorage(BEACON_ROOTS_ADDRESS, 1),
+    );
+    // The caller is not left behind as an account.
+    try std.testing.expect(!accountIsCached(&sm, SYSTEM_ADDRESS));
+
+    // EIP-2935: a reverting call is ignored and leaves no state behind.
+    try sm.setCode(HISTORY_STORAGE_ADDRESS, &reverting);
+    try applyHistoricalBlockHashSystemCall(&sm, 5, word);
+    try std.testing.expectEqual(@as(u256, 0), try sm.getStorage(HISTORY_STORAGE_ADDRESS, 0));
+
+    // EIP-7002: the call output becomes the type-0x01 request, after deposits.
+    try sm.setCode(WITHDRAWAL_REQUESTS_ADDRESS, &one_byte);
+    const deposit = testDepositEventData(0x10);
+    const topics = [_][32]u8{DEPOSIT_EVENT_TOPIC};
+    const logs = [_]primitives.EventLog.EventLog{testLog(DEPOSIT_CONTRACT_ADDRESS, &topics, &deposit)};
+    const receipts = [_]primitives.Receipt.Receipt{testReceipt(&logs)};
+
+    const requests = try collectBlockExecutionRequests(allocator, &sm, &receipts, .prague, systemCallBlockContext());
+    defer freeExecutionRequests(allocator, requests);
+    try std.testing.expectEqual(@as(usize, 2), requests.len);
+    try std.testing.expectEqual(@as(usize, 1 + DEPOSIT_REQUEST_SIZE), requests[0].len);
+    try std.testing.expectEqual(DEPOSIT_REQUEST_TYPE, requests[0][0]);
+    try std.testing.expectEqualSlices(u8, &.{ WITHDRAWAL_REQUEST_TYPE, 0xaa }, requests[1]);
+
+    const expected_hash = computeRequestsHash(.{ .deposits = requests[0][1..], .withdrawals = &.{0xaa} });
+    try std.testing.expectEqualSlices(u8, &expected_hash, &(try computeRequestsHashFromRawRequests(allocator, requests)));
+
+    // EIP-7251: a failing checked call invalidates the block.
+    try sm.setCode(CONSOLIDATION_REQUESTS_ADDRESS, &reverting);
+    try std.testing.expectError(
+        error.SystemContractCallFailed,
+        collectBlockExecutionRequests(allocator, &sm, &.{}, .prague, systemCallBlockContext()),
+    );
+
+    // Before Prague there are no requests and no system calls.
+    const cancun = try collectBlockExecutionRequests(allocator, &sm, &receipts, .cancun, systemCallBlockContext());
+    defer freeExecutionRequests(allocator, cancun);
+    try std.testing.expectEqual(@as(usize, 0), cancun.len);
+}
+
+test "validateBlock rejects a requests hash that execution does not reproduce" {
+    const headers = testHeaders();
+    const claimed = [_]u8{0xaa} ** 32;
+    const other = [_]u8{0xbb} ** 32;
+    var input = BlockValidationInput{
+        .header = &headers.child,
+        .parent_header = &headers.parent,
+        .fork = .prague,
+        .requests_hash = claimed,
+        .computed_requests_hash = claimed,
+    };
+    try std.testing.expectEqualSlices(u8, &claimed, &(try validateRequestsHash(input)).?);
+
+    input.computed_requests_hash = other;
+    try std.testing.expectError(error.InvalidRequestsHash, validateRequestsHash(input));
+
+    // A Prague block that commits to no hash cannot match a computed one.
+    input.requests_hash = null;
+    try std.testing.expectError(error.InvalidRequestsHash, validateRequestsHash(input));
+
+    // The side-channel hash must agree with the header's own field.
+    var header_with_hash = headers.child;
+    header_with_hash.requests_hash = other;
+    input.header = &header_with_hash;
+    input.requests_hash = claimed;
+    input.computed_requests_hash = null;
+    try std.testing.expectError(error.InvalidRequestsHash, validateRequestsHash(input));
+
+    // A Prague block must commit to a hash even when nothing was recomputed.
+    input.header = &headers.child;
+    input.requests_hash = null;
+    try std.testing.expectError(error.InvalidRequestsHash, validateRequestsHash(input));
+
+    // Before Prague the field does not exist: committing to one is invalid.
+    input.fork = .cancun;
+    input.requests_hash = claimed;
+    try std.testing.expectError(error.InvalidRequestsHash, validateRequestsHash(input));
+    input.header = &header_with_hash;
+    input.requests_hash = null;
+    try std.testing.expectError(error.InvalidRequestsHash, validateRequestsHash(input));
+    try std.testing.expectError(error.InvalidRequestsHash, validateHeader(&header_with_hash, &headers.parent, .cancun));
+
+    // Without a committed hash the recomputed one is ignored.
+    input.header = &headers.child;
+    input.computed_requests_hash = other;
+    try std.testing.expectEqual(@as(?[32]u8, null), try validateRequestsHash(input));
+}
+
+test "validateBlock checks parent hash, ommers hash, and the Cancun beacon root" {
+    const allocator = std.testing.allocator;
+    const headers = testHeaders();
+    var child = headers.child;
+    child.parent_hash = [_]u8{0x01} ** 32;
+
+    try std.testing.expectError(error.InvalidParentHash, validateBlock(allocator, .{
+        .header = &child,
+        .parent_header = &headers.parent,
+        .parent_hash = [_]u8{0x02} ** 32,
+    }));
+    try std.testing.expectError(error.InvalidOmmersHash, validateBlock(allocator, .{
+        .header = &child,
+        .parent_header = &headers.parent,
+        .parent_hash = child.parent_hash,
+        .ommers_hash = [_]u8{0x03} ** 32,
+    }));
+    _ = try validateBlock(allocator, .{
+        .header = &child,
+        .parent_header = &headers.parent,
+        .parent_hash = child.parent_hash,
+        .ommers_hash = primitives.BlockHeader.EMPTY_OMMERS_HASH,
+    });
+
+    try std.testing.expectError(error.MissingParentBeaconBlockRoot, validateBlock(allocator, .{
+        .header = &child,
+        .parent_header = &headers.parent,
+        .fork = .cancun,
+    }));
+}
+
+test "validateGasLimit is overflow-safe, bounded below, and doubles the parent on the London fork block" {
+    const headers = testHeaders();
+    var parent = headers.parent;
+    var child = headers.child;
+
+    // Strictly less than parent / 1024 in either direction.
+    const max_delta = parent.gas_limit / 1024;
+    child.gas_limit = parent.gas_limit + max_delta - 1;
+    try validateGasLimit(&child, &parent, .paris);
+    child.gas_limit = parent.gas_limit + max_delta;
+    try std.testing.expectError(error.InvalidGasLimitDelta, validateGasLimit(&child, &parent, .paris));
+    child.gas_limit = parent.gas_limit - max_delta;
+    try std.testing.expectError(error.InvalidGasLimitDelta, validateGasLimit(&child, &parent, .paris));
+
+    // A parent limit near 2^64 used to trap on `parent + delta`.
+    parent.gas_limit = std.math.maxInt(u64);
+    child.gas_limit = std.math.maxInt(u64);
+    try validateGasLimit(&child, &parent, .paris);
+
+    // Absolute minimum: 4,999 is within the delta of 5,002 and still invalid.
+    parent.gas_limit = 5_002;
+    child.gas_limit = 4_999;
+    try std.testing.expectError(error.InvalidGasLimitDelta, validateGasLimit(&child, &parent, .paris));
+    child.gas_limit = 5_000;
+    try validateGasLimit(&child, &parent, .paris);
+
+    // London fork block: the parent has no base fee and its limit doubles.
+    parent.gas_limit = 15_000_000;
+    parent.base_fee_per_gas = null;
+    child.gas_limit = 30_000_000;
+    try validateGasLimit(&child, &parent, .london);
+    try std.testing.expectError(error.InvalidGasLimitDelta, validateGasLimit(&child, &parent, .berlin));
+    child.gas_limit = 15_000_000;
+    try std.testing.expectError(error.InvalidGasLimitDelta, validateGasLimit(&child, &parent, .london));
+    try validateGasLimit(&child, &parent, .berlin);
+}
+
+test "zero-amount withdrawals never create an account" {
+    const allocator = std.testing.allocator;
+    var sm = try state_manager.StateManager.init(allocator, null);
+    defer sm.deinit();
+
+    const absent = primitives.Address{ .bytes = [_]u8{0x77} ++ [_]u8{0} ** 19 };
+    const paid = primitives.Address{ .bytes = [_]u8{0x78} ++ [_]u8{0} ** 19 };
+    const root_before = try computeStateRoot(allocator, &sm);
+
+    try applyWithdrawals(&sm, &.{.{ .index = 1, .validator_index = 2, .address = absent, .amount = 0 }});
+    try std.testing.expect(sm.journaled_state.account_cache.get(absent) == null);
+    try std.testing.expectEqualSlices(u8, &root_before, &(try computeStateRoot(allocator, &sm)));
+
+    try applyWithdrawals(&sm, &.{
+        .{ .index = 2, .validator_index = 2, .address = absent, .amount = 0 },
+        .{ .index = 3, .validator_index = 2, .address = paid, .amount = 3 },
+    });
+    try std.testing.expect(sm.journaled_state.account_cache.get(absent) == null);
+    try std.testing.expectEqual(@as(u256, 3_000_000_000), try sm.getBalance(paid));
+}
+
+test "EIP-161 pruning is keyed on Spurious Dragon" {
+    try std.testing.expect(atLeast(.spurious_dragon, .spurious_dragon));
+    try std.testing.expect(atLeast(.byzantium, .spurious_dragon));
+    try std.testing.expect(!atLeast(.homestead, .spurious_dragon));
+    try std.testing.expectEqual(Hardfork.spurious_dragon, hardforkFromEvm(.SPURIOUS_DRAGON));
+    try std.testing.expectEqual(Hardfork.homestead, hardforkFromEvm(.TANGERINE_WHISTLE));
+    try std.testing.expectEqual(Hardfork.byzantium, hardforkFromEvm(.BYZANTIUM));
+    try std.testing.expectEqual(guillotine_mini.Hardfork.SPURIOUS_DRAGON, evmHardforkFromBlockBuilderFork(.spurious_dragon));
+    try std.testing.expectEqual(@as(?u256, 5 * WEI_PER_ETHER), blockRewardWei(.spurious_dragon));
+}
+
+test "transaction and withdrawal roots free everything when an allocation fails" {
+    const Harness = struct {
+        fn rawTransactions(allocator: std.mem.Allocator) !void {
+            const transactions = [_]primitives.BlockBody.TransactionData{
+                .{ .raw = &.{ 0x02, 0xc0 } },
+                .{ .raw = &.{ 0x01, 0xc0 } },
+                .{ .raw = &.{ 0xc1, 0x80 } },
+            };
+            _ = try computeRawTransactionsRoot(allocator, &transactions);
+        }
+
+        fn withdrawals(allocator: std.mem.Allocator) !void {
+            const recipient = primitives.Address{ .bytes = [_]u8{0x77} ** 20 };
+            const items = [_]primitives.BlockBody.Withdrawal{
+                .{ .index = 1, .validator_index = 2, .address = recipient, .amount = 3 },
+                .{ .index = 2, .validator_index = 3, .address = recipient, .amount = 4 },
+            };
+            _ = try computeWithdrawalsRoot(allocator, &items);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Harness.rawTransactions, .{});
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Harness.withdrawals, .{});
+}
+
+test "computeTransactionsRoot commits to the canonical envelope when the transaction carries one" {
+    const allocator = std.testing.allocator;
+    const typed_envelope = [_]u8{ 0x02, 0xc3, 0x01, 0x80, 0x80 };
+    const tx = primitives.Transaction.LegacyTransaction{
+        .nonce = 0,
+        .gas_price = 1,
+        .gas_limit = 21_000,
+        .to = null,
+        .value = 0,
+        .data = &.{},
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+    const caller = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
+
+    const with_raw = [_]tx_processor.ExecutionTx{.{ .caller = caller, .tx = tx, .receipt_type = .eip1559, .raw = &typed_envelope }};
+    const envelopes = [_]primitives.BlockBody.TransactionData{.{ .raw = &typed_envelope }};
+    const canonical = try computeRawTransactionsRoot(allocator, &envelopes);
+    try std.testing.expectEqualSlices(u8, &canonical, &(try computeTransactionsRoot(allocator, &with_raw)));
+
+    // Without canonical bytes the legacy re-encoding is the only option, and
+    // it commits to a different value.
+    const without_raw = [_]tx_processor.ExecutionTx{.{ .caller = caller, .tx = tx, .receipt_type = .eip1559 }};
+    try std.testing.expect(!std.mem.eql(u8, &canonical, &(try computeTransactionsRoot(allocator, &without_raw))));
+}
+
+test "headerRlpSize matches the canonical encoding and counts the Prague requests hash" {
+    const allocator = std.testing.allocator;
+    var header = testHeaders().child;
+    header.extra_data = "zevm";
+    header.withdrawals_root = primitives.BlockHeader.EMPTY_WITHDRAWALS_ROOT;
+    header.blob_gas_used = 131_072;
+    header.excess_blob_gas = 0;
+    header.parent_beacon_block_root = primitives.Hash.ZERO;
+
+    const cancun_encoded = try primitives.BlockHeader.rlpEncode(&header, allocator);
+    defer allocator.free(cancun_encoded);
+    try std.testing.expectEqual(cancun_encoded.len, headerRlpSize(&header, .cancun, null));
+
+    const requests_hash = [_]u8{0x5a} ** 32;
+    const prague_encoded = try encodeHeaderWithRequestsHash(allocator, &header, requests_hash);
+    defer allocator.free(prague_encoded);
+    try std.testing.expectEqual(prague_encoded.len, headerRlpSize(&header, .prague, requests_hash));
+    try std.testing.expectEqual(cancun_encoded.len + 33, prague_encoded.len);
+    try std.testing.expect(prague_encoded.len <= MAX_HEADER_RLP_SIZE);
+
+    // A block measured without the hash grows by the header difference, and
+    // by one more byte when the list prefix widens.
+    try std.testing.expectEqual(@as(usize, 1_000 + 33), blockRlpSizeWithRequestsHash(1_000, &header, .prague, requests_hash));
+    try std.testing.expectEqual(@as(usize, 65_537 + 33 + 1), blockRlpSizeWithRequestsHash(65_537, &header, .prague, requests_hash));
+    try std.testing.expectEqual(@as(usize, 1_000), blockRlpSizeWithRequestsHash(1_000, &header, .cancun, requests_hash));
+    try std.testing.expectEqual(@as(usize, 1_000), blockRlpSizeWithRequestsHash(1_000, &header, .prague, null));
+    header.requests_hash = requests_hash;
+    try std.testing.expectEqual(@as(usize, 1_000), blockRlpSizeWithRequestsHash(1_000, &header, .prague, requests_hash));
+}
+
+test "strict builds reject a transaction that exceeds the remaining block gas" {
+    const allocator = std.testing.allocator;
+    var sm = try state_manager.StateManager.init(allocator, null);
+    defer sm.deinit();
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+
+    const sender = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
+    const recipient = primitives.Address{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 19 };
+    try sm.setBalance(sender, 1_000_000);
+    try sm.setNonce(sender, 0);
+
+    var txs: [2]tx_processor.ExecutionTx = undefined;
+    for (&txs, 0..) |*item, nonce| {
+        item.* = .{ .caller = sender, .tx = .{
+            .nonce = nonce,
+            .gas_price = 1,
+            .gas_limit = 21_000,
+            .to = recipient,
+            .value = 0,
+            .data = &.{},
+            .v = 0,
+            .r = [_]u8{0} ** 32,
+            .s = [_]u8{0} ** 32,
+        } };
+    }
+    var block_ctx = systemCallBlockContext();
+    block_ctx.block_number = 1;
+    block_ctx.block_timestamp = 1000;
+    block_ctx.block_gas_limit = 30_000;
+
+    // A supplied list is the block: the second transaction cannot fit.
+    try std.testing.expectError(
+        error.InvalidIncludedTransaction,
+        buildBlockWithOptions(allocator, &sm, adapter.hostInterface(), &txs, block_ctx, .{}),
+    );
+    try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(sender));
+
+    // Candidate selection leaves it out instead.
+    var result = try buildBlockWithOptions(allocator, &sm, adapter.hostInterface(), &txs, block_ctx, .{
+        .skip_invalid_transactions = true,
+    });
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), result.receipts.len);
+    try std.testing.expectEqual(@as(usize, 0), result.execution_requests.len);
+    try std.testing.expectEqual(@as(?[32]u8, null), result.computed_requests_hash);
+}
+
+test "a missing EIP-7002 or EIP-7251 predeploy fails only when system contracts are required" {
+    const allocator = std.testing.allocator;
+    // mstore8(0, 0xaa); return(0, 1)
+    const one_byte = [_]u8{ 0x60, 0xaa, 0x60, 0x00, 0x53, 0x60, 0x01, 0x60, 0x00, 0xf3 };
+    const predeploys = [_]primitives.Address{ WITHDRAWAL_REQUESTS_ADDRESS, CONSOLIDATION_REQUESTS_ADDRESS };
+
+    // Each round deploys exactly one predeploy and leaves the other missing.
+    for (predeploys) |deployed| {
+        var sm = try state_manager.StateManager.init(allocator, null);
+        defer sm.deinit();
+        var adapter = host_adapter.HostAdapter{ .state = &sm };
+        try sm.setCode(deployed, &one_byte);
+
+        try std.testing.expectError(error.SystemContractMissingCode, collectPragueRequestsWithOptions(
+            allocator,
+            &sm,
+            adapter.hostInterface(),
+            systemCallBlockContext(),
+            .PRAGUE,
+            &.{},
+            .{ .require_system_contracts = true },
+        ));
+
+        // Dev chains: the missing predeploy is a no-op.
+        var relaxed = try collectPragueRequestsWithOptions(
+            allocator,
+            &sm,
+            adapter.hostInterface(),
+            systemCallBlockContext(),
+            .PRAGUE,
+            &.{},
+            .{},
+        );
+        defer relaxed.deinit(allocator);
+        const deployed_output = if (deployed.equals(WITHDRAWAL_REQUESTS_ADDRESS)) relaxed.withdrawals else relaxed.consolidations;
+        const missing_output = if (deployed.equals(WITHDRAWAL_REQUESTS_ADDRESS)) relaxed.consolidations else relaxed.withdrawals;
+        try std.testing.expectEqualSlices(u8, &.{0xaa}, deployed_output.?);
+        try std.testing.expect(missing_output == null);
+        try std.testing.expect(relaxed.deposits == null);
+
+        // The backward-compatible wrappers keep the no-op.
+        var wrapped = try collectPragueRequests(allocator, &sm, adapter.hostInterface(), systemCallBlockContext(), .PRAGUE, &.{});
+        defer wrapped.deinit(allocator);
+        var system_only = try collectPragueRequestsSystemCalls(allocator, &sm, adapter.hostInterface(), systemCallBlockContext(), .PRAGUE);
+        defer system_only.deinit(allocator);
+    }
+
+    // Both deployed: strict mode succeeds.
+    var sm = try state_manager.StateManager.init(allocator, null);
+    defer sm.deinit();
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    for (predeploys) |address| try sm.setCode(address, &one_byte);
+    var strict = try collectPragueRequestsWithOptions(
+        allocator,
+        &sm,
+        adapter.hostInterface(),
+        systemCallBlockContext(),
+        .PRAGUE,
+        &.{},
+        .{ .require_system_contracts = true },
+    );
+    defer strict.deinit(allocator);
+    try std.testing.expectEqualSlices(u8, &.{0xaa}, strict.withdrawals.?);
+    try std.testing.expectEqualSlices(u8, &.{0xaa}, strict.consolidations.?);
+}
+
+test "collectPragueRequestsWithOptions reads deposits from the configured contract" {
+    const allocator = std.testing.allocator;
+    var sm = try state_manager.StateManager.init(allocator, null);
+    defer sm.deinit();
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+
+    const custom = primitives.Address{ .bytes = [_]u8{0xde} ** 20 };
+    const deposit = testDepositEventData(0x10);
+    const topics = [_][32]u8{DEPOSIT_EVENT_TOPIC};
+    const logs = [_]primitives.EventLog.EventLog{testLog(custom, &topics, &deposit)};
+
+    var defaults = try collectPragueRequests(allocator, &sm, adapter.hostInterface(), systemCallBlockContext(), .PRAGUE, &logs);
+    defer defaults.deinit(allocator);
+    try std.testing.expect(defaults.deposits == null);
+
+    var configured = try collectPragueRequestsWithOptions(
+        allocator,
+        &sm,
+        adapter.hostInterface(),
+        systemCallBlockContext(),
+        .PRAGUE,
+        &logs,
+        .{ .deposit_contract_address = custom },
+    );
+    defer configured.deinit(allocator);
+    try std.testing.expectEqual(DEPOSIT_REQUEST_SIZE, configured.deposits.?.len);
+}
+
+test "the deposit contract address falls back from options to the chain config to mainnet" {
+    const from_options = primitives.Address{ .bytes = [_]u8{0x0a} ** 20 };
+    const from_config = primitives.Address{ .bytes = [_]u8{0x0b} ** 20 };
+    var config = hardfork_schedule.MAINNET_CHAIN_CONFIG;
+
+    try std.testing.expect((BuildBlockOptions{}).effectiveDepositContractAddress().equals(DEPOSIT_CONTRACT_ADDRESS));
+    try std.testing.expect((BuildBlockOptions{ .hardfork_config = config }).effectiveDepositContractAddress().equals(DEPOSIT_CONTRACT_ADDRESS));
+
+    config.deposit_contract_address = from_config;
+    try std.testing.expect((BuildBlockOptions{ .hardfork_config = config }).effectiveDepositContractAddress().equals(from_config));
+    try std.testing.expect((BuildBlockOptions{
+        .hardfork_config = config,
+        .deposit_contract_address = from_options,
+    }).effectiveDepositContractAddress().equals(from_options));
 }

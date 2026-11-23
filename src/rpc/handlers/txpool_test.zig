@@ -115,7 +115,7 @@ test "txpool_content groups pending and queued transactions by sender and decima
     try std.testing.expectEqual(.null, try field(pending_tx, "transactionIndex"));
 }
 
-test "txpool_content omits blob-pool-only transactions while status counts them" {
+test "txpool_content and txpool_inspect include EIP-4844 blob transactions" {
     var rt = try makeRuntime();
     defer rt.deinit();
 
@@ -135,7 +135,20 @@ test "txpool_content omits blob-pool-only transactions while status counts them"
         .max_fee_per_gas = 1_000_000_000,
         .max_fee_per_blob_gas = 1,
         .receipt_type = .eip4844,
+        .to = runtime.DEFAULT_DEV_ACCOUNTS[1],
+        .blob_versioned_hashes = &.{[_]u8{0x01} ++ [_]u8{0xab} ** 31},
         .hash = makeHash(0x22),
+    });
+    // A queued blob transaction lands in the queued section.
+    try rt.pool.add(std.testing.allocator, .{
+        .sender = sender,
+        .nonce = 3,
+        .gas_limit = 21_000,
+        .max_fee_per_gas = 1_000_000_000,
+        .max_fee_per_blob_gas = 1,
+        .receipt_type = .eip4844,
+        .to = runtime.DEFAULT_DEV_ACCOUNTS[1],
+        .hash = makeHash(0x33),
     });
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -144,15 +157,61 @@ test "txpool_content omits blob-pool-only transactions while status counts them"
     const status = try txpool.handleStatus(arena.allocator(), &rt, null);
     const status_obj = try expectObject(status);
     try std.testing.expectEqualStrings("0x2", (try field(status_obj, "pending")).string);
+    try std.testing.expectEqualStrings("0x1", (try field(status_obj, "queued")).string);
 
+    const account_key = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
     const content = try txpool.handleContent(arena.allocator(), &rt, null);
     const root = try expectObject(content);
-    const pending = try expectObject(try field(root, "pending"));
-    const account_key = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
-    const pending_account = try expectObject(try field(pending, account_key));
-
+    const pending_account = try expectObject(try field(try expectObject(try field(root, "pending")), account_key));
     _ = try field(pending_account, "0");
-    try std.testing.expect(pending_account.get("1") == null);
+    const blob_tx = try expectObject(try field(pending_account, "1"));
+    try std.testing.expectEqualStrings("0x3", (try field(blob_tx, "type")).string);
+    try std.testing.expectEqualStrings("0x1", (try field(blob_tx, "maxFeePerBlobGas")).string);
+    try std.testing.expectEqual(@as(usize, 1), (try field(blob_tx, "blobVersionedHashes")).array.items.len);
+
+    const queued_account = try expectObject(try field(try expectObject(try field(root, "queued")), account_key));
+    _ = try field(queued_account, "3");
+    try std.testing.expect(pending_account.get("3") == null);
+
+    const inspect = try txpool.handleInspect(arena.allocator(), &rt, null);
+    const inspect_root = try expectObject(inspect);
+    const inspect_pending = try expectObject(try field(try expectObject(try field(inspect_root, "pending")), account_key));
+    _ = try field(inspect_pending, "1");
+}
+
+test "txpool_content classifies a long nonce chain with a gap by per-sender boundary" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+
+    const sender = runtime.DEFAULT_DEV_ACCOUNTS[0];
+    try rt.pool.setNonce(sender, 0);
+    // Nonces 0..39 are pending; 41..49 sit behind the gap at 40 and are queued.
+    var nonce: u64 = 0;
+    while (nonce < 50) : (nonce += 1) {
+        if (nonce == 40) continue;
+        var hash = makeHash(0x44);
+        hash[31] = @intCast(nonce);
+        try rt.pool.add(std.testing.allocator, .{
+            .sender = sender,
+            .nonce = nonce,
+            .gas_limit = 21_000,
+            .max_fee_per_gas = 1_000_000_000,
+            .hash = hash,
+        });
+    }
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const account_key = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+    const content = try txpool.handleContent(arena.allocator(), &rt, null);
+    const root = try expectObject(content);
+    const pending_account = try expectObject(try field(try expectObject(try field(root, "pending")), account_key));
+    const queued_account = try expectObject(try field(try expectObject(try field(root, "queued")), account_key));
+    try std.testing.expectEqual(@as(usize, 40), pending_account.count());
+    try std.testing.expectEqual(@as(usize, 9), queued_account.count());
+    _ = try field(pending_account, "39");
+    _ = try field(queued_account, "41");
 }
 
 test "txpool_inspect returns geth-style summaries" {

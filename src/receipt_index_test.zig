@@ -315,10 +315,6 @@ test "receipt_index: deinit frees all memory" {
 }
 
 test "receipt_index: failed put leaves a previously indexed tx untouched (#53)" {
-    // Block A already indexes `shared`. Storing block B, which re-seals `shared`
-    // and adds `fresh`, must not disturb block A's entry when any allocation
-    // fails. The index maps and the clones share one failing allocator so
-    // hash-map growth failures are exercised too.
     var failing = testing.FailingAllocator.init(testing.allocator, .{});
     const allocator = failing.allocator();
     var idx = receipt_index.ReceiptIndex.init(allocator);
@@ -362,7 +358,6 @@ test "receipt_index: failed put leaves a previously indexed tx untouched (#53)" 
     try testing.expect(failures > 0);
     try testing.expectEqual(@as(u64, 2), idx.getByTxHash(shared).?.block_number);
     try testing.expectEqual(@as(u64, 2), idx.getByTxHash(fresh).?.block_number);
-    // Block A keeps its own receipt and logs after the tx is re-pointed at B.
     const a_receipts = idx.getByBlockHash(block_a).?;
     try testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3, 4 }, a_receipts[0].logs[0].data);
 }
@@ -407,9 +402,57 @@ test "receipt_index: removeBlockReceipts drops the block and its tx entries (#53
     try idx.putBlockReceipts(allocator, block_b, &[_]primitives.Receipt.Receipt{rb});
 
     idx.removeBlockReceipts(allocator, block_b);
-    idx.removeBlockReceipts(allocator, block_b); // absent block is a no-op
+    idx.removeBlockReceipts(allocator, block_b);
 
     try testing.expect(idx.getByBlockHash(block_b) == null);
     try testing.expect(idx.getByTxHash(tx_b) == null);
     try testing.expectEqual(@as(u64, 1), idx.getByTxHash(tx_a).?.block_number);
+}
+
+test "receipt_index: duplicate tx hash across blocks survives a reorg without use-after-free" {
+    const allocator = testing.allocator;
+    var idx = receipt_index.ReceiptIndex.init(allocator);
+    defer idx.deinit(allocator);
+
+    var tx_hash: [32]u8 = undefined;
+    @memset(&tx_hash, 0x42);
+    var other_tx: [32]u8 = undefined;
+    @memset(&other_tx, 0x43);
+    var block_a: [32]u8 = undefined;
+    @memset(&block_a, 0xaa);
+    var block_b: [32]u8 = undefined;
+    @memset(&block_b, 0xbb);
+
+    var ra = try makeReceiptWithLog(allocator, tx_hash, block_a, 1);
+    defer ra.deinit(allocator);
+    var rb = try makeReceiptWithLog(allocator, tx_hash, block_b, 2);
+    defer rb.deinit(allocator);
+    var rc = try makeReceiptWithLog(allocator, other_tx, block_a, 1);
+    defer rc.deinit(allocator);
+
+    try idx.putBlockReceipts(allocator, block_a, &[_]primitives.Receipt.Receipt{ra});
+    try idx.putBlockReceipts(allocator, block_b, &[_]primitives.Receipt.Receipt{rb});
+
+    const a_receipts = idx.getByBlockHash(block_a).?;
+    try testing.expectEqual(@as(usize, 1), a_receipts.len);
+    try testing.expectEqual(@as(usize, 1), a_receipts[0].logs.len);
+    try testing.expectEqualSlices(u8, ra.logs[0].data, a_receipts[0].logs[0].data);
+    try testing.expectEqual(@as(u64, 2), idx.getByTxHash(tx_hash).?.block_number);
+    try testing.expect(std.mem.eql(u8, &idx.locateByTxHash(tx_hash).?.block_hash, &block_b));
+
+    try idx.putBlockReceipts(allocator, block_a, &[_]primitives.Receipt.Receipt{rc});
+    const found = idx.getByTxHash(tx_hash).?;
+    try testing.expectEqual(@as(u64, 2), found.block_number);
+    try testing.expectEqual(@as(usize, 1), found.logs.len);
+    try testing.expectEqualSlices(u8, rb.logs[0].data, found.logs[0].data);
+    try testing.expectEqual(@as(u64, 1), idx.getByTxHash(other_tx).?.block_number);
+
+    try idx.putBlockReceipts(allocator, block_b, &[_]primitives.Receipt.Receipt{});
+    try testing.expect(idx.getByTxHash(tx_hash) == null);
+    try testing.expectEqual(@as(usize, 0), idx.getByBlockHash(block_b).?.len);
+
+    var cloned = try idx.clone(allocator);
+    defer cloned.deinit(allocator);
+    try testing.expectEqual(@as(u64, 1), cloned.getByTxHash(other_tx).?.block_number);
+    try testing.expect(cloned.getByTxHash(tx_hash) == null);
 }

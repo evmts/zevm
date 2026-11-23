@@ -36,7 +36,7 @@ pub const Cache = struct {
         var root_it = root.iterate();
         while (try root_it.next()) |entry| {
             if (entry.kind != .directory) continue;
-            try method_dirs.append(allocator, try allocator.dupe(u8, entry.name));
+            try appendOwnedName(allocator, &method_dirs, entry.name);
         }
         std.mem.sort([]u8, method_dirs.items, {}, lessThanBytes);
 
@@ -53,7 +53,7 @@ pub const Cache = struct {
             var sub_it = subdir.iterate();
             while (try sub_it.next()) |entry| {
                 if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".io")) continue;
-                try file_names.append(allocator, try allocator.dupe(u8, entry.name));
+                try appendOwnedName(allocator, &file_names, entry.name);
             }
             std.mem.sort([]u8, file_names.items, {}, lessThanBytes);
 
@@ -105,11 +105,9 @@ pub const Cache = struct {
         while (lines.next()) |line_raw| {
             const line = std.mem.trimRight(u8, line_raw, "\r");
             if (std.mem.startsWith(u8, line, ">> ")) {
-                if (pending_request) |request_json| {
-                    pending_request = null;
-                    allocator.free(request_json);
-                }
-                pending_request = try allocator.dupe(u8, line[3..]);
+                const next_request = try allocator.dupe(u8, line[3..]);
+                if (pending_request) |request_json| allocator.free(request_json);
+                pending_request = next_request;
             } else if (std.mem.startsWith(u8, line, "<< ")) {
                 var request_json = pending_request orelse return error.InvalidExecutionFixtureRpc;
                 pending_request = null;
@@ -346,8 +344,10 @@ fn cloneJsonValue(allocator: std.mem.Allocator, value: std.json.Value) !std.json
                 var out_value = std.json.Value{ .array = out };
                 deinitJsonValue(allocator, &out_value);
             }
+            try out.ensureTotalCapacityPrecise(arr.items.len);
             for (arr.items) |item| {
-                try out.append(try cloneJsonValue(allocator, item));
+                // Capacity is reserved, so the clone cannot leak on append failure.
+                out.appendAssumeCapacity(try cloneJsonValue(allocator, item));
             }
             break :blk .{ .array = out };
         },
@@ -390,6 +390,78 @@ fn deinitJsonValue(allocator: std.mem.Allocator, value: *std.json.Value) void {
     }
 }
 
+/// Duplicates `name` and appends it; frees the copy if the append fails.
+fn appendOwnedName(allocator: std.mem.Allocator, names: *std.ArrayList([]u8), name: []const u8) !void {
+    const owned = try allocator.dupe(u8, name);
+    errdefer allocator.free(owned);
+    try names.append(allocator, owned);
+}
+
 fn lessThanBytes(_: void, lhs: []const u8, rhs: []const u8) bool {
     return std.mem.lessThan(u8, lhs, rhs);
+}
+
+fn writeFixture(dir: std.fs.Dir, sub_path: []const u8, data: []const u8) !void {
+    if (std.fs.path.dirname(sub_path)) |parent| try dir.makePath(parent);
+    try dir.writeFile(.{ .sub_path = sub_path, .data = data });
+}
+
+fn loadFixtureTree(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir) !?Cache {
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    return Cache.loadFromTestsDir(allocator, root);
+}
+
+test "fixture cache loading frees every allocation under OOM" {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try writeFixture(tmp.dir, "eth_getBalance/a.io",
+        \\>> {"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x01","latest"]}
+        \\<< {"jsonrpc":"2.0","id":1,"result":{"list":[1,"two",[3,{"k":"v"}]]}}
+        \\>> {"jsonrpc":"2.0","id":2,"method":"eth_getBalance","params":["0x02","latest"]}
+        \\<< {"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"boom","data":"0xdead"}}
+        \\
+    );
+    try writeFixture(tmp.dir, "eth_call/b.io",
+        \\>> {"jsonrpc":"2.0","id":3,"method":"eth_call","params":[]}
+        \\>> {"jsonrpc":"2.0","id":4,"method":"eth_call","params":[{"to":"0x02"}]}
+        \\<< {"jsonrpc":"2.0","id":4,"result":"0x"}
+        \\
+    );
+
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn run(allocator: std.mem.Allocator, tmp_dir: *std.testing.TmpDir) !void {
+            var cache = (try loadFixtureTree(allocator, tmp_dir)) orelse return error.ExpectedCache;
+            defer cache.deinit(allocator);
+            try std.testing.expectEqual(@as(usize, 3), cache.entries.items.len);
+        }
+    }.run, .{&tmp});
+}
+
+test "fixture response clone frees partial arrays under OOM" {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try writeFixture(tmp.dir, "eth_getBalance/a.io",
+        \\>> {"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x01","latest"]}
+        \\<< {"jsonrpc":"2.0","id":1,"result":[1,"two",[3,{"k":"v"}],{"x":["y","z"]}]}
+        \\
+    );
+    var cache = (try loadFixtureTree(std.testing.allocator, &tmp)) orelse return error.ExpectedCache;
+    defer cache.deinit(std.testing.allocator);
+
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn run(allocator: std.mem.Allocator, fixture_cache: *const Cache) !void {
+            const params_json = "[\"0x01\",\"latest\"]";
+            var params = try std.json.parseFromSlice(std.json.Value, allocator, params_json, .{});
+            defer params.deinit();
+            var response = (try fixture_cache.matchResponse(allocator, .{
+                .jsonrpc = "2.0",
+                .id = .{ .integer = 1 },
+                .method = "eth_getBalance",
+                .params = params.value,
+            })) orelse return error.ExpectedMatch;
+            if (response.result) |*result| deinitJsonValue(allocator, result);
+            response.result = null;
+        }
+    }.run, .{&cache});
 }

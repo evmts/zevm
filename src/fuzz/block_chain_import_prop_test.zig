@@ -732,6 +732,7 @@ test "property: buildBlock output passes validateBlock across Cancun, Prague, Os
                     .withdrawals = &.{},
                     .parent_beacon_block_root = beacon_root,
                     .parent_hash = parent_hash,
+                    .skip_invalid_transactions = true,
                 },
             );
             defer result.deinit(allocator);
@@ -1371,6 +1372,7 @@ test "property: MiningCoordinator keeps numbers, timestamps and EIP-7918/7892 ex
         var result = try mc.mineBlockWithOptions(allocator, &sm, adapter.hostInterface(), .{
             .prevrandao = random.int(u256),
             .parent_hash = parent_hash,
+            .skip_invalid_transactions = true,
         });
         defer result.deinit(allocator);
 

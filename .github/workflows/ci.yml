@@ -80,6 +80,45 @@ jobs:
         working-directory: zevm
         run: zig build transaction-tests
 
+      - name: Build the pinned Lean 4 reference spec
+        uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: zevm/spec/lean
+          auto-config: "false"
+          build: "true"
+          build-args: "--wfail ZevmSpec zevm-spec"
+          use-mathlib-cache: "false"
+          use-github-cache: "false"
+
+      - name: Check the Lean reference spec for sorry and axiom declarations
+        working-directory: zevm/spec/lean
+        run: |
+          audit_dir="$(mktemp -d "$RUNNER_TEMP/zevm-lean.XXXXXXXX")"
+          cat > "$audit_dir/Audit.lean" <<'LEAN'
+          import Lean
+          import ZevmSpec
+
+          open Lean Elab Command
+
+          run_cmd do
+            let env ← getEnv
+            for (name, info) in env.constants do
+              let some idx := env.getModuleIdxFor? name | continue
+              unless (`ZevmSpec).isPrefixOf env.header.moduleNames[idx.toNat]! do continue
+              if let .axiomInfo _ := info then
+                throwError "reference spec declares axiom {name}"
+              if info.type.hasSorry || (info.value? (allowOpaque := true)).any Expr.hasSorry then
+                throwError "reference spec declaration {name} uses sorry"
+          LEAN
+          lake env lean "$audit_dir/Audit.lean"
+
+      - name: Differential fuzzing against the Lean spec
+        working-directory: zevm
+        run: |
+          # Local setup with Lean installed: (cd spec/lean && lake build --wfail ZevmSpec zevm-spec)
+          zig build diff-fuzz-lean -Doptimize=ReleaseSafe -- \
+            --lean-bin spec/lean/.lake/build/bin/zevm-spec --cases 128
+
       - name: C ABI smoke
         working-directory: zevm
         run: zig build c-smoke
@@ -115,7 +154,13 @@ jobs:
           test -s zig-out/release/ci/release-tuple.json
           test -s zig-out/release/ci/light-default-checkpoints.json
           test "$(jq -r '.zevmGitRevision' zig-out/release/ci/release-tuple.json)" = "$(git rev-parse HEAD)"
+          test "$(jq -r '.voltaireGitRevision' zig-out/release/ci/release-tuple.json)" = "$(jq -r '.voltaire.revision' native-dependencies.json)"
+          test "$(jq -r '.guillotineMiniGitRevision' zig-out/release/ci/release-tuple.json)" = "$(jq -r '."guillotine-mini".revision' native-dependencies.json)"
           test "$(jq -r '.zigVersion' zig-out/release/ci/release-tuple.json)" = "$ZIG_VERSION"
+          EXPECTED_HOODI="0x$(sed -n 's/^pub const hoodi_hex = "\(.*\)";$/\1/p' src/light_default_checkpoints.zig)"
+          jq -e --arg expected "$EXPECTED_HOODI" '
+            .defaults.hoodi | test("^0x[0-9a-fA-F]{64}$") and . == $expected
+          ' zig-out/release/ci/light-default-checkpoints.json > /dev/null
 
       - name: Dirty worktree preflight
         working-directory: zevm
@@ -376,23 +421,27 @@ jobs:
           EXPECTED_MAINNET="0x$(sed -n 's/^pub const mainnet_hex = "\(.*\)";$/\1/p' src/light_default_checkpoints.zig)"
           EXPECTED_SEPOLIA="0x$(sed -n 's/^pub const sepolia_hex = "\(.*\)";$/\1/p' src/light_default_checkpoints.zig)"
           EXPECTED_HOLESKY="0x$(sed -n 's/^pub const holesky_hex = "\(.*\)";$/\1/p' src/light_default_checkpoints.zig)"
+          EXPECTED_HOODI="0x$(sed -n 's/^pub const hoodi_hex = "\(.*\)";$/\1/p' src/light_default_checkpoints.zig)"
           jq -e \
             --arg rid "$RELEASE_IDENTIFIER" \
             --arg expected_mainnet "$EXPECTED_MAINNET" \
             --arg expected_sepolia "$EXPECTED_SEPOLIA" \
-            --arg expected_holesky "$EXPECTED_HOLESKY" '
+            --arg expected_holesky "$EXPECTED_HOLESKY" \
+            --arg expected_hoodi "$EXPECTED_HOODI" '
             (type == "object")
             and ((keys | sort) == ["defaults", "releaseIdentifier", "schemaVersion"])
             and (.schemaVersion == "zevm-light-default-checkpoints.v1")
             and (.releaseIdentifier == $rid)
             and (.defaults | type == "object")
-            and ((.defaults | keys | sort) == ["holesky", "mainnet", "sepolia"])
+            and ((.defaults | keys | sort) == ["holesky", "hoodi", "mainnet", "sepolia"])
             and (.defaults.mainnet | test("^0x[0-9a-fA-F]{64}$"))
             and (.defaults.sepolia | test("^0x[0-9a-fA-F]{64}$"))
             and (.defaults.holesky | test("^0x[0-9a-fA-F]{64}$"))
+            and (.defaults.hoodi | test("^0x[0-9a-fA-F]{64}$"))
             and (.defaults.mainnet == $expected_mainnet)
             and (.defaults.sepolia == $expected_sepolia)
             and (.defaults.holesky == $expected_holesky)
+            and (.defaults.hoodi == $expected_hoodi)
           ' "$ARTIFACT_DIR/light-default-checkpoints.json" > /dev/null
 
       - name: Extract release tuple pins

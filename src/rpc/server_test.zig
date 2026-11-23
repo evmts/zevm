@@ -763,6 +763,23 @@ test "request telemetry formatting records outcome without params" {
     try std.testing.expect(std.mem.indexOf(u8, message, "params") == null);
 }
 
+test "request telemetry rejects invalid and oversized method names" {
+    const allocator = std.testing.allocator;
+    for ([_][]const u8{ "eth_bad\nstatus=success", "eth_bad-method", "a" ** 65 }) |method| {
+        const message = try server.formatRequestTelemetryForTest(allocator, .{
+            .method = method,
+            .id_present = false,
+            .batch_size = 1,
+            .status = "error",
+            .error_code = null,
+            .duration_ns = 0,
+            .mode = "trusted",
+        });
+        defer allocator.free(message);
+        try std.testing.expect(std.mem.startsWith(u8, message, "rpc_request method=<invalid> id_present="));
+    }
+}
+
 test "single notification returns 204 empty response" {
     const handlers = dispatcher.HandlerRegistry{
         .on_method = &successHandler,
@@ -848,4 +865,516 @@ test "id null is not treated as a notification" {
     defer parsed.deinit();
 
     try std.testing.expect((try getObjectField(parsed.value, "id")) == .null);
+}
+
+// ---------------------------------------------------------------------------
+// Round 1 transport hardening regressions.
+// ---------------------------------------------------------------------------
+
+var engine_handler_calls = std.atomic.Value(usize).init(0);
+
+fn engineAwareHandler(allocator: std.mem.Allocator, method_name: []const u8, params: ?std.json.Value) anyerror!std.json.Value {
+    _ = allocator;
+    _ = params;
+    if (std.mem.startsWith(u8, method_name, "engine_")) {
+        _ = engine_handler_calls.fetchAdd(1, .seq_cst);
+        return .{ .integer = 99 };
+    }
+    if (std.mem.eql(u8, method_name, "eth_blockNumber")) return .{ .integer = 7 };
+    return error.UnexpectedMethod;
+}
+
+fn expectErrorCode(body: []const u8, expected: i32) !void {
+    const parsed = try parseJson(body);
+    defer parsed.deinit();
+    const error_object = try getObjectField(parsed.value, "error");
+    try std.testing.expectEqual(@as(i64, expected), (try getObjectField(error_object, "code")).integer);
+}
+
+fn nestedParamsRequest(allocator: std.mem.Allocator, depth: usize) ![]u8 {
+    var out = std.Io.Writer.Allocating.init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_blockNumber\",\"params\":");
+    for (0..depth) |_| try out.writer.writeByte('[');
+    for (0..depth) |_| try out.writer.writeByte(']');
+    try out.writer.writeByte('}');
+    return out.toOwnedSlice();
+}
+
+fn batchRequest(allocator: std.mem.Allocator, count: usize) ![]u8 {
+    var out = std.Io.Writer.Allocating.init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeByte('[');
+    for (0..count) |index| {
+        if (index != 0) try out.writer.writeByte(',');
+        try out.writer.print("{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"eth_blockNumber\"}}", .{index});
+    }
+    try out.writer.writeByte(']');
+    return out.toOwnedSlice();
+}
+
+/// Writes `bytes`, then reads until the server closes the connection.
+fn rawExchange(allocator: std.mem.Allocator, address: std.net.Address, bytes: []const u8) ![]u8 {
+    const stream = try std.net.tcpConnectToAddress(address);
+    defer stream.close();
+    try stream.writeAll(bytes);
+
+    var response = std.ArrayList(u8).empty;
+    errdefer response.deinit(allocator);
+    var buffer: [4096]u8 = undefined;
+    while (true) {
+        const read_count = stream.read(&buffer) catch |err| switch (err) {
+            error.ConnectionResetByPeer => break,
+            else => return err,
+        };
+        if (read_count == 0) break;
+        try response.appendSlice(allocator, buffer[0..read_count]);
+    }
+    return response.toOwnedSlice(allocator);
+}
+
+test "JSON nesting deeper than max_json_depth returns -32600 before parsing" {
+    const handlers = dispatcher.HandlerRegistry{ .on_method = &successHandler };
+
+    // The envelope object is depth 1, so params nesting of 63 reaches depth 64.
+    const at_limit = try nestedParamsRequest(std.testing.allocator, server.DEFAULT_MAX_JSON_DEPTH - 1);
+    defer std.testing.allocator.free(at_limit);
+    const accepted = (try server.handlePost(std.testing.allocator, at_limit, &handlers)).?;
+    defer std.testing.allocator.free(accepted);
+    const accepted_parsed = try parseJson(accepted);
+    defer accepted_parsed.deinit();
+    try std.testing.expect(accepted_parsed.value.object.get("error") == null or
+        (try getObjectField(try getObjectField(accepted_parsed.value, "error"), "code")).integer != jsonrpc.envelope.ErrorCode.INVALID_REQUEST);
+
+    const too_deep = try nestedParamsRequest(std.testing.allocator, server.DEFAULT_MAX_JSON_DEPTH);
+    defer std.testing.allocator.free(too_deep);
+    const rejected = (try server.handlePost(std.testing.allocator, too_deep, &handlers)).?;
+    defer std.testing.allocator.free(rejected);
+    try expectErrorCode(rejected, jsonrpc.envelope.ErrorCode.INVALID_REQUEST);
+
+    // A nesting bomb far beyond std.json.Stringify's 256-level limit must not panic.
+    const bomb = try nestedParamsRequest(std.testing.allocator, 100_000);
+    defer std.testing.allocator.free(bomb);
+    const bomb_response = (try server.handlePost(std.testing.allocator, bomb, &handlers)).?;
+    defer std.testing.allocator.free(bomb_response);
+    try expectErrorCode(bomb_response, jsonrpc.envelope.ErrorCode.INVALID_REQUEST);
+}
+
+test "JSON value cap rejects a shallow request above the limit" {
+    const handlers = dispatcher.HandlerRegistry{ .on_method = &successHandler };
+    const body =
+        \\{"jsonrpc":"2.0","method":"eth_blockNumber","id":1,"params":[[100,-2,3e4,0,0,0,0,0,0]]}
+    ;
+    const allocator = std.testing.allocator;
+    var response = try server.handleHttpRequestForTestWithOptions(allocator, .{
+        .method = .POST,
+        .body = body,
+        .options = .{ .max_json_values = 15 },
+    }, &handlers);
+    defer response.deinit(allocator);
+
+    const parsed = try parseJson(response.body.?);
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value.object.get("result") != null);
+
+    var rejected = try server.handleHttpRequestForTestWithOptions(allocator, .{
+        .method = .POST,
+        .body = body,
+        .options = .{ .max_json_values = 14 },
+    }, &handlers);
+    defer rejected.deinit(allocator);
+    try expectErrorCode(rejected.body.?, jsonrpc.envelope.ErrorCode.INVALID_REQUEST);
+    const rejected_parsed = try parseJson(rejected.body.?);
+    defer rejected_parsed.deinit();
+    try std.testing.expect((try getObjectField(rejected_parsed.value, "id")) == .null);
+}
+
+test "dev method policy rejects each dev namespace before dispatch" {
+    const allocator = std.testing.allocator;
+    const handlers = dispatcher.HandlerRegistry{ .on_method = &struct {
+        fn handle(_: std.mem.Allocator, _: []const u8, _: ?std.json.Value) anyerror!std.json.Value {
+            return .{ .bool = true };
+        }
+    }.handle };
+    for ([_][]const u8{ "anvil_mine", "evm_mine", "hardhat_reset", "zevm_mine", "testing_buildBlockV1" }) |method| {
+        const body = try std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"method\":\"{s}\",\"id\":1,\"params\":[]}}", .{method});
+        defer allocator.free(body);
+
+        const accepted = (try server.handlePost(allocator, body, &handlers)).?;
+        defer allocator.free(accepted);
+        const parsed = try parseJson(accepted);
+        defer parsed.deinit();
+        try std.testing.expect(parsed.value.object.get("result") != null);
+
+        const response = (try server.handlePostWithPolicy(allocator, body, &handlers, .{
+            .allow_dev_methods = false,
+        })).?;
+        defer allocator.free(response);
+        try expectErrorCode(response, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND);
+    }
+
+    // Read-only light-mode health status stays reachable even when dev mutators are off.
+    const light_status = (try server.handlePostWithPolicy(
+        allocator,
+        "{\"jsonrpc\":\"2.0\",\"method\":\"zevm_lightSyncStatus\",\"id\":1,\"params\":[]}",
+        &handlers,
+        .{ .allow_dev_methods = false },
+    )).?;
+    defer allocator.free(light_status);
+    const parsed_status = try parseJson(light_status);
+    defer parsed_status.deinit();
+    try std.testing.expect(parsed_status.value.object.get("result") != null);
+}
+
+test "JSON depth scan ignores brackets inside strings and escaped quotes" {
+    const shape = server.scanJsonShape("{\"a\":\"[[[[\\\"{{{{\",\"b\":[1,2]}", 64);
+    try std.testing.expectEqual(@as(usize, 2), shape.max_depth);
+    try std.testing.expect(shape.top_level_array_len == null);
+
+    const batch_shape = server.scanJsonShape("[ {\"x\":\",\"}, {} ,{}]", 64);
+    try std.testing.expectEqual(@as(?usize, 3), batch_shape.top_level_array_len);
+    try std.testing.expectEqual(@as(?usize, 0), server.scanJsonShape("[ ]", 64).top_level_array_len);
+}
+
+test "batch larger than max_batch_size returns a single -32600 error" {
+    const handlers = dispatcher.HandlerRegistry{ .on_method = &successHandler };
+
+    const at_limit = try batchRequest(std.testing.allocator, server.DEFAULT_MAX_BATCH_SIZE);
+    defer std.testing.allocator.free(at_limit);
+    const accepted = (try server.handlePost(std.testing.allocator, at_limit, &handlers)).?;
+    defer std.testing.allocator.free(accepted);
+    const accepted_parsed = try parseJson(accepted);
+    defer accepted_parsed.deinit();
+    try std.testing.expectEqual(server.DEFAULT_MAX_BATCH_SIZE, accepted_parsed.value.array.items.len);
+
+    const too_many = try batchRequest(std.testing.allocator, server.DEFAULT_MAX_BATCH_SIZE + 1);
+    defer std.testing.allocator.free(too_many);
+    const rejected = (try server.handlePost(std.testing.allocator, too_many, &handlers)).?;
+    defer std.testing.allocator.free(rejected);
+    try expectErrorCode(rejected, jsonrpc.envelope.ErrorCode.INVALID_REQUEST);
+}
+
+test "public listener options reject engine_* with -32601 without calling the handler" {
+    const handlers = dispatcher.HandlerRegistry{ .on_method = &engineAwareHandler };
+    const calls_before = engine_handler_calls.load(.seq_cst);
+
+    var response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"engine_exchangeCapabilities\",\"params\":[[]]}",
+        &handlers,
+    );
+    defer response.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, response.status);
+    try expectErrorCode(response.body.?, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND);
+
+    var batch_response = try server.handleHttpRequestForTest(
+        std.testing.allocator,
+        .POST,
+        "[{\"jsonrpc\":\"2.0\",\"method\":\"engine_forkchoiceUpdatedV3\",\"params\":[]},{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"engine_getPayloadV4\",\"params\":[\"0x01\"]}]",
+        &handlers,
+    );
+    defer batch_response.deinit(std.testing.allocator);
+    const parsed = try parseJson(batch_response.body.?);
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.array.items.len);
+    const error_object = try getObjectField(parsed.value.array.items[0], "error");
+    try std.testing.expectEqual(@as(i64, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND), (try getObjectField(error_object, "code")).integer);
+
+    try std.testing.expectEqual(calls_before, engine_handler_calls.load(.seq_cst));
+
+    // Engine listener options reach the handler.
+    var engine_response = try server.handleHttpRequestForTestWithOptions(std.testing.allocator, .{
+        .method = .POST,
+        .body = "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"engine_exchangeCapabilities\",\"params\":[[]]}",
+        .options = .{ .allow_engine_methods = true },
+    }, &handlers);
+    defer engine_response.deinit(std.testing.allocator);
+    const engine_parsed = try parseJson(engine_response.body.?);
+    defer engine_parsed.deinit();
+    try std.testing.expectEqual(@as(i64, 99), (try getObjectField(engine_parsed.value, "result")).integer);
+    try std.testing.expectEqual(calls_before + 1, engine_handler_calls.load(.seq_cst));
+}
+
+test "public TCP listener rejects engine_* with -32601" {
+    const handlers = dispatcher.HandlerRegistry{ .on_method = &engineAwareHandler };
+    const calls_before = engine_handler_calls.load(.seq_cst);
+
+    var listener = try server.TestListener.init(std.testing.allocator, "127.0.0.1", &handlers);
+    defer listener.deinit();
+    try listener.start();
+
+    const body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"engine_newPayloadV4\",\"params\":[]}";
+    const request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}",
+        .{ body.len, body },
+    );
+    defer std.testing.allocator.free(request);
+
+    const raw = try rawExchange(std.testing.allocator, listener.address(), request);
+    defer std.testing.allocator.free(raw);
+    const header_end = std.mem.indexOf(u8, raw, "\r\n\r\n") orelse return error.MissingResponseHead;
+    try std.testing.expect(std.mem.startsWith(u8, raw, "HTTP/1.1 200"));
+    try expectErrorCode(raw[header_end + 4 ..], jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND);
+    try std.testing.expectEqual(calls_before, engine_handler_calls.load(.seq_cst));
+}
+
+test "engine listener requires a 32-byte JWT secret" {
+    try std.testing.expectError(
+        error.EngineJwtSecretRequired,
+        server.validateEngineAuthForTest(.{ .allow_engine_methods = true }),
+    );
+    try std.testing.expectError(
+        error.InsecureEngineJwtSecret,
+        server.validateEngineAuthForTest(.{ .allow_engine_methods = true, .jwt_secret = "short" }),
+    );
+
+    var secret: [server.ENGINE_JWT_SECRET_BYTES]u8 = undefined;
+    std.crypto.random.bytes(&secret);
+    try server.validateEngineAuthForTest(.{ .allow_engine_methods = true, .jwt_secret = &secret });
+    try server.validateEngineAuthForTest(.{});
+
+    const handlers = dispatcher.HandlerRegistry{};
+    try std.testing.expectError(
+        error.EngineJwtSecretRequired,
+        server.TestListener.initWithLimits(std.testing.allocator, "127.0.0.1", &handlers, .{ .allow_engine_methods = true }),
+    );
+}
+
+test "JWT iat at i64 extremes does not overflow drift arithmetic" {
+    const secret = server.DEFAULT_ENGINE_JWT_SECRET;
+    for ([_]i64{ std.math.minInt(i64), std.math.maxInt(i64) }) |iat| {
+        const token = try makeJwt(std.testing.allocator, secret, iat);
+        defer std.testing.allocator.free(token);
+        const authorization = try std.fmt.allocPrint(std.testing.allocator, "Bearer {s}", .{token});
+        defer std.testing.allocator.free(authorization);
+
+        for ([_]i64{ std.math.maxInt(i64), std.math.minInt(i64), 1_700_000_000 }) |now| {
+            try std.testing.expectEqual(iat == now, try server.validateJwtAuthorizationForTest(
+                std.testing.allocator,
+                authorization,
+                secret,
+                now,
+                server.DEFAULT_ENGINE_JWT_MAX_TIME_DRIFT_SECONDS,
+            ));
+        }
+    }
+}
+
+test "JWT float iat rejects fractional and out-of-range values" {
+    try std.testing.expectEqual(@as(?i64, 1_700_000_000), server.floatIatToSecondsForTest(1_700_000_000.0));
+    try std.testing.expectEqual(@as(?i64, std.math.minInt(i64)), server.floatIatToSecondsForTest(-9223372036854775808.0));
+    try std.testing.expect(server.floatIatToSecondsForTest(9223372036854775808.0) == null);
+    try std.testing.expect(server.floatIatToSecondsForTest(1.5) == null);
+    try std.testing.expect(server.floatIatToSecondsForTest(std.math.inf(f64)) == null);
+    try std.testing.expect(server.floatIatToSecondsForTest(std.math.nan(f64)) == null);
+}
+
+test "early HTTP error closes keep-alive connection instead of parsing the unread body" {
+    const handlers = dispatcher.HandlerRegistry{ .on_method = &successHandler };
+    var listener = try server.TestListener.initWithLimits(std.testing.allocator, "127.0.0.1", &handlers, .{
+        .read_timeout_ms = 2_000,
+    });
+    defer listener.deinit();
+    try listener.start();
+
+    // The body is a smuggled second request. A keep-alive server that skipped
+    // draining would answer it as a second response.
+    const smuggled = "POST / HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 51\r\n\r\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_blockNumber\"}";
+    const request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "POST /not-root HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}",
+        .{ smuggled.len, smuggled },
+    );
+    defer std.testing.allocator.free(request);
+
+    const raw = try rawExchange(std.testing.allocator, listener.address(), request);
+    defer std.testing.allocator.free(raw);
+
+    try std.testing.expect(std.mem.startsWith(u8, raw, "HTTP/1.1 404"));
+    try std.testing.expect(std.ascii.indexOfIgnoreCase(raw, "connection: close") != null);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, raw, "HTTP/1.1 "));
+}
+
+test "CORS preflight returns 204 with allow headers" {
+    const handlers = dispatcher.HandlerRegistry{};
+    var listener = try server.TestListener.initWithLimits(std.testing.allocator, "127.0.0.1", &handlers, .{ .cors_allow_origin = "*" });
+    defer listener.deinit();
+    try listener.start();
+
+    const raw = try rawExchange(
+        std.testing.allocator,
+        listener.address(),
+        "OPTIONS / HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://example.test\r\nAccess-Control-Request-Method: POST\r\n\r\n",
+    );
+    defer std.testing.allocator.free(raw);
+    try std.testing.expect(std.mem.startsWith(u8, raw, "HTTP/1.1 204"));
+    try std.testing.expect(std.ascii.indexOfIgnoreCase(raw, "access-control-allow-origin: *") != null);
+    try std.testing.expect(std.ascii.indexOfIgnoreCase(raw, "access-control-allow-methods: POST, OPTIONS") != null);
+}
+
+test "listen address accepts localhost and wildcard binds unblock via loopback" {
+    const localhost = try server.parseListenAddress("localhost", 8545);
+    try std.testing.expect(localhost.eql(std.net.Address.initIp4(.{ 127, 0, 0, 1 }, 8545)));
+
+    const wildcard4 = try std.net.Address.parseIp("0.0.0.0", 9000);
+    try std.testing.expect(server.connectableAddress(wildcard4).eql(std.net.Address.initIp4(.{ 127, 0, 0, 1 }, 9000)));
+
+    const wildcard6 = try std.net.Address.parseIp("::", 9001);
+    const loopback6 = try std.net.Address.parseIp("::1", 9001);
+    try std.testing.expect(server.connectableAddress(wildcard6).eql(loopback6));
+
+    const specific = try std.net.Address.parseIp("127.0.0.2", 9002);
+    try std.testing.expect(server.connectableAddress(specific).eql(specific));
+}
+
+test "accept backoff grows and caps" {
+    var backoff: u64 = 0;
+    backoff = server.nextAcceptBackoffForTest(backoff);
+    try std.testing.expectEqual(@as(u64, 5 * std.time.ns_per_ms), backoff);
+    backoff = server.nextAcceptBackoffForTest(backoff);
+    try std.testing.expectEqual(@as(u64, 10 * std.time.ns_per_ms), backoff);
+    for (0..20) |_| backoff = server.nextAcceptBackoffForTest(backoff);
+    try std.testing.expectEqual(@as(u64, 500 * std.time.ns_per_ms), backoff);
+}
+
+// ---------------------------------------------------------------------------
+// Round 3 HTTP hardening tests.
+// ---------------------------------------------------------------------------
+
+test "Host header validation accepts loopback and rejects foreign hosts" {
+    try std.testing.expect(server.isAllowedHostHeaderForTest("localhost", "127.0.0.1"));
+    try std.testing.expect(server.isAllowedHostHeaderForTest("localhost:8545", "127.0.0.1"));
+    try std.testing.expect(server.isAllowedHostHeaderForTest("127.0.0.1", "127.0.0.1"));
+    try std.testing.expect(server.isAllowedHostHeaderForTest("127.0.0.1:8545", "127.0.0.1"));
+    try std.testing.expect(server.isAllowedHostHeaderForTest("[::1]", "127.0.0.1"));
+    try std.testing.expect(server.isAllowedHostHeaderForTest("[::1]:8545", "127.0.0.1"));
+    try std.testing.expect(!server.isAllowedHostHeaderForTest("evil.example.com", "127.0.0.1"));
+    try std.testing.expect(!server.isAllowedHostHeaderForTest("evil.example.com:8545", "127.0.0.1"));
+    try std.testing.expect(!server.isAllowedHostHeaderForTest(null, "127.0.0.1"));
+    try std.testing.expect(!server.isAllowedHostHeaderForTest("", "127.0.0.1"));
+    // Disabled when validate_host is null.
+    try std.testing.expect(server.isAllowedHostHeaderForTest("evil.example.com", null));
+    try std.testing.expect(server.isAllowedHostHeaderForTest(null, null));
+}
+
+test "sameIp matches addresses regardless of port" {
+    const a = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, 8545);
+    const b = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, 9999);
+    const c = std.net.Address.initIp4(.{ 192, 168, 1, 1 }, 8545);
+    try std.testing.expect(server.sameIpForTest(a, b));
+    try std.testing.expect(!server.sameIpForTest(a, c));
+}
+
+test "POST without Content-Length returns 411" {
+    const handlers = dispatcher.HandlerRegistry{ .on_method = &successHandler };
+    var listener = try server.TestListener.init(std.testing.allocator, "127.0.0.1", &handlers);
+    defer listener.deinit();
+    try listener.start();
+
+    const raw = try rawExchange(
+        std.testing.allocator,
+        listener.address(),
+        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n\r\n",
+    );
+    defer std.testing.allocator.free(raw);
+    try std.testing.expect(std.mem.startsWith(u8, raw, "HTTP/1.1 411"));
+}
+
+test "malformed request head returns 400" {
+    const handlers = dispatcher.HandlerRegistry{};
+    var listener = try server.TestListener.init(std.testing.allocator, "127.0.0.1", &handlers);
+    defer listener.deinit();
+    try listener.start();
+
+    const raw = try rawExchange(
+        std.testing.allocator,
+        listener.address(),
+        "INVALID HTTP\r\n\r\n",
+    );
+    defer std.testing.allocator.free(raw);
+    try std.testing.expect(std.mem.startsWith(u8, raw, "HTTP/1.1 400"));
+}
+
+test "oversized request head returns 431" {
+    const handlers = dispatcher.HandlerRegistry{};
+    var listener = try server.TestListener.init(std.testing.allocator, "127.0.0.1", &handlers);
+    defer listener.deinit();
+    try listener.start();
+
+    const oversized = try std.testing.allocator.alloc(u8, server.MAX_HTTP_HEAD_BYTES + 100);
+    defer std.testing.allocator.free(oversized);
+    @memset(oversized, 'A');
+    oversized[0] = 'G';
+    oversized[1] = 'E';
+    oversized[2] = 'T';
+    oversized[3] = ' ';
+
+    const raw = try rawExchange(std.testing.allocator, listener.address(), oversized);
+    defer std.testing.allocator.free(raw);
+    try std.testing.expect(std.mem.startsWith(u8, raw, "HTTP/1.1 431") or std.mem.startsWith(u8, raw, "HTTP/1.1 400"));
+}
+
+test "default loopback listener auto-enables host validation and rejects DNS rebinding" {
+    const handlers = dispatcher.HandlerRegistry{ .on_method = &successHandler };
+    // No explicit validate_host — init auto-populates it for a loopback bind.
+    var listener = try server.TestListener.init(std.testing.allocator, "127.0.0.1", &handlers);
+    defer listener.deinit();
+    try listener.start();
+
+    const body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_blockNumber\"}";
+    const good_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "POST / HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}",
+        .{ listener.address().getPort(), body.len, body },
+    );
+    defer std.testing.allocator.free(good_request);
+
+    const good_raw = try rawExchange(std.testing.allocator, listener.address(), good_request);
+    defer std.testing.allocator.free(good_raw);
+    try std.testing.expect(std.mem.startsWith(u8, good_raw, "HTTP/1.1 200"));
+
+    const evil_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "POST / HTTP/1.1\r\nHost: evil.com\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}",
+        .{ body.len, body },
+    );
+    defer std.testing.allocator.free(evil_request);
+
+    const evil_raw = try rawExchange(std.testing.allocator, listener.address(), evil_request);
+    defer std.testing.allocator.free(evil_raw);
+    try std.testing.expect(std.mem.startsWith(u8, evil_raw, "HTTP/1.1 400"));
+}
+
+test "Host header validation rejects DNS rebinding on loopback listener" {
+    const handlers = dispatcher.HandlerRegistry{ .on_method = &successHandler };
+    var listener = try server.TestListener.initWithLimits(std.testing.allocator, "127.0.0.1", &handlers, .{
+        .validate_host = "127.0.0.1",
+    });
+    defer listener.deinit();
+    try listener.start();
+
+    const body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_blockNumber\"}";
+    const good_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}",
+        .{ body.len, body },
+    );
+    defer std.testing.allocator.free(good_request);
+
+    const good_raw = try rawExchange(std.testing.allocator, listener.address(), good_request);
+    defer std.testing.allocator.free(good_raw);
+    try std.testing.expect(std.mem.startsWith(u8, good_raw, "HTTP/1.1 200"));
+
+    const bad_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "POST / HTTP/1.1\r\nHost: evil.example.com\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}",
+        .{ body.len, body },
+    );
+    defer std.testing.allocator.free(bad_request);
+
+    const bad_raw = try rawExchange(std.testing.allocator, listener.address(), bad_request);
+    defer std.testing.allocator.free(bad_raw);
+    try std.testing.expect(std.mem.startsWith(u8, bad_raw, "HTTP/1.1 400"));
 }

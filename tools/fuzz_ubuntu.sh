@@ -5,16 +5,16 @@ set -euo pipefail
 #
 # Runs all `test "fuzz: ..."` targets across src/fuzz/*.zig and
 # tools/c_abi_fuzz_test.zig using Zig 0.15.2's native coverage-guided fuzzer
-# (`zig build fuzz --fuzz`), either locally on Linux or remotely on a bare-metal
-# Latitude Ubuntu host (default: nyc-02 in RAM-backed /dev/shm/zevm-fuzz).
+# (`zig build fuzz --fuzz`), either locally on Linux or remotely on an Ubuntu
+# host explicitly selected with FUZZ_REMOTE_HOST.
 
 SECONDS_PER_TARGET="${FUZZ_SECONDS:-30}"
 JOBS="${FUZZ_JOBS:-8}"
 FILTER="${FUZZ_FILTER:-}"
 OPTIMIZE="${FUZZ_OPTIMIZE:-Debug}"
-REMOTE_HOST="${FUZZ_HOST:-lane@160.202.128.229}"
-REMOTE_DIR="${FUZZ_REMOTE_DIR:-/dev/shm/zevm-fuzz}"
-SSH_KEY="${FUZZ_SSH_KEY:-$HOME/.ssh/smithers-linux}"
+REMOTE_HOST="${FUZZ_REMOTE_HOST:-}"
+REMOTE_DIR="${FUZZ_REMOTE_DIR:-}"
+SSH_KEY="${FUZZ_SSH_KEY:-}"
 LOCAL_MODE=0
 LIST_ONLY=0
 RUN_PROPERTIES=1
@@ -28,12 +28,14 @@ Options:
   --jobs N           Parallel fuzz workers (default: 8)
   --optimize MODE    Zig optimize mode: Debug or ReleaseSafe (default: Debug)
   --filter SUBSTR    Only run fuzz targets whose name contains SUBSTR
-  --host USER@HOST   Remote Ubuntu host (default: lane@160.202.128.229)
-  --remote-dir PATH  Remote working directory (default: /dev/shm/zevm-fuzz)
+  --remote-dir PATH  Remote working directory (default: a fresh directory in /tmp)
   --local            Run directly on this Linux host instead of syncing over SSH
   --skip-properties  Skip the deterministic property+corpus pass before --fuzz
   --list             List all discovered native std.testing.fuzz targets and exit
   -h, --help         Show this help
+
+Set FUZZ_REMOTE_HOST to an SSH hostname or USER@HOST for remote mode.
+Without it, the script runs locally on Linux. FUZZ_SSH_KEY is optional.
 EOF
 }
 
@@ -43,7 +45,6 @@ while [[ $# -gt 0 ]]; do
         --jobs) JOBS="$2"; shift 2 ;;
         --optimize) OPTIMIZE="$2"; shift 2 ;;
         --filter) FILTER="$2"; shift 2 ;;
-        --host) REMOTE_HOST="$2"; shift 2 ;;
         --remote-dir) REMOTE_DIR="$2"; shift 2 ;;
         --local) LOCAL_MODE=1; shift ;;
         --skip-properties) RUN_PROPERTIES=0; shift ;;
@@ -84,7 +85,11 @@ if [[ "$LIST_ONLY" -eq 1 ]]; then
     exit 0
 fi
 
-if [[ "$(uname -s)" == "Linux" ]]; then
+if [[ "$LOCAL_MODE" -eq 0 && -z "$REMOTE_HOST" ]]; then
+    if [[ "$(uname -s)" != "Linux" ]]; then
+        echo "ERROR: set FUZZ_REMOTE_HOST to an Ubuntu SSH destination or use --local on Linux" >&2
+        exit 2
+    fi
     LOCAL_MODE=1
 fi
 
@@ -95,9 +100,7 @@ run_local_linux() {
     export PATH="$HOME/.cargo/bin:$HOME/.local/bin:/usr/local/bin:$PATH"
     local zig_bin="${ZIG_BIN:-}"
     if [[ -z "$zig_bin" ]]; then
-        if [[ -x "/home/lane/gm-maint/tools/zig-0.15.2/zig" ]]; then
-            zig_bin="/home/lane/gm-maint/tools/zig-0.15.2/zig"
-        elif command -v zig >/dev/null 2>&1; then
+        if command -v zig >/dev/null 2>&1; then
             zig_bin="$(command -v zig)"
         else
             echo "ERROR: zig 0.15.2 not found on Linux host" >&2
@@ -105,12 +108,7 @@ run_local_linux() {
         fi
     fi
 
-    local global_cache_args=()
-    if [[ -d "/home/lane/gm-maint/zig-global" ]]; then
-        global_cache_args=(--global-cache-dir "/home/lane/gm-maint/zig-global")
-    fi
-
-    echo "=== Host: $(hostname) ($(uname -srm)) | Zig: $($zig_bin version) | Jobs: $JOBS | Seconds/target: $SECONDS_PER_TARGET ==="
+    echo "=== Host: $(hostname) ($(uname -srm)) | Zig: $("$zig_bin" version) | Jobs: $JOBS | Seconds/target: $SECONDS_PER_TARGET ==="
 
     # Pre-build Voltaire Rust crypto once so parallel workers never contend on cargo locks.
     if [[ -d "../voltaire" ]]; then
@@ -120,12 +118,12 @@ run_local_linux() {
 
     if [[ "$RUN_PROPERTIES" -eq 1 ]]; then
         echo ">>> Running full deterministic property & corpus fuzz suite (zig build fuzz -Doptimize=$OPTIMIZE)..."
-        "$zig_bin" build fuzz "-Doptimize=$OPTIMIZE" "${global_cache_args[@]}"
+        "$zig_bin" build fuzz "-Doptimize=$OPTIMIZE" -Dskip-rust-build=true
     fi
 
-    local log_dir="$zevm_dir/.fuzz-logs"
-    rm -rf "$log_dir"
-    mkdir -p "$log_dir"
+    local log_dir
+    mkdir -p "$zevm_dir/.fuzz-logs"
+    log_dir="$(mktemp -d "$zevm_dir/.fuzz-logs/run.XXXXXXXX")"
 
     local targets=()
     while IFS= read -r entry; do
@@ -144,8 +142,8 @@ run_local_linux() {
 
     # Pre-compile the two fuzz test binaries once (with -ffuzz instrumentation) so
     # parallel runs share the cache without racing on compilation.
-    "$zig_bin" build fuzz "-Doptimize=$OPTIMIZE" -Dskip-rust-build=true -Dfuzz-filter="__warmup_none__" "${global_cache_args[@]}" --fuzz >/dev/null 2>&1 || true
-    "$zig_bin" build fuzz-c-abi "-Doptimize=$OPTIMIZE" -Dskip-rust-build=true -Dfuzz-filter="__warmup_none__" "${global_cache_args[@]}" --fuzz >/dev/null 2>&1 || true
+    "$zig_bin" build fuzz "-Doptimize=$OPTIMIZE" -Dskip-rust-build=true -Dfuzz-filter="__warmup_none__" --fuzz >/dev/null 2>&1 || true
+    "$zig_bin" build fuzz-c-abi "-Doptimize=$OPTIMIZE" -Dskip-rust-build=true -Dfuzz-filter="__warmup_none__" --fuzz >/dev/null 2>&1 || true
 
     local pids=()
     local names=()
@@ -181,7 +179,6 @@ run_local_linux() {
                 "-Doptimize=$OPTIMIZE" \
                 -Dskip-rust-build=true \
                 -Dfuzz-filter="$name" \
-                "${global_cache_args[@]}" \
                 --fuzz >"$attempt_log" 2>&1 || rc=$?
 
             cat "$attempt_log" >>"$log"
@@ -283,15 +280,40 @@ if [[ "$LOCAL_MODE" -eq 1 ]]; then
     exit 0
 fi
 
-# Remote bare-metal Ubuntu mode (macOS -> nyc-02)
-SSH_OPTS=(-o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=6)
-if [[ -f "$SSH_KEY" ]]; then
-    SSH_OPTS+=(-i "$SSH_KEY" -o IdentitiesOnly=yes)
+# Remote bare-metal Ubuntu mode
+if [[ "$REMOTE_HOST" == -* || ! "$REMOTE_HOST" =~ ^([[:alnum:]_.-]+@)?[[:alnum:]_.-]+$ ]]; then
+    echo "ERROR: FUZZ_REMOTE_HOST must be a hostname or USER@HOST" >&2
+    exit 2
 fi
+SSH_OPTS=(-o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=6)
 RSYNC_RSH="ssh ${SSH_OPTS[*]}"
+if [[ -n "$SSH_KEY" ]]; then
+    if [[ ! -f "$SSH_KEY" ]]; then
+        echo "ERROR: FUZZ_SSH_KEY is not a file: $SSH_KEY" >&2
+        exit 2
+    fi
+    SSH_OPTS+=(-i "$SSH_KEY" -o IdentitiesOnly=yes)
+    RSYNC_RSH+=" -i \"${SSH_KEY//\"/\"\"}\" -o IdentitiesOnly=yes"
+fi
+
+ssh_remote() {
+    local command
+    printf -v command '%q ' "$@"
+    # Pass the arguments quoted for the remote shell.
+    # shellcheck disable=SC2029
+    ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "$command"
+}
+
+if [[ -z "$REMOTE_DIR" ]]; then
+    REMOTE_DIR="$(ssh_remote mktemp -d /tmp/zevm-fuzz.XXXXXXXX)"
+fi
+if [[ ! "$REMOTE_DIR" =~ ^(/[[:alnum:]_.-]+)+$ || "$REMOTE_DIR/" == *'/../'* || "$REMOTE_DIR/" == *'/./'* ]]; then
+    echo "ERROR: remote directory must be an absolute path without spaces or relative components" >&2
+    exit 2
+fi
 
 echo ">>> Syncing zevm, voltaire, and guillotine-mini to $REMOTE_HOST:$REMOTE_DIR..."
-ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "mkdir -p '$REMOTE_DIR/zevm' '$REMOTE_DIR/voltaire' '$REMOTE_DIR/guillotine-mini'"
+ssh_remote mkdir -p "$REMOTE_DIR/zevm" "$REMOTE_DIR/voltaire" "$REMOTE_DIR/guillotine-mini"
 
 RSYNC_EXCLUDES=(
     --exclude='.git'
@@ -319,19 +341,19 @@ ZEVM_RSYNC_EXCLUDES=(
     --exclude='*.log'
 )
 
-rsync -az --delete -e "$RSYNC_RSH" "${ZEVM_RSYNC_EXCLUDES[@]}" "$REPO_ROOT/" "$REMOTE_HOST:$REMOTE_DIR/zevm/"
+rsync -az -e "$RSYNC_RSH" "${ZEVM_RSYNC_EXCLUDES[@]}" "$REPO_ROOT/" "$REMOTE_HOST:$REMOTE_DIR/zevm/"
 if [[ -f "$REPO_ROOT/lib/execution-apis/tests/chain.rlp" ]]; then
-    ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "mkdir -p '$REMOTE_DIR/zevm/lib/execution-apis/tests'"
+    ssh_remote mkdir -p "$REMOTE_DIR/zevm/lib/execution-apis/tests"
     rsync -az -e "$RSYNC_RSH" \
         "$REPO_ROOT/lib/execution-apis/tests/chain.rlp" \
         "$REPO_ROOT/lib/execution-apis/tests/genesis.json" \
         "$REMOTE_HOST:$REMOTE_DIR/zevm/lib/execution-apis/tests/"
 fi
 if [[ -d "$PARENT_DIR/voltaire" ]]; then
-    rsync -az --delete -e "$RSYNC_RSH" "${RSYNC_EXCLUDES[@]}" "$PARENT_DIR/voltaire/" "$REMOTE_HOST:$REMOTE_DIR/voltaire/"
+    rsync -az -e "$RSYNC_RSH" "${RSYNC_EXCLUDES[@]}" "$PARENT_DIR/voltaire/" "$REMOTE_HOST:$REMOTE_DIR/voltaire/"
 fi
 if [[ -d "$PARENT_DIR/guillotine-mini" ]]; then
-    rsync -az --delete -e "$RSYNC_RSH" "${RSYNC_EXCLUDES[@]}" "$PARENT_DIR/guillotine-mini/" "$REMOTE_HOST:$REMOTE_DIR/guillotine-mini/"
+    rsync -az -e "$RSYNC_RSH" "${RSYNC_EXCLUDES[@]}" "$PARENT_DIR/guillotine-mini/" "$REMOTE_HOST:$REMOTE_DIR/guillotine-mini/"
 fi
 
 REMOTE_ARGS=(--local --seconds "$SECONDS_PER_TARGET" --jobs "$JOBS" --optimize "$OPTIMIZE")
@@ -342,5 +364,4 @@ if [[ "$RUN_PROPERTIES" -eq 0 ]]; then
     REMOTE_ARGS+=(--skip-properties)
 fi
 
-printf -v REMOTE_CMD '%q ' "$REMOTE_DIR/zevm/tools/fuzz_ubuntu.sh" "${REMOTE_ARGS[@]}"
-ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "chmod +x '$REMOTE_DIR/zevm/tools/fuzz_ubuntu.sh' && $REMOTE_CMD"
+ssh_remote bash "$REMOTE_DIR/zevm/tools/fuzz_ubuntu.sh" "${REMOTE_ARGS[@]}"

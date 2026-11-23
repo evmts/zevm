@@ -112,28 +112,63 @@ pub const HostAdapter = struct {
         self.state.setNonce(address, nonce) catch |err| return hostErrorToError(mapStateWriteError(err));
     }
 
+    /// Removes an account (SELFDESTRUCT and EIP-161 empty-account cleanup).
+    ///
+    /// Every write goes through the checkpointed caches, so an enclosing
+    /// `revert` restores the account in full.
+    ///
+    /// Local state: the cache entries are dropped, so the account also leaves
+    /// the state trie on the next sync. Cache checkpoints are full snapshots,
+    /// which makes the removal revertible.
+    ///
+    /// Forked state: dropping the entries would make the next read fetch the
+    /// remote account again and resurrect it. The account is overwritten with
+    /// an empty tombstone instead: balance, nonce and code go through the
+    /// `StateManager` setters and every locally cached slot is zeroed.
     pub fn deleteAccount(self: *HostAdapter, address: primitives.Address) Error!void {
         const before = if (self.balance_changes != null) self.state.getBalance(address) catch 0 else 0;
-        _ = self.state.journaled_state.account_cache.delete(address);
-        _ = self.state.journaled_state.contract_cache.delete(address);
-        if (self.state.journaled_state.storage_cache.cache.fetchRemove(address)) |entry| {
-            var slots = entry.value;
-            slots.deinit();
+        const journal = &self.state.journaled_state;
+
+        if (journal.fork_backend == null) {
+            _ = journal.account_cache.delete(address);
+            _ = journal.contract_cache.delete(address);
+            if (journal.storage_cache.cache.fetchRemove(address)) |entry| {
+                var slots = entry.value;
+                slots.deinit();
+            }
+        } else {
+            // `putAccount` also resets the remote `code_hash` and `storage_root`.
+            journal.putAccount(address, .{
+                .nonce = 0,
+                .balance = 0,
+                .code_hash = primitives.Hash.ZERO,
+                .storage_root = primitives.Hash.ZERO,
+            }) catch |err| return hostErrorToError(mapStateWriteError(err));
+            self.state.setCode(address, &.{}) catch |err| return hostErrorToError(mapStateWriteError(err));
+            // Zero in place: `setStorage` during iteration could rehash the map.
+            if (journal.storage_cache.cache.getPtr(address)) |slots| {
+                var values = slots.valueIterator();
+                while (values.next()) |value| value.* = 0;
+            }
         }
         self.recordBalanceChange(address, before, 0);
     }
 
+    /// EIP-161 existence: an account exists when it is non-empty, that is
+    /// `nonce > 0`, `balance > 0`, or it has code. Bare cache presence is not
+    /// existence: reads of a forked account and zero-value writes both create
+    /// cache entries for accounts that are not in the state.
     pub fn accountExists(self: *HostAdapter, address: primitives.Address) Error!bool {
-        if (self.state.journaled_state.account_cache.has(address)) return true;
-        if (self.state.journaled_state.contract_cache.has(address)) return true;
-        if (self.state.journaled_state.storage_cache.cache.contains(address)) return true;
+        const journal = &self.state.journaled_state;
+        const account = journal.getAccount(address) catch |err| return hostErrorToError(mapStateReadError(err));
+        if (account.nonce != 0 or account.balance != 0) return true;
 
-        if (self.state.journaled_state.fork_backend != null) {
-            _ = self.state.journaled_state.getAccount(address) catch |err| return hostErrorToError(mapStateReadError(err));
-            return self.state.journaled_state.account_cache.has(address);
-        }
-
-        return false;
+        // Locally written code is authoritative; `AccountState.code_hash` is
+        // only populated for accounts fetched from a fork.
+        if (journal.contract_cache.get(address)) |code| return code.len != 0;
+        if (journal.fork_backend == null) return false;
+        return !std.mem.eql(u8, &account.code_hash, &primitives.State.EMPTY_CODE_HASH) and
+            !std.mem.eql(u8, &account.code_hash, &primitives.Hash.ZERO);
     }
 
     pub fn accountIsEmpty(self: *HostAdapter, address: primitives.Address) Error!bool {

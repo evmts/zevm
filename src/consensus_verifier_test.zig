@@ -247,7 +247,7 @@ test "applyUpdate handles majority and non-majority correctly" {
     const low_checkpoint = consensus_verifier.applyUpdate(&store, low_update);
     try std.testing.expect(low_checkpoint == null);
     try std.testing.expectEqual(@as(u64, 64), store.finalized_header.beacon.slot);
-    try std.testing.expectEqual(@as(u64, 65), store.optimistic_header.beacon.slot);
+    try std.testing.expectEqual(@as(u64, 64), store.optimistic_header.beacon.slot);
 
     var majority_bits = [_]u8{0} ** 64;
     setFirstParticipants(&majority_bits, 342);
@@ -285,4 +285,24 @@ test "safetyThreshold calculation" {
     );
 
     try std.testing.expectEqual(@as(u64, 150), consensus_verifier.safetyThreshold(store));
+}
+
+test "force update retains one-signer candidate and advances with a supermajority" {
+    var store = std.mem.zeroes(primitives.LightClientUpdate.LightClientStore);
+    var update = std.mem.zeroes(primitives.LightClientUpdate.GenericUpdate);
+    update.attested_header = fixtureHeader(32, 1);
+    update.next_sync_committee_pubkeys = fixtureCommitteePubkeys(2);
+    update.next_sync_committee_aggregate_pubkey = [_]u8{3} ** 48;
+    setFirstParticipants(&update.sync_committee_bits, 1);
+    store.best_valid_update = try primitives.LightClientUpdate.StoredGenericUpdate.fromGeneric(update);
+    const now = primitives.ConsensusSpec.SLOTS_PER_SYNC_COMMITTEE_PERIOD + 1;
+    try std.testing.expect(consensus_verifier.processLightClientStoreForceUpdate(&store, now) == null);
+    try std.testing.expect(store.best_valid_update.?.finalized_header == null);
+    try std.testing.expectEqual(@as(u64, 0), store.finalized_header.beacon.slot);
+    try std.testing.expect(store.next_sync_committee_pubkeys == null);
+    setFirstParticipants(&store.best_valid_update.?.sync_committee_bits, 342);
+    try std.testing.expect(consensus_verifier.processLightClientStoreForceUpdate(&store, now) != null);
+    try expectLightClientHeaderEqual(update.attested_header, store.finalized_header);
+    try std.testing.expectEqual(update.next_sync_committee_aggregate_pubkey, store.next_sync_committee_aggregate_pubkey);
+    try std.testing.expect(store.best_valid_update == null);
 }

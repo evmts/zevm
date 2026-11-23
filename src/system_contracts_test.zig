@@ -89,6 +89,7 @@ fn blockOptions(config: hardfork_schedule.ChainConfig) block_builder.BuildBlockO
         .withdrawals = &.{},
         .parent_beacon_block_root = [_]u8{0xbe} ** 32,
         .parent_hash = [_]u8{0x11} ** 32,
+        .require_system_contracts = true,
     };
 }
 
@@ -232,7 +233,7 @@ test "Prague and Osaka blocks are invalid without system contract code" {
         var sm = try state_manager.StateManager.init(std.testing.allocator, null);
         defer sm.deinit();
         var adapter = host_adapter.HostAdapter{ .state = &sm };
-        try std.testing.expectError(error.MissingSystemContractCode, block_builder.buildBlockWithOptions(
+        try std.testing.expectError(error.SystemContractMissingCode, block_builder.buildBlockWithOptions(
             std.testing.allocator,
             &sm,
             adapter.hostInterface(),
@@ -243,7 +244,7 @@ test "Prague and Osaka blocks are invalid without system contract code" {
 
         // Only one of the two request contracts is still not enough.
         try sm.setCode(system_contracts.WITHDRAWAL_REQUESTS_ADDRESS, &system_contracts.WITHDRAWAL_REQUESTS_CODE);
-        try std.testing.expectError(error.MissingSystemContractCode, block_builder.buildBlockWithOptions(
+        try std.testing.expectError(error.SystemContractMissingCode, block_builder.buildBlockWithOptions(
             std.testing.allocator,
             &sm,
             adapter.hostInterface(),
@@ -733,7 +734,7 @@ test "Prague mining rejects an explicit genesis file missing system contract cod
     });
     defer rt.deinit();
     rt.setNextBlockTimestamp(MAINNET_PRAGUE_TIMESTAMP);
-    try std.testing.expectError(error.MissingSystemContractCode, rt.mineBlocks(1, 0));
+    try std.testing.expectError(error.SystemContractMissingCode, rt.mineBlocks(1, 0));
     try std.testing.expectEqual(@as(u64, 0), rt.head_block_number);
 }
 

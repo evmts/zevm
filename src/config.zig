@@ -52,6 +52,47 @@ pub const RpcConfig = struct {
     port: u16,
 };
 
+/// Engine API listener. `jwt_secret_file` names a file holding a hex-encoded
+/// 32-byte secret (`--authrpc.jwtsecret`); null means startup generates one.
+pub const EngineRpcConfig = struct {
+    host: []const u8,
+    port: u16,
+    jwt_secret_file: ?[]const u8 = null,
+
+    pub fn listener(self: EngineRpcConfig) RpcConfig {
+        return .{ .host = self.host, .port = self.port };
+    }
+};
+
+pub const ENGINE_JWT_SECRET_BYTES: usize = 32;
+const MAX_JWT_SECRET_FILE_BYTES: usize = 1024;
+
+pub const JwtSecretError = error{
+    InvalidJwtSecret,
+};
+
+/// Parses a geth/reth-style JWT secret: 64 hex digits, optional `0x` prefix,
+/// surrounding whitespace ignored.
+pub fn parseJwtSecretHex(text: []const u8) JwtSecretError![ENGINE_JWT_SECRET_BYTES]u8 {
+    var hex = std.mem.trim(u8, text, " \t\r\n");
+    if (std.mem.startsWith(u8, hex, "0x") or std.mem.startsWith(u8, hex, "0X")) hex = hex[2..];
+    if (hex.len != ENGINE_JWT_SECRET_BYTES * 2) return error.InvalidJwtSecret;
+
+    var secret: [ENGINE_JWT_SECRET_BYTES]u8 = undefined;
+    _ = std.fmt.hexToBytes(&secret, hex) catch return error.InvalidJwtSecret;
+    return secret;
+}
+
+/// Reads and parses a JWT secret file.
+pub fn loadJwtSecretFile(allocator: std.mem.Allocator, path: []const u8) ![ENGINE_JWT_SECRET_BYTES]u8 {
+    const bytes = try std.fs.cwd().readFileAlloc(allocator, path, MAX_JWT_SECRET_FILE_BYTES);
+    defer {
+        std.crypto.secureZero(u8, bytes);
+        allocator.free(bytes);
+    }
+    return parseJwtSecretHex(bytes);
+}
+
 pub const ForkConfig = struct {
     url: []const u8,
     block_number: ?u64 = null,
@@ -72,6 +113,9 @@ pub const TrustedConfig = struct {
     engine_sync_fallback_url: ?[]const u8,
     genesis_alloc_path: ?[]const u8,
     chain_rlp_path: ?[]const u8,
+    /// Explicit opt-in directory of recorded `.io` JSON-RPC fixtures
+    /// (`--execution-fixture-rpc-dir`). Never inferred from other paths.
+    execution_fixture_rpc_dir: ?[]const u8 = null,
 
     pub fn toNodeConfig(self: TrustedConfig) node_runtime.NodeConfig {
         return .{
@@ -134,33 +178,13 @@ pub const ModeConfig = union(Mode) {
 
 pub const AppConfig = struct {
     rpc: RpcConfig,
-    engine_rpc: ?RpcConfig = null,
+    engine_rpc: ?EngineRpcConfig = null,
     mode: ModeConfig,
 
     pub fn deinit(self: *AppConfig, allocator: std.mem.Allocator) void {
         allocator.free(self.rpc.host);
-        if (self.engine_rpc) |engine_rpc| allocator.free(engine_rpc.host);
-        switch (self.mode) {
-            .trusted => |trusted| {
-                if (trusted.fork) |fork| {
-                    allocator.free(fork.url);
-                }
-                if (trusted.engine_sync_fallback_url) |url| {
-                    allocator.free(url);
-                }
-                if (trusted.genesis_alloc_path) |path| {
-                    allocator.free(path);
-                }
-                if (trusted.chain_rlp_path) |path| {
-                    allocator.free(path);
-                }
-            },
-            .light => |light| {
-                allocator.free(light.consensus_rpc_url);
-                if (light.execution_rpc_url) |url| allocator.free(url);
-                allocator.free(light.checkpoint_dir);
-            },
-        }
+        if (self.engine_rpc) |engine_rpc| freeEngineRpc(allocator, engine_rpc);
+        deinitModeConfig(allocator, self.mode);
     }
 };
 
@@ -184,6 +208,7 @@ fn checkpointSourceToRuntime(source: CheckpointSource) node_runtime.CheckpointSo
 const FileRpc = struct {
     host: ?[]const u8 = null,
     port: ?u16 = null,
+    jwt_secret_file: ?[]const u8 = null,
 };
 
 const FileFork = struct {
@@ -206,6 +231,7 @@ const FileTrusted = struct {
     engine_sync_fallback_url: ?[]const u8 = null,
     genesis_alloc_path: ?[]const u8 = null,
     chain_rlp_path: ?[]const u8 = null,
+    execution_fixture_rpc_dir: ?[]const u8 = null,
 };
 
 const FileHardforkConfig = struct {
@@ -334,7 +360,7 @@ fn resolve(
     const rpc = try resolveRpc(allocator, options, file_config);
     errdefer allocator.free(rpc.host);
     const engine_rpc = try resolveEngineRpc(allocator, options, file_config, resolved_mode, rpc.host);
-    errdefer if (engine_rpc) |value| allocator.free(value.host);
+    errdefer if (engine_rpc) |value| freeEngineRpc(allocator, value);
 
     const mode_config: ModeConfig = switch (resolved_mode) {
         .trusted => .{ .trusted = try resolveTrusted(allocator, options, fileTrusted(file_config)) },
@@ -383,7 +409,7 @@ fn resolveEngineRpc(
     file_config: ?FileConfig,
     resolved_mode: Mode,
     fallback_host: []const u8,
-) LoadError!?RpcConfig {
+) LoadError!?EngineRpcConfig {
     const file_engine_rpc = if (file_config) |file| file.engine_rpc else null;
     const enabled = options.hasEngineRpc() or file_engine_rpc != null;
     if (!enabled) return null;
@@ -392,10 +418,24 @@ fn resolveEngineRpc(
     const file_rpc = file_engine_rpc orelse FileRpc{};
     const host = options.engine_host orelse file_rpc.host orelse fallback_host;
     if (std.mem.trim(u8, host, " \t\r\n").len == 0) return error.InvalidConfig;
+    const jwt_secret_file_value = options.engine_jwt_secret_file orelse file_rpc.jwt_secret_file;
+    if (jwt_secret_file_value) |path| {
+        if (std.mem.trim(u8, path, " \t\r\n").len == 0) return error.InvalidConfig;
+    }
+
+    const owned_host = try allocator.dupe(u8, host);
+    errdefer allocator.free(owned_host);
+    const owned_jwt_secret_file = if (jwt_secret_file_value) |path| try allocator.dupe(u8, path) else null;
     return .{
-        .host = try allocator.dupe(u8, host),
+        .host = owned_host,
         .port = options.engine_port orelse file_rpc.port orelse DEFAULT_ENGINE_PORT,
+        .jwt_secret_file = owned_jwt_secret_file,
     };
+}
+
+fn freeEngineRpc(allocator: std.mem.Allocator, engine_rpc: EngineRpcConfig) void {
+    allocator.free(engine_rpc.host);
+    if (engine_rpc.jwt_secret_file) |path| allocator.free(path);
 }
 
 fn resolveTrusted(
@@ -428,7 +468,19 @@ fn resolveTrusted(
     else
         null;
     errdefer if (engine_sync_fallback_url) |url| allocator.free(url);
+    const execution_fixture_rpc_dir_value = options.execution_fixture_rpc_dir orelse file_value.execution_fixture_rpc_dir;
+    const execution_fixture_rpc_dir = if (execution_fixture_rpc_dir_value) |path|
+        try allocator.dupe(u8, path)
+    else
+        null;
+    errdefer if (execution_fixture_rpc_dir) |path| allocator.free(path);
+
+    // Zero values are syntactically valid but semantically broken: chain id 0
+    // disables EIP-155 replay protection and a zero gas limit mines nothing.
     const chain_id = options.chain_id orelse file_value.chain_id orelse node_runtime.DEFAULT_CHAIN_ID;
+    if (chain_id == 0) return error.InvalidConfig;
+    const block_gas_limit = options.block_gas_limit orelse file_value.block_gas_limit orelse DEFAULT_BLOCK_GAS_LIMIT;
+    if (block_gas_limit == 0) return error.InvalidConfig;
 
     return .{
         .chain_id = chain_id,
@@ -438,19 +490,20 @@ fn resolveTrusted(
         .base_fee = options.base_fee orelse file_value.base_fee orelse node_runtime.DEFAULT_BASE_FEE,
         .blob_base_fee = options.blob_base_fee orelse file_value.blob_base_fee orelse node_runtime.DEFAULT_BLOB_BASE_FEE,
         .max_priority_fee_per_gas = options.max_priority_fee_per_gas orelse file_value.max_priority_fee_per_gas orelse node_runtime.DEFAULT_MAX_PRIORITY_FEE,
-        .block_gas_limit = options.block_gas_limit orelse file_value.block_gas_limit orelse DEFAULT_BLOCK_GAS_LIMIT,
+        .block_gas_limit = block_gas_limit,
         .mining_config = try resolveMining(options, file_value.mining_config),
         .hardfork_config = try resolveHardforkConfig(chain_id, file_value.hardfork_config),
         .fork = fork,
         .engine_sync_fallback_url = engine_sync_fallback_url,
         .genesis_alloc_path = genesis_alloc_path,
         .chain_rlp_path = chain_rlp_path,
+        .execution_fixture_rpc_dir = execution_fixture_rpc_dir,
     };
 }
 
 fn resolveHardforkConfig(chain_id: u64, file_config: ?FileHardforkConfig) LoadError!hardfork_schedule.ChainConfig {
     var config = node_runtime.defaultHardforkConfigForChainId(chain_id);
-    const overrides = file_config orelse return config;
+    const overrides = file_config orelse FileHardforkConfig{};
     if (overrides.homestead_block) |value| config.homestead_block = value;
     if (overrides.dao_block) |value| config.dao_block = value;
     if (overrides.tangerine_whistle_block) |value| config.tangerine_whistle_block = value;
@@ -470,14 +523,8 @@ fn resolveHardforkConfig(chain_id: u64, file_config: ?FileHardforkConfig) LoadEr
     if (overrides.prague_timestamp) |value| config.prague_timestamp = value;
     if (overrides.osaka_timestamp) |value| config.osaka_timestamp = value;
     if (overrides.seconds_per_slot) |value| config.seconds_per_slot = value;
-    if (overrides.blob_schedule) |value| {
-        // EIP-7892 BPO forks activate at or after Osaka; reject an explicitly
-        // configured entry timestamped before `osaka_timestamp`.
-        for (value.entries()) |entry| {
-            if (entry.timestamp < config.osaka_timestamp) return error.InvalidConfig;
-        }
-        config.blob_schedule = value;
-    }
+    if (overrides.blob_schedule) |value| config.blob_schedule = value;
+    hardfork_schedule.validateForkOrder(config) catch return error.InvalidConfig;
     return config;
 }
 
@@ -494,7 +541,12 @@ fn makeMiningConfig(mining_type: cli.MiningType, block_time: ?u64) LoadError!min
     return switch (mining_type) {
         .auto => if (block_time == null) .auto else error.InvalidConfig,
         .manual => if (block_time == null) .manual else error.InvalidConfig,
-        .interval => .{ .interval = .{ .block_time = block_time orelse return error.InvalidConfig } },
+        .interval => blk: {
+            const interval_seconds = block_time orelse return error.InvalidConfig;
+            // A zero interval would spin the mining thread.
+            if (interval_seconds == 0) return error.InvalidConfig;
+            break :blk .{ .interval = .{ .block_time = interval_seconds } };
+        },
     };
 }
 
@@ -676,7 +728,7 @@ fn parseFileConfig(value: std.json.Value) LoadError!FileConfig {
         if (std.mem.eql(u8, key, "rpc")) {
             rpc = try parseRpc(entry.value_ptr.*);
         } else if (std.mem.eql(u8, key, "engineRpc")) {
-            engine_rpc = try parseRpc(entry.value_ptr.*);
+            engine_rpc = try parseRpcWithOptions(entry.value_ptr.*, true);
         } else if (std.mem.eql(u8, key, "mode")) {
             mode = try parseModeObject(entry.value_ptr.*);
         } else {
@@ -692,6 +744,10 @@ fn parseFileConfig(value: std.json.Value) LoadError!FileConfig {
 }
 
 fn parseRpc(value: std.json.Value) LoadError!FileRpc {
+    return parseRpcWithOptions(value, false);
+}
+
+fn parseRpcWithOptions(value: std.json.Value, allow_jwt_secret_file: bool) LoadError!FileRpc {
     const object = switch (value) {
         .object => |object| object,
         else => return error.InvalidConfig,
@@ -705,6 +761,8 @@ fn parseRpc(value: std.json.Value) LoadError!FileRpc {
             rpc.host = try parseString(entry.value_ptr.*);
         } else if (std.mem.eql(u8, key, "port")) {
             rpc.port = try parseU16(entry.value_ptr.*);
+        } else if (allow_jwt_secret_file and std.mem.eql(u8, key, "jwtSecretFile")) {
+            rpc.jwt_secret_file = try parseOptionalString(entry.value_ptr.*);
         } else {
             return error.InvalidConfig;
         }
@@ -783,6 +841,8 @@ fn parseTrusted(value: std.json.Value) LoadError!FileTrusted {
             trusted.genesis_alloc_path = try parseOptionalString(entry.value_ptr.*);
         } else if (std.mem.eql(u8, key, "chainRlp")) {
             trusted.chain_rlp_path = try parseOptionalString(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "executionFixtureRpcDir")) {
+            trusted.execution_fixture_rpc_dir = try parseOptionalString(entry.value_ptr.*);
         } else {
             return error.InvalidConfig;
         }
@@ -1065,6 +1125,7 @@ fn deinitModeConfig(allocator: std.mem.Allocator, mode_config: ModeConfig) void 
             if (trusted.engine_sync_fallback_url) |url| allocator.free(url);
             if (trusted.genesis_alloc_path) |path| allocator.free(path);
             if (trusted.chain_rlp_path) |path| allocator.free(path);
+            if (trusted.execution_fixture_rpc_dir) |path| allocator.free(path);
         },
         .light => |light| {
             allocator.free(light.consensus_rpc_url);

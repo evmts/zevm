@@ -154,9 +154,6 @@ pub fn verifyUpdate(
     const update_has_next_committee = store.next_sync_committee_pubkeys == null and
         hasSyncUpdate(update) and
         update_attested_period == store_period;
-    if (update.attested_header.beacon.slot <= store.finalized_header.beacon.slot and !update_has_next_committee) {
-        return ConsensusVerifierError.NotRelevant;
-    }
 
     if (update.finalized_header) |finalized_header| {
         if (finalized_header.beacon.slot != 0) {
@@ -274,6 +271,9 @@ pub fn verifyUpdate(
     if (!valid_signature) {
         return ConsensusVerifierError.InvalidSignature;
     }
+    if (update.attested_header.beacon.slot <= store.finalized_header.beacon.slot and !update_has_next_committee) {
+        return ConsensusVerifierError.NotRelevant;
+    }
 }
 
 pub fn applyBootstrap(
@@ -310,7 +310,7 @@ pub fn applyUpdate(
         active_participants,
     );
 
-    if (active_participants > safetyThreshold(store.*) and
+    if (isOptimisticParticipationSufficient(store.*, active_participants) and
         update.attested_header.beacon.slot > store.optimistic_header.beacon.slot)
     {
         store.optimistic_header = update.attested_header;
@@ -328,7 +328,7 @@ pub fn applyUpdate(
         hasFinalityUpdate(update) and
         update_finalized_period == update_attested_period;
 
-    const has_majority = active_participants * 3 >= primitives.ConsensusSpec.SYNC_COMMITTEE_SIZE * 2;
+    const has_majority = hasSupermajority(active_participants);
     const update_is_newer = update_finalized_slot > store.finalized_header.beacon.slot;
     const should_apply_update = has_majority and (update_is_newer or update_has_finalized_next_committee);
 
@@ -339,6 +339,31 @@ pub fn applyUpdate(
     const checkpoint = applyUpdateNoQuorumCheck(store, update);
     store.best_valid_update = null;
     return checkpoint;
+}
+
+/// Returns true when `active_participants` may advance `optimistic_header`.
+///
+/// The spec rule `active_participants > safetyThreshold(store)` degenerates to
+/// `> 0` right after bootstrap, because both max-participant counters start at
+/// zero. That lets a single compromised sync committee member move the
+/// optimistic head. Until the store has observed a supermajority update, this
+/// requires the update itself to carry a supermajority.
+pub fn isOptimisticParticipationSufficient(
+    store: primitives.LightClientUpdate.LightClientStore,
+    active_participants: u64,
+) bool {
+    const observed_max = @max(
+        store.current_max_active_participants,
+        store.previous_max_active_participants,
+    );
+    if (!hasSupermajority(observed_max)) {
+        return hasSupermajority(active_participants);
+    }
+    return active_participants > safetyThreshold(store);
+}
+
+fn hasSupermajority(active_participants: u64) bool {
+    return active_participants * 3 >= primitives.ConsensusSpec.SYNC_COMMITTEE_SIZE * 2;
 }
 
 pub fn safetyThreshold(store: primitives.LightClientUpdate.LightClientStore) u64 {
@@ -406,11 +431,14 @@ pub fn processLightClientStoreForceUpdate(
     store: *primitives.LightClientUpdate.LightClientStore,
     current_slot: u64,
 ) ?[32]u8 {
-    if (current_slot <= store.finalized_header.beacon.slot + UPDATE_TIMEOUT or store.best_valid_update == null) {
+    const timeout_slot = store.finalized_header.beacon.slot +| UPDATE_TIMEOUT;
+    if (current_slot <= timeout_slot or store.best_valid_update == null) {
         return null;
     }
 
     if (store.best_valid_update) |*best_valid_update| {
+        if (!hasSupermajority(participantCount(best_valid_update.sync_committee_bits))) return null;
+
         const best_finalized_slot = if (best_valid_update.finalized_header) |finalized_header|
             finalized_header.beacon.slot
         else
@@ -493,7 +521,8 @@ fn hasSyncUpdate(update: primitives.LightClientUpdate.GenericUpdate) bool {
 }
 
 fn hasFinalityUpdate(update: primitives.LightClientUpdate.GenericUpdate) bool {
-    return update.finalized_header != null and update.finality_branch != null;
+    const branch = update.finality_branch orelse return false;
+    return update.finalized_header != null and !std.mem.allEqual(u8, std.mem.sliceAsBytes(branch), 0);
 }
 
 fn syncCommitteeRoot(
@@ -791,4 +820,122 @@ test "finality proofs select Electra generalized indices at the fork epoch" {
         electra_slot,
         fork_config,
     ));
+}
+
+fn testLightClientHeader(slot: u64, marker: u8) primitives.LightClientHeader.LightClientHeader {
+    return .{
+        .beacon = .{
+            .slot = slot,
+            .proposer_index = slot,
+            .parent_root = testHash(marker),
+            .state_root = testHash(marker +% 1),
+            .body_root = testHash(marker +% 2),
+        },
+        .execution = .{
+            .parent_hash = testHash(marker +% 3),
+            .fee_recipient = [_]u8{marker} ** 20,
+            .state_root = testHash(marker +% 4),
+            .receipts_root = testHash(marker +% 5),
+            .logs_bloom = [_]u8{0} ** 256,
+            .prev_randao = testHash(marker +% 6),
+            .block_number = slot,
+            .gas_limit = 30_000_000,
+            .gas_used = 0,
+            .timestamp = slot *| 12,
+            .base_fee_per_gas = 1,
+            .block_hash = testHash(marker +% 7),
+            .transactions_root = testHash(marker +% 8),
+            .withdrawals_root = testHash(marker +% 9),
+            .blob_gas_used = 0,
+            .excess_blob_gas = 0,
+        },
+        .execution_branch = [_][32]u8{ZERO_CHUNK} ** 4,
+    };
+}
+
+fn testBootstrappedStore(slot: u64) primitives.LightClientUpdate.LightClientStore {
+    const header = testLightClientHeader(slot, 0x10);
+    return .{
+        .finalized_header = header,
+        .current_sync_committee_pubkeys = [_][48]u8{[_]u8{0xaa} ** 48} ** 512,
+        .current_sync_committee_aggregate_pubkey = [_]u8{0xbb} ** 48,
+        .next_sync_committee_pubkeys = null,
+        .next_sync_committee_aggregate_pubkey = null,
+        .best_valid_update = null,
+        .optimistic_header = header,
+        .previous_max_active_participants = 0,
+        .current_max_active_participants = 0,
+    };
+}
+
+fn testParticipantBits(count: usize) [64]u8 {
+    var bits = [_]u8{0} ** 64;
+    for (0..count) |index| {
+        bits[index / 8] |= @as(u8, 1) << @as(u3, @intCast(index % 8));
+    }
+    return bits;
+}
+
+fn testOptimisticUpdate(attested_slot: u64, participants: usize) primitives.LightClientUpdate.GenericUpdate {
+    return .{
+        .attested_header = testLightClientHeader(attested_slot, 0x40),
+        .sync_committee_bits = testParticipantBits(participants),
+        .sync_committee_signature = [_]u8{0} ** 96,
+        .signature_slot = attested_slot + 1,
+        .next_sync_committee_pubkeys = null,
+        .next_sync_committee_aggregate_pubkey = null,
+        .next_sync_committee_branch = null,
+        .finalized_header = null,
+        .finality_branch = null,
+    };
+}
+
+test "a single validator cannot advance optimistic_header right after bootstrap" {
+    var store = testBootstrappedStore(64);
+
+    _ = applyUpdate(&store, testOptimisticUpdate(65, 1));
+    try std.testing.expectEqual(@as(u64, 64), store.optimistic_header.beacon.slot);
+
+    // Repeated minority updates must not ratchet the threshold down to zero.
+    _ = applyUpdate(&store, testOptimisticUpdate(66, 1));
+    _ = applyUpdate(&store, testOptimisticUpdate(67, 341));
+    try std.testing.expectEqual(@as(u64, 64), store.optimistic_header.beacon.slot);
+}
+
+test "a supermajority advances optimistic_header after bootstrap, then the spec threshold applies" {
+    var store = testBootstrappedStore(64);
+
+    _ = applyUpdate(&store, testOptimisticUpdate(65, 342));
+    try std.testing.expectEqual(@as(u64, 65), store.optimistic_header.beacon.slot);
+
+    // Once a supermajority has been observed, the spec safety threshold
+    // (max participants / 2) governs: 171 is not enough, 172 is.
+    _ = applyUpdate(&store, testOptimisticUpdate(66, 171));
+    try std.testing.expectEqual(@as(u64, 65), store.optimistic_header.beacon.slot);
+    _ = applyUpdate(&store, testOptimisticUpdate(67, 172));
+    try std.testing.expectEqual(@as(u64, 67), store.optimistic_header.beacon.slot);
+}
+
+test "processLightClientStoreForceUpdate saturates the timeout slot" {
+    var store = testBootstrappedStore(std.math.maxInt(u64) - 1);
+    store.best_valid_update = try primitives.LightClientUpdate.StoredGenericUpdate.fromGeneric(
+        testOptimisticUpdate(std.math.maxInt(u64) - 2, 342),
+    );
+
+    try std.testing.expect(processLightClientStoreForceUpdate(&store, std.math.maxInt(u64)) == null);
+    try std.testing.expectEqual(std.math.maxInt(u64) - 1, store.finalized_header.beacon.slot);
+}
+
+test "a zero finality branch ranks like an absent branch" {
+    const optimistic = testOptimisticUpdate(65, 342);
+    var candidate = optimistic;
+    candidate.finalized_header = testLightClientHeader(0, 0);
+    var branch = [_][32]u8{ZERO_CHUNK} ** 6;
+    candidate.finality_branch = &branch;
+    try std.testing.expect(!isBetterUpdate(candidate, optimistic));
+    try std.testing.expect(!isBetterUpdate(optimistic, candidate));
+
+    branch[5][31] = 1;
+    try std.testing.expect(isBetterUpdate(candidate, optimistic));
+    try std.testing.expect(!isBetterUpdate(optimistic, candidate));
 }

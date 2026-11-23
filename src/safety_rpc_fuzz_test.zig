@@ -77,7 +77,13 @@ fn checkFees(_: void, bytes: []const u8) !void {
     const base = in.word();
     const value = in.word();
     const blob_cap = if (kind == 2) in.word() else 0;
-    const blobs: u256 = if (kind == 2) @as(u256, 131072) * (in.byte() % 7) else 0;
+    const blob_count: usize = if (kind == 2) 1 + (in.byte() % 6) else 0;
+    var blob_hashes: [6][32]u8 = undefined;
+    for (blob_hashes[0..blob_count], 0..) |*h, idx| {
+        h.* = hash(@intCast(idx + 1));
+        h[0] = 0x01;
+    }
+    const blobs: u256 = @as(u256, 131072) * blob_count;
     const blob_price = @min(blob_cap, in.word());
     // All products and their sum fit in 512 bits, even when the sender cannot pay.
     const cost = @as(u512, cap) * gas + @as(u512, blob_cap) * blobs + value;
@@ -128,6 +134,7 @@ fn checkFees(_: void, bytes: []const u8) !void {
         .max_fee_per_blob_gas = blob_cap,
         .blob_gas_used = blobs,
         .blob_gas_price = blob_price,
+        .blob_versioned_hashes = if (kind == 2) blob_hashes[0..blob_count] else null,
     });
     const expected: ?processor.TxError = if (gas < 21000) error.IntrinsicGasExceedsLimit else if (kind != 0 and tip > cap) error.TipExceedsFeeCap else if (cap < base) error.GasPriceBelowBaseFee else if (cost > balance) error.InsufficientBalance else null;
     if (expected) |err| {
