@@ -4,6 +4,8 @@ dist/
 /types/
 
 .smithers
+.flows/
+bench/**/.results/
 
 modern-monaco
 tevm-monorepo
@@ -102,6 +104,7 @@ _
 # zig
 .zig-cache/
 .zig-cache-codex-check/
+.fuzz-logs/
 zig-out/
 zig-cache/
 /bin/

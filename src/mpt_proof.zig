@@ -20,11 +20,17 @@ const Entry = struct {
     value: []const u8,
 };
 
-const Node = union(enum) {
+const NodeKind = union(enum) {
     empty,
     leaf: PathValue,
     extension: Extension,
     branch: Branch,
+};
+
+const Node = struct {
+    kind: NodeKind,
+    encoded: ?[]const u8 = null,
+    ref: ?Data = null,
 };
 
 const PathValue = struct {
@@ -101,24 +107,24 @@ fn buildNode(allocator: std.mem.Allocator, entries: []const Entry, level: usize)
     errdefer allocator.destroy(node);
 
     if (entries.len == 0) {
-        node.* = .empty;
+        node.* = .{ .kind = .empty };
         return node;
     }
 
     if (entries.len == 1) {
-        node.* = .{ .leaf = .{
+        node.* = .{ .kind = .{ .leaf = .{
             .path = entries[0].key[level..],
             .value = entries[0].value,
-        } };
+        } } };
         return node;
     }
 
     const prefix_length = commonPrefixLength(entries, level);
     if (prefix_length > 0) {
-        node.* = .{ .extension = .{
+        node.* = .{ .kind = .{ .extension = .{
             .path = entries[0].key[level .. level + prefix_length],
             .child = try buildNode(allocator, entries, level + prefix_length),
-        } };
+        } } };
         return node;
     }
 
@@ -127,31 +133,46 @@ fn buildNode(allocator: std.mem.Allocator, entries: []const Entry, level: usize)
         .value = EMPTY_BYTES,
     };
 
+    // Single counting pass across all 16 nibble buckets instead of 16 separate scans.
+    var counts = [_]usize{0} ** 16;
+    var total_children: usize = 0;
     for (entries) |entry| {
         if (entry.key.len == level) {
             branch.value = entry.value;
+        } else {
+            counts[entry.key[level]] += 1;
+            total_children += 1;
         }
     }
 
-    for (0..16) |bucket| {
-        var count: usize = 0;
-        for (entries) |entry| {
-            if (entry.key.len > level and entry.key[level] == bucket) count += 1;
+    if (total_children > 0) {
+        // One contiguous partition buffer for all non-empty buckets at this branch.
+        const partitioned = try allocator.alloc(Entry, total_children);
+        var starts: [16]usize = undefined;
+        var cursors: [16]usize = undefined;
+        var offset: usize = 0;
+        for (0..16) |bucket| {
+            starts[bucket] = offset;
+            cursors[bucket] = offset;
+            offset += counts[bucket];
         }
-        if (count == 0) continue;
 
-        const bucket_entries = try allocator.alloc(Entry, count);
-        var index: usize = 0;
         for (entries) |entry| {
-            if (entry.key.len > level and entry.key[level] == bucket) {
-                bucket_entries[index] = entry;
-                index += 1;
+            if (entry.key.len > level) {
+                const b = entry.key[level];
+                partitioned[cursors[b]] = entry;
+                cursors[b] += 1;
             }
         }
-        branch.children[bucket] = try buildNode(allocator, bucket_entries, level + 1);
+
+        for (0..16) |bucket| {
+            if (counts[bucket] == 0) continue;
+            const slice = partitioned[starts[bucket] .. starts[bucket] + counts[bucket]];
+            branch.children[bucket] = try buildNode(allocator, slice, level + 1);
+        }
     }
 
-    node.* = .{ .branch = branch };
+    node.* = .{ .kind = .{ .branch = branch } };
     return node;
 }
 
@@ -171,10 +192,9 @@ fn commonPrefixLength(entries: []const Entry, level: usize) usize {
     return prefix_length;
 }
 
-fn computeRootHash(allocator: std.mem.Allocator, root: *const Node) anyerror!Hash32 {
+fn computeRootHash(allocator: std.mem.Allocator, root: *Node) anyerror!Hash32 {
     const root_ref = try nodeReferenceData(allocator, root);
-    const encoded = try encodeData(allocator, root_ref);
-    defer allocator.free(encoded);
+    const encoded = root.encoded orelse try encodeData(allocator, root_ref);
 
     if (encoded.len < 32) return hashBytes(encoded);
 
@@ -192,26 +212,29 @@ fn computeRootHash(allocator: std.mem.Allocator, root: *const Node) anyerror!Has
 fn collectProofNodes(
     proof_allocator: std.mem.Allocator,
     arena_allocator: std.mem.Allocator,
-    node: *const Node,
+    node: *Node,
     target_nibbles: []const u8,
     level: usize,
     proof_nodes: *std.ArrayList([]u8),
     is_root: bool,
 ) anyerror!void {
-    const full = try fullNodeData(arena_allocator, node);
-    const encoded = try encodeData(proof_allocator, full);
+    // Reuse the RLP bytes cached during computeRootHash instead of re-encoding
+    // and re-hashing every subtree along the proof path.
+    const cached = node.encoded orelse blk: {
+        _ = try nodeReferenceData(arena_allocator, node);
+        break :blk node.encoded.?;
+    };
 
     // Per EIP-1186, only hash-referenced nodes appear as standalone proof
     // entries. A child whose RLP encoding is < 32 bytes is embedded inline in
     // its parent (see nodeReferenceData) and must NOT be emitted separately.
     // The root node is always emitted even when < 32 bytes.
-    if (is_root or encoded.len >= 32) {
-        try proof_nodes.append(proof_allocator, encoded);
-    } else {
-        proof_allocator.free(encoded);
+    if (is_root or cached.len >= 32) {
+        const duped = try proof_allocator.dupe(u8, cached);
+        try proof_nodes.append(proof_allocator, duped);
     }
 
-    switch (node.*) {
+    switch (node.kind) {
         .empty => {},
         .leaf => {},
         .extension => |extension| {
@@ -242,24 +265,36 @@ fn collectProofNodes(
     }
 }
 
-fn nodeReferenceData(allocator: std.mem.Allocator, node: *const Node) anyerror!Data {
-    switch (node.*) {
-        .empty => return .{ .string = EMPTY_BYTES },
+fn nodeReferenceData(allocator: std.mem.Allocator, node: *Node) anyerror!Data {
+    if (node.ref) |cached_ref| return cached_ref;
+
+    switch (node.kind) {
+        .empty => {
+            const empty_encoded = try encodeData(allocator, .{ .string = EMPTY_BYTES });
+            node.encoded = empty_encoded;
+            node.ref = .{ .string = EMPTY_BYTES };
+            return node.ref.?;
+        },
         else => {},
     }
 
     const full = try fullNodeData(allocator, node);
     const encoded = try encodeData(allocator, full);
-    defer allocator.free(encoded);
+    node.encoded = encoded;
 
-    if (encoded.len < 32) return full;
+    if (encoded.len < 32) {
+        node.ref = full;
+        return full;
+    }
 
     const hashed = hashBytes(encoded);
-    return .{ .string = try allocator.dupe(u8, &hashed) };
+    const ref_data = Data{ .string = try allocator.dupe(u8, &hashed) };
+    node.ref = ref_data;
+    return ref_data;
 }
 
-fn fullNodeData(allocator: std.mem.Allocator, node: *const Node) anyerror!Data {
-    return switch (node.*) {
+fn fullNodeData(allocator: std.mem.Allocator, node: *Node) anyerror!Data {
+    return switch (node.kind) {
         .empty => .{ .string = EMPTY_BYTES },
         .leaf => |leaf| blk: {
             const items = try allocator.alloc(Data, 2);

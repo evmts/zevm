@@ -3,6 +3,7 @@ const primitives = @import("primitives");
 const state_manager = @import("state-manager");
 const guillotine_mini = @import("guillotine_mini");
 const tx_processor = @import("tx_processor.zig");
+const tx_encoding = @import("transaction_encoding.zig");
 const dev_runtime = @import("rpc/dev_runtime.zig");
 const hardfork_schedule = @import("hardfork_schedule.zig");
 const blob_fee = @import("blob_fee.zig");
@@ -643,6 +644,7 @@ pub fn expectedBaseFeePerGas(parent: *const primitives.BlockHeader.BlockHeader) 
         const raw_delta = (@as(u512, parent_base_fee) * @as(u512, gas_delta)) /
             @as(u512, parent_gas_target) /
             @as(u512, BASE_FEE_CHANGE_DENOMINATOR);
+        if (raw_delta > std.math.maxInt(u256)) return error.BaseFeeOverflow;
         const base_fee_delta = @max(@as(u256, 1), @as(u256, @intCast(raw_delta)));
         return std.math.add(u256, parent_base_fee, base_fee_delta) catch return error.BaseFeeOverflow;
     }
@@ -660,34 +662,20 @@ pub fn computeTransactionsRoot(
     allocator: std.mem.Allocator,
     transactions: []const tx_processor.ExecutionTx,
 ) ![32]u8 {
-    const keys = try allocator.alloc([]const u8, transactions.len);
-    defer allocator.free(keys);
-    const values = try allocator.alloc([]const u8, transactions.len);
-    defer allocator.free(values);
+    if (transactions.len == 0) return primitives.BlockHeader.EMPTY_TRANSACTIONS_ROOT;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
 
-    var initialized: usize = 0;
-    errdefer {
-        var i: usize = 0;
-        while (i < initialized) : (i += 1) {
-            allocator.free(keys[i]);
-            allocator.free(values[i]);
-        }
-    }
-    defer {
-        var i: usize = 0;
-        while (i < initialized) : (i += 1) {
-            allocator.free(keys[i]);
-            allocator.free(values[i]);
-        }
-    }
+    const keys = try arena_alloc.alloc([]const u8, transactions.len);
+    const values = try arena_alloc.alloc([]const u8, transactions.len);
 
     for (transactions, 0..) |item, i| {
-        keys[i] = try primitives.Rlp.encode(allocator, @as(u64, @intCast(i)));
-        values[i] = try encodeLegacyTransactionEnvelope(allocator, item.tx);
-        initialized += 1;
+        keys[i] = try primitives.Rlp.encode(arena_alloc, @as(u64, @intCast(i)));
+        values[i] = try tx_encoding.encodeLegacyTransactionEnvelope(arena_alloc, item.tx);
     }
 
-    return primitives.TrieHash.trie_root(allocator, keys, values);
+    return primitives.TrieHash.trie_root(arena_alloc, keys, values);
 }
 
 fn computeIncludedTransactionsRoot(
@@ -738,34 +726,20 @@ pub fn computeReceiptsRoot(
     allocator: std.mem.Allocator,
     receipts: []const primitives.Receipt.Receipt,
 ) ![32]u8 {
-    const keys = try allocator.alloc([]const u8, receipts.len);
-    defer allocator.free(keys);
-    const values = try allocator.alloc([]const u8, receipts.len);
-    defer allocator.free(values);
+    if (receipts.len == 0) return primitives.BlockHeader.EMPTY_RECEIPTS_ROOT;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
 
-    var initialized: usize = 0;
-    errdefer {
-        var i: usize = 0;
-        while (i < initialized) : (i += 1) {
-            allocator.free(keys[i]);
-            allocator.free(values[i]);
-        }
-    }
-    defer {
-        var i: usize = 0;
-        while (i < initialized) : (i += 1) {
-            allocator.free(keys[i]);
-            allocator.free(values[i]);
-        }
-    }
+    const keys = try arena_alloc.alloc([]const u8, receipts.len);
+    const values = try arena_alloc.alloc([]const u8, receipts.len);
 
     for (receipts, 0..) |receipt, i| {
-        keys[i] = try primitives.Rlp.encode(allocator, @as(u64, @intCast(i)));
-        values[i] = try encodeReceiptEnvelope(allocator, receipt);
-        initialized += 1;
+        keys[i] = try primitives.Rlp.encode(arena_alloc, @as(u64, @intCast(i)));
+        values[i] = try encodeReceiptEnvelope(arena_alloc, receipt);
     }
 
-    return primitives.TrieHash.trie_root(allocator, keys, values);
+    return primitives.TrieHash.trie_root(arena_alloc, keys, values);
 }
 
 pub fn computeStateRoot(
@@ -782,8 +756,11 @@ pub fn computeStateRootForFork(
 ) ![32]u8 {
     _ = fork;
 
-    var addresses = std.AutoHashMap(primitives.Address, void).init(allocator);
-    defer addresses.deinit();
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    var addresses = std.AutoHashMap(primitives.Address, void).init(arena_alloc);
 
     var account_it = sm.accountIterator();
     while (account_it.next()) |entry| {
@@ -800,26 +777,19 @@ pub fn computeStateRootForFork(
         try addresses.put(address.*, {});
     }
 
-    var keys = std.ArrayList([]const u8){};
-    defer {
-        for (keys.items) |key| allocator.free(key);
-        keys.deinit(allocator);
-    }
-    var values = std.ArrayList([]const u8){};
-    defer {
-        for (values.items) |value| allocator.free(value);
-        values.deinit(allocator);
-    }
+    const cap = addresses.count();
+    var keys = try std.ArrayList([]const u8).initCapacity(arena_alloc, cap);
+    var values = try std.ArrayList([]const u8).initCapacity(arena_alloc, cap);
 
     var address_it = addresses.keyIterator();
     while (address_it.next()) |address_ptr| {
         const address = address_ptr.*;
         const account = sm.journaled_state.account_cache.get(address) orelse state_manager.AccountState.init();
-        const storage_root = try computeAccountStorageRoot(allocator, sm, address, account.storage_root);
+        const storage_root = try computeAccountStorageRoot(arena_alloc, sm, address, account.storage_root);
         const code_hash = computeAccountCodeHash(sm, address, account.code_hash);
 
         try appendAccountTrieEntry(
-            allocator,
+            arena_alloc,
             &keys,
             &values,
             address,
@@ -830,7 +800,7 @@ pub fn computeStateRootForFork(
         );
     }
 
-    return try primitives.TrieHash.secure_trie_root(allocator, keys.items, values.items);
+    return try primitives.TrieHash.secure_trie_root(arena_alloc, keys.items, values.items);
 }
 
 pub fn computeStorageRoot(
@@ -1360,33 +1330,13 @@ fn encodeLegacyTransactionEnvelope(
     allocator: std.mem.Allocator,
     tx: primitives.Transaction.LegacyTransaction,
 ) ![]u8 {
-    var fields = std.ArrayList([]u8){};
-    defer freeEncodedFields(allocator, &fields);
-
-    try fields.append(allocator, try primitives.Rlp.encode(allocator, tx.nonce));
-    try fields.append(allocator, try primitives.Rlp.encode(allocator, tx.gas_price));
-    try fields.append(allocator, try primitives.Rlp.encode(allocator, tx.gas_limit));
-    if (tx.to) |to| {
-        try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, &to.bytes));
-    } else {
-        try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, &.{}));
-    }
-    try fields.append(allocator, try primitives.Rlp.encode(allocator, tx.value));
-    try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, tx.data));
-    try fields.append(allocator, try primitives.Rlp.encode(allocator, tx.v));
-    try fields.append(allocator, try primitives.Rlp.encode(allocator, std.mem.readInt(u256, &tx.r, .big)));
-    try fields.append(allocator, try primitives.Rlp.encode(allocator, std.mem.readInt(u256, &tx.s, .big)));
-
-    return encodeRlpListFromEncodedFields(allocator, fields.items);
+    return tx_encoding.encodeLegacyTransactionEnvelope(allocator, tx);
 }
 
 pub fn encodeReceiptEnvelope(
     allocator: std.mem.Allocator,
     receipt: primitives.Receipt.Receipt,
 ) ![]u8 {
-    const payload = try encodeReceiptPayload(allocator, receipt);
-    errdefer allocator.free(payload);
-
     const type_byte: ?u8 = switch (receipt.type) {
         .legacy => null,
         .eip2930 => 0x01,
@@ -1395,79 +1345,133 @@ pub fn encodeReceiptEnvelope(
         .eip7702 => 0x04,
     };
 
-    if (type_byte) |byte| {
-        const out = try allocator.alloc(u8, payload.len + 1);
-        out[0] = byte;
-        @memcpy(out[1..], payload);
-        allocator.free(payload);
-        return out;
-    }
-
-    return payload;
-}
-
-fn encodeReceiptPayload(
-    allocator: std.mem.Allocator,
-    receipt: primitives.Receipt.Receipt,
-) ![]u8 {
-    var fields = std.ArrayList([]u8){};
-    defer freeEncodedFields(allocator, &fields);
-
-    if (receipt.root) |root| {
-        try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, &root));
-    } else if (receipt.status) |status| {
-        try fields.append(allocator, try primitives.Rlp.encode(allocator, @as(u8, if (status.success) 1 else 0)));
-    } else {
+    const status_or_root_len: usize = if (receipt.root != null)
+        33 // 0xa0 + 32 bytes
+    else if (receipt.status != null)
+        1 // 0x80 (0) or 0x01 (1)
+    else
         return error.InvalidReceipt;
+
+    const cum_gas_len = rlpUintEncodedLen(receipt.cumulative_gas_used);
+    const bloom_len: usize = 3 + 256; // 0xb9, 0x01, 0x00 + 256 bytes
+
+    var logs_payload_len: usize = 0;
+    for (receipt.logs) |event_log| {
+        const topics_payload_len = event_log.topics.len * 33;
+        const topics_item_len = rlpListEncodedLen(topics_payload_len);
+        const log_payload_len = 21 + topics_item_len + rlpBytesEncodedLen(event_log.data);
+        logs_payload_len += rlpListEncodedLen(log_payload_len);
+    }
+    const logs_item_len = rlpListEncodedLen(logs_payload_len);
+
+    const receipt_payload_len = status_or_root_len + cum_gas_len + bloom_len + logs_item_len;
+    const receipt_rlp_len = rlpListEncodedLen(receipt_payload_len);
+    const prefix_len: usize = if (type_byte != null) 1 else 0;
+
+    const out = try allocator.alloc(u8, prefix_len + receipt_rlp_len);
+    var pos: usize = 0;
+    if (type_byte) |byte| {
+        out[pos] = byte;
+        pos += 1;
     }
 
-    try fields.append(allocator, try primitives.Rlp.encode(allocator, receipt.cumulative_gas_used));
-    try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, &receipt.logs_bloom));
-    try fields.append(allocator, try encodeLogs(allocator, receipt.logs));
+    pos = writeRlpListHeader(out, pos, receipt_payload_len);
+    if (receipt.root) |root| {
+        pos = writeRlpBytes(out, pos, &root);
+    } else if (receipt.status) |status| {
+        out[pos] = if (status.success) 0x01 else 0x80;
+        pos += 1;
+    } else unreachable;
 
-    return encodeRlpListFromEncodedFields(allocator, fields.items);
-}
+    pos = writeRlpUint(out, pos, receipt.cumulative_gas_used);
+    pos = writeRlpBytes(out, pos, &receipt.logs_bloom);
 
-fn encodeLogs(
-    allocator: std.mem.Allocator,
-    logs: []const primitives.EventLog.EventLog,
-) ![]u8 {
-    var fields = std.ArrayList([]u8){};
-    defer freeEncodedFields(allocator, &fields);
-
-    for (logs) |log| {
-        try fields.append(allocator, try encodeLog(allocator, log));
+    pos = writeRlpListHeader(out, pos, logs_payload_len);
+    for (receipt.logs) |event_log| {
+        const topics_payload_len = event_log.topics.len * 33;
+        const topics_item_len = rlpListEncodedLen(topics_payload_len);
+        const log_payload_len = 21 + topics_item_len + rlpBytesEncodedLen(event_log.data);
+        pos = writeRlpListHeader(out, pos, log_payload_len);
+        pos = writeRlpBytes(out, pos, &event_log.address.bytes);
+        pos = writeRlpListHeader(out, pos, topics_payload_len);
+        for (event_log.topics) |topic| {
+            pos = writeRlpBytes(out, pos, &topic);
+        }
+        pos = writeRlpBytes(out, pos, event_log.data);
     }
 
-    return encodeRlpListFromEncodedFields(allocator, fields.items);
+    std.debug.assert(pos == out.len);
+    return out;
 }
 
-fn encodeLog(
-    allocator: std.mem.Allocator,
-    log: primitives.EventLog.EventLog,
-) ![]u8 {
-    var fields = std.ArrayList([]u8){};
-    defer freeEncodedFields(allocator, &fields);
-
-    try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, &log.address.bytes));
-    try fields.append(allocator, try encodeTopics(allocator, log.topics));
-    try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, log.data));
-
-    return encodeRlpListFromEncodedFields(allocator, fields.items);
+fn rlpLengthPrefixBytes(len: usize) usize {
+    if (len < 56) return 1;
+    return 1 + ((@bitSizeOf(usize) - @clz(len) + 7) / 8);
 }
 
-fn encodeTopics(
-    allocator: std.mem.Allocator,
-    topics: []const primitives.Hash.Hash,
-) ![]u8 {
-    var fields = std.ArrayList([]u8){};
-    defer freeEncodedFields(allocator, &fields);
+fn rlpListEncodedLen(payload_len: usize) usize {
+    return rlpLengthPrefixBytes(payload_len) + payload_len;
+}
 
-    for (topics) |topic| {
-        try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, &topic));
+fn rlpBytesEncodedLen(bytes: []const u8) usize {
+    if (bytes.len == 1 and bytes[0] < 0x80) return 1;
+    return rlpLengthPrefixBytes(bytes.len) + bytes.len;
+}
+
+fn rlpUintEncodedLen(value: anytype) usize {
+    if (value == 0 or value < 0x80) return 1;
+    const bit_len: usize = @bitSizeOf(@TypeOf(value)) - @as(usize, @clz(value));
+    return 1 + (bit_len + 7) / 8;
+}
+
+fn writeRlpHeader(out: []u8, pos: usize, payload_len: usize, short_base: u8, long_base: u8) usize {
+    if (payload_len < 56) {
+        out[pos] = short_base + @as(u8, @intCast(payload_len));
+        return pos + 1;
     }
+    const len_bytes: usize = (@bitSizeOf(usize) - @clz(payload_len) + 7) / 8;
+    out[pos] = long_base + @as(u8, @intCast(len_bytes));
+    var i: usize = 0;
+    while (i < len_bytes) : (i += 1) {
+        const shift: std.math.Log2Int(usize) = @intCast((len_bytes - 1 - i) * 8);
+        out[pos + 1 + i] = @truncate(payload_len >> shift);
+    }
+    return pos + 1 + len_bytes;
+}
 
-    return encodeRlpListFromEncodedFields(allocator, fields.items);
+fn writeRlpListHeader(out: []u8, pos: usize, payload_len: usize) usize {
+    return writeRlpHeader(out, pos, payload_len, 0xc0, 0xf7);
+}
+
+fn writeRlpBytes(out: []u8, pos: usize, bytes: []const u8) usize {
+    if (bytes.len == 1 and bytes[0] < 0x80) {
+        out[pos] = bytes[0];
+        return pos + 1;
+    }
+    const p = writeRlpHeader(out, pos, bytes.len, 0x80, 0xb7);
+    if (bytes.len > 0) @memcpy(out[p .. p + bytes.len], bytes);
+    return p + bytes.len;
+}
+
+fn writeRlpUint(out: []u8, pos: usize, value: anytype) usize {
+    if (value == 0) {
+        out[pos] = 0x80;
+        return pos + 1;
+    }
+    if (value < 0x80) {
+        out[pos] = @intCast(value);
+        return pos + 1;
+    }
+    const T = @TypeOf(value);
+    const bit_len: usize = @bitSizeOf(T) - @as(usize, @clz(value));
+    const byte_len: usize = (bit_len + 7) / 8;
+    out[pos] = 0x80 + @as(u8, @intCast(byte_len));
+    var i: usize = 0;
+    while (i < byte_len) : (i += 1) {
+        const shift: std.math.Log2Int(T) = @intCast((byte_len - 1 - i) * 8);
+        out[pos + 1 + i] = @truncate(value >> shift);
+    }
+    return pos + 1 + byte_len;
 }
 
 fn encodeWithdrawal(

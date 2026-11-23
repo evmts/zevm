@@ -53,9 +53,25 @@ If implementation, tests, or public docs diverge from those specs, treat the mis
 npm --prefix npm/zevm install --ignore-scripts
 zig build test
 zig build verify-fast
+zig build fuzz -Doptimize=ReleaseSafe
 zig build c-smoke
 zig build npm-smoke
 node --check npm/zevm/src/index.js
+```
+
+### Fuzz Testing
+
+ZEVM ships 14 property-based and native `std.testing.fuzz` suites (30 coverage-guided targets covering consensus, EVM execution, state/MPT proofs, KZG blobs, JSON-RPC, Engine API, light client, config/CLI/genesis, and the C ABI):
+
+```bash
+# Run all deterministic property tests and fuzz corpora (macOS & Linux)
+zig build fuzz -Doptimize=ReleaseSafe
+zig build fuzz-c-abi -Doptimize=ReleaseSafe
+zig build fuzz -Dfuzz-filter="rpc"
+
+# Run live coverage-guided --fuzz across all 30 targets (Linux locally, or synced to bare-metal Ubuntu from macOS)
+./tools/fuzz_ubuntu.sh --list
+./tools/fuzz_ubuntu.sh --optimize ReleaseSafe --seconds 30 --jobs 8
 ```
 
 Behavior changes are docs-first: update `docs/specs/prd.md` and `docs/specs/json-rpc-contract.md` before landing code that changes startup, runtime modes, JSON-RPC behavior, release metadata, the C ABI, or npm distribution. The full process is in [docs/specs/docs-first-process.md](./docs/specs/docs-first-process.md).

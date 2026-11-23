@@ -1785,66 +1785,52 @@ pub const NodeRuntime = struct {
     }
 
     pub fn revertToSnapshot(self: *NodeRuntime, snapshot_id: u64) !bool {
-        const entry = self.snapshots.get(snapshot_id) orelse return false;
-        var pool_copy = try entry.pool.clone(self.allocator);
-        var pool_assigned = false;
-        defer {
-            if (!pool_assigned) pool_copy.deinit();
-        }
-        var impersonated_copy = try entry.impersonated_accounts.clone();
-        var impersonation_assigned = false;
-        defer {
-            if (!impersonation_assigned) impersonated_copy.deinit();
-        }
-        var query_copy = try cloneQueryIndexSnapshot(
-            self.allocator,
-            &entry.query_indexes.blockchain,
-            &entry.query_indexes.receipt_index,
-            &entry.query_indexes.log_index,
-        );
-        var query_assigned = false;
-        defer {
-            if (!query_assigned) query_copy.deinit(self.allocator);
-        }
+        if (!self.snapshots.contains(snapshot_id)) return false;
 
-        self.state.revertToSnapshot(entry.state_snapshot_id) catch return false;
+        // Fetch-remove and transfer ownership directly from the snapshot entry instead
+        // of deep-cloning pool, impersonated_accounts, and full query indexes just to
+        // immediately free the original snapshot entry.
+        const entry_peek = self.snapshots.get(snapshot_id).?;
+        self.state.revertToSnapshot(entry_peek.state_snapshot_id) catch return false;
         self.stopIntervalMiningTimer();
 
-        self.head_block_number = entry.head_block_number;
-        self.head_block_timestamp = entry.head_block_timestamp;
-        self.engine_safe_hash = entry.engine_safe_hash;
-        self.engine_finalized_hash = entry.engine_finalized_hash;
+        const removed_entry = self.snapshots.fetchRemove(snapshot_id).?.value;
+        defer freeForkConfig(self.allocator, removed_entry.fork_config);
+
+        self.head_block_number = removed_entry.head_block_number;
+        self.head_block_timestamp = removed_entry.head_block_timestamp;
+        self.engine_safe_hash = removed_entry.engine_safe_hash;
+        self.engine_finalized_hash = removed_entry.engine_finalized_hash;
         self.clearEngineImportState();
         self.clearReplayStateCache();
         self.clearEngineInvalidPayloads();
-        self.coinbase = entry.coinbase;
-        self.gas_price = entry.gas_price;
-        self.base_fee = entry.base_fee;
-        self.blob_base_fee = entry.blob_base_fee;
-        self.max_priority_fee = entry.max_priority_fee;
-        self.mining_config = entry.mining_config;
-        self.pool.deinit();
-        self.pool = pool_copy;
-        pool_assigned = true;
-        self.replaceQueryIndexes(query_copy);
-        query_assigned = true;
-        self.time_offset = entry.time_offset;
-        self.next_block_timestamp = entry.next_block_timestamp;
-        self.block_timestamp_interval = entry.block_timestamp_interval;
-        self.dev_runtime.config = entry.dev_config;
+        self.coinbase = removed_entry.coinbase;
+        self.gas_price = removed_entry.gas_price;
+        self.base_fee = removed_entry.base_fee;
+        self.blob_base_fee = removed_entry.blob_base_fee;
+        self.max_priority_fee = removed_entry.max_priority_fee;
+        self.mining_config = removed_entry.mining_config;
 
-        try self.restoreForkStateFromSnapshot(entry.fork_config);
+        self.pool.deinit();
+        self.pool = removed_entry.pool;
+        self.replaceQueryIndexes(removed_entry.query_indexes);
+        self.time_offset = removed_entry.time_offset;
+        self.next_block_timestamp = removed_entry.next_block_timestamp;
+        self.block_timestamp_interval = removed_entry.block_timestamp_interval;
+        self.dev_runtime.config = removed_entry.dev_config;
+
         self.impersonated_accounts.deinit();
-        self.impersonated_accounts = impersonated_copy;
-        impersonation_assigned = true;
-        self.auto_impersonate_account = entry.auto_impersonate_account;
+        self.impersonated_accounts = removed_entry.impersonated_accounts;
+        self.auto_impersonate_account = removed_entry.auto_impersonate_account;
+
+        try self.restoreForkStateFromSnapshot(removed_entry.fork_config);
 
         var to_remove = std.ArrayList(u64){};
         defer to_remove.deinit(self.allocator);
 
         var it = self.snapshots.iterator();
         while (it.next()) |kv| {
-            if (kv.key_ptr.* >= snapshot_id) {
+            if (kv.key_ptr.* > snapshot_id) {
                 try to_remove.append(self.allocator, kv.key_ptr.*);
             }
         }

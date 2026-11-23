@@ -7,14 +7,15 @@ pub const std_options: std.Options = .{
 };
 
 pub fn main() !void {
-    const args = try std.process.argsAlloc(std.heap.page_allocator);
-    defer std.process.argsFree(std.heap.page_allocator, args);
+    const allocator = std.heap.smp_allocator;
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
 
     zevm.log.init(.info);
 
     var load_diagnostics = zevm.config.LoadDiagnostics{};
     var app_config = zevm.config.loadWithDiagnostics(
-        std.heap.page_allocator,
+        allocator,
         args[1..],
         &load_diagnostics,
     ) catch |err| {
@@ -32,7 +33,7 @@ pub fn main() !void {
         }
         std.process.exit(1);
     };
-    defer app_config.deinit(std.heap.page_allocator);
+    defer app_config.deinit(allocator);
 
     switch (app_config.mode) {
         .trusted => |trusted_config| {
@@ -49,7 +50,7 @@ pub fn main() !void {
 
             // Runtime initialization validates startup config before the listener opens.
             var runtime = zevm.node_runtime.NodeRuntime.init(
-                std.heap.page_allocator,
+                allocator,
                 trusted_config.toNodeConfig(),
             ) catch |err| exitStartupError("startup failed phase=runtime_init mode=trusted error={s}", .{@errorName(err)});
             defer runtime.deinit();
@@ -62,7 +63,7 @@ pub fn main() !void {
 
             if (app_config.engine_rpc) |engine_rpc| {
                 engine_listener = zevm.rpc.server.RpcServer.init(
-                    std.heap.page_allocator,
+                    allocator,
                     engine_rpc,
                     &handlers,
                     .{
@@ -80,7 +81,7 @@ pub fn main() !void {
                     @errorName(err),
                 });
             }
-            zevm.rpc.server.run(std.heap.page_allocator, app_config.rpc, &handlers) catch |err| exitStartupError("startup failed phase=rpc_listener mode=trusted host={s} port={} error={s}", .{
+            zevm.rpc.server.run(allocator, app_config.rpc, &handlers) catch |err| exitStartupError("startup failed phase=rpc_listener mode=trusted host={s} port={} error={s}", .{
                 app_config.rpc.host,
                 app_config.rpc.port,
                 @errorName(err),
@@ -91,7 +92,7 @@ pub fn main() !void {
             zevm.log.info(.startup, "light network network={s}", .{zevm.cli.networkName(light_config.network)});
 
             var runtime = zevm.node_runtime.NodeRuntime.init(
-                std.heap.page_allocator,
+                allocator,
                 light_config.toNodeConfig(),
             ) catch |err| exitStartupError("startup failed phase=runtime_init mode=light error={s}", .{@errorName(err)});
             defer runtime.deinit();
@@ -99,7 +100,7 @@ pub fn main() !void {
 
             var handlers = zevm.rpc.dispatcher.HandlerRegistry{};
             zevm.rpc.dispatch_wiring.install(&handlers, &runtime);
-            zevm.rpc.server.run(std.heap.page_allocator, app_config.rpc, &handlers) catch |err| exitStartupError("startup failed phase=rpc_listener mode=light host={s} port={} error={s}", .{
+            zevm.rpc.server.run(allocator, app_config.rpc, &handlers) catch |err| exitStartupError("startup failed phase=rpc_listener mode=light host={s} port={} error={s}", .{
                 app_config.rpc.host,
                 app_config.rpc.port,
                 @errorName(err),

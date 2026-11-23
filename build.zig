@@ -147,6 +147,99 @@ pub fn build(b: *std.Build) void {
     const run_test_graph_check = b.addRunArtifact(test_graph_check_exe);
     run_test_graph_check.step.dependOn(launch_policy_preflight_step);
 
+    const fuzz_filter = b.option([]const u8, "fuzz-filter", "Filter tests in the fuzz and fuzz-c-abi steps");
+    const fuzz_filters: []const []const u8 = if (fuzz_filter) |filter| &.{filter} else &.{};
+    const skip_rust_build = b.option(bool, "skip-rust-build", "Skip invoking cargo build for voltaire Rust crypto (caller pre-built it)") orelse false;
+
+    const fuzz_mod = b.createModule(.{
+        .root_source_file = b.path("src/fuzz_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "primitives", .module = modules.primitives_mod },
+            .{ .name = "state-manager", .module = modules.state_manager_mod },
+            .{ .name = "blockchain", .module = modules.blockchain_mod },
+            .{ .name = "crypto", .module = modules.crypto_mod },
+            .{ .name = "precompiles", .module = modules.precompiles_mod },
+            .{ .name = "guillotine_mini", .module = modules.guillotine_mini_mod },
+            .{ .name = "jsonrpc", .module = modules.jsonrpc_mod },
+        },
+    });
+    fuzz_mod.addIncludePath(modules.c_kzg_include_path);
+    fuzz_mod.addIncludePath(modules.blst_include_path);
+
+    const fuzz_tests = b.addTest(.{
+        .name = "zevm-fuzz",
+        .root_module = fuzz_mod,
+        .filters = fuzz_filters,
+        .use_llvm = true,
+    });
+    if (!skip_rust_build) {
+        fuzz_tests.step.dependOn(&modules.voltaire_rust_crypto.step);
+    }
+    linkRustSupport(fuzz_tests, target);
+    const run_fuzz_tests = b.addRunArtifact(fuzz_tests);
+    run_fuzz_tests.step.dependOn(launch_policy_preflight_step);
+
+    const c_abi_fuzz_c_mod = createCBindingsModule(b, target, optimize, modules);
+    const c_abi_fuzz_mod = b.createModule(.{
+        .root_source_file = b.path("tools/c_abi_fuzz_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "c_bindings", .module = c_abi_fuzz_c_mod },
+        },
+    });
+    const c_abi_fuzz_tests = b.addTest(.{
+        .name = "zevm-c-abi-fuzz",
+        .root_module = c_abi_fuzz_mod,
+        .filters = fuzz_filters,
+        .use_llvm = true,
+    });
+    c_abi_fuzz_tests.linkLibC();
+    if (!skip_rust_build) {
+        c_abi_fuzz_tests.step.dependOn(&modules.voltaire_rust_crypto.step);
+    }
+    linkRustSupport(c_abi_fuzz_tests, target);
+    const run_c_abi_fuzz_tests = b.addRunArtifact(c_abi_fuzz_tests);
+    run_c_abi_fuzz_tests.step.dependOn(launch_policy_preflight_step);
+
+    const fuzz_c_abi_step = b.step("fuzz-c-abi", "Run C ABI fuzz and property tests (supports -Dfuzz-filter and --fuzz on Linux)");
+    fuzz_c_abi_step.dependOn(&run_c_abi_fuzz_tests.step);
+
+    const fuzz_step = b.step("fuzz", "Run all zevm fuzz and property suites (supports -Dfuzz-filter and --fuzz on Linux)");
+    fuzz_step.dependOn(&run_fuzz_tests.step);
+    if (fuzz_filter == null) {
+        fuzz_step.dependOn(&run_c_abi_fuzz_tests.step);
+    }
+
+    const lean_diff_fuzz = b.addExecutable(.{
+        .name = "lean-diff-fuzz",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/lean_diff_fuzz.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zevm", .module = modules.zevm_mod },
+                .{ .name = "primitives", .module = modules.primitives_mod },
+                .{ .name = "precompiles", .module = modules.precompiles_mod },
+                .{ .name = "guillotine_mini", .module = modules.guillotine_mini_mod },
+            },
+        }),
+    });
+    lean_diff_fuzz.step.dependOn(&modules.voltaire_rust_crypto.step);
+    linkRustSupport(lean_diff_fuzz, target);
+    const run_lean_diff_fuzz = b.addRunArtifact(lean_diff_fuzz);
+    run_lean_diff_fuzz.step.dependOn(launch_policy_preflight_step);
+    if (b.args) |args| {
+        run_lean_diff_fuzz.addArgs(args);
+    } else {
+        run_lean_diff_fuzz.addArgs(&.{ "--lean-bin", "spec/lean/.lake/build/bin/zevm-spec" });
+    }
+    const diff_fuzz_lean_step = b.step("diff-fuzz-lean", "Run differential fuzzing comparing Zig implementations against the Lean 4 reference spec");
+    diff_fuzz_lean_step.dependOn(&run_lean_diff_fuzz.step);
+
     const startup_smoke_step = b.step("startup-smoke", "Run executable startup failure smoke tests");
     const startup_smoke_files = b.addWriteFiles();
 
@@ -187,6 +280,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_test_graph_check.step);
     test_step.dependOn(startup_smoke_step);
     test_step.dependOn(&run_mod_tests.step);
+    test_step.dependOn(&run_c_abi_fuzz_tests.step);
     test_step.dependOn(&run_qualification_check_tests.step);
     test_step.dependOn(&run_dependency_preflight_tests.step);
 
@@ -309,6 +403,77 @@ pub fn build(b: *std.Build) void {
         "zevm.node",
     );
     npm_platform_step.dependOn(&npm_platform_addon.step);
+
+    // Performance benchmark suites (each wired as its own `bench-<suite>` step
+    // so Smithers PACKAGE.ts targets can build and run only affected suites).
+    const bench_harness_mod = b.createModule(.{
+        .root_source_file = b.path("bench/harness.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const bench_suites = [_]struct {
+        name: []const u8,
+        root: []const u8,
+        link_c_abi: bool = false,
+    }{
+        .{ .name = "database", .root = "bench/database/main.zig" },
+        .{ .name = "host-adapter", .root = "bench/host-adapter/main.zig" },
+        .{ .name = "tx-encoding", .root = "bench/tx-encoding/main.zig" },
+        .{ .name = "blob-kzg", .root = "bench/blob-kzg/main.zig" },
+        .{ .name = "tx-processor", .root = "bench/tx-processor/main.zig" },
+        .{ .name = "txpool", .root = "bench/txpool/main.zig" },
+        .{ .name = "block-builder", .root = "bench/block-builder/main.zig" },
+        .{ .name = "indexes", .root = "bench/indexes/main.zig" },
+        .{ .name = "mpt-proof", .root = "bench/mpt-proof/main.zig" },
+        .{ .name = "consensus-light", .root = "bench/consensus-light/main.zig" },
+        .{ .name = "chain-genesis", .root = "bench/chain-genesis/main.zig" },
+        .{ .name = "mining-node", .root = "bench/mining-node/main.zig" },
+        .{ .name = "rpc", .root = "bench/rpc/main.zig" },
+        .{ .name = "config-cli-log", .root = "bench/config-cli-log/main.zig" },
+        .{ .name = "c-ffi", .root = "bench/c-ffi/main.zig", .link_c_abi = true },
+    };
+
+    const bench_all_step = b.step("bench", "Run all performance benchmark suites");
+    for (bench_suites) |suite| {
+        const bench_exe = b.addExecutable(.{
+            .name = b.fmt("bench-{s}", .{suite.name}),
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(suite.root),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "harness", .module = bench_harness_mod },
+                    .{ .name = "zevm", .module = mod },
+                    .{ .name = "primitives", .module = modules.primitives_mod },
+                    .{ .name = "state-manager", .module = modules.state_manager_mod },
+                    .{ .name = "blockchain", .module = modules.blockchain_mod },
+                    .{ .name = "crypto", .module = modules.crypto_mod },
+                    .{ .name = "precompiles", .module = modules.precompiles_mod },
+                    .{ .name = "guillotine_mini", .module = modules.guillotine_mini_mod },
+                    .{ .name = "jsonrpc", .module = modules.jsonrpc_mod },
+                },
+            }),
+        });
+        bench_exe.step.dependOn(&modules.voltaire_rust_crypto.step);
+        if (suite.link_c_abi) {
+            bench_exe.linkLibrary(static_lib);
+            bench_exe.linkLibC();
+        }
+        linkRustSupport(bench_exe, target);
+
+        const run_bench = b.addRunArtifact(bench_exe);
+        run_bench.step.dependOn(launch_policy_preflight_step);
+        if (b.args) |args| {
+            run_bench.addArgs(args);
+        }
+
+        const suite_step = b.step(
+            b.fmt("bench-{s}", .{suite.name}),
+            b.fmt("Run {s} performance benchmark suite", .{suite.name}),
+        );
+        suite_step.dependOn(&run_bench.step);
+        bench_all_step.dependOn(&run_bench.step);
+    }
 }
 
 fn createModuleSet(

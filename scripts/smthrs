@@ -1,0 +1,28 @@
+#!/bin/sh
+# Runs the Smithers build CLI (`smithers-build`) against this repository's WORKSPACE.ts and PACKAGE.ts graph.
+#
+# Usage:
+#   scripts/smthrs build //bench/... --verbose --jobs 1
+#   scripts/smthrs affected build //bench/... --verbose --jobs 1
+#   scripts/smthrs affected test //bench/... --list
+#   scripts/smthrs target //bench:report --verbose --jobs 1
+set -eu
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$root"
+
+if [ -n "${SMITHERS_BUILD_BIN:-}" ] && [ -x "$SMITHERS_BUILD_BIN" ]; then
+  exec "$SMITHERS_BUILD_BIN" "$@"
+fi
+
+if command -v smithers-build >/dev/null 2>&1; then
+  exec smithers-build "$@"
+fi
+
+sibling="$root/../smithers/node_modules/.bin/smithers-build"
+if [ -x "$sibling" ]; then
+  exec "$sibling" "$@"
+fi
+
+echo "error: smithers-build not found on PATH or at $sibling (set SMITHERS_BUILD_BIN to override)" >&2
+exit 1

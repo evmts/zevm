@@ -466,28 +466,118 @@ pub fn envelopeAuthorizationList(decoded: DecodedEnvelope) []const primitives.Au
     };
 }
 
+fn rlpLenOfLen(len: usize) usize {
+    var tmp = len;
+    var n: usize = 0;
+    while (tmp > 0) : (tmp >>= 8) n += 1;
+    return n;
+}
+
+fn rlpHeaderLen(payload_len: usize) usize {
+    return if (payload_len < 56) 1 else 1 + rlpLenOfLen(payload_len);
+}
+
+fn rlpBytesLen(bytes: []const u8) usize {
+    if (bytes.len == 1 and bytes[0] < 0x80) return 1;
+    return rlpHeaderLen(bytes.len) + bytes.len;
+}
+
+fn uintByteLen(comptime T: type, value: T) usize {
+    if (value == 0) return 0;
+    const bits = @bitSizeOf(T) - @clz(value);
+    return (bits + 7) / 8;
+}
+
+fn rlpUintLen(comptime T: type, value: T) usize {
+    if (value == 0) return 1;
+    if (value < 0x80) return 1;
+    return 1 + uintByteLen(T, value);
+}
+
+fn writeRlpHeader(out: []u8, offset: *usize, base: u8, payload_len: usize) void {
+    if (payload_len < 56) {
+        out[offset.*] = base + @as(u8, @intCast(payload_len));
+        offset.* += 1;
+    } else {
+        const len_bytes = rlpLenOfLen(payload_len);
+        out[offset.*] = (base + 55) + @as(u8, @intCast(len_bytes));
+        offset.* += 1;
+        var shift = (len_bytes - 1) * 8;
+        for (0..len_bytes) |_| {
+            out[offset.*] = @as(u8, @intCast((payload_len >> @intCast(shift)) & 0xff));
+            offset.* += 1;
+            if (shift >= 8) shift -= 8;
+        }
+    }
+}
+
+fn writeRlpBytes(out: []u8, offset: *usize, bytes: []const u8) void {
+    if (bytes.len == 1 and bytes[0] < 0x80) {
+        out[offset.*] = bytes[0];
+        offset.* += 1;
+        return;
+    }
+    writeRlpHeader(out, offset, 0x80, bytes.len);
+    @memcpy(out[offset.* .. offset.* + bytes.len], bytes);
+    offset.* += bytes.len;
+}
+
+fn writeRlpUint(comptime T: type, out: []u8, offset: *usize, value: T) void {
+    if (value == 0) {
+        out[offset.*] = 0x80;
+        offset.* += 1;
+        return;
+    }
+    if (value < 0x80) {
+        out[offset.*] = @intCast(value);
+        offset.* += 1;
+        return;
+    }
+    const byte_len = uintByteLen(T, value);
+    out[offset.*] = 0x80 + @as(u8, @intCast(byte_len));
+    offset.* += 1;
+    var buf: [@sizeOf(T)]u8 = undefined;
+    std.mem.writeInt(T, &buf, value, .big);
+    @memcpy(out[offset.* .. offset.* + byte_len], buf[@sizeOf(T) - byte_len ..]);
+    offset.* += byte_len;
+}
+
 pub fn encodeLegacyTransactionEnvelope(
     allocator: std.mem.Allocator,
     tx: primitives.Transaction.LegacyTransaction,
 ) ![]u8 {
-    var fields = std.ArrayList([]u8){};
-    defer freeEncodedFields(allocator, &fields);
+    const to_slice: []const u8 = if (tx.to) |*to| &to.bytes else &.{};
+    const r_u256 = bytes32ToU256(tx.r);
+    const s_u256 = bytes32ToU256(tx.s);
 
-    try fields.append(allocator, try primitives.Rlp.encode(allocator, tx.nonce));
-    try fields.append(allocator, try primitives.Rlp.encode(allocator, tx.gas_price));
-    try fields.append(allocator, try primitives.Rlp.encode(allocator, tx.gas_limit));
-    if (tx.to) |to| {
-        try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, &to.bytes));
-    } else {
-        try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, &.{}));
-    }
-    try fields.append(allocator, try primitives.Rlp.encode(allocator, tx.value));
-    try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, tx.data));
-    try fields.append(allocator, try primitives.Rlp.encode(allocator, tx.v));
-    try fields.append(allocator, try primitives.Rlp.encode(allocator, bytes32ToU256(tx.r)));
-    try fields.append(allocator, try primitives.Rlp.encode(allocator, bytes32ToU256(tx.s)));
+    const payload_len =
+        rlpUintLen(u64, tx.nonce) +
+        rlpUintLen(u256, tx.gas_price) +
+        rlpUintLen(u64, tx.gas_limit) +
+        rlpBytesLen(to_slice) +
+        rlpUintLen(u256, tx.value) +
+        rlpBytesLen(tx.data) +
+        rlpUintLen(u64, tx.v) +
+        rlpUintLen(u256, r_u256) +
+        rlpUintLen(u256, s_u256);
 
-    return encodeRlpListFromEncodedFields(allocator, fields.items);
+    const total_len = rlpHeaderLen(payload_len) + payload_len;
+    const out = try allocator.alloc(u8, total_len);
+    var offset: usize = 0;
+
+    writeRlpHeader(out, &offset, 0xc0, payload_len);
+    writeRlpUint(u64, out, &offset, tx.nonce);
+    writeRlpUint(u256, out, &offset, tx.gas_price);
+    writeRlpUint(u64, out, &offset, tx.gas_limit);
+    writeRlpBytes(out, &offset, to_slice);
+    writeRlpUint(u256, out, &offset, tx.value);
+    writeRlpBytes(out, &offset, tx.data);
+    writeRlpUint(u64, out, &offset, tx.v);
+    writeRlpUint(u256, out, &offset, r_u256);
+    writeRlpUint(u256, out, &offset, s_u256);
+
+    std.debug.assert(offset == total_len);
+    return out;
 }
 
 pub fn encodeLegacySigningPreimage(
@@ -495,27 +585,40 @@ pub fn encodeLegacySigningPreimage(
     tx: primitives.Transaction.LegacyTransaction,
     chain_id: ?u64,
 ) ![]u8 {
-    var fields = std.ArrayList([]u8){};
-    defer freeEncodedFields(allocator, &fields);
+    const to_slice: []const u8 = if (tx.to) |*to| &to.bytes else &.{};
 
-    try fields.append(allocator, try primitives.Rlp.encode(allocator, tx.nonce));
-    try fields.append(allocator, try primitives.Rlp.encode(allocator, tx.gas_price));
-    try fields.append(allocator, try primitives.Rlp.encode(allocator, tx.gas_limit));
-    if (tx.to) |to| {
-        try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, &to.bytes));
-    } else {
-        try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, &.{}));
-    }
-    try fields.append(allocator, try primitives.Rlp.encode(allocator, tx.value));
-    try fields.append(allocator, try primitives.Rlp.encodeBytes(allocator, tx.data));
-
+    var payload_len =
+        rlpUintLen(u64, tx.nonce) +
+        rlpUintLen(u256, tx.gas_price) +
+        rlpUintLen(u64, tx.gas_limit) +
+        rlpBytesLen(to_slice) +
+        rlpUintLen(u256, tx.value) +
+        rlpBytesLen(tx.data);
     if (chain_id) |id| {
-        try fields.append(allocator, try primitives.Rlp.encode(allocator, id));
-        try fields.append(allocator, try primitives.Rlp.encode(allocator, @as(u64, 0)));
-        try fields.append(allocator, try primitives.Rlp.encode(allocator, @as(u64, 0)));
+        payload_len += rlpUintLen(u64, id) + 1 + 1; // id, 0, 0
     }
 
-    return encodeRlpListFromEncodedFields(allocator, fields.items);
+    const total_len = rlpHeaderLen(payload_len) + payload_len;
+    const out = try allocator.alloc(u8, total_len);
+    var offset: usize = 0;
+
+    writeRlpHeader(out, &offset, 0xc0, payload_len);
+    writeRlpUint(u64, out, &offset, tx.nonce);
+    writeRlpUint(u256, out, &offset, tx.gas_price);
+    writeRlpUint(u64, out, &offset, tx.gas_limit);
+    writeRlpBytes(out, &offset, to_slice);
+    writeRlpUint(u256, out, &offset, tx.value);
+    writeRlpBytes(out, &offset, tx.data);
+    if (chain_id) |id| {
+        writeRlpUint(u64, out, &offset, id);
+        out[offset] = 0x80;
+        offset += 1;
+        out[offset] = 0x80;
+        offset += 1;
+    }
+
+    std.debug.assert(offset == total_len);
+    return out;
 }
 
 pub fn signLegacyTransaction(
@@ -685,7 +788,7 @@ pub fn decodeEip7702Envelope(
         .max_priority_fee_per_gas = try rlpStringToU256(try rlpItemString(fields[2])),
         .max_fee_per_gas = try rlpStringToU256(try rlpItemString(fields[3])),
         .gas_limit = try rlpStringToU64(try rlpItemString(fields[4])),
-        .to = try rlpStringToOptionalAddress(try rlpItemString(fields[5])),
+        .to = try rlpStringToAddress(try rlpItemString(fields[5])),
         .value = try rlpStringToU256(try rlpItemString(fields[6])),
         .data = try rlpItemString(fields[7]),
         .access_list = access_list,
@@ -961,8 +1064,7 @@ fn rlpItemToAuthorizationList(
     while (index < payload.len) {
         const auth_payload = try rlpItemList(try parseRlpItem(payload, &index));
         const fields = try decodeRlpPayloadFields(6, auth_payload);
-        const y_parity = try rlpStringToU64(try rlpItemString(fields[3]));
-        if (y_parity > 1) return error.InvalidSignatureV;
+        const y_parity = try rlpStringToU8(try rlpItemString(fields[3]));
         try authorizations.append(allocator, .{
             .chain_id = try rlpStringToU64(try rlpItemString(fields[0])),
             .address = try rlpStringToAddress(try rlpItemString(fields[1])),

@@ -1,0 +1,10 @@
+name = "zevm-spec"
+version = "0.1.0"
+defaultTargets = ["zevm-spec"]
+
+[[lean_lib]]
+name = "ZevmSpec"
+
+[[lean_exe]]
+name = "zevm-spec"
+root = "ZevmSpec.Main"

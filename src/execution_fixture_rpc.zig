@@ -105,7 +105,10 @@ pub const Cache = struct {
         while (lines.next()) |line_raw| {
             const line = std.mem.trimRight(u8, line_raw, "\r");
             if (std.mem.startsWith(u8, line, ">> ")) {
-                if (pending_request) |request_json| allocator.free(request_json);
+                if (pending_request) |request_json| {
+                    pending_request = null;
+                    allocator.free(request_json);
+                }
                 pending_request = try allocator.dupe(u8, line[3..]);
             } else if (std.mem.startsWith(u8, line, "<< ")) {
                 var request_json = pending_request orelse return error.InvalidExecutionFixtureRpc;
@@ -135,6 +138,7 @@ pub const Cache = struct {
         }
 
         if (pending_request) |request_json| {
+            pending_request = null;
             allocator.free(request_json);
             return error.InvalidExecutionFixtureRpc;
         }

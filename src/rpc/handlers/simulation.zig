@@ -1486,7 +1486,7 @@ fn buildSimulatedTransaction(
     nonce_tracker: *std.ArrayList(SimulatedNonceState),
 ) !SimulatedTransaction {
     const from = request.from orelse primitives.Address.ZERO_ADDRESS;
-    const nonce = try nextSimulatedNonce(rt, nonce_tracker, from, request.nonce, options.validation);
+    const nonce = try nextSimulatedNonce(allocator, rt, nonce_tracker, from, request.nonce, options.validation);
     const tx_type = request.tx_type orelse inferredSimulatedTxType(request);
     const chain_id = if (tx_type == 0) request.chain_id else request.chain_id orelse rt.chain_id;
     const max_fee = request.max_fee_per_gas orelse request.gas_price orelse 0;
@@ -1542,6 +1542,8 @@ fn buildSimulatedTransaction(
 }
 
 fn nextSimulatedNonce(
+    // Must be the allocator that owns `nonce_tracker` (the caller deinits with it).
+    allocator: std.mem.Allocator,
     rt: *runtime.NodeRuntime,
     nonce_tracker: *std.ArrayList(SimulatedNonceState),
     from: primitives.Address,
@@ -1555,7 +1557,7 @@ fn nextSimulatedNonce(
     }
 
     const state_nonce = rt.state.getNonce(from) catch 0;
-    try nonce_tracker.append(rt.allocator, .{
+    try nonce_tracker.append(allocator, .{
         .address = from,
         .next_nonce = state_nonce,
     });

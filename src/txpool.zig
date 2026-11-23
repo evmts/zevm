@@ -27,28 +27,36 @@ pub const PooledTransaction = struct {
     s: [32]u8 = [_]u8{0} ** 32,
 };
 
-const SenderNonce = struct {
-    sender: primitives.Address,
+const SenderNonceKey = struct {
+    sender: [20]u8,
     nonce: u64,
 };
 
 pub const TransactionPool = struct {
     allocator: std.mem.Allocator,
     transactions: std.ArrayList(PooledTransaction),
-    sender_nonces: std.ArrayList(SenderNonce),
+    base_nonces: std.AutoHashMapUnmanaged([20]u8, u64),
+    sender_nonce_index: std.AutoHashMapUnmanaged(SenderNonceKey, usize),
+    hash_index: std.AutoHashMapUnmanaged([32]u8, usize),
+    has_duplicate_hashes: bool,
 
     pub fn init(allocator: std.mem.Allocator) TransactionPool {
         return .{
             .allocator = allocator,
             .transactions = .{},
-            .sender_nonces = .{},
+            .base_nonces = .{},
+            .sender_nonce_index = .{},
+            .hash_index = .{},
+            .has_duplicate_hashes = false,
         };
     }
 
     pub fn deinit(self: *TransactionPool) void {
         self.clear();
         self.transactions.deinit(self.allocator);
-        self.sender_nonces.deinit(self.allocator);
+        self.base_nonces.deinit(self.allocator);
+        self.sender_nonce_index.deinit(self.allocator);
+        self.hash_index.deinit(self.allocator);
     }
 
     pub fn clear(self: *TransactionPool) void {
@@ -56,39 +64,47 @@ pub const TransactionPool = struct {
             self.freeStoredTransaction(tx);
         }
         self.transactions.clearRetainingCapacity();
-        self.sender_nonces.clearRetainingCapacity();
+        self.base_nonces.clearRetainingCapacity();
+        self.sender_nonce_index.clearRetainingCapacity();
+        self.hash_index.clearRetainingCapacity();
+        self.has_duplicate_hashes = false;
     }
 
     pub fn clone(self: *const TransactionPool, allocator: std.mem.Allocator) !TransactionPool {
         var out = TransactionPool.init(allocator);
         errdefer out.deinit();
 
-        for (self.sender_nonces.items) |entry| {
-            try out.sender_nonces.append(allocator, entry);
+        try out.base_nonces.ensureTotalCapacity(allocator, self.base_nonces.count());
+        var bn_it = self.base_nonces.iterator();
+        while (bn_it.next()) |entry| {
+            out.base_nonces.putAssumeCapacity(entry.key_ptr.*, entry.value_ptr.*);
         }
 
-        for (self.transactions.items) |tx| {
+        try out.transactions.ensureTotalCapacity(allocator, self.transactions.items.len);
+        try out.sender_nonce_index.ensureTotalCapacity(allocator, @intCast(self.transactions.items.len));
+        try out.hash_index.ensureTotalCapacity(allocator, @intCast(self.transactions.items.len));
+        out.has_duplicate_hashes = self.has_duplicate_hashes;
+
+        for (self.transactions.items, 0..) |tx, idx| {
             const cloned = try cloneTransaction(allocator, tx);
             errdefer out.freeStoredTransaction(cloned);
-            try out.transactions.append(allocator, cloned);
+            out.transactions.appendAssumeCapacity(cloned);
+            out.sender_nonce_index.putAssumeCapacity(.{ .sender = cloned.sender.bytes, .nonce = cloned.nonce }, idx);
+            if (!out.hash_index.contains(cloned.hash)) {
+                out.hash_index.putAssumeCapacity(cloned.hash, idx);
+            }
         }
 
         return out;
     }
 
     pub fn setNonce(self: *TransactionPool, sender: primitives.Address, nonce: u64) !void {
-        if (self.findSenderNonceIndex(sender)) |index| {
-            self.sender_nonces.items[index].nonce = nonce;
-            return;
-        }
-        try self.sender_nonces.append(self.allocator, .{
-            .sender = sender,
-            .nonce = nonce,
-        });
+        try self.base_nonces.put(self.allocator, sender.bytes, nonce);
     }
 
     pub fn add(self: *TransactionPool, _: std.mem.Allocator, tx: PooledTransaction) !void {
-        if (self.findTransactionIndex(tx.sender, tx.nonce)) |index| {
+        const key = SenderNonceKey{ .sender = tx.sender.bytes, .nonce = tx.nonce };
+        if (self.sender_nonce_index.get(key)) |index| {
             const existing = self.transactions.items[index];
             if (sameHash(tx.hash, existing.hash)) {
                 // Across the Osaka boundary the same signed blob tx may be
@@ -105,14 +121,42 @@ pub const TransactionPool = struct {
             }
 
             const stored = try cloneTransaction(self.allocator, tx);
-            self.freeStoredTransaction(self.transactions.items[index]);
+            errdefer self.freeStoredTransaction(stored);
+
+            if (!sameHash(existing.hash, stored.hash)) {
+                if (self.hash_index.get(existing.hash)) |mapped| {
+                    if (mapped == index) _ = self.hash_index.remove(existing.hash);
+                }
+                // Reclaim tombstones in-place before growing so repeated gas-price
+                // replacements do not double hash_index capacity unboundedly.
+                try ensureMapSlotNoTombstoneGrow([32]u8, &self.hash_index, self.allocator);
+                if (self.hash_index.contains(stored.hash)) {
+                    self.has_duplicate_hashes = true;
+                } else {
+                    self.hash_index.putAssumeCapacity(stored.hash, index);
+                }
+            }
+
+            self.freeStoredTransaction(existing);
             self.transactions.items[index] = stored;
             return;
         }
 
         const stored = try cloneTransaction(self.allocator, tx);
         errdefer self.freeStoredTransaction(stored);
-        try self.transactions.append(self.allocator, stored);
+
+        try self.transactions.ensureUnusedCapacity(self.allocator, 1);
+        try ensureMapSlotNoTombstoneGrow(SenderNonceKey, &self.sender_nonce_index, self.allocator);
+        try ensureMapSlotNoTombstoneGrow([32]u8, &self.hash_index, self.allocator);
+
+        const new_index = self.transactions.items.len;
+        self.transactions.appendAssumeCapacity(stored);
+        self.sender_nonce_index.putAssumeCapacity(key, new_index);
+        if (self.hash_index.contains(stored.hash)) {
+            self.has_duplicate_hashes = true;
+        } else {
+            self.hash_index.putAssumeCapacity(stored.hash, new_index);
+        }
     }
 
     pub fn items(self: *const TransactionPool) []const PooledTransaction {
@@ -126,7 +170,14 @@ pub const TransactionPool = struct {
     pub fn pendingCount(self: *const TransactionPool) usize {
         var count: usize = 0;
         for (self.transactions.items) |tx| {
-            if (self.isPending(tx.sender, tx.nonce)) count += 1;
+            // Anchor each sender once at its base nonce and walk its contiguous pending chain in O(1)/step.
+            if (tx.nonce != self.baseNonce(tx.sender)) continue;
+            var next_nonce = tx.nonce;
+            while (self.findTransactionIndex(tx.sender, next_nonce) != null) {
+                count += 1;
+                if (next_nonce == std.math.maxInt(u64)) break;
+                next_nonce += 1;
+            }
         }
         return count;
     }
@@ -165,16 +216,11 @@ pub const TransactionPool = struct {
         // pending nonces in order. We anchor senders by the order in which their
         // first pending transaction appears in storage to keep results stable.
         for (self.transactions.items) |tx| {
-            if (!self.isPending(tx.sender, tx.nonce)) continue;
-            // Only start a sender group from its first (lowest pending) nonce so we
-            // don't emit the same sender twice.
             if (tx.nonce != self.baseNonce(tx.sender)) continue;
 
             var next_nonce = tx.nonce;
             while (self.findTransactionIndex(tx.sender, next_nonce)) |tx_index| {
-                const candidate = self.transactions.items[tx_index];
-                if (!self.isPending(candidate.sender, candidate.nonce)) break;
-                ready[index] = candidate;
+                ready[index] = self.transactions.items[tx_index];
                 index += 1;
                 if (next_nonce == std.math.maxInt(u64)) break;
                 next_nonce += 1;
@@ -186,6 +232,18 @@ pub const TransactionPool = struct {
     }
 
     pub fn removeMined(self: *TransactionPool, hashes: []const [32]u8) void {
+        if (hashes.len == 0 or self.transactions.items.len == 0) return;
+
+        if (!self.has_duplicate_hashes) {
+            for (hashes) |hash| {
+                const idx = self.hash_index.get(hash) orelse continue;
+                const tx = self.transactions.items[idx];
+                self.advanceSenderNonce(tx.sender, tx.nonce);
+                self.removeAtSwap(idx);
+            }
+            return;
+        }
+
         var index: usize = 0;
         while (index < self.transactions.items.len) {
             const tx = self.transactions.items[index];
@@ -193,21 +251,21 @@ pub const TransactionPool = struct {
                 index += 1;
                 continue;
             }
-
             self.advanceSenderNonce(tx.sender, tx.nonce);
-            self.freeStoredTransaction(tx);
-            _ = self.transactions.orderedRemove(index);
+            self.removeAtSwap(index);
         }
     }
 
     pub fn removeByHash(self: *TransactionPool, hash: [32]u8) bool {
-        var index: usize = 0;
-        while (index < self.transactions.items.len) : (index += 1) {
-            const tx = self.transactions.items[index];
-            if (!sameHash(tx.hash, hash)) continue;
+        if (!self.has_duplicate_hashes) {
+            const idx = self.hash_index.get(hash) orelse return false;
+            self.removeAtSwap(idx);
+            return true;
+        }
 
-            self.freeStoredTransaction(tx);
-            _ = self.transactions.orderedRemove(index);
+        for (self.transactions.items, 0..) |tx, index| {
+            if (!sameHash(tx.hash, hash)) continue;
+            self.removeAtSwap(index);
             return true;
         }
         return false;
@@ -221,6 +279,23 @@ pub const TransactionPool = struct {
         return removed;
     }
 
+    fn removeAtSwap(self: *TransactionPool, index: usize) void {
+        const removed = self.transactions.swapRemove(index);
+        _ = self.sender_nonce_index.remove(.{ .sender = removed.sender.bytes, .nonce = removed.nonce });
+        if (self.hash_index.get(removed.hash)) |mapped| {
+            if (mapped == index) _ = self.hash_index.remove(removed.hash);
+        }
+
+        if (index < self.transactions.items.len) {
+            const moved = self.transactions.items[index];
+            self.sender_nonce_index.put(self.allocator, .{ .sender = moved.sender.bytes, .nonce = moved.nonce }, index) catch {};
+            if (self.hash_index.getPtr(moved.hash)) |ptr| {
+                if (ptr.* == self.transactions.items.len) ptr.* = index;
+            }
+        }
+        self.freeStoredTransaction(removed);
+    }
+
     fn isPending(self: *const TransactionPool, sender: primitives.Address, nonce: u64) bool {
         var next_nonce = self.baseNonce(sender);
         while (next_nonce <= nonce) : (next_nonce += 1) {
@@ -232,38 +307,20 @@ pub const TransactionPool = struct {
     }
 
     fn baseNonce(self: *const TransactionPool, sender: primitives.Address) u64 {
-        if (self.findSenderNonceIndex(sender)) |index| {
-            return self.sender_nonces.items[index].nonce;
-        }
-        return 0;
+        return self.base_nonces.get(sender.bytes) orelse 0;
     }
 
     fn advanceSenderNonce(self: *TransactionPool, sender: primitives.Address, mined_nonce: u64) void {
         const next_nonce = mined_nonce +| 1;
-        if (self.findSenderNonceIndex(sender)) |index| {
-            if (next_nonce > self.sender_nonces.items[index].nonce) {
-                self.sender_nonces.items[index].nonce = next_nonce;
-            }
+        if (self.base_nonces.getPtr(sender.bytes)) |ptr| {
+            if (next_nonce > ptr.*) ptr.* = next_nonce;
             return;
         }
-        self.sender_nonces.append(self.allocator, .{
-            .sender = sender,
-            .nonce = next_nonce,
-        }) catch {};
-    }
-
-    fn findSenderNonceIndex(self: *const TransactionPool, sender: primitives.Address) ?usize {
-        for (self.sender_nonces.items, 0..) |entry, index| {
-            if (sameAddress(entry.sender, sender)) return index;
-        }
-        return null;
+        self.base_nonces.put(self.allocator, sender.bytes, next_nonce) catch {};
     }
 
     fn findTransactionIndex(self: *const TransactionPool, sender: primitives.Address, nonce: u64) ?usize {
-        for (self.transactions.items, 0..) |tx, index| {
-            if (tx.nonce == nonce and sameAddress(tx.sender, sender)) return index;
-        }
-        return null;
+        return self.sender_nonce_index.get(.{ .sender = sender.bytes, .nonce = nonce });
     }
 
     fn freeStoredTransaction(self: *TransactionPool, tx: PooledTransaction) void {
@@ -274,19 +331,31 @@ pub const TransactionPool = struct {
     }
 };
 
+fn ensureMapSlotNoTombstoneGrow(
+    comptime K: type,
+    map: *std.AutoHashMapUnmanaged(K, usize),
+    allocator: std.mem.Allocator,
+) !void {
+    if (map.capacity() > 0 and map.available == 0 and @as(usize, map.count()) * 2 < @as(usize, map.capacity())) {
+        map.rehash(std.hash_map.AutoContext(K){});
+        if (map.available >= 1) return;
+    }
+    try map.ensureUnusedCapacity(allocator, 1);
+}
+
 fn cloneTransaction(
     allocator: std.mem.Allocator,
     tx: PooledTransaction,
 ) !PooledTransaction {
     var cloned = tx;
-    cloned.input = try allocator.dupe(u8, tx.input);
-    errdefer allocator.free(cloned.input);
-    cloned.raw = try allocator.dupe(u8, tx.raw);
-    errdefer allocator.free(cloned.raw);
-    cloned.blob_versioned_hashes = try allocator.dupe([32]u8, tx.blob_versioned_hashes);
-    errdefer allocator.free(cloned.blob_versioned_hashes);
-    cloned.blob_sidecars = try allocator.dupe(tx_encoding.BlobSidecar, tx.blob_sidecars);
-    errdefer allocator.free(cloned.blob_sidecars);
+    cloned.input = if (tx.input.len > 0) try allocator.dupe(u8, tx.input) else &.{};
+    errdefer if (cloned.input.len > 0) allocator.free(cloned.input);
+    cloned.raw = if (tx.raw.len > 0) try allocator.dupe(u8, tx.raw) else &.{};
+    errdefer if (cloned.raw.len > 0) allocator.free(cloned.raw);
+    cloned.blob_versioned_hashes = if (tx.blob_versioned_hashes.len > 0) try allocator.dupe([32]u8, tx.blob_versioned_hashes) else &.{};
+    errdefer if (cloned.blob_versioned_hashes.len > 0) allocator.free(cloned.blob_versioned_hashes);
+    cloned.blob_sidecars = if (tx.blob_sidecars.len > 0) try allocator.dupe(tx_encoding.BlobSidecar, tx.blob_sidecars) else &.{};
+    errdefer if (cloned.blob_sidecars.len > 0) allocator.free(cloned.blob_sidecars);
     return cloned;
 }
 

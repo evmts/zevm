@@ -358,9 +358,15 @@ pub const MiningCoordinator = struct {
         self.pending_txs.clearRetainingCapacity();
         // Retain actual parent inputs so interval mining or timestamp overrides
         // recompute the child's excess using the child's true BPO parameters.
+        // Compute mined_excess_blob_gas before assigning self.parent_blob_fees so
+        // result-location semantics cannot alias self.parent_blob_fees during excessAt().
         self.current_timestamp = block_ctx.block_timestamp;
+        const mined_excess_blob_gas = if (active_hardfork.isAtLeast(.CANCUN))
+            self.excessAt(self.current_block_number, block_ctx.block_timestamp)
+        else
+            0;
         self.parent_blob_fees = if (active_hardfork.isAtLeast(.CANCUN)) .{
-            .excess = self.excessAt(self.current_block_number, block_ctx.block_timestamp),
+            .excess = mined_excess_blob_gas,
             .used = result.blob_gas_used,
             .base_fee = block_base_fee,
         } else .{

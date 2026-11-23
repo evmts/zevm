@@ -117,6 +117,45 @@ jobs:
         working-directory: zevm
         run: git diff --exit-code -- .
 
+  fuzz:
+    name: Coverage-Guided Fuzzing
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    steps:
+      - name: Checkout ZEVM
+        uses: actions/checkout@v7
+        with:
+          path: zevm
+
+      - name: Checkout execution-apis test fixtures
+        working-directory: zevm
+        run: git submodule update --init --depth 1 -- lib/execution-apis
+
+      - name: Checkout pinned native dependencies
+        working-directory: zevm
+        run: bash tools/checkout-native.sh
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2.2.1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cargo perl rustc
+
+      - name: Fetch Zig package dependencies
+        working-directory: zevm
+        run: zig build --fetch
+
+      - name: Run coverage-guided Zig fuzzing campaign
+        working-directory: zevm
+        run: bash tools/fuzz_ubuntu.sh --local --optimize ReleaseSafe --seconds 15 --jobs 4
+
+      - name: Dirty worktree preflight
+        working-directory: zevm
+        run: git diff --exit-code -- .
+
   external:
     name: Official External Verification
     runs-on: ubuntu-latest

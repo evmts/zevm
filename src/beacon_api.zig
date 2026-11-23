@@ -272,7 +272,8 @@ fn parseFork(name: []const u8) !primitives.LightClientHeader.Fork {
     if (std.ascii.eqlIgnoreCase(name, "bellatrix")) return .bellatrix;
     if (std.ascii.eqlIgnoreCase(name, "capella")) return .capella;
     if (std.ascii.eqlIgnoreCase(name, "deneb")) return .deneb;
-    if (std.ascii.eqlIgnoreCase(name, "electra")) return .electra;
+    // Fulu preserves Electra's 6-element post-Electra light-client branch depth.
+    if (std.ascii.eqlIgnoreCase(name, "electra") or std.ascii.eqlIgnoreCase(name, "fulu")) return .electra;
     return error.UnknownFork;
 }
 

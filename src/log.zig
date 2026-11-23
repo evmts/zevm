@@ -6,7 +6,7 @@ const default_level: Level = .info;
 var active_level = std.atomic.Value(u8).init(@intFromEnum(default_level));
 
 pub fn init(level: Level) void {
-    active_level.store(@intFromEnum(level), .seq_cst);
+    active_level.store(@intFromEnum(level), .release);
 }
 
 pub fn info(
@@ -14,6 +14,7 @@ pub fn info(
     comptime fmt: []const u8,
     args: anytype,
 ) void {
+    if (!shouldLog(.info)) return;
     std.log.scoped(scope).info(fmt, args);
 }
 
@@ -22,6 +23,7 @@ pub fn warn(
     comptime fmt: []const u8,
     args: anytype,
 ) void {
+    if (!shouldLog(.warn)) return;
     std.log.scoped(scope).warn(fmt, args);
 }
 
@@ -30,6 +32,7 @@ pub fn err(
     comptime fmt: []const u8,
     args: anytype,
 ) void {
+    if (!shouldLog(.err)) return;
     std.log.scoped(scope).err(fmt, args);
 }
 
@@ -59,8 +62,9 @@ pub fn logFn(
     ) catch return;
 }
 
-fn shouldLog(level: Level) bool {
-    return @intFromEnum(level) <= active_level.load(.seq_cst);
+/// Cheap level check so callers can skip building expensive log payloads.
+pub fn shouldLog(level: Level) bool {
+    return @intFromEnum(level) <= active_level.load(.monotonic);
 }
 
 fn levelText(level: Level) []const u8 {

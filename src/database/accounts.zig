@@ -6,10 +6,12 @@ const primitives = @import("primitives");
 /// Stores Ethereum accounts keyed by keccak256(address) in a secure trie,
 /// providing O(log n) lookups and a deterministic state root hash.
 pub const Accounts = struct {
+    allocator: std.mem.Allocator,
     account_trie: primitives.Trie,
 
     pub fn init(allocator: std.mem.Allocator) Accounts {
         return .{
+            .allocator = allocator,
             .account_trie = primitives.Trie.init(allocator),
         };
     }

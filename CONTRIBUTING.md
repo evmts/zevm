@@ -26,9 +26,17 @@ Keep `../voltaire` and `../guillotine-mini` beside this checkout. Native builds 
 ```bash
 zig build test
 zig build verify-fast
+zig build fuzz -Doptimize=ReleaseSafe
 zig build c-smoke
 zig build npm-smoke
 node --check npm/zevm/src/index.js
+```
+
+For live coverage-guided fuzzing (`std.testing.fuzz --fuzz`, supported on Linux/Ubuntu):
+
+```bash
+./tools/fuzz_ubuntu.sh --list
+./tools/fuzz_ubuntu.sh --optimize ReleaseSafe --seconds 30 --jobs 8
 ```
 
 Before a release candidate, run:

@@ -32,6 +32,26 @@ pub const Database = struct {
     /// Call this for each address modified during block execution before
     /// reading stateRoot().
     pub fn syncAccountToTrie(self: *Database, allocator: std.mem.Allocator, address: primitives.Address) !void {
+        const account = try self.buildAccountState(allocator, address);
+        try self.accounts.put(allocator, address, &account);
+    }
+
+    pub fn syncCachedAccountsToTrie(self: *Database, allocator: std.mem.Allocator) !void {
+        var rebuilt = @import("accounts.zig").Accounts.init(self.accounts.allocator);
+        errdefer rebuilt.deinit();
+
+        var it = self.state.accountIterator();
+        while (it.next()) |entry| {
+            const address = entry.key_ptr.*;
+            const account = try self.buildAccountState(allocator, address);
+            try rebuilt.put(allocator, address, &account);
+        }
+
+        self.accounts.deinit();
+        self.accounts = rebuilt;
+    }
+
+    fn buildAccountState(self: *Database, allocator: std.mem.Allocator, address: primitives.Address) !primitives.AccountState.AccountState {
         const balance = try self.state.getBalance(address);
         const nonce = try self.state.getNonce(address);
         const code = try self.state.getCode(address);
@@ -47,20 +67,12 @@ pub const Database = struct {
         // storageRoot = EMPTY_TRIE_ROOT and produce a consensus-invalid state root.
         const storage_root = try computeAccountStorageRoot(self, allocator, address);
 
-        const account = primitives.AccountState.AccountState.from(.{
+        return primitives.AccountState.AccountState.from(.{
             .nonce = nonce,
             .balance = balance,
             .storage_root = storage_root,
             .code_hash = code_hash,
         });
-        try self.accounts.put(allocator, address, &account);
-    }
-
-    pub fn syncCachedAccountsToTrie(self: *Database, allocator: std.mem.Allocator) !void {
-        var it = self.state.accountIterator();
-        while (it.next()) |entry| {
-            try self.syncAccountToTrie(allocator, entry.key_ptr.*);
-        }
     }
 };
 
@@ -78,37 +90,30 @@ fn computeAccountStorageRoot(
     const slots = self.state.journaled_state.storage_cache.cache.getPtr(address) orelse
         return primitives.State.EMPTY_TRIE_ROOT;
 
-    var keys = std.ArrayList([]const u8){};
-    defer {
-        for (keys.items) |key| allocator.free(key);
-        keys.deinit(allocator);
-    }
-    var values = std.ArrayList([]const u8){};
-    defer {
-        for (values.items) |value| allocator.free(value);
-        values.deinit(allocator);
-    }
+    if (slots.count() == 0) return primitives.State.EMPTY_TRIE_ROOT;
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    const capacity = slots.count();
+    var keys = try std.ArrayList([]const u8).initCapacity(arena_alloc, capacity);
+    var values = try std.ArrayList([]const u8).initCapacity(arena_alloc, capacity);
+    const slot_storage = try arena_alloc.alloc([32]u8, capacity);
+    var idx: usize = 0;
 
     var it = slots.iterator();
     while (it.next()) |entry| {
         const value = entry.value_ptr.*;
         if (value == 0) continue;
 
-        var slot_bytes: [32]u8 = undefined;
-        std.mem.writeInt(u256, &slot_bytes, entry.key_ptr.*, .big);
-        const key = try allocator.dupe(u8, slot_bytes[0..]);
-        var key_owned = true;
-        errdefer if (key_owned) allocator.free(key);
-        const encoded_value = try primitives.Rlp.encode(allocator, value);
-        var value_owned = true;
-        errdefer if (value_owned) allocator.free(encoded_value);
-
-        try keys.append(allocator, key);
-        key_owned = false;
-        try values.append(allocator, encoded_value);
-        value_owned = false;
+        std.mem.writeInt(u256, &slot_storage[idx], entry.key_ptr.*, .big);
+        const encoded_value = try primitives.Rlp.encode(arena_alloc, value);
+        keys.appendAssumeCapacity(&slot_storage[idx]);
+        values.appendAssumeCapacity(encoded_value);
+        idx += 1;
     }
 
     if (keys.items.len == 0) return primitives.State.EMPTY_TRIE_ROOT;
-    return try primitives.TrieHash.secure_trie_root(allocator, keys.items, values.items);
+    return try primitives.TrieHash.secure_trie_root(arena_alloc, keys.items, values.items);
 }

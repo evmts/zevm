@@ -26,8 +26,13 @@ pub const checkpoint = @import("checkpoint.zig");
 pub const chain_import = @import("chain_import.zig");
 pub const mpt_proof = @import("mpt_proof.zig");
 pub const mining = @import("mining.zig");
+pub const mining_coordinator = @import("mining_coordinator.zig");
+pub const txpool = @import("txpool.zig");
+pub const receipt_index = @import("receipt_index.zig");
+pub const log_index = @import("log_index.zig");
 pub const cli = @import("cli.zig");
 pub const config = @import("config.zig");
+pub const genesis = @import("genesis.zig");
 pub const genesis_alloc = @import("genesis_alloc.zig");
 pub const node_runtime = @import("node/runtime.zig");
 pub const rpc = @import("rpc/root.zig");
@@ -64,4 +69,5 @@ test {
     _ = @import("txpool.zig");
     _ = @import("rpc/root.zig");
     _ = @import("release_metadata.zig");
+    _ = @import("fuzz/root.zig");
 }

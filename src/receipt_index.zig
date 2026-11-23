@@ -38,7 +38,8 @@ pub const ReceiptIndex = struct {
         return cloned;
     }
 
-    /// Store receipts for a sealed block. Inserts into both indexes.
+    /// Store receipts for a sealed block. Inserts into both indexes, retiring
+    /// any previously stored receipts for the same block hash.
     pub fn putBlockReceipts(
         self: *ReceiptIndex,
         allocator: std.mem.Allocator,
@@ -46,49 +47,47 @@ pub const ReceiptIndex = struct {
         receipts: []const primitives.Receipt.Receipt,
     ) !void {
         const cloned = try allocator.alloc(primitives.Receipt.Receipt, receipts.len);
-        errdefer allocator.free(cloned);
-
-        // Track how many by_tx entries we have successfully inserted so we can roll
-        // them back (and free their logs) if a later insertion fails. Without this,
-        // a failed putBlockReceipts would leave by_tx populated for a block that was
-        // never stored in by_block, an inconsistent index. `cloned_count` tracks how
-        // many slots of `cloned` hold a valid (initialized) clone.
-        var inserted: usize = 0;
         var cloned_count: usize = 0;
         errdefer {
-            // Remove the by_tx entries we inserted during this call, freeing the
-            // logs each one owns (the by_tx value and the cloned[j] struct share the
-            // same logs pointer, so free exactly once via the map entry).
-            var j: usize = 0;
-            while (j < inserted) : (j += 1) {
-                if (self.by_tx.fetchRemove(cloned[j].transaction_hash)) |kv| {
-                    var removed = kv.value;
-                    removed.deinit(allocator);
-                }
+            for (cloned[0..cloned_count]) |*r| {
+                r.deinit(allocator);
             }
-            // Free the logs of any valid clone that was produced but never inserted
-            // into by_tx (e.g. the current iteration's clone after a failed put).
-            var k: usize = inserted;
-            while (k < cloned_count) : (k += 1) {
-                cloned[k].deinit(allocator);
-            }
+            allocator.free(cloned);
         }
 
         for (receipts, 0..) |receipt, i| {
             cloned[i] = try cloneReceipt(allocator, receipt);
             cloned_count = i + 1;
-            // If a prior receipt with this tx hash exists (e.g. a re-org re-seals a
-            // block containing an already-indexed tx), free its owned logs before
-            // overwriting so they are not leaked.
-            if (self.by_tx.fetchRemove(cloned[i].transaction_hash)) |kv| {
+        }
+
+        // Reserve capacity in both maps before mutating either map so no
+        // partial state or leak can occur on out-of-memory.
+        try self.by_tx.ensureUnusedCapacity(@intCast(receipts.len));
+        try self.by_block.ensureUnusedCapacity(1);
+
+        // Retire any previous receipts stored under this block_hash so neither
+        // the old slice nor any displaced tx_hash entries leak or remain stale.
+        if (self.by_block.fetchRemove(block_hash)) |old_block| {
+            for (old_block.value) |old_receipt| {
+                if (self.by_tx.fetchRemove(old_receipt.transaction_hash)) |old_tx| {
+                    var prior = old_tx.value;
+                    prior.deinit(allocator);
+                }
+            }
+            allocator.free(old_block.value);
+        }
+
+        for (cloned) |receipt| {
+            // If a prior receipt with this tx hash exists under another block
+            // (e.g. a re-org), free its owned logs before overwriting.
+            if (self.by_tx.fetchRemove(receipt.transaction_hash)) |kv| {
                 var prior = kv.value;
                 prior.deinit(allocator);
             }
-            try self.by_tx.put(cloned[i].transaction_hash, cloned[i]);
-            inserted = i + 1;
+            self.by_tx.putAssumeCapacity(receipt.transaction_hash, receipt);
         }
 
-        try self.by_block.put(block_hash, cloned);
+        self.by_block.putAssumeCapacity(block_hash, cloned);
     }
 
     /// Returns receipt for a tx hash, or null if not found.

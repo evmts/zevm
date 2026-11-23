@@ -1,0 +1,41 @@
+import { benchSuite } from "../suite.ts"
+
+const suite = benchSuite({
+  name: "mining-node",
+  summary: "NodeRuntime init, state reads, evm_snapshot/evm_revert, and block mining with queued transactions",
+  srcs: [
+    "src/beacon_api.zig",
+    "src/blob_fee.zig",
+    "src/blob_kzg.zig",
+    "src/block_builder.zig",
+    "src/chain_import.zig",
+    "src/checkpoint.zig",
+    "src/consensus_sync.zig",
+    "src/consensus_verifier.zig",
+    "src/database/accounts.zig",
+    "src/database/contracts.zig",
+    "src/database/database.zig",
+    "src/database/root.zig",
+    "src/evm_overrides.zig",
+    "src/genesis.zig",
+    "src/genesis_alloc.zig",
+    "src/hardfork_schedule.zig",
+    "src/host_adapter.zig",
+    "src/light_default_checkpoints.zig",
+    "src/light_proof.zig",
+    "src/log.zig",
+    "src/log_index.zig",
+    "src/mining.zig",
+    "src/mining_coordinator.zig",
+    "src/node/runtime.zig",
+    "src/precompile_compat.zig",
+    "src/receipt_index.zig",
+    "src/rpc/dev_runtime.zig",
+    "src/rpc/parse.zig",
+    "src/transaction_encoding.zig",
+    "src/tx_processor.zig",
+    "src/txpool.zig",
+  ],
+})
+
+export const Package = suite.Package

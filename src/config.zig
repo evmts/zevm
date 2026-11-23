@@ -369,8 +369,10 @@ fn resolveRpc(
     file_config: ?FileConfig,
 ) LoadError!RpcConfig {
     const file_rpc = if (file_config) |file| file.rpc else FileRpc{};
+    const host = options.host orelse file_rpc.host orelse DEFAULT_HOST;
+    if (std.mem.trim(u8, host, " \t\r\n").len == 0) return error.InvalidConfig;
     return .{
-        .host = try allocator.dupe(u8, options.host orelse file_rpc.host orelse DEFAULT_HOST),
+        .host = try allocator.dupe(u8, host),
         .port = options.port orelse file_rpc.port orelse DEFAULT_PORT,
     };
 }
@@ -388,8 +390,10 @@ fn resolveEngineRpc(
     if (resolved_mode != .trusted) return error.InvalidConfig;
 
     const file_rpc = file_engine_rpc orelse FileRpc{};
+    const host = options.engine_host orelse file_rpc.host orelse fallback_host;
+    if (std.mem.trim(u8, host, " \t\r\n").len == 0) return error.InvalidConfig;
     return .{
-        .host = try allocator.dupe(u8, options.engine_host orelse file_rpc.host orelse fallback_host),
+        .host = try allocator.dupe(u8, host),
         .port = options.engine_port orelse file_rpc.port orelse DEFAULT_ENGINE_PORT,
     };
 }

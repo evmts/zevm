@@ -224,7 +224,7 @@ fn decodeHeaderForImport(
 
     const fields = try childSpans(allocator, header_bytes, header_span.payload_start, header_span.payload_end);
     defer allocator.free(fields);
-    if (fields.len < 15) return error.InvalidChainRlp;
+    if (fields.len < 15 or fields.len > 21) return error.InvalidChainRlp;
 
     var header = primitives.BlockHeader.BlockHeader{};
     header.parent_hash = try parseRlpHash(header_bytes, fields[0]);
@@ -258,6 +258,7 @@ fn decodeHeaderRequestsHash(allocator: std.mem.Allocator, header_bytes: []const 
 
     const fields = try childSpans(allocator, header_bytes, header_span.payload_start, header_span.payload_end);
     defer allocator.free(fields);
+    if (fields.len < 15 or fields.len > 21) return error.InvalidChainRlp;
     if (fields.len <= 20) return null;
     return try parseRlpHash(header_bytes, fields[20]);
 }
@@ -520,7 +521,9 @@ fn itemSpan(bytes: []const u8, start: usize) !RlpSpan {
     }
     if (prefix <= 0xb7) {
         const len: usize = prefix - 0x80;
-        return sizedSpan(bytes, start, 1, len, .string);
+        const span = try sizedSpan(bytes, start, 1, len, .string);
+        if (len == 1 and bytes[span.payload_start] < 0x80) return error.InvalidChainRlp;
+        return span;
     }
     if (prefix <= 0xbf) {
         const len_of_len: usize = prefix - 0xb7;
@@ -567,6 +570,7 @@ fn parseLength(bytes: []const u8, start: usize, len_of_len: usize) !usize {
     for (bytes[len_start..len_end]) |byte| {
         len = (len << 8) | byte;
     }
+    if (len < 56) return error.InvalidChainRlp;
     return len;
 }
 
@@ -610,7 +614,7 @@ fn parseRlpU256Field(bytes: []const u8, span: RlpSpan) !u256 {
 
 fn parseRlpU64(bytes: []const u8) !u64 {
     if (bytes.len > @sizeOf(u64)) return error.InvalidChainRlp;
-    if (bytes.len > 1 and bytes[0] == 0) return error.InvalidChainRlp;
+    if (bytes.len > 0 and bytes[0] == 0) return error.InvalidChainRlp;
     var value: u64 = 0;
     for (bytes) |byte| {
         value = (value << 8) | byte;
@@ -620,7 +624,7 @@ fn parseRlpU64(bytes: []const u8) !u64 {
 
 fn parseRlpU256(bytes: []const u8) !u256 {
     if (bytes.len > 32) return error.InvalidChainRlp;
-    if (bytes.len > 1 and bytes[0] == 0) return error.InvalidChainRlp;
+    if (bytes.len > 0 and bytes[0] == 0) return error.InvalidChainRlp;
     var value: u256 = 0;
     for (bytes) |byte| {
         value = (value << 8) | byte;

@@ -30,14 +30,24 @@ pub const IndexedLog = struct {
     block_hash: [32]u8,
 };
 
+const BlockRange = struct {
+    start: usize,
+    end: usize,
+    bloom: [4]u64 = .{ 0, 0, 0, 0 },
+};
+
 pub const LogIndex = struct {
     logs: std.ArrayListUnmanaged(IndexedLog),
-    block_range: std.AutoHashMapUnmanaged(u64, struct { start: usize, end: usize }),
+    block_range: std.AutoHashMapUnmanaged(u64, BlockRange),
+    block_hash_range: std.AutoHashMapUnmanaged([32]u8, BlockRange),
+    block_numbers: std.ArrayListUnmanaged(u64),
 
     pub fn init() LogIndex {
         return .{
             .logs = .{},
             .block_range = .{},
+            .block_hash_range = .{},
+            .block_numbers = .{},
         };
     }
 
@@ -48,12 +58,15 @@ pub const LogIndex = struct {
         }
         self.logs.deinit(allocator);
         self.block_range.deinit(allocator);
+        self.block_hash_range.deinit(allocator);
+        self.block_numbers.deinit(allocator);
     }
 
     pub fn clone(self: *const LogIndex, allocator: std.mem.Allocator) !LogIndex {
         var cloned = LogIndex.init();
         errdefer cloned.deinit(allocator);
 
+        try cloned.logs.ensureTotalCapacity(allocator, self.logs.items.len);
         for (self.logs.items) |entry| {
             const cloned_log = try cloneEventLog(allocator, entry.log);
             var log_owned = false;
@@ -61,17 +74,26 @@ pub const LogIndex = struct {
                 allocator.free(cloned_log.topics);
                 allocator.free(cloned_log.data);
             };
-            try cloned.logs.append(allocator, .{
+            cloned.logs.appendAssumeCapacity(.{
                 .log = cloned_log,
                 .block_hash = entry.block_hash,
             });
             log_owned = true;
         }
 
+        try cloned.block_range.ensureTotalCapacity(allocator, self.block_range.count());
         var range_it = self.block_range.iterator();
         while (range_it.next()) |entry| {
-            try cloned.block_range.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
+            cloned.block_range.putAssumeCapacity(entry.key_ptr.*, entry.value_ptr.*);
         }
+
+        try cloned.block_hash_range.ensureTotalCapacity(allocator, self.block_hash_range.count());
+        var hash_it = self.block_hash_range.iterator();
+        while (hash_it.next()) |entry| {
+            cloned.block_hash_range.putAssumeCapacity(entry.key_ptr.*, entry.value_ptr.*);
+        }
+
+        try cloned.block_numbers.appendSlice(allocator, self.block_numbers.items);
 
         return cloned;
     }
@@ -85,19 +107,41 @@ pub const LogIndex = struct {
         receipts: []const primitives.Receipt.Receipt,
     ) !void {
         const start = self.logs.items.len;
+        var bloom = [_]u64{ 0, 0, 0, 0 };
 
         for (receipts) |receipt| {
             for (receipt.logs) |log| {
                 const cloned = try cloneEventLog(allocator, log);
+                var owned = false;
+                errdefer if (!owned) {
+                    allocator.free(cloned.topics);
+                    allocator.free(cloned.data);
+                };
                 try self.logs.append(allocator, .{
                     .log = cloned,
                     .block_hash = block_hash,
                 });
+                owned = true;
+                bloomAdd(&bloom, &cloned.address.bytes);
+                for (cloned.topics) |topic| {
+                    bloomAdd(&bloom, &topic);
+                }
             }
         }
 
         const end = self.logs.items.len;
-        try self.block_range.put(allocator, block_number, .{ .start = start, .end = end });
+        const range = BlockRange{ .start = start, .end = end, .bloom = bloom };
+        const existed = self.block_range.contains(block_number);
+        try self.block_range.put(allocator, block_number, range);
+        try self.block_hash_range.put(allocator, block_hash, range);
+        if (!existed) {
+            if (self.block_numbers.items.len == 0 or self.block_numbers.items[self.block_numbers.items.len - 1] < block_number) {
+                try self.block_numbers.append(allocator, block_number);
+            } else {
+                const pos = lowerBound(self.block_numbers.items, block_number);
+                try self.block_numbers.insert(allocator, pos, block_number);
+            }
+        }
     }
 
     /// Execute a filter query. Returns owned slice of matching logs (caller frees).
@@ -123,21 +167,27 @@ pub const LogIndex = struct {
         var results = std.ArrayListUnmanaged(IndexedLog){};
         errdefer results.deinit(allocator);
 
-        // If blockHash filter, find that block's number from our range map
+        // O(1) lookup by blockHash when specified
         if (filter.block_hash) |bh| {
-            for (self.logs.items) |entry| {
-                if (!std.mem.eql(u8, &entry.block_hash, &bh)) continue;
-                if (matchesFilter(entry, filter)) {
-                    try results.append(allocator, entry);
+            if (self.block_hash_range.get(bh)) |range| {
+                if (range.start < range.end and bloomMayMatchFilter(range.bloom, filter)) {
+                    for (self.logs.items[range.start..range.end]) |entry| {
+                        if (matchesFilter(entry, filter)) {
+                            try results.append(allocator, entry);
+                        }
+                    }
                 }
             }
             return try results.toOwnedSlice(allocator);
         }
 
-        // Range scan
-        var block_num = from;
-        while (block_num <= to) : (block_num += 1) {
+        // Binary search populated blocks in [from, to] so sparse ranges are O(log B + populated)
+        const start_idx = lowerBound(self.block_numbers.items, from);
+        for (self.block_numbers.items[start_idx..]) |block_num| {
+            if (block_num > to) break;
             if (self.block_range.get(block_num)) |range| {
+                if (range.start == range.end) continue;
+                if (!bloomMayMatchFilter(range.bloom, filter)) continue;
                 for (self.logs.items[range.start..range.end]) |entry| {
                     if (matchesFilter(entry, filter)) {
                         try results.append(allocator, entry);
@@ -149,6 +199,78 @@ pub const LogIndex = struct {
         return try results.toOwnedSlice(allocator);
     }
 };
+
+fn lowerBound(sorted: []const u64, target: u64) usize {
+    var lo: usize = 0;
+    var hi: usize = sorted.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        if (sorted[mid] < target) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+inline fn bloomMask(bytes: []const u8) [4]u64 {
+    const h = std.hash.Wyhash.hash(0, bytes);
+    const b0: u8 = @truncate(h);
+    const b1: u8 = @truncate(h >> 8);
+    const b2: u8 = @truncate(h >> 16);
+    var mask = [_]u64{ 0, 0, 0, 0 };
+    mask[b0 >> 6] |= @as(u64, 1) << @as(u6, @truncate(b0));
+    mask[b1 >> 6] |= @as(u64, 1) << @as(u6, @truncate(b1));
+    mask[b2 >> 6] |= @as(u64, 1) << @as(u6, @truncate(b2));
+    return mask;
+}
+
+inline fn bloomAdd(bloom: *[4]u64, bytes: []const u8) void {
+    const mask = bloomMask(bytes);
+    bloom[0] |= mask[0];
+    bloom[1] |= mask[1];
+    bloom[2] |= mask[2];
+    bloom[3] |= mask[3];
+}
+
+inline fn bloomContains(bloom: [4]u64, bytes: []const u8) bool {
+    const mask = bloomMask(bytes);
+    return (bloom[0] & mask[0]) == mask[0] and
+        (bloom[1] & mask[1]) == mask[1] and
+        (bloom[2] & mask[2]) == mask[2] and
+        (bloom[3] & mask[3]) == mask[3];
+}
+
+fn bloomMayMatchFilter(bloom: [4]u64, filter: LogFilter) bool {
+    if (filter.addresses) |addrs| {
+        if (addrs.len == 0) return false;
+        var any = false;
+        for (addrs) |addr| {
+            if (bloomContains(bloom, &addr.bytes)) {
+                any = true;
+                break;
+            }
+        }
+        if (!any) return false;
+    }
+    if (filter.topics) |topics| {
+        for (topics) |maybe_topic_set| {
+            if (maybe_topic_set) |topic_set| {
+                if (topic_set.len == 0) continue;
+                var any = false;
+                for (topic_set) |topic| {
+                    if (bloomContains(bloom, &topic)) {
+                        any = true;
+                        break;
+                    }
+                }
+                if (!any) return false;
+            }
+        }
+    }
+    return true;
+}
 
 fn matchesFilter(entry: IndexedLog, filter: LogFilter) bool {
     // Address filter
@@ -165,10 +287,10 @@ fn matchesFilter(entry: IndexedLog, filter: LogFilter) bool {
 
     // Topic filter
     if (filter.topics) |topics| {
+        if (topics.len > entry.log.topics.len) return false;
         for (topics, 0..) |maybe_topic_set, i| {
             if (maybe_topic_set) |topic_set| {
                 if (topic_set.len == 0) continue;
-                if (i >= entry.log.topics.len) return false;
                 var topic_match = false;
                 for (topic_set) |required_topic| {
                     if (std.mem.eql(u8, &entry.log.topics[i], &required_topic)) {
