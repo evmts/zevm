@@ -22,6 +22,20 @@ const DEPOSIT_REQUEST_TYPE: u8 = 0x00;
 const WITHDRAWAL_REQUEST_TYPE: u8 = 0x01;
 const CONSOLIDATION_REQUEST_TYPE: u8 = 0x02;
 
+/// EIP-7934 block size bound shared with the consensus gossip limit.
+pub const MAX_BLOCK_SIZE: usize = 10_485_760;
+/// EIP-7934 allowance reserved for the beacon block that wraps the payload.
+pub const BLOCK_SIZE_SAFETY_MARGIN: usize = 2_097_152;
+/// EIP-7934 maximum RLP-encoded execution block size, enforced from Osaka.
+pub const MAX_RLP_BLOCK_SIZE: usize = MAX_BLOCK_SIZE - BLOCK_SIZE_SAFETY_MARGIN;
+/// EIP-7935 recommended default block gas limit for Osaka networks. The limit
+/// is client configuration, not consensus: nothing here applies it implicitly.
+pub const OSAKA_DEFAULT_BLOCK_GAS_LIMIT: u64 = 60_000_000;
+
+/// Upper bound of an RLP-encoded post-Prague header: 21 fields, a 32-byte
+/// `extraData`, and every integer at its widest encoding.
+const MAX_HEADER_RLP_SIZE: usize = 742;
+
 pub const BEACON_ROOTS_ADDRESS = primitives.Address{ .bytes = .{
     0x00, 0x0f, 0x3d, 0xf6, 0xd7, 0x32, 0x80, 0x7e, 0xf1, 0x31,
     0x9f, 0xb7, 0xb8, 0xbb, 0x85, 0x22, 0xd0, 0xbe, 0xac, 0x02,
@@ -59,6 +73,7 @@ pub const Hardfork = enum(u8) {
     shanghai,
     cancun,
     prague,
+    osaka,
 };
 
 pub const RequestsByType = struct {
@@ -88,6 +103,11 @@ pub const BuildBlockOptions = struct {
     state_root: ?[32]u8 = null,
     dev_runtime: ?*dev_runtime.DevRuntime = null,
     skip_invalid_transactions: bool = false,
+    /// EIP-7934: size of each transaction as encoded in the block body's
+    /// transaction list, parallel to the `transactions` argument. Callers that
+    /// hold the raw envelopes pass exact sizes; when null the builder derives
+    /// the sizes from the execution transactions (`executionTxRlpSize`).
+    transaction_rlp_sizes: ?[]const usize = null,
 };
 
 pub const BlockCommitments = struct {
@@ -113,6 +133,9 @@ pub const BlockResult = struct {
     logs_bloom: [256]u8,
     blob_gas_used: u64,
     requests_hash: ?[32]u8,
+    /// Upper bound of the RLP-encoded execution block built from the included
+    /// transactions (EIP-7934 accounting). Never below the encoded size.
+    rlp_size_upper_bound: usize = 0,
 
     pub fn deinit(self: *BlockResult, allocator: std.mem.Allocator) void {
         for (self.receipts) |receipt| {
@@ -156,16 +179,41 @@ pub fn buildBlockWithOptions(
     const effective_block_ctx = blockContextWithEnvironmentOverrides(options.dev_runtime, block_ctx);
     const effective_fork = effectiveBlockBuilderFork(options, effective_block_ctx);
 
+    const execution_fork = if (options.hardfork_config) |config|
+        tx_processor.resolveHardforkWithConfig(config, effective_block_ctx)
+    else
+        tx_processor.resolveHardfork(effective_block_ctx);
+    // Osaka block rules apply when either the builder fork or the fork that
+    // executes the transactions is Osaka, so a caller that sets only one of
+    // `fork` and the schedule cannot build a block Osaka rejects.
+    const osaka_rules = atLeast(effective_fork, .osaka) or execution_fork.isAtLeast(.OSAKA);
+
+    if (options.transaction_rlp_sizes) |sizes| {
+        if (sizes.len != transactions.len) return error.TransactionSizeCountMismatch;
+    }
+
     // Validate included transactions before packing: an oversized transaction
     // must invalidate a supplied block even when it would not fit remaining gas.
     if (!options.skip_invalid_transactions) {
-        const execution_fork = if (options.hardfork_config) |config|
-            tx_processor.resolveHardforkWithConfig(config, effective_block_ctx)
-        else
-            tx_processor.resolveHardfork(effective_block_ctx);
         for (transactions) |item| {
             tx_processor.validateTransactionGasLimit(item.tx.gas_limit, execution_fork) catch
                 return error.InvalidIncludedTransaction;
+        }
+    }
+
+    // EIP-7934: account for the encoded block while packing. The payload
+    // starts with everything that is not a transaction.
+    const block_rlp_payload_size: usize = blockRlpFixedPayloadSize(options.withdrawals);
+    var transactions_rlp_payload_size: usize = 0;
+    if (osaka_rules and !options.skip_invalid_transactions) {
+        // A supplied transaction list is the block: reject it whole, before
+        // any state change, instead of silently dropping its tail.
+        var supplied_size: usize = 0;
+        for (transactions, 0..) |item, tx_index| {
+            supplied_size +|= transactionRlpSize(options, item, tx_index, effective_block_ctx.chain_id);
+        }
+        if (blockRlpSize(block_rlp_payload_size, supplied_size) > MAX_RLP_BLOCK_SIZE) {
+            return error.BlockRlpSizeExceeded;
         }
     }
 
@@ -215,6 +263,15 @@ pub fn buildBlockWithOptions(
         if (blob_gas_cap) |cap| {
             if (item_blob_gas_used > cap) continue;
             if (total_blob_gas_used > cap - item_blob_gas_used) continue;
+        }
+
+        // EIP-7934: leave out a transaction that would push the encoded block
+        // past the cap. Smaller transactions later in the list may still fit.
+        const item_rlp_size = transactionRlpSize(options, item, tx_index, effective_block_ctx.chain_id);
+        if (osaka_rules and
+            blockRlpSize(block_rlp_payload_size, transactions_rlp_payload_size +| item_rlp_size) > MAX_RLP_BLOCK_SIZE)
+        {
+            continue;
         }
 
         const tx_options = tx_processor.ProcessTransactionOptions{
@@ -268,6 +325,7 @@ pub fn buildBlockWithOptions(
         try receipts.append(receipt);
         try included_tx_indexes.append(tx_index);
         receipt_appended = true;
+        transactions_rlp_payload_size +|= item_rlp_size;
     }
 
     if (preserved_empty_accounts) |*accounts| {
@@ -338,7 +396,115 @@ pub fn buildBlockWithOptions(
         .logs_bloom = logs_bloom,
         .blob_gas_used = total_blob_gas_used,
         .requests_hash = requests_hash,
+        .rlp_size_upper_bound = blockRlpSize(block_rlp_payload_size, transactions_rlp_payload_size),
     };
+}
+
+/// EIP-7934: reject an RLP-encoded execution block larger than
+/// `MAX_RLP_BLOCK_SIZE` from Osaka. Earlier forks have no size rule.
+pub fn validateBlockRlpSize(block_rlp_size: usize, fork: Hardfork) error{BlockRlpSizeExceeded}!void {
+    if (atLeast(fork, .osaka) and block_rlp_size > MAX_RLP_BLOCK_SIZE) return error.BlockRlpSizeExceeded;
+}
+
+/// Size of a transaction as one item of the block body's transaction list:
+/// the RLP list for a legacy transaction, and the RLP byte string wrapping
+/// `type || rlp(payload)` for a typed one. Exact when the signature fields and
+/// `chain_id` are those of the signed envelope; performs no allocation.
+pub fn executionTxRlpSize(item: tx_processor.ExecutionTx, chain_id: u256) usize {
+    const tx = item.tx;
+    // Fields common to every type: nonce, gas limit, to, value, data, r, s.
+    var payload: usize = rlpUintSize(tx.nonce) +| rlpUintSize(tx.gas_limit) +|
+        (if (tx.to == null) @as(usize, 1) else 21) +|
+        rlpUintSize(tx.value) +| rlpBytesSize(tx.data) +|
+        rlpUintSize(std.mem.readInt(u256, &tx.r, .big)) +|
+        rlpUintSize(std.mem.readInt(u256, &tx.s, .big));
+
+    if (item.receipt_type == .legacy) {
+        payload +|= rlpUintSize(tx.gas_price) +| rlpUintSize(tx.v);
+        return rlpItemSize(payload);
+    }
+
+    // Typed payloads carry the chain id, a one-byte y parity and an access list.
+    payload +|= rlpUintSize(chain_id) +| 1 +| accessListRlpSize(item.access_list orelse &.{});
+    switch (item.receipt_type) {
+        .legacy => unreachable,
+        .eip2930 => payload +|= rlpUintSize(tx.gas_price),
+        .eip1559, .eip4844, .eip7702 => {
+            payload +|= rlpUintSize(item.max_priority_fee_per_gas orelse tx.gas_price) +|
+                rlpUintSize(item.max_fee_per_gas orelse tx.gas_price);
+        },
+    }
+    if (item.receipt_type == .eip4844) {
+        const hashes = item.blob_versioned_hashes orelse &.{};
+        payload +|= rlpUintSize(item.max_fee_per_blob_gas orelse 0) +| rlpItemSize(hashes.len *| 33);
+    }
+    if (item.receipt_type == .eip7702) {
+        var authorizations: usize = 0;
+        for (item.authorization_list orelse &.{}) |authorization| {
+            authorizations +|= rlpItemSize(rlpUintSize(authorization.chain_id) +| 21 +|
+                rlpUintSize(authorization.nonce) +| rlpUintSize(authorization.v) +|
+                rlpUintSize(std.mem.readInt(u256, &authorization.r, .big)) +|
+                rlpUintSize(std.mem.readInt(u256, &authorization.s, .big)));
+        }
+        payload +|= rlpItemSize(authorizations);
+    }
+    // The type byte and payload list form one byte string in the body.
+    return rlpItemSize(1 +| rlpItemSize(payload));
+}
+
+fn transactionRlpSize(
+    options: BuildBlockOptions,
+    item: tx_processor.ExecutionTx,
+    tx_index: usize,
+    chain_id: u256,
+) usize {
+    if (options.transaction_rlp_sizes) |sizes| return sizes[tx_index];
+    return executionTxRlpSize(item, chain_id);
+}
+
+/// Payload of the block list excluding transactions: header bound, empty
+/// ommers list, and the withdrawals list when the block carries one.
+fn blockRlpFixedPayloadSize(withdrawals: ?[]const primitives.BlockBody.Withdrawal) usize {
+    var size: usize = MAX_HEADER_RLP_SIZE + 1;
+    if (withdrawals) |items| {
+        var payload: usize = 0;
+        for (items) |withdrawal| {
+            payload +|= rlpItemSize(rlpUintSize(withdrawal.index) +| rlpUintSize(withdrawal.validator_index) +|
+                21 +| rlpUintSize(withdrawal.amount));
+        }
+        size +|= rlpItemSize(payload);
+    }
+    return size;
+}
+
+fn blockRlpSize(fixed_payload_size: usize, transactions_payload_size: usize) usize {
+    return rlpItemSize(fixed_payload_size +| rlpItemSize(transactions_payload_size));
+}
+
+fn accessListRlpSize(access_list: primitives.AccessList.AccessList) usize {
+    var payload: usize = 0;
+    for (access_list) |entry| {
+        payload +|= rlpItemSize(21 +| rlpItemSize(entry.storage_keys.len *| 33));
+    }
+    return rlpItemSize(payload);
+}
+
+/// Size of an RLP list or of a byte string longer than one byte, given its
+/// payload length.
+fn rlpItemSize(payload_size: usize) usize {
+    if (payload_size < 56) return payload_size + 1;
+    const length_bytes: usize = (@as(usize, @bitSizeOf(usize)) - @clz(payload_size) + 7) / 8;
+    return payload_size +| (1 + length_bytes);
+}
+
+fn rlpBytesSize(bytes: []const u8) usize {
+    if (bytes.len == 1 and bytes[0] < 0x80) return 1;
+    return rlpItemSize(bytes.len);
+}
+
+fn rlpUintSize(value: u256) usize {
+    if (value < 0x80) return 1;
+    return 1 + (@as(usize, 256) - @clz(value) + 7) / 8;
 }
 
 pub fn blockContextWithEnvironmentOverrides(
@@ -365,6 +531,13 @@ pub fn blockContextWithEnvironmentOverrides(
 
 pub fn validateBlock(allocator: std.mem.Allocator, input: BlockValidationInput) !BlockCommitments {
     try validateHeader(input.header, input.parent_header, input.fork);
+
+    // EIP-7825: an Osaka block holding a transaction above the cap is invalid
+    // whatever its roots say.
+    for (input.execution_transactions) |item| {
+        tx_processor.validateTransactionGasLimit(item.tx.gas_limit, evmHardforkFromBlockBuilderFork(input.fork)) catch
+            return error.TransactionGasLimitExceeded;
+    }
 
     const tx_count = if (input.transaction_envelopes) |envelopes| envelopes.len else input.execution_transactions.len;
     if (tx_count != input.receipts.len) return error.TransactionReceiptCountMismatch;
@@ -941,7 +1114,7 @@ pub fn blockRewardWei(fork: Hardfork) ?u256 {
         .frontier, .homestead => 5 * WEI_PER_ETHER,
         .byzantium => 3 * WEI_PER_ETHER,
         .constantinople, .istanbul, .berlin, .london => 2 * WEI_PER_ETHER,
-        .paris, .shanghai, .cancun, .prague => null,
+        .paris, .shanghai, .cancun, .prague, .osaka => null,
     };
 }
 
@@ -1077,7 +1250,9 @@ fn normalizedCodeHash(hash: [32]u8) [32]u8 {
 pub fn maxBlobGasPerBlock(fork: Hardfork) ?u64 {
     return switch (fork) {
         .cancun => CANCUN_MAX_BLOB_GAS_PER_BLOCK,
-        .prague => PRAGUE_MAX_BLOB_GAS_PER_BLOCK,
+        // Osaka keeps the Prague blob schedule until a BPO fork changes it;
+        // BPO parameters resolve through the blob-fee module, not this enum.
+        .prague, .osaka => PRAGUE_MAX_BLOB_GAS_PER_BLOCK,
         else => null,
     };
 }
@@ -1370,7 +1545,7 @@ fn requestsWithPragueSystemOutputs(base: RequestsByType, system: PragueSystemReq
 
 fn effectiveBlockBuilderFork(options: BuildBlockOptions, block_ctx: guillotine_mini.BlockContext) Hardfork {
     if (options.hardfork_config) |config| {
-        return blockBuilderFork(tx_processor.resolveHardforkWithConfig(config, block_ctx));
+        return hardforkFromEvm(tx_processor.resolveHardforkWithConfig(config, block_ctx));
     }
     return options.fork;
 }
@@ -1388,10 +1563,13 @@ fn evmHardforkFromBlockBuilderFork(fork: Hardfork) guillotine_mini.Hardfork {
         .shanghai => .SHANGHAI,
         .cancun => .CANCUN,
         .prague => .PRAGUE,
+        .osaka => .OSAKA,
     };
 }
 
-fn blockBuilderFork(fork: guillotine_mini.Hardfork) Hardfork {
+/// Map an EVM hardfork to the block-rule fork that governs it.
+pub fn hardforkFromEvm(fork: guillotine_mini.Hardfork) Hardfork {
+    if (fork.isAtLeast(.OSAKA)) return .osaka;
     if (fork.isAtLeast(.PRAGUE)) return .prague;
     if (fork.isAtLeast(.CANCUN)) return .cancun;
     if (fork.isAtLeast(.SHANGHAI)) return .shanghai;

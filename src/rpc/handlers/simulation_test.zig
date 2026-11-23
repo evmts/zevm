@@ -514,3 +514,63 @@ fn parseAddress(text: []const u8) !primitives.Address {
     _ = std.fmt.hexToBytes(&bytes, text[2..]) catch return error.InvalidAddress;
     return .{ .bytes = bytes };
 }
+
+// GAS PUSH4 20_000_000 LT PUSH1 0x0d JUMPI PUSH0 PUSH0 REVERT JUMPDEST STOP:
+// succeeds only when more than 20M gas remains at entry.
+const REQUIRES_OVER_20M_GAS = [_]u8{ 0x5a, 0x63, 0x01, 0x31, 0x2d, 0x00, 0x10, 0x60, 0x0d, 0x57, 0x5f, 0x5f, 0xfd, 0x5b, 0x00 };
+
+test "EIP-7825 eth_estimateGas never returns an estimate above the Osaka transaction cap" {
+    const target = try parseAddress(TARGET);
+
+    // Prague has no transaction cap: the estimate may exceed 2^24.
+    var prague_rt = try runtime.NodeRuntime.init(std.testing.allocator, .{
+        .hardfork_config = .{ .prague_timestamp = 0, .osaka_timestamp = std.math.maxInt(u64) },
+    });
+    defer prague_rt.deinit();
+    try prague_rt.setCode(target, &REQUIRES_OVER_20M_GAS);
+    var prague_params = try parseJson(
+        \\[{"from":"0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266","to":"0x1000000000000000000000000000000000000001"}]
+    );
+    defer prague_params.deinit();
+    const prague_result = try simulation.handleEthEstimateGas(std.testing.allocator, &prague_rt, prague_params.value);
+    defer std.testing.allocator.free(prague_result.string);
+    const prague_estimate = try std.fmt.parseInt(u64, prague_result.string[2..], 16);
+    try std.testing.expect(prague_estimate > 20_000_000);
+    try std.testing.expect(prague_estimate <= 30_000_000);
+
+    // Osaka: the same call cannot fit any valid transaction, with or without
+    // an explicit gas above the cap.
+    var osaka_rt = try runtime.NodeRuntime.init(std.testing.allocator, .{
+        .hardfork_config = .{ .prague_timestamp = 0, .osaka_timestamp = 0 },
+    });
+    defer osaka_rt.deinit();
+    try osaka_rt.setCode(target, &REQUIRES_OVER_20M_GAS);
+    for ([_][]const u8{
+        \\[{"from":"0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266","to":"0x1000000000000000000000000000000000000001"}]
+        ,
+        \\[{"from":"0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266","to":"0x1000000000000000000000000000000000000001","gas":"0x1c9c380"}]
+        ,
+    }) |request| {
+        var params = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, request, .{});
+        defer params.deinit();
+        try std.testing.expectError(error.ExecutionFailed, simulation.handleEthEstimateGas(std.testing.allocator, &osaka_rt, params.value));
+    }
+
+    // An ordinary Osaka estimate is unchanged, and eth_call may still run
+    // with the full block gas limit.
+    var transfer_params = try parseJson(
+        \\[{"from":"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266","to":"0x70997970C51812dc3A010C7d01b50e0d17dc79C8"}]
+    );
+    defer transfer_params.deinit();
+    const transfer = try simulation.handleEthEstimateGas(std.testing.allocator, &osaka_rt, transfer_params.value);
+    defer std.testing.allocator.free(transfer.string);
+    try std.testing.expectEqualStrings("0x5208", transfer.string);
+
+    var call_params = try parseJson(
+        \\[{"from":"0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266","to":"0x1000000000000000000000000000000000000001"},"latest"]
+    );
+    defer call_params.deinit();
+    const call_result = try simulation.handleEthCall(std.testing.allocator, &osaka_rt, call_params.value);
+    defer std.testing.allocator.free(call_result.string);
+    try std.testing.expectEqualStrings("0x", call_result.string);
+}

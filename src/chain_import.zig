@@ -1,6 +1,18 @@
 const std = @import("std");
 const blockchain_mod = @import("blockchain");
 const primitives = @import("primitives");
+const block_builder = @import("block_builder.zig");
+const hardfork_schedule = @import("hardfork_schedule.zig");
+
+/// EIP-7934 maximum RLP-encoded execution block size, enforced from Osaka.
+pub const MAX_RLP_BLOCK_SIZE: usize = block_builder.MAX_RLP_BLOCK_SIZE;
+
+pub const ImportOptions = struct {
+    /// Activation schedule for fork-dependent block validation. With a
+    /// schedule, import rejects Osaka blocks larger than `MAX_RLP_BLOCK_SIZE`
+    /// (EIP-7934). Null decodes and stores blocks without fork rules.
+    hardfork_config: ?hardfork_schedule.ChainConfig = null,
+};
 
 const RlpKind = enum {
     string,
@@ -70,9 +82,26 @@ pub fn importChainFile(
     owned_block_bodies: *std.ArrayList(OwnedBlockBody),
     path: []const u8,
 ) !ImportStats {
+    return importChainFileWithOptions(allocator, blockchain, owned_block_bodies, path, .{});
+}
+
+pub fn importChainFileWithOptions(
+    allocator: std.mem.Allocator,
+    blockchain: *blockchain_mod.Blockchain,
+    owned_block_bodies: *std.ArrayList(OwnedBlockBody),
+    path: []const u8,
+    options: ImportOptions,
+) !ImportStats {
     const bytes = try std.fs.cwd().readFileAlloc(allocator, path, 512 * 1024 * 1024);
     defer allocator.free(bytes);
-    return try importChainBytes(allocator, blockchain, owned_block_bodies, bytes);
+    return try importChainBytesWithOptions(allocator, blockchain, owned_block_bodies, bytes, options);
+}
+
+/// EIP-7934: reject an execution block whose RLP encoding exceeds
+/// `MAX_RLP_BLOCK_SIZE` when `hardfork` is Osaka or later. Earlier forks have
+/// no size rule, so larger historical blocks stay valid.
+pub fn validateBlockRlpSize(block_rlp_size: u64, hardfork: primitives.Hardfork) error{BlockRlpSizeExceeded}!void {
+    if (hardfork.isAtLeast(.OSAKA) and block_rlp_size > MAX_RLP_BLOCK_SIZE) return error.BlockRlpSizeExceeded;
 }
 
 pub fn importChainBytes(
@@ -81,12 +110,32 @@ pub fn importChainBytes(
     owned_block_bodies: *std.ArrayList(OwnedBlockBody),
     bytes: []const u8,
 ) !ImportStats {
+    return importChainBytesWithOptions(allocator, blockchain, owned_block_bodies, bytes, .{});
+}
+
+pub fn importChainBytesWithOptions(
+    allocator: std.mem.Allocator,
+    blockchain: *blockchain_mod.Blockchain,
+    owned_block_bodies: *std.ArrayList(OwnedBlockBody),
+    bytes: []const u8,
+    options: ImportOptions,
+) !ImportStats {
     var stats = ImportStats{};
     var offset: usize = 0;
     while (offset < bytes.len) {
         var decoded = try decodeNextBlock(allocator, bytes[offset..]);
         var owned = false;
         errdefer if (!owned) decoded.deinit(allocator);
+
+        // Reject an oversized block before it reaches the block store.
+        if (options.hardfork_config) |config| {
+            const hardfork = hardfork_schedule.resolveHardforkWithConfig(
+                config,
+                decoded.block.header.number,
+                decoded.block.header.timestamp,
+            );
+            try validateBlockRlpSize(decoded.block.size, hardfork);
+        }
 
         stats.transaction_count += decoded.block.body.transactions.len;
         stats.head_block_number = decoded.block.header.number;

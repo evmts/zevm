@@ -3626,6 +3626,7 @@ fn blockValueFromReceipts(
 }
 
 fn blockBuilderFork(fork: guillotine_mini.Hardfork) block_builder.Hardfork {
+    if (fork.isAtLeast(.OSAKA)) return .osaka;
     if (fork.isAtLeast(.PRAGUE)) return .prague;
     if (fork.isAtLeast(.CANCUN)) return .cancun;
     if (fork.isAtLeast(.SHANGHAI)) return .shanghai;

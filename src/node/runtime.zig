@@ -623,7 +623,9 @@ pub const NodeRuntime = struct {
         var startup_head_block_timestamp: u64 = genesis_header.timestamp;
         var startup_base_fee = config.base_fee;
         if (config.chain_rlp_path) |path| {
-            const stats = try chain_import.importChainFile(allocator, &blockchain, &owned_block_bodies, path);
+            const stats = try chain_import.importChainFileWithOptions(allocator, &blockchain, &owned_block_bodies, path, .{
+                .hardfork_config = runtime_hardfork_config,
+            });
             const imported_head = (try blockchain.getBlockByNumber(stats.head_block_number)) orelse return error.ImportedChainHeadMissing;
             startup_head_block_number = imported_head.header.number;
             startup_head_block_timestamp = imported_head.header.timestamp;
@@ -2861,6 +2863,9 @@ fn materializeImportedBlock(
     var recent_hashes: [256][32]u8 = undefined;
     const block_ctx = try importedBlockContext(blockchain, chain_id, blob_base_fee, block, &recent_hashes);
     const hardfork = inferImportedBlockHardfork(hardfork_config, block_ctx, block);
+    // EIP-7934: every imported or engine-supplied block passes through here
+    // with its resolved fork, so the Osaka size cap is enforced once.
+    try chain_import.validateBlockRlpSize(block.size, hardfork);
 
     if (hardfork.isAtLeast(.CANCUN)) {
         if (block.header.parent_beacon_block_root) |root| {
@@ -3125,7 +3130,8 @@ fn blockBuilderHardfork(hardfork: guillotine_mini.Hardfork) block_builder.Hardfo
     if (hardfork.isBefore(.SHANGHAI)) return .paris;
     if (hardfork.isBefore(.CANCUN)) return .shanghai;
     if (hardfork.isBefore(.PRAGUE)) return .cancun;
-    return .prague;
+    if (hardfork.isBefore(.OSAKA)) return .prague;
+    return .osaka;
 }
 
 fn finalizeReceiptsForBlock(

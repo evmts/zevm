@@ -1736,6 +1736,13 @@ fn estimateGas(
     const intrinsic = intrinsicGas(rt, tx, block_ctx);
     var high = gasLimit(tx, block_ctx);
     if (high < intrinsic or high > block_ctx.block_gas_limit) return error.ExecutionFailed;
+    // EIP-7825: an estimate above the Osaka transaction cap names a gas limit
+    // no transaction may declare, so the search never looks past the cap. A
+    // call that needs more fails here instead of at submission.
+    if (rt.hardforkForBlockContext(block_ctx).isAtLeast(.OSAKA)) {
+        high = @min(high, tx_processor.MAX_TRANSACTION_GAS_LIMIT);
+        if (high < intrinsic) return error.ExecutionFailed;
+    }
 
     var high_result = try executeOnce(allocator, rt, tx, block_ctx, high);
     high_result.deinit(allocator);
@@ -2500,6 +2507,7 @@ fn headerFromSimulatedBlock(block: SimulatedBlockData) primitives.BlockHeader.Bl
 }
 
 fn simBlockBuilderFork(fork: guillotine_mini.Hardfork) block_builder.Hardfork {
+    if (fork.isAtLeast(.OSAKA)) return .osaka;
     if (fork.isAtLeast(.PRAGUE)) return .prague;
     if (fork.isAtLeast(.CANCUN)) return .cancun;
     if (fork.isAtLeast(.SHANGHAI)) return .shanghai;

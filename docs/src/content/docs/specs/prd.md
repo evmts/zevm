@@ -189,7 +189,7 @@ Trusted-mode defaults:
 - `maxPriorityFeePerGas`: `1000000000`
 - `blockGasLimit`: `30000000`
 - mining mode: `auto`
-- hardfork policy: explicit dev schedule with Cancun active from genesis and Prague/Osaka inactive until configured
+- hardfork policy: explicit dev schedule with Cancun active from genesis and Prague/Osaka inactive until configured (see section 9.1 for the Osaka configuration path)
 
 Managed dev-wallet contract (exact):
 
@@ -639,11 +639,44 @@ Detailed RPC-level mining behavior is defined in `docs/specs/json-rpc-contract.m
 
 ## 9. Fee Model And Transaction Types
 
-From Osaka, EIP-7825 limits each transaction's declared gas limit to 16,777,216,
-independent of the block gas limit. Transaction admission and included-block
-execution reject larger limits before changing state. Historical forks retain
-their existing block-gas bound. Non-validating simulations may exceed this
-transaction cap within their simulation block gas limit.
+### 9.1 Osaka block and transaction limits
+
+Osaka is its own block-rule fork. Every mapping from the EVM hardfork to the
+block builder's fork resolves Osaka to `osaka`, never to `prague`. Osaka keeps
+the Prague blob limits until a blob-parameter-only fork changes them; blob fee
+and BPO parameters are specified with the blob fee model, not here.
+
+| Rule | Limit | Active | Where ZEVM enforces it |
+| --- | --- | --- | --- |
+| EIP-7825 transaction gas cap | `16,777,216` gas (`2^24`) per transaction | Osaka and later | `eth_sendRawTransaction`, `eth_sendTransaction`, `eth_signTransaction`, validating `eth_simulateV1`, `eth_estimateGas`, block building, block validation, chain and Engine API import |
+| EIP-7934 block size cap | `8,388,608` bytes (`10,485,760 - 2,097,152`) of RLP-encoded execution block | Osaka and later | block building, chain RLP import, Engine API import |
+| EIP-7935 block gas limit | `60,000,000` recommended default | not consensus | explicit configuration only |
+
+EIP-7825 (transaction gas cap):
+
+- The cap applies to the declared gas limit of every transaction type (`0x0` through `0x4`), independent of the block gas limit. A limit of exactly `16,777,216` is valid.
+- Transaction admission and included-block execution reject larger limits before changing state. Submission and signing methods return JSON-RPC error `-32000` with message `transaction gas limit exceeds Osaka cap (16777216)`.
+- Admission uses the fork of the pending block, so a transaction above the cap is accepted until the block that activates Osaka.
+- A supplied block that holds a transaction above the cap is invalid as a whole. A pending transaction above the cap is left out of built blocks.
+- `eth_estimateGas` never returns more than the cap from Osaka. A call that needs more gas fails as an execution failure instead of returning a limit no transaction may declare.
+- `eth_call` and non-validating `eth_simulateV1` may exceed the cap within their simulation block gas limit. System calls are not transactions and are exempt.
+- Earlier forks keep only the block-gas bound.
+
+EIP-7934 (block size cap):
+
+- The size is the length of the RLP encoding of the whole execution block: header, transactions, ommers, and withdrawals. A block of exactly `8,388,608` bytes is valid.
+- Chain RLP import (`--chain-rlp`) checks the exact encoded length of each block against the fork resolved from that block's number and timestamp. An oversized Osaka block fails the import with `BlockRlpSizeExceeded` and is not stored. Blocks imported before it stay imported.
+- Blocks larger than the cap stay valid before Osaka.
+- The block builder counts the encoded size while it packs transactions. When it selects from pending transactions it leaves out any transaction that would push the block past the cap and continues with later, smaller ones. A supplied transaction list that exceeds the cap is rejected whole before any state change.
+- The builder's size is an upper bound: exact transaction sizes plus the largest possible header (742 bytes). It never builds a block over the cap; it may leave up to a few hundred bytes unused.
+
+EIP-7935 (block gas limit) and the dev default:
+
+- The dev default stays `blockGasLimit = 30000000` with Cancun active from genesis. ZEVM does not raise the default to `60,000,000` and does not activate Osaka by default.
+- Reason: an Osaka (or Prague) dev chain needs the EIP-7002 and EIP-7251 request system contracts in genesis state. The default dev genesis does not deploy them, so every mined block fails with `MissingSystemContractCode`. Switching the default was measured against the test suite: 33 of 570 tests fail, 23 of them for that reason.
+- Supported Osaka path: supply a genesis that deploys the request system contracts, set `mode.trusted.hardfork.pragueTimestamp` and `osakaTimestamp` to `0`, and set `blockGasLimit` (or `--block-gas-limit`) to `60000000`. No explicit `blockGasLimit` is ever overridden by a fork.
+- `chainId = 1` uses the mainnet schedule, which activates Osaka at timestamp `1764798551`.
+- Each transaction is still capped at `16,777,216` gas, so a `60,000,000` block holds at least three maximum-size transactions.
 
 Phase-1 transaction request and submission contract:
 
