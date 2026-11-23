@@ -388,3 +388,53 @@ test "log_index: deinit frees all memory" {
 
     idx.deinit(allocator);
 }
+
+test "log_index: failed append leaves the index unchanged (#53)" {
+    // The log list, the range map, and the clones share one failing allocator.
+    // Any allocation failure must roll the block back completely: no orphan
+    // logs without a block range, and no leaked clones.
+    var failing = testing.FailingAllocator.init(testing.allocator, .{});
+    const allocator = failing.allocator();
+    var idx = log_index.LogIndex.init();
+    defer idx.deinit(allocator);
+
+    const addr = primitives.Address.ZERO_ADDRESS;
+    const topic = [_]u8{0x77} ** 32;
+    const block_one = [_]u8{0x01} ** 32;
+    const block_two = [_]u8{0x02} ** 32;
+
+    var first = try makeReceiptWithLogs(testing.allocator, addr, topic, 1);
+    defer first.deinit(testing.allocator);
+    try idx.appendBlockLogs(allocator, 1, block_one, &[_]primitives.Receipt.Receipt{first});
+
+    var r0 = try makeReceiptWithLogs(testing.allocator, addr, topic, 2);
+    defer r0.deinit(testing.allocator);
+    var r1 = try makeReceiptWithLogs(testing.allocator, addr, null, 3);
+    defer r1.deinit(testing.allocator);
+    const receipts = [_]primitives.Receipt.Receipt{ r0, r1 };
+
+    var failures: usize = 0;
+    var budget: usize = 0;
+    while (budget < 64) : (budget += 1) {
+        failing.fail_index = failing.alloc_index + budget;
+        if (idx.appendBlockLogs(allocator, 2, block_two, &receipts)) |_| {
+            break;
+        } else |err| {
+            failures += 1;
+            try testing.expectEqual(error.OutOfMemory, err);
+            try testing.expectEqual(@as(usize, 1), idx.logs.items.len);
+            try testing.expect(idx.block_range.get(2) == null);
+            try testing.expectEqual(@as(usize, 1), idx.block_range.count());
+        }
+    } else return error.AppendNeverSucceeded;
+    failing.fail_index = std.math.maxInt(usize);
+
+    try testing.expect(failures > 0);
+    try testing.expectEqual(@as(usize, 6), idx.logs.items.len);
+    const by_hash = try idx.query(testing.allocator, .{ .block_hash = block_two }, 2);
+    defer testing.allocator.free(by_hash);
+    try testing.expectEqual(@as(usize, 5), by_hash.len);
+    const by_range = try idx.query(testing.allocator, .{ .from_block = 2, .to_block = 2 }, 2);
+    defer testing.allocator.free(by_range);
+    try testing.expectEqual(@as(usize, 5), by_range.len);
+}

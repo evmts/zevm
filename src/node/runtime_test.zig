@@ -921,3 +921,127 @@ test "fork URL validation rejects unusable HTTP URLs" {
     try std.testing.expectError(error.InvalidForkUrl, rt.setRpcUrl("https://"));
     try std.testing.expectEqualStrings("https://rpc.example", rt.fork_config.?.url);
 }
+
+/// Fork upstream that serves the scalar read methods but not `eth_getProof`.
+const ScalarOnlyForkResolver = struct {
+    balance: u256,
+    nonce: u64,
+    storage_slot: u256,
+    storage_value: u256,
+    code: []const u8,
+    fail_everything: bool = false,
+    proof_calls: usize = 0,
+    scalar_calls: usize = 0,
+
+    fn asResolver(self: *ScalarOnlyForkResolver) runtime.ForkRpcResolver {
+        return .{ .context = self, .resolve = &resolve };
+    }
+
+    fn resolve(
+        context: ?*anyopaque,
+        allocator: std.mem.Allocator,
+        request: runtime.ForkRpcRequest,
+    ) ![]u8 {
+        const self: *ScalarOnlyForkResolver = @ptrCast(@alignCast(context.?));
+        if (self.fail_everything) return error.UpstreamRpcFailed;
+        if (std.mem.eql(u8, request.method, "eth_getProof")) {
+            self.proof_calls += 1;
+            // What the HTTP resolver returns for a JSON-RPC "method not found".
+            return error.InvalidUpstreamRpcResponse;
+        }
+        self.scalar_calls += 1;
+
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, request.params_json, .{});
+        defer parsed.deinit();
+        const params = parsed.value.array.items;
+        // Every scalar read must carry the address and a trailing block tag.
+        if (params[0] != .string or params[params.len - 1] != .string) return error.InvalidParams;
+
+        if (std.mem.eql(u8, request.method, "eth_getBalance")) {
+            if (params.len != 2) return error.InvalidParams;
+            return std.fmt.allocPrint(allocator, "\"0x{x}\"", .{self.balance});
+        }
+        if (std.mem.eql(u8, request.method, "eth_getTransactionCount")) {
+            if (params.len != 2) return error.InvalidParams;
+            return std.fmt.allocPrint(allocator, "\"0x{x}\"", .{self.nonce});
+        }
+        if (std.mem.eql(u8, request.method, "eth_getCode")) {
+            if (params.len != 2) return error.InvalidParams;
+            const code_hex = try primitives.Hex.bytesToHex(allocator, self.code);
+            defer allocator.free(code_hex);
+            return std.fmt.allocPrint(allocator, "\"{s}\"", .{code_hex});
+        }
+        if (std.mem.eql(u8, request.method, "eth_getStorageAt")) {
+            if (params.len != 3) return error.InvalidParams;
+            const slot = try parseHexU256(params[1].string);
+            const value = if (slot == self.storage_slot) self.storage_value else @as(u256, 0);
+            // Upstreams return storage as zero-padded 32-byte data.
+            return std.fmt.allocPrint(allocator, "\"0x{x:0>64}\"", .{value});
+        }
+        return error.UnsupportedMethod;
+    }
+};
+
+test "forked runtime falls back to scalar reads when upstream lacks eth_getProof" {
+    var resolver = ScalarOnlyForkResolver{
+        .balance = 0x2a,
+        .nonce = 7,
+        .storage_slot = 5,
+        .storage_value = 0x55,
+        .code = &[_]u8{ 0x60, 0x01 },
+    };
+
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, .{
+        .fork_url = "https://rpc-a.example",
+        .fork_rpc_resolver = resolver.asResolver(),
+    });
+    defer rt.deinit();
+
+    const addr = testAddress();
+    try std.testing.expectEqual(@as(u256, 0x2a), try rt.getBalance(addr));
+    try std.testing.expectEqual(@as(u64, 7), try rt.getNonce(addr));
+    try std.testing.expectEqual(@as(u256, 0x55), try rt.getStorage(addr, 5));
+    try std.testing.expectEqual(@as(u256, 0), try rt.getStorage(addr, 6));
+    const code = try rt.getCode(addr);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x60, 0x01 }, code);
+
+    // eth_getProof is probed once, then skipped for the rest of this upstream.
+    try std.testing.expectEqual(@as(usize, 1), resolver.proof_calls);
+    try std.testing.expect(rt.fork_proof_unavailable);
+    try std.testing.expect(resolver.scalar_calls > 0);
+
+    // A new upstream gets a fresh eth_getProof probe.
+    try rt.setRpcUrl("https://rpc-b.example");
+    try std.testing.expect(!rt.fork_proof_unavailable);
+    const other = parseAddr("0x0000000000000000000000000000000000000043");
+    try std.testing.expectEqual(@as(u256, 0x2a), try rt.getBalance(other));
+    try std.testing.expectEqual(@as(usize, 2), resolver.proof_calls);
+}
+
+test "forked runtime retries a read after an upstream failure" {
+    var resolver = ScalarOnlyForkResolver{
+        .balance = 0x2a,
+        .nonce = 7,
+        .storage_slot = 5,
+        .storage_value = 0x55,
+        .code = &[_]u8{},
+        .fail_everything = true,
+    };
+
+    var rt = try runtime.NodeRuntime.init(std.testing.allocator, .{
+        .fork_url = "https://rpc-a.example",
+        .fork_rpc_resolver = resolver.asResolver(),
+    });
+    defer rt.deinit();
+
+    const addr = testAddress();
+    try std.testing.expectError(error.UpstreamRpcFailed, rt.getBalance(addr));
+    try std.testing.expectError(error.UpstreamRpcFailed, rt.getStorage(addr, 5));
+    try std.testing.expect(!rt.fork_proof_unavailable);
+
+    // The failed requests must not stay pending: once the upstream recovers,
+    // the same keys resolve.
+    resolver.fail_everything = false;
+    try std.testing.expectEqual(@as(u256, 0x2a), try rt.getBalance(addr));
+    try std.testing.expectEqual(@as(u256, 0x55), try rt.getStorage(addr, 5));
+}

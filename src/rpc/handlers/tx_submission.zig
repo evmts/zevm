@@ -115,7 +115,7 @@ pub fn handleSendRawTransaction(
         tx_encoding.envelopeMaxFeePerBlobGas(decoded) orelse 0,
         tx_encoding.envelopeBlobGasUsed(decoded) orelse 0,
     ) catch return TxSubmissionError.InsufficientBalance;
-    const total_cost = tx.value +| max_gas_cost +| max_blob_gas_cost;
+    const total_cost = checkedTotalCost(tx.value, max_gas_cost, max_blob_gas_cost) catch return TxSubmissionError.InsufficientBalance;
     const balance = rt.state.getBalance(sender) catch return TxSubmissionError.StateError;
     if (balance < total_cost) return TxSubmissionError.InsufficientBalance;
 
@@ -173,7 +173,7 @@ pub fn handleSendRawTransaction(
 
     switch (rt.mining_config) {
         .auto => if (receipt_type != .eip4844 and tx.nonce == current_nonce)
-            automine(rt) catch return TxSubmissionError.MiningFailed,
+            try automine(rt, tx_hash),
         .manual, .interval => {},
     }
 
@@ -247,8 +247,8 @@ pub fn handleSendTransaction(
     if (intrinsic > tx.gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
     if (tx.gas_limit > rt.dev_runtime.config.block_gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
 
-    const max_gas_cost = gas_price * @as(u256, tx.gas_limit);
-    const total_cost = tx.value +| max_gas_cost;
+    const max_gas_cost = std.math.mul(u256, gas_price, @as(u256, tx.gas_limit)) catch return TxSubmissionError.InsufficientBalance;
+    const total_cost = checkedTotalCost(tx.value, max_gas_cost, 0) catch return TxSubmissionError.InsufficientBalance;
     const balance = rt.state.getBalance(request.from) catch return TxSubmissionError.StateError;
     if (balance < total_cost) return TxSubmissionError.InsufficientBalance;
 
@@ -284,7 +284,7 @@ pub fn handleSendTransaction(
     logTxAccepted(rt, "sendTransaction", request.from, tx.nonce, tx.gas_limit, tx_hash);
 
     switch (rt.mining_config) {
-        .auto => if (tx.nonce == current_nonce) automine(rt) catch return TxSubmissionError.MiningFailed,
+        .auto => if (tx.nonce == current_nonce) try automine(rt, tx_hash),
         .manual, .interval => {},
     }
 
@@ -563,8 +563,22 @@ fn miningConfigName(config: mining.MiningConfig) []const u8 {
     };
 }
 
-fn automine(rt: *runtime.NodeRuntime) !void {
-    try rt.mineBlocks(1, 0);
+/// Auto-mining is part of the submission contract: a submission only succeeds
+/// when its mining pass succeeds. On failure the transaction leaves the pool so
+/// a later block cannot include a transaction the caller was told had failed.
+fn automine(rt: *runtime.NodeRuntime, tx_hash: [32]u8) TxSubmissionError!void {
+    rt.mineBlocks(1, 0) catch |err| {
+        log.warn(.mining, "automine_failed error={s}", .{@errorName(err)});
+        _ = rt.pool.removeByHash(tx_hash);
+        return TxSubmissionError.MiningFailed;
+    };
+}
+
+/// Upfront cost a sender must cover: value + gas cost + blob gas cost. Overflow
+/// is an error; saturating would let a u256-max balance pass an impossible cost.
+fn checkedTotalCost(value: u256, max_gas_cost: u256, max_blob_gas_cost: u256) error{Overflow}!u256 {
+    const fee_cost = try std.math.add(u256, max_gas_cost, max_blob_gas_cost);
+    return std.math.add(u256, value, fee_cost);
 }
 
 // An omitted gas limit must cover execution and code deposit, not just intrinsic

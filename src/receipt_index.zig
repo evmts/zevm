@@ -12,16 +12,14 @@ pub const ReceiptIndex = struct {
         };
     }
 
+    /// `by_block` owns every stored receipt and its logs. `by_tx` holds shallow
+    /// copies that alias a `by_block` receipt, so it frees nothing itself.
     pub fn deinit(self: *ReceiptIndex, allocator: std.mem.Allocator) void {
-        var tx_it = self.by_tx.valueIterator();
-        while (tx_it.next()) |receipt| {
-            receipt.deinit(allocator);
-        }
         self.by_tx.deinit();
 
         var block_it = self.by_block.valueIterator();
         while (block_it.next()) |receipts| {
-            allocator.free(receipts.*);
+            freeReceipts(allocator, receipts.*);
         }
         self.by_block.deinit();
     }
@@ -38,8 +36,11 @@ pub const ReceiptIndex = struct {
         return cloned;
     }
 
-    /// Store receipts for a sealed block. Inserts into both indexes, retiring
-    /// any previously stored receipts for the same block hash.
+    /// Store receipts for a sealed block. Inserts into both indexes.
+    ///
+    /// Failure-atomic: every allocation (receipt clones and hash-map capacity)
+    /// happens before the first index mutation, so an allocation error leaves
+    /// both indexes exactly as they were.
     pub fn putBlockReceipts(
         self: *ReceiptIndex,
         allocator: std.mem.Allocator,
@@ -49,45 +50,53 @@ pub const ReceiptIndex = struct {
         const cloned = try allocator.alloc(primitives.Receipt.Receipt, receipts.len);
         var cloned_count: usize = 0;
         errdefer {
-            for (cloned[0..cloned_count]) |*r| {
-                r.deinit(allocator);
-            }
+            for (cloned[0..cloned_count]) |receipt| receipt.deinit(allocator);
             allocator.free(cloned);
         }
-
         for (receipts, 0..) |receipt, i| {
             cloned[i] = try cloneReceipt(allocator, receipt);
             cloned_count = i + 1;
         }
 
-        // Reserve capacity in both maps before mutating either map so no
-        // partial state or leak can occur on out-of-memory.
-        try self.by_tx.ensureUnusedCapacity(@intCast(receipts.len));
+        const tx_capacity = std.math.cast(u32, receipts.len) orelse return error.OutOfMemory;
+        try self.by_tx.ensureUnusedCapacity(tx_capacity);
         try self.by_block.ensureUnusedCapacity(1);
 
-        // Retire any previous receipts stored under this block_hash so neither
-        // the old slice nor any displaced tx_hash entries leak or remain stale.
-        if (self.by_block.fetchRemove(block_hash)) |old_block| {
-            for (old_block.value) |old_receipt| {
-                if (self.by_tx.fetchRemove(old_receipt.transaction_hash)) |old_tx| {
-                    var prior = old_tx.value;
-                    prior.deinit(allocator);
-                }
-            }
-            allocator.free(old_block.value);
+        // Nothing below can fail.
+        if (self.by_block.fetchRemove(block_hash)) |replaced| {
+            // Re-storing a block: drop the tx entries that still alias the old
+            // receipts before freeing them.
+            self.dropTxEntriesAliasing(replaced.value);
+            freeReceipts(allocator, replaced.value);
         }
-
         for (cloned) |receipt| {
-            // If a prior receipt with this tx hash exists under another block
-            // (e.g. a re-org), free its owned logs before overwriting.
-            if (self.by_tx.fetchRemove(receipt.transaction_hash)) |kv| {
-                var prior = kv.value;
-                prior.deinit(allocator);
-            }
+            // A tx hash already indexed for another block (a re-org re-seals it)
+            // now resolves to this block. The other block keeps its own copy.
             self.by_tx.putAssumeCapacity(receipt.transaction_hash, receipt);
         }
-
         self.by_block.putAssumeCapacity(block_hash, cloned);
+    }
+
+    /// Remove a block's receipts and the tx entries that point at them. Used to
+    /// roll back a block whose persistence failed part-way.
+    pub fn removeBlockReceipts(self: *ReceiptIndex, allocator: std.mem.Allocator, block_hash: [32]u8) void {
+        const removed = self.by_block.fetchRemove(block_hash) orelse return;
+        self.dropTxEntriesAliasing(removed.value);
+        freeReceipts(allocator, removed.value);
+    }
+
+    /// Remove the `by_tx` entries that are shallow copies of `receipts`, leaving
+    /// entries that a later block re-pointed at its own receipts.
+    fn dropTxEntriesAliasing(self: *ReceiptIndex, receipts: []const primitives.Receipt.Receipt) void {
+        for (receipts) |old| {
+            const indexed = self.by_tx.get(old.transaction_hash) orelse continue;
+            if (indexed.logs.ptr == old.logs.ptr and
+                indexed.transaction_index == old.transaction_index and
+                std.mem.eql(u8, &indexed.block_hash, &old.block_hash))
+            {
+                _ = self.by_tx.remove(old.transaction_hash);
+            }
+        }
     }
 
     /// Returns receipt for a tx hash, or null if not found.
@@ -107,6 +116,11 @@ pub const ReceiptIndex = struct {
         return self.by_block.get(block_hash);
     }
 };
+
+fn freeReceipts(allocator: std.mem.Allocator, receipts: []primitives.Receipt.Receipt) void {
+    for (receipts) |receipt| receipt.deinit(allocator);
+    allocator.free(receipts);
+}
 
 fn cloneReceipt(allocator: std.mem.Allocator, receipt: primitives.Receipt.Receipt) !primitives.Receipt.Receipt {
     const logs = try allocator.alloc(primitives.EventLog.EventLog, receipt.logs.len);

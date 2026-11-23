@@ -313,3 +313,103 @@ test "receipt_index: deinit frees all memory" {
     // deinit should free all cloned data without leaks
     idx.deinit(allocator);
 }
+
+test "receipt_index: failed put leaves a previously indexed tx untouched (#53)" {
+    // Block A already indexes `shared`. Storing block B, which re-seals `shared`
+    // and adds `fresh`, must not disturb block A's entry when any allocation
+    // fails. The index maps and the clones share one failing allocator so
+    // hash-map growth failures are exercised too.
+    var failing = testing.FailingAllocator.init(testing.allocator, .{});
+    const allocator = failing.allocator();
+    var idx = receipt_index.ReceiptIndex.init(allocator);
+    defer idx.deinit(allocator);
+
+    const shared = [_]u8{0x42} ** 32;
+    const fresh = [_]u8{0x43} ** 32;
+    const block_a = [_]u8{0xaa} ** 32;
+    const block_b = [_]u8{0xbb} ** 32;
+
+    var ra = try makeReceiptWithLog(testing.allocator, shared, block_a, 1);
+    defer ra.deinit(testing.allocator);
+    try idx.putBlockReceipts(allocator, block_a, &[_]primitives.Receipt.Receipt{ra});
+
+    var rb0 = try makeReceiptWithLog(testing.allocator, shared, block_b, 2);
+    defer rb0.deinit(testing.allocator);
+    var rb1 = try makeReceiptWithLog(testing.allocator, fresh, block_b, 2);
+    defer rb1.deinit(testing.allocator);
+    const receipts_b = [_]primitives.Receipt.Receipt{ rb0, rb1 };
+
+    var failures: usize = 0;
+    var budget: usize = 0;
+    while (budget < 64) : (budget += 1) {
+        failing.fail_index = failing.alloc_index + budget;
+        if (idx.putBlockReceipts(allocator, block_b, &receipts_b)) |_| {
+            break;
+        } else |err| {
+            failures += 1;
+            try testing.expectEqual(error.OutOfMemory, err);
+            try testing.expect(idx.getByBlockHash(block_b) == null);
+            try testing.expect(idx.getByTxHash(fresh) == null);
+            const prior = idx.getByTxHash(shared).?;
+            try testing.expectEqual(@as(u64, 1), prior.block_number);
+            try testing.expectEqual(@as(usize, 1), prior.logs.len);
+            try testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3, 4 }, prior.logs[0].data);
+            try testing.expectEqual(@as(usize, 1), idx.getByBlockHash(block_a).?.len);
+        }
+    } else return error.PutNeverSucceeded;
+    failing.fail_index = std.math.maxInt(usize);
+
+    try testing.expect(failures > 0);
+    try testing.expectEqual(@as(u64, 2), idx.getByTxHash(shared).?.block_number);
+    try testing.expectEqual(@as(u64, 2), idx.getByTxHash(fresh).?.block_number);
+    // Block A keeps its own receipt and logs after the tx is re-pointed at B.
+    const a_receipts = idx.getByBlockHash(block_a).?;
+    try testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3, 4 }, a_receipts[0].logs[0].data);
+}
+
+test "receipt_index: re-storing a block replaces its receipts without leaks (#53)" {
+    const allocator = testing.allocator;
+    var idx = receipt_index.ReceiptIndex.init(allocator);
+    defer idx.deinit(allocator);
+
+    const kept = [_]u8{0x01} ** 32;
+    const dropped = [_]u8{0x02} ** 32;
+    const block_hash = [_]u8{0xcc} ** 32;
+
+    var r_kept = try makeReceiptWithLog(allocator, kept, block_hash, 7);
+    defer r_kept.deinit(allocator);
+    var r_dropped = try makeReceiptWithLog(allocator, dropped, block_hash, 7);
+    defer r_dropped.deinit(allocator);
+
+    try idx.putBlockReceipts(allocator, block_hash, &[_]primitives.Receipt.Receipt{ r_kept, r_dropped });
+    try idx.putBlockReceipts(allocator, block_hash, &[_]primitives.Receipt.Receipt{r_kept});
+
+    try testing.expectEqual(@as(usize, 1), idx.getByBlockHash(block_hash).?.len);
+    try testing.expectEqual(@as(usize, 1), idx.getByTxHash(kept).?.logs.len);
+    try testing.expect(idx.getByTxHash(dropped) == null);
+}
+
+test "receipt_index: removeBlockReceipts drops the block and its tx entries (#53)" {
+    const allocator = testing.allocator;
+    var idx = receipt_index.ReceiptIndex.init(allocator);
+    defer idx.deinit(allocator);
+
+    const tx_a = [_]u8{0x0a} ** 32;
+    const tx_b = [_]u8{0x0b} ** 32;
+    const block_a = [_]u8{0xa1} ** 32;
+    const block_b = [_]u8{0xb1} ** 32;
+
+    var ra = try makeReceiptWithLog(allocator, tx_a, block_a, 1);
+    defer ra.deinit(allocator);
+    var rb = try makeReceiptWithLog(allocator, tx_b, block_b, 2);
+    defer rb.deinit(allocator);
+    try idx.putBlockReceipts(allocator, block_a, &[_]primitives.Receipt.Receipt{ra});
+    try idx.putBlockReceipts(allocator, block_b, &[_]primitives.Receipt.Receipt{rb});
+
+    idx.removeBlockReceipts(allocator, block_b);
+    idx.removeBlockReceipts(allocator, block_b); // absent block is a no-op
+
+    try testing.expect(idx.getByBlockHash(block_b) == null);
+    try testing.expect(idx.getByTxHash(tx_b) == null);
+    try testing.expectEqual(@as(u64, 1), idx.getByTxHash(tx_a).?.block_number);
+}

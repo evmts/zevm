@@ -109,19 +109,30 @@ pub const LogIndex = struct {
         const start = self.logs.items.len;
         var bloom = [_]u64{ 0, 0, 0, 0 };
 
+        // Reserve everything up front so the appends below cannot fail and a
+        // failed clone can roll the list back to `start`. Without this, a
+        // mid-block allocation error left orphan logs with no block range.
+        var log_count: usize = 0;
+        for (receipts) |receipt| log_count += receipt.logs.len;
+        try self.logs.ensureUnusedCapacity(allocator, log_count);
+        try self.block_range.ensureUnusedCapacity(allocator, 1);
+        try self.block_hash_range.ensureUnusedCapacity(allocator, 1);
+        try self.block_numbers.ensureUnusedCapacity(allocator, 1);
+        errdefer {
+            for (self.logs.items[start..]) |entry| {
+                allocator.free(entry.log.topics);
+                allocator.free(entry.log.data);
+            }
+            self.logs.shrinkRetainingCapacity(start);
+        }
+
         for (receipts) |receipt| {
             for (receipt.logs) |log| {
                 const cloned = try cloneEventLog(allocator, log);
-                var owned = false;
-                errdefer if (!owned) {
-                    allocator.free(cloned.topics);
-                    allocator.free(cloned.data);
-                };
-                try self.logs.append(allocator, .{
+                self.logs.appendAssumeCapacity(.{
                     .log = cloned,
                     .block_hash = block_hash,
                 });
-                owned = true;
                 bloomAdd(&bloom, &cloned.address.bytes);
                 for (cloned.topics) |topic| {
                     bloomAdd(&bloom, &topic);
@@ -132,14 +143,15 @@ pub const LogIndex = struct {
         const end = self.logs.items.len;
         const range = BlockRange{ .start = start, .end = end, .bloom = bloom };
         const existed = self.block_range.contains(block_number);
-        try self.block_range.put(allocator, block_number, range);
-        try self.block_hash_range.put(allocator, block_hash, range);
+        // Capacity was reserved above, so nothing below can fail.
+        self.block_range.putAssumeCapacity(block_number, range);
+        self.block_hash_range.putAssumeCapacity(block_hash, range);
         if (!existed) {
             if (self.block_numbers.items.len == 0 or self.block_numbers.items[self.block_numbers.items.len - 1] < block_number) {
-                try self.block_numbers.append(allocator, block_number);
+                self.block_numbers.appendAssumeCapacity(block_number);
             } else {
                 const pos = lowerBound(self.block_numbers.items, block_number);
-                try self.block_numbers.insert(allocator, pos, block_number);
+                self.block_numbers.insertAssumeCapacity(pos, block_number);
             }
         }
     }

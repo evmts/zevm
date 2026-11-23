@@ -1126,3 +1126,130 @@ test "EIP-7594 admission gates v0/v1 wrappers, verifies KZG proofs, upgrades sid
     const signed7 = try primitives.Transaction.encodeEip4844ForSigning(temp, tx7);
     try std.testing.expectError(error.TooManyBlobs, tx_submission.handleSendRawTransaction(temp, &rt, makeRawTxParams(try bytesToHexAlloc(temp, signed7))));
 }
+
+// --- Regression: unchecked fee/value arithmetic (#55) ---
+
+test "eth_sendTransaction returns an error when gasPrice * gas overflows u256 (#55)" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    try rt.setMiningConfig(.manual);
+
+    var obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try obj.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try obj.put("gasPrice", .{ .string = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" });
+    try obj.put("gas", .{ .string = "0x5208" });
+
+    const result = tx_submission.handleSendTransaction(std.testing.allocator, &rt, .{
+        .transaction = .{ .value = .{ .object = obj } },
+    });
+    try std.testing.expectError(tx_submission.TxSubmissionError.InsufficientBalance, result);
+    try std.testing.expectEqual(@as(usize, 0), rt.pool.pendingCount());
+}
+
+test "eth_sendTransaction rejects value + gas cost overflow even with a u256-max balance (#55)" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    try rt.setMiningConfig(.manual);
+    try rt.setBalance(runtime.DEFAULT_DEV_ACCOUNTS[0], std.math.maxInt(u256));
+
+    var obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try obj.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try obj.put("value", .{ .string = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" });
+    try obj.put("gas", .{ .string = "0x5208" });
+
+    // A saturating sum equals the balance and would be accepted.
+    const result = tx_submission.handleSendTransaction(std.testing.allocator, &rt, .{
+        .transaction = .{ .value = .{ .object = obj } },
+    });
+    try std.testing.expectError(tx_submission.TxSubmissionError.InsufficientBalance, result);
+    try std.testing.expectEqual(@as(usize, 0), rt.pool.pendingCount());
+}
+
+test "eth_sendRawTransaction rejects value + gas cost overflow even with a u256-max balance (#55)" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+    try rt.setMiningConfig(.manual);
+    try rt.setBalance(runtime.DEFAULT_DEV_ACCOUNTS[0], std.math.maxInt(u256));
+
+    const encoded = try signTestLegacyTx(
+        std.testing.allocator,
+        0,
+        runtime.DEFAULT_GAS_PRICE,
+        21_000,
+        runtime.DEFAULT_DEV_ACCOUNTS[1],
+        std.math.maxInt(u256),
+        runtime.DEFAULT_CHAIN_ID,
+        genesis.DEV_ACCOUNTS[0].private_key,
+    );
+    defer std.testing.allocator.free(encoded);
+    const hex = try bytesToHexAlloc(std.testing.allocator, encoded);
+    defer std.testing.allocator.free(hex);
+
+    const result = tx_submission.handleSendRawTransaction(std.testing.allocator, &rt, makeRawTxParams(hex));
+    try std.testing.expectError(tx_submission.TxSubmissionError.InsufficientBalance, result);
+    try std.testing.expectEqual(@as(usize, 0), rt.pool.pendingCount());
+}
+
+// --- Regression: automine failure must fail the submission (#56) ---
+
+test "automine failure fails eth_sendRawTransaction and evicts the transaction (#56)" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+
+    const encoded = try signTestLegacyTx(
+        std.testing.allocator,
+        0,
+        runtime.DEFAULT_GAS_PRICE,
+        21_000,
+        runtime.DEFAULT_DEV_ACCOUNTS[1],
+        1000,
+        runtime.DEFAULT_CHAIN_ID,
+        genesis.DEV_ACCOUNTS[0].private_key,
+    );
+    defer std.testing.allocator.free(encoded);
+    const hex = try bytesToHexAlloc(std.testing.allocator, encoded);
+    defer std.testing.allocator.free(hex);
+
+    // A next-block timestamp at or before the head makes the mining pass fail.
+    rt.next_block_timestamp = rt.head_block_timestamp;
+    const failed = tx_submission.handleSendRawTransaction(std.testing.allocator, &rt, makeRawTxParams(hex));
+    try std.testing.expectError(tx_submission.TxSubmissionError.MiningFailed, failed);
+    try std.testing.expectEqual(@as(u64, 0), rt.head_block_number);
+    try std.testing.expectEqual(@as(usize, 0), rt.pool.pendingCount());
+    try std.testing.expectEqual(@as(usize, 0), rt.pool.queuedCount());
+
+    // The failed submission left nothing behind, so the same tx can be resent.
+    rt.next_block_timestamp = null;
+    const result = try tx_submission.handleSendRawTransaction(std.testing.allocator, &rt, makeRawTxParams(hex));
+    try std.testing.expectEqual(@as(u64, 1), rt.head_block_number);
+    try std.testing.expectEqual(@as(u64, 1), rt.receipt_index.getByTxHash(result.value.bytes).?.block_number);
+}
+
+test "automine failure fails eth_sendTransaction and evicts the transaction (#56)" {
+    var rt = try makeRuntime();
+    defer rt.deinit();
+
+    var obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("from", .{ .string = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" });
+    try obj.put("to", .{ .string = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" });
+    try obj.put("value", .{ .string = "0x3e8" });
+    try obj.put("gas", .{ .string = "0x5208" });
+    const params = jsonrpc.eth.SendTransaction.Params{ .transaction = .{ .value = .{ .object = obj } } };
+
+    rt.next_block_timestamp = rt.head_block_timestamp;
+    const failed = tx_submission.handleSendTransaction(std.testing.allocator, &rt, params);
+    try std.testing.expectError(tx_submission.TxSubmissionError.MiningFailed, failed);
+    try std.testing.expectEqual(@as(u64, 0), rt.head_block_number);
+    try std.testing.expectEqual(@as(usize, 0), rt.pool.pendingCount());
+    try std.testing.expectEqual(@as(u64, 0), try rt.getNonce(runtime.DEFAULT_DEV_ACCOUNTS[0]));
+
+    rt.next_block_timestamp = null;
+    _ = try tx_submission.handleSendTransaction(std.testing.allocator, &rt, params);
+    try std.testing.expectEqual(@as(u64, 1), rt.head_block_number);
+    try std.testing.expectEqual(@as(u64, 1), try rt.getNonce(runtime.DEFAULT_DEV_ACCOUNTS[0]));
+}

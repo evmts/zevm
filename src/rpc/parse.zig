@@ -205,3 +205,20 @@ test "light selector parses pending separately from numeric selectors" {
     try std.testing.expectEqual(@as(u64, 10), selector.number);
     try std.testing.expectError(error.InvalidParams, parseLightBlockSelectorValue(.{ .string = "0x0a" }));
 }
+
+test "QuantityHex rejects negative and non-string numbers instead of reinterpreting them (#44)" {
+    // A negative JSON number must never be bit-cast into a huge unsigned value.
+    try std.testing.expectError(error.InvalidParams, parseQuantityValue(u256, .{ .integer = -1 }));
+    try std.testing.expectError(error.InvalidParams, parseQuantityValue(u64, .{ .integer = std.math.minInt(i64) }));
+    try std.testing.expectError(error.InvalidParams, parseQuantityValue(u256, .{ .float = -1.0 }));
+    try std.testing.expectError(error.InvalidParams, parseQuantityValue(u256, .{ .number_string = "-1" }));
+    try std.testing.expectError(error.InvalidParams, parseQuantityString(u256, "-1"));
+    try std.testing.expectError(error.InvalidParams, parseQuantityString(u256, "-0x1"));
+    try std.testing.expectError(error.InvalidParams, parseQuantityString(u256, "0x-1"));
+    try std.testing.expectError(error.InvalidParams, parseQuantityString(u256, "0x+1"));
+    try std.testing.expectError(error.InvalidParams, parseQuantityString(u64, "0x1_0"));
+    try std.testing.expectError(error.InvalidParams, parseQuantityString(u64, "0x"));
+    try std.testing.expectError(error.InvalidParams, parseQuantityString(u64, "0x10000000000000000"));
+    try std.testing.expectEqual(std.math.maxInt(u256), try parseQuantityString(u256, "0x" ++ "f" ** 64));
+    try std.testing.expectError(error.InvalidParams, parseQuantityString(u256, "0x1" ++ "0" ** 64));
+}

@@ -961,3 +961,39 @@ test "EIP-7951 P256VERIFY precompile executes across zevm -> guillotine-mini -> 
         try std.testing.expectEqual(@as(usize, 0), out.len);
     }
 }
+
+test "dynamic fee caps near u256 max return an error instead of overflowing (#55)" {
+    var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+    defer sm.deinit();
+
+    var adapter = host_adapter.HostAdapter{ .state = &sm };
+    const sender = primitives.Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
+    const recipient = primitives.Address{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 19 };
+    var block_ctx = defaultBlockContext();
+    block_ctx.block_base_fee = 100;
+
+    const max = std.math.maxInt(u256);
+    try sm.setBalance(sender, max);
+    try sm.setNonce(sender, 0);
+
+    // base_fee + max_priority_fee_per_gas exceeds u256; so does fee cap * gas.
+    const result = tx_processor.processTransactionWithOptions(
+        std.testing.allocator,
+        &sm,
+        adapter.hostInterface(),
+        sender,
+        makeLegacyTx(.{
+            .to = recipient,
+            .value = 0,
+            .data = &[_]u8{},
+            .gas_limit = 21_000,
+            .gas_price = max,
+            .nonce = 0,
+        }),
+        block_ctx,
+        .{ .receipt_type = .eip1559, .max_fee_per_gas = max, .max_priority_fee_per_gas = max, .hardfork_override = .LONDON },
+    );
+    try std.testing.expectError(tx_processor.TxError.InsufficientBalance, result);
+    try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(sender));
+    try std.testing.expectEqual(@as(u256, max), try sm.getBalance(sender));
+}

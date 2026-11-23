@@ -465,3 +465,75 @@ test "handleGetLogs: allocator failure does not become empty logs" {
         ),
     );
 }
+
+// ============================================================================
+// eth_getLogs filter contract
+// ============================================================================
+
+fn filterFromJson(arena: std.mem.Allocator, ctx: *const block_query_handlers.BlockQueryContext, text: []const u8) !log_index_mod.LogFilter {
+    const parsed = try std.json.parseFromSlice(std.json.Value, arena, text, .{});
+    return block_query_handlers.rpcFilterToInternal(arena, ctx, .{ .value = parsed.value });
+}
+
+test "eth_getLogs filter: omitted range defaults to latest and tags resolve" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var state = try setupCtx(allocator);
+    defer state.deinit(allocator);
+    const genesis = (try state.bc.getBlockByNumber(0)).?;
+    const block_one = try addBlock(allocator, &state.bc, genesis.hash, 1);
+    const block_two = try addBlock(allocator, &state.bc, block_one.hash, 2);
+    try state.bc.setCanonicalHead(block_two.hash);
+
+    var ctx = state.getCtx();
+
+    // Omitted fromBlock/toBlock both default to "latest", not to genesis.
+    const defaulted = try filterFromJson(arena.allocator(), &ctx, "{}");
+    try std.testing.expectEqual(@as(?u64, 2), defaulted.from_block);
+    try std.testing.expectEqual(@as(?u64, 2), defaulted.to_block);
+
+    const only_from = try filterFromJson(arena.allocator(), &ctx, "{\"fromBlock\":\"earliest\"}");
+    try std.testing.expectEqual(@as(?u64, 0), only_from.from_block);
+    try std.testing.expectEqual(@as(?u64, 2), only_from.to_block);
+
+    const tags = try filterFromJson(arena.allocator(), &ctx, "{\"fromBlock\":\"0x1\",\"toBlock\":\"pending\"}");
+    try std.testing.expectEqual(@as(?u64, 1), tags.from_block);
+    try std.testing.expectEqual(@as(?u64, 2), tags.to_block);
+
+    // A blockHash filter carries no implicit range.
+    const hash_hex = std.fmt.bytesToHex(block_one.hash, .lower);
+    const by_hash_json = try std.fmt.allocPrint(arena.allocator(), "{{\"blockHash\":\"0x{s}\"}}", .{hash_hex[0..]});
+    const by_hash = try filterFromJson(arena.allocator(), &ctx, by_hash_json);
+    try std.testing.expectEqual(@as(?u64, null), by_hash.from_block);
+    try std.testing.expectEqual(@as(?u64, null), by_hash.to_block);
+    try std.testing.expectEqualSlices(u8, &block_one.hash, &by_hash.block_hash.?);
+}
+
+test "eth_getLogs filter: rejects malformed selectors and mixed blockHash ranges" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var state = try setupCtx(allocator);
+    defer state.deinit(allocator);
+    var ctx = state.getCtx();
+
+    const hash = "0x" ++ "11" ** 32;
+    const rejected = [_][]const u8{
+        "{\"fromBlock\":\"0x01\"}",
+        "{\"fromBlock\":\"0X1\"}",
+        "{\"fromBlock\":1}",
+        "{\"toBlock\":\"newest\"}",
+        "{\"toBlock\":\"-0x1\"}",
+        "{\"blockHash\":\"" ++ hash ++ "\",\"fromBlock\":\"0x0\"}",
+        "{\"blockHash\":\"" ++ hash ++ "\",\"toBlock\":\"latest\"}",
+        "{\"blockHash\":\"0x1234\"}",
+        "{\"fromBlock\":\"0x1\",\"toBlock\":\"0x0\"}",
+        "{\"unknownField\":true}",
+    };
+    for (rejected) |text| {
+        try std.testing.expectError(error.InvalidParams, filterFromJson(arena.allocator(), &ctx, text));
+    }
+}

@@ -3212,3 +3212,71 @@ test "engineClientVersionValue returns a single populated client object" {
     try std.testing.expectEqualStrings("zevm", obj.object.get("name").?.string);
     try std.testing.expectEqualStrings("ZE", obj.object.get("code").?.string);
 }
+
+test "dev mutation methods reject negative numeric params without mutating state (#44)" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var handlers = dispatcher.HandlerRegistry{};
+    dispatch_wiring.install(&handlers, &rt);
+
+    const address = try parseTestAddress("0x0000000000000000000000000000000000000042");
+    try rt.setBalance(address, 7);
+    try rt.setNonce(address, 3);
+    try rt.setStorage(address, 1, 9);
+    const gas_limit_before = rt.dev_runtime.config.block_gas_limit;
+    const mining_before = std.meta.activeTag(rt.mining_config);
+
+    const negatives = [_]std.json.Value{
+        .{ .integer = -1 },
+        .{ .float = -1.0 },
+        .{ .string = "-1" },
+        .{ .string = "-0x1" },
+        .{ .string = "0x-1" },
+    };
+    for (negatives) |negative| {
+        for ([_][]const u8{ "zevm_setBalance", "anvil_setBalance", "hardhat_setBalance", "anvil_setNonce", "hardhat_setNonce" }) |method| {
+            var params = std.json.Array.init(std.testing.allocator);
+            defer params.deinit();
+            try params.append(validAddress());
+            try params.append(negative);
+            try expectInvalidParamsRpc(&handlers, method, .{ .array = params });
+        }
+        {
+            var params = std.json.Array.init(std.testing.allocator);
+            defer params.deinit();
+            try params.append(validAddress());
+            try params.append(.{ .string = "0x1" });
+            try params.append(negative);
+            try expectInvalidParamsRpc(&handlers, "anvil_setStorageAt", .{ .array = params });
+        }
+        {
+            var params = std.json.Array.init(std.testing.allocator);
+            defer params.deinit();
+            try params.append(validAddress());
+            try params.append(validAddress());
+            try params.append(negative);
+            try expectInvalidParamsRpc(&handlers, "anvil_dealErc20", .{ .array = params });
+        }
+        for ([_][]const u8{
+            "anvil_setBlockGasLimit",
+            "anvil_setNextBlockBaseFeePerGas",
+            "anvil_setMinGasPrice",
+            "evm_increaseTime",
+            "evm_setIntervalMining",
+            "anvil_mine",
+        }) |method| {
+            var params = std.json.Array.init(std.testing.allocator);
+            defer params.deinit();
+            try params.append(negative);
+            try expectInvalidParamsRpc(&handlers, method, .{ .array = params });
+        }
+    }
+
+    try std.testing.expectEqual(@as(u256, 7), try rt.getBalance(address));
+    try std.testing.expectEqual(@as(u64, 3), try rt.getNonce(address));
+    try std.testing.expectEqual(@as(u256, 9), try rt.getStorage(address, 1));
+    try std.testing.expectEqual(gas_limit_before, rt.dev_runtime.config.block_gas_limit);
+    try std.testing.expectEqual(mining_before, std.meta.activeTag(rt.mining_config));
+    try std.testing.expectEqual(@as(u64, 0), rt.head_block_number);
+}

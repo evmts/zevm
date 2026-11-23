@@ -502,6 +502,10 @@ pub const NodeRuntime = struct {
     fork_config: ?ForkConfig,
     fork_backend: ?*state_manager.ForkBackend,
     fork_rpc_resolver: ?ForkRpcResolver,
+    /// Latched after the fork upstream fails `eth_getProof` but answers the
+    /// scalar read methods, so later reads skip the failing call. Cleared
+    /// whenever the fork upstream changes.
+    fork_proof_unavailable: bool = false,
     engine_sync_fallback_url: ?[]u8,
     snapshots: std.AutoHashMap(u64, SnapshotEntry),
     next_snapshot_id: u64,
@@ -1903,6 +1907,7 @@ pub const NodeRuntime = struct {
         self.fork_config = fork_cfg;
 
         // Upstream changed; clear only remote cache while preserving local overlays.
+        self.fork_proof_unavailable = false;
         self.state.clearForkCache();
     }
 
@@ -2445,6 +2450,7 @@ pub const NodeRuntime = struct {
         self.state = new_state;
         self.fork_backend = new_backend;
         self.fork_config = new_fork_config;
+        self.fork_proof_unavailable = false;
         self.enableSynchronousForkReads();
         if (new_fork_config != null and self.fork_rpc_resolver == null) {
             self.fork_rpc_resolver = .{
@@ -2470,6 +2476,7 @@ pub const NodeRuntime = struct {
             current.url = updated_url;
             current.block_number = target.block_number;
             self.fork_config = current;
+            self.fork_proof_unavailable = false;
             self.state.clearForkCache();
         }
     }
@@ -2496,30 +2503,58 @@ pub const NodeRuntime = struct {
         const fork_cfg = self.fork_config orelse return error.ForkNotEnabled;
 
         while (backend.nextRequest()) |request| {
-            const method_name: []const u8 = switch (request.kind) {
-                .code => "eth_getCode",
-                .account_proof, .storage_proof => "eth_getProof",
-            };
-
-            const response_payload = resolver.resolve(
-                resolver.context,
-                self.allocator,
-                .{
-                    .url = fork_cfg.url,
-                    .method = method_name,
-                    .params_json = request.params_json,
-                },
-            ) catch |err| {
-                log.warn(.fork, "fork upstream request failed method={s} error={s}", .{ method_name, @errorName(err) });
+            const response_payload = self.resolveForkRequest(resolver, fork_cfg.url, request) catch |err| {
+                // Release the backend's pending entry. Otherwise the request is
+                // never re-queued and every later read of this key fails.
+                backend.continueRequest(request.id, "null") catch {};
                 return err;
             };
             defer self.allocator.free(response_payload);
 
             backend.continueRequest(request.id, response_payload) catch |err| {
-                log.warn(.fork, "fork upstream response rejected method={s} error={s}", .{ method_name, @errorName(err) });
+                log.warn(.fork, "fork upstream response rejected kind={s} error={s}", .{ @tagName(request.kind), @errorName(err) });
                 return err;
             };
         }
+    }
+
+    /// Resolve one fork backend request to the JSON payload the backend expects.
+    /// Account and storage reads use `eth_getProof`; when the upstream cannot
+    /// serve it, they fall back to the scalar read methods.
+    fn resolveForkRequest(
+        self: *NodeRuntime,
+        resolver: ForkRpcResolver,
+        url: []const u8,
+        request: anytype,
+    ) ![]u8 {
+        const method_name: []const u8 = switch (request.kind) {
+            .code => "eth_getCode",
+            .account_proof, .storage_proof => "eth_getProof",
+        };
+        const is_proof = request.kind != .code;
+
+        if (!(is_proof and self.fork_proof_unavailable)) {
+            if (resolver.resolve(resolver.context, self.allocator, .{
+                .url = url,
+                .method = method_name,
+                .params_json = request.params_json,
+            })) |payload| {
+                return payload;
+            } else |err| {
+                log.warn(.fork, "fork upstream request failed method={s} error={s}", .{ method_name, @errorName(err) });
+                if (!is_proof or err == error.OutOfMemory) return err;
+            }
+        }
+
+        const payload = forkProofFromScalarReads(self.allocator, resolver, url, request) catch |err| {
+            log.warn(.fork, "fork upstream scalar fallback failed error={s}", .{@errorName(err)});
+            return err;
+        };
+        if (!self.fork_proof_unavailable) {
+            self.fork_proof_unavailable = true;
+            log.warn(.fork, "fork upstream lacks eth_getProof; using eth_getBalance/eth_getTransactionCount/eth_getCode/eth_getStorageAt", .{});
+        }
+        return payload;
     }
 
     fn cloneQueryIndexes(self: *const NodeRuntime) !QueryIndexSnapshot {
@@ -2643,6 +2678,8 @@ pub const NodeRuntime = struct {
         transactions_owned_by_runtime = true;
 
         try self.receipt_index.putBlockReceipts(self.allocator, block.hash, result.receipts);
+        // Keep the two query indexes in step: a block has receipts iff it has logs.
+        errdefer self.receipt_index.removeBlockReceipts(self.allocator, block.hash);
         try self.log_index.appendBlockLogs(self.allocator, block.header.number, block.hash, result.receipts);
 
         return block.hash;
@@ -3047,6 +3084,7 @@ fn materializeImportedBlock(
     committed = true;
 
     try receipt_index.putBlockReceipts(allocator, block.hash, receipts.items);
+    errdefer receipt_index.removeBlockReceipts(allocator, block.hash);
     try log_index.appendBlockLogs(allocator, block.header.number, block.hash, receipts.items);
 
     return stats;
@@ -3548,6 +3586,101 @@ fn currentUnixSeconds() u64 {
     const now = std.time.timestamp();
     if (now <= 0) return 0;
     return @intCast(now);
+}
+
+/// Build an `eth_getProof`-shaped account payload from scalar reads, for fork
+/// upstreams that do not serve `eth_getProof`. The storage root is unknown
+/// without a proof, so `storageHash` is the zero hash.
+fn forkProofFromScalarReads(
+    allocator: std.mem.Allocator,
+    resolver: ForkRpcResolver,
+    url: []const u8,
+    request: anytype,
+) ![]u8 {
+    // The backend encodes proof params as [address, slots, blockTag].
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, request.params_json, .{});
+    defer parsed.deinit();
+    if (parsed.value != .array or parsed.value.array.items.len != 3) return error.InvalidForkRequest;
+    const address = switch (parsed.value.array.items[0]) {
+        .string => |text| text,
+        else => return error.InvalidForkRequest,
+    };
+    const block_tag = switch (parsed.value.array.items[2]) {
+        .string => |text| text,
+        else => return error.InvalidForkRequest,
+    };
+
+    const account_params = try std.fmt.allocPrint(allocator, "[\"{s}\",\"{s}\"]", .{ address, block_tag });
+    defer allocator.free(account_params);
+
+    const balance = try forkScalarQuantity(u256, allocator, resolver, url, "eth_getBalance", account_params);
+    const nonce = try forkScalarQuantity(u64, allocator, resolver, url, "eth_getTransactionCount", account_params);
+
+    const code_payload = try resolver.resolve(resolver.context, allocator, .{
+        .url = url,
+        .method = "eth_getCode",
+        .params_json = account_params,
+    });
+    defer allocator.free(code_payload);
+    const code_hex = try forkScalarString(code_payload);
+    const code = primitives.Hex.hexToBytes(allocator, code_hex) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidUpstreamRpcResponse,
+    };
+    defer allocator.free(code);
+    var code_hash: [32]u8 = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(code, &code_hash, .{});
+    const code_hash_hex = std.fmt.bytesToHex(code_hash, .lower);
+
+    if (request.kind != .storage_proof) {
+        return std.fmt.allocPrint(
+            allocator,
+            "{{\"nonce\":\"0x{x}\",\"balance\":\"0x{x}\",\"codeHash\":\"0x{s}\",\"storageHash\":\"0x{x:0>64}\",\"storageProof\":[]}}",
+            .{ nonce, balance, &code_hash_hex, @as(u256, 0) },
+        );
+    }
+
+    const storage_params = try std.fmt.allocPrint(allocator, "[\"{s}\",\"0x{x}\",\"{s}\"]", .{ address, request.slot, block_tag });
+    defer allocator.free(storage_params);
+    const storage_value = try forkScalarQuantity(u256, allocator, resolver, url, "eth_getStorageAt", storage_params);
+
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"nonce\":\"0x{x}\",\"balance\":\"0x{x}\",\"codeHash\":\"0x{s}\",\"storageHash\":\"0x{x:0>64}\",\"storageProof\":[{{\"key\":\"0x{x:0>64}\",\"value\":\"0x{x}\"}}]}}",
+        .{ nonce, balance, &code_hash_hex, @as(u256, 0), request.slot, storage_value },
+    );
+}
+
+/// Call a scalar read method and decode its hex result. Accepts zero-padded
+/// values because `eth_getStorageAt` returns 32-byte data, not a quantity.
+fn forkScalarQuantity(
+    comptime T: type,
+    allocator: std.mem.Allocator,
+    resolver: ForkRpcResolver,
+    url: []const u8,
+    method: []const u8,
+    params_json: []const u8,
+) !T {
+    const payload = try resolver.resolve(resolver.context, allocator, .{
+        .url = url,
+        .method = method,
+        .params_json = params_json,
+    });
+    defer allocator.free(payload);
+    const text = try forkScalarString(payload);
+    if (text.len < 2 or text[0] != '0' or text[1] != 'x') return error.InvalidUpstreamRpcResponse;
+    if (text.len == 2) return 0;
+    return std.fmt.parseInt(T, text[2..], 16) catch error.InvalidUpstreamRpcResponse;
+}
+
+/// Borrow the contents of a JSON string payload such as `"0x2a"`. Hex results
+/// never contain escapes, so no unescaping is needed.
+fn forkScalarString(payload: []const u8) ![]const u8 {
+    const trimmed = std.mem.trim(u8, payload, " \t\r\n");
+    if (trimmed.len < 2 or trimmed[0] != '"' or trimmed[trimmed.len - 1] != '"') return error.InvalidUpstreamRpcResponse;
+    const text = trimmed[1 .. trimmed.len - 1];
+    if (std.mem.indexOfAny(u8, text, "\"\\") != null) return error.InvalidUpstreamRpcResponse;
+    return text;
 }
 
 fn resolveForkRpcViaHttp(
