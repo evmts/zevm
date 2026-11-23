@@ -3,6 +3,7 @@ const primitives = @import("primitives");
 const state_manager = @import("state-manager");
 const guillotine_mini = @import("guillotine_mini");
 const block_builder = @import("block_builder.zig");
+const system_contracts = @import("system_contracts.zig");
 const genesis = @import("genesis.zig");
 const hardfork_schedule = @import("hardfork_schedule.zig");
 const tx_processor = @import("tx_processor.zig");
@@ -904,9 +905,8 @@ const Eip7934Fixture = struct {
         errdefer self.sm.deinit();
         self.data = try allocator.alloc(u8, big_data_len);
         @memset(self.data, 0);
-        // Prague and later read both request system contracts every block.
-        try self.sm.setCode(block_builder.WITHDRAWAL_REQUESTS_ADDRESS, &.{0x00});
-        try self.sm.setCode(block_builder.CONSOLIDATION_REQUESTS_ADDRESS, &.{0x00});
+        // Prague and later call both request system contracts every block.
+        try system_contracts.installGenesis(&self.sm);
         const recipient = primitives.Address.fromU256(0x200);
         for (&self.transactions, 0..) |*item, index| {
             const sender = senderAddress(index);
@@ -1068,8 +1068,7 @@ test "EIP-7934 boundary: a block of exactly 8,388,608 bytes is allowed, one more
             var sm = try state_manager.StateManager.init(std.testing.allocator, null);
             defer sm.deinit();
             var adapter = host_adapter.HostAdapter{ .state = &sm };
-            try sm.setCode(block_builder.WITHDRAWAL_REQUESTS_ADDRESS, &.{0x00});
-            try sm.setCode(block_builder.CONSOLIDATION_REQUESTS_ADDRESS, &.{0x00});
+            try system_contracts.installGenesis(&sm);
             try sm.setBalance(sender, 1_000_000_000);
 
             var options = Eip7934Fixture.options(eip7934_osaka_config, skip_invalid);

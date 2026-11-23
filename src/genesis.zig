@@ -3,12 +3,16 @@ const primitives = @import("primitives");
 const state_manager = @import("state-manager");
 const blockchain_mod = @import("blockchain");
 const database = @import("database/root.zig");
+const block_builder = @import("block_builder.zig");
+const system_contracts = @import("system_contracts.zig");
 
 pub const CHAIN_ID: u64 = 31337;
 pub const MAINNET_CHAIN_ID: u64 = 1;
 pub const DEVNET_CHAIN_ID: u64 = CHAIN_ID;
 pub const DEV_BALANCE: u256 = 10_000 * 1_000_000_000_000_000_000;
 pub const DEFAULT_GAS_LIMIT: u64 = 30_000_000;
+/// EIP-7935 recommended default block gas limit for Osaka networks.
+pub const DEFAULT_OSAKA_GAS_LIMIT: u64 = block_builder.OSAKA_DEFAULT_BLOCK_GAS_LIMIT;
 pub const DEFAULT_BASE_FEE: u256 = 1_000_000_000;
 /// Fixed devnet genesis timestamp. Using a constant (rather than wall-clock
 /// std.time.timestamp()) keeps the genesis block hash deterministic across
@@ -120,7 +124,13 @@ pub const PremineAccount = struct {
     address: primitives.Address.Address,
     balance: u256,
     nonce: u64 = 0,
+    /// Runtime bytecode. Empty for externally owned accounts.
+    code: []const u8 = &.{},
 };
+
+/// Accounts in the devnet genesis allocation: the funded dev accounts plus
+/// the Cancun/Prague system contracts.
+pub const DEVNET_PREMINE_LEN: usize = DEV_ACCOUNTS.len + system_contracts.ALL.len;
 
 const NO_MANAGED_ACCOUNTS: [0]DevAccount = .{};
 
@@ -276,6 +286,9 @@ pub fn applyPremineAllocation(
         if (account.nonce != 0) {
             try db.state.setNonce(account.address, account.nonce);
         }
+        if (account.code.len != 0) {
+            try db.state.setCode(account.address, account.code);
+        }
         try db.syncAccountToTrie(allocator, account.address);
     }
 
@@ -300,9 +313,14 @@ pub fn computeStateRootFromPremine(
         std.crypto.hash.sha3.Keccak256.hash(&account.address.bytes, &hashed_key, .{});
         entries[index].nibbles = keyToNibbles(hashed_key);
 
+        var code_hash = primitives.State.EMPTY_CODE_HASH;
+        if (account.code.len != 0) {
+            std.crypto.hash.sha3.Keccak256.hash(account.code, &code_hash, .{});
+        }
         const account_state = primitives.AccountState.AccountState.from(.{
             .nonce = account.nonce,
             .balance = account.balance,
+            .code_hash = code_hash,
         });
         entries[index].value = try account_state.rlpEncode(arena_allocator);
     }
@@ -372,24 +390,52 @@ fn validateProfileChainId(profile: GenesisProfile, chain_id: u64) !void {
 }
 
 fn computeDevnetStateRoot(allocator: std.mem.Allocator) !primitives.Hash.Hash {
-    var allocation: [DEV_ACCOUNTS.len]PremineAccount = undefined;
+    var allocation: [DEVNET_PREMINE_LEN]PremineAccount = undefined;
     fillDevnetPremine(&allocation);
     return try computeStateRootFromPremine(allocator, &allocation);
 }
 
 fn applyDevnetPremine(allocator: std.mem.Allocator, db: *database.Database) !primitives.Hash.Hash {
-    var allocation: [DEV_ACCOUNTS.len]PremineAccount = undefined;
+    var allocation: [DEVNET_PREMINE_LEN]PremineAccount = undefined;
     fillDevnetPremine(&allocation);
     return try applyPremineAllocation(allocator, db, &allocation);
 }
 
-fn fillDevnetPremine(allocation: []PremineAccount) void {
+/// Devnet genesis allocation: funded dev accounts, then the canonical system
+/// contracts that Cancun and Prague block processing calls. Without these
+/// contracts the first Prague or Osaka block fails with `MissingSystemContractCode`.
+pub fn fillDevnetPremine(allocation: *[DEVNET_PREMINE_LEN]PremineAccount) void {
     for (&DEV_ACCOUNTS, 0..) |*account, index| {
         allocation[index] = .{
             .address = account.address,
             .balance = DEV_BALANCE,
         };
     }
+    for (&system_contracts.ALL, DEV_ACCOUNTS.len..) |*contract, index| {
+        allocation[index] = .{
+            .address = contract.address,
+            .balance = 0,
+            .nonce = system_contracts.DEPLOYED_NONCE,
+            .code = contract.code,
+        };
+    }
+}
+
+/// Seeds a state manager with the node-owned dev genesis: `accounts` funded
+/// with `balance`, plus the canonical system contracts. A forked state reads
+/// the system contracts from the remote chain instead, so `forked` skips them.
+pub fn seedDevGenesisState(
+    sm: *state_manager.StateManager,
+    accounts: []const DevAccount,
+    balance: u256,
+    forked: bool,
+) !void {
+    // initAccount bypasses fork backend reads: dev accounts are unconditional
+    // local overrides regardless of remote state.
+    for (accounts) |account| {
+        try sm.initAccount(account.address, balance);
+    }
+    if (!forked) try system_contracts.installGenesis(sm);
 }
 
 fn buildGenesisTrie(

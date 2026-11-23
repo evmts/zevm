@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Install the canonical EIP-4788, EIP-2935, EIP-7002, and EIP-7251 system contract
+  bytecode (nonce 1, empty storage) in every node-owned local/dev genesis. Mining a
+  Prague or Osaka block on a dev or mainnet-configured chain previously failed with
+  `MissingSystemContractCode`. Explicit `--genesis` files and forked state remain
+  unchanged, and Prague/Osaka blocks without system contract code remain invalid.
+  **The devnet genesis state root and block hash change.**
+- Populate `requests_hash` directly on mined Prague/Osaka `BlockHeader`s and execute
+  canonical EIP-4788 and EIP-2935 bytecode via `SYSTEM_ADDRESS` when deployed.
+
 ## 0.1.0
 
 - Report `0.1.0` from the native `version()` export; it reported `0.0.0`. `npm-smoke` now fails when the addon and package versions differ.

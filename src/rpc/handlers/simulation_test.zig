@@ -2,6 +2,8 @@ const std = @import("std");
 const jsonrpc = @import("jsonrpc");
 const primitives = @import("primitives");
 const runtime = @import("../../node/runtime.zig");
+const hardfork_schedule = @import("../../hardfork_schedule.zig");
+const tx_processor = @import("../../tx_processor.zig");
 const dispatcher = @import("../dispatcher.zig");
 const dispatch_wiring = @import("../dispatch_wiring.zig");
 const simulation = @import("simulation.zig");
@@ -573,4 +575,160 @@ test "EIP-7825 eth_estimateGas never returns an estimate above the Osaka transac
     const call_result = try simulation.handleEthCall(std.testing.allocator, &osaka_rt, call_params.value);
     defer std.testing.allocator.free(call_result.string);
     try std.testing.expectEqualStrings("0x", call_result.string);
+}
+
+test "EIP-7951 P256VERIFY eth_call, eth_estimateGas, OOG boundary, and mainnet Osaka mining at 1764798551" {
+    const allocator = std.testing.allocator;
+    const osaka_ts = hardfork_schedule.MAINNET_CHAIN_CONFIG.osaka_timestamp;
+    try std.testing.expectEqual(@as(u64, 1_764_798_551), osaka_ts);
+
+    var rt = try runtime.NodeRuntime.init(allocator, .{ .chain_id = 1 });
+    defer rt.deinit();
+
+    const p256_valid_hex = "4cee90eb86eaa050036147a12d49004b6b9c72bd725d39d4785011fe190f0b4d" ++
+        "a73bd4903f0ce3b639bbbf6e8e80d16931ff4bcf5993d58468e8fb19086e8cac" ++
+        "36dbcd03009df8c59286b162af3bd7fcc0450c9aa81be5d10d312af6c66b1d60" ++
+        "4aebd3099c618202fcfe16ae7770b0c49ab5eadf74b754204a3bb6060e44eff3" ++
+        "7618b065f9832de4ca6ca971a7a1adc826d0f7c00181a5fb2ddf79ae00b4e10e";
+    var valid_bytes: [160]u8 = undefined;
+    _ = try std.fmt.hexToBytes(&valid_bytes, p256_valid_hex);
+
+    const p256_n: u256 = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551;
+    var high_s_bytes = valid_bytes;
+    const orig_s = std.mem.readInt(u256, valid_bytes[64..96], .big);
+    std.mem.writeInt(u256, high_s_bytes[64..96], p256_n - orig_s, .big);
+    const high_s_hex = std.fmt.bytesToHex(high_s_bytes, .lower);
+
+    var bad_sig_bytes = valid_bytes;
+    bad_sig_bytes[0] ^= 0x01;
+    const bad_sig_hex = std.fmt.bytesToHex(bad_sig_bytes, .lower);
+
+    var infinity_bytes = valid_bytes;
+    @memset(infinity_bytes[96..160], 0);
+    const infinity_hex = std.fmt.bytesToHex(infinity_bytes, .lower);
+
+    const expected_one = "0x0000000000000000000000000000000000000000000000000000000000000001";
+    const p256_intrinsic = tx_processor.intrinsicGasForFork(&valid_bytes, false, .OSAKA);
+
+    // Block 1 at osaka_timestamp - 1 (1764798550, Prague): mines cleanly and P256VERIFY is inactive.
+    rt.setNextBlockTimestamp(osaka_ts - 1);
+    try rt.mineBlocks(1, 12);
+    try std.testing.expectEqual(@as(u64, 1), rt.head_block_number);
+    try std.testing.expectEqual(osaka_ts - 1, rt.head_block_timestamp);
+
+    {
+        const req_json = try std.fmt.allocPrint(
+            allocator,
+            "[{{\"to\":\"0x0000000000000000000000000000000000000100\",\"data\":\"0x{s}\"}},\"latest\"]",
+            .{p256_valid_hex},
+        );
+        defer allocator.free(req_json);
+        var params = try parseJson(req_json);
+        defer params.deinit();
+
+        const pre_osaka = try simulation.handleEthCall(allocator, &rt, params.value);
+        defer allocator.free(pre_osaka.string);
+        try std.testing.expectEqualStrings("0x", pre_osaka.string);
+
+        const pre_gas = try simulation.handleEthEstimateGas(allocator, &rt, params.value);
+        defer allocator.free(pre_gas.string);
+        const pre_estimate = try std.fmt.parseInt(u64, pre_gas.string[2..], 16);
+        try std.testing.expectEqual(p256_intrinsic, pre_estimate);
+    }
+
+    // Block 2 at osaka_timestamp (1764798551, Osaka): mines cleanly and activates EIP-7951 P256VERIFY.
+    const block1 = (try rt.blockchain.getBlockByNumber(1)).?;
+    rt.setNextBlockTimestamp(osaka_ts);
+    try rt.mineBlocks(1, 12);
+    try std.testing.expectEqual(@as(u64, 2), rt.head_block_number);
+    try std.testing.expectEqual(osaka_ts, rt.head_block_timestamp);
+
+    // Valid signature and high-s malleated signature both return 32-byte 1.
+    for ([_][]const u8{ p256_valid_hex, &high_s_hex }) |payload_hex| {
+        const req_json = try std.fmt.allocPrint(
+            allocator,
+            "[{{\"to\":\"0x0000000000000000000000000000000000000100\",\"data\":\"0x{s}\"}},\"latest\"]",
+            .{payload_hex},
+        );
+        defer allocator.free(req_json);
+        var params = try parseJson(req_json);
+        defer params.deinit();
+
+        const res = try simulation.handleEthCall(allocator, &rt, params.value);
+        defer allocator.free(res.string);
+        try std.testing.expectEqualStrings(expected_one, res.string);
+    }
+
+    // Invalid signature, point at infinity, and wrong input length return empty bytes ("0x") without revert.
+    for ([_][]const u8{ &bad_sig_hex, &infinity_hex, "1234", "" }) |bad_hex| {
+        const req_json = try std.fmt.allocPrint(
+            allocator,
+            "[{{\"to\":\"0x0000000000000000000000000000000000000100\",\"data\":\"0x{s}\"}},\"latest\"]",
+            .{bad_hex},
+        );
+        defer allocator.free(req_json);
+        var params = try parseJson(req_json);
+        defer params.deinit();
+
+        const res = try simulation.handleEthCall(allocator, &rt, params.value);
+        defer allocator.free(res.string);
+        try std.testing.expectEqualStrings("0x", res.string);
+    }
+
+    // Exact gas boundary: intrinsic + 6899 fails with ExecutionFailed (OutOfGas), intrinsic + 6900 succeeds.
+    {
+        const oog_json = try std.fmt.allocPrint(
+            allocator,
+            "[{{\"to\":\"0x0000000000000000000000000000000000000100\",\"gas\":\"0x{x}\",\"data\":\"0x{s}\"}},\"latest\"]",
+            .{ p256_intrinsic + 6899, p256_valid_hex },
+        );
+        defer allocator.free(oog_json);
+        var oog_params = try parseJson(oog_json);
+        defer oog_params.deinit();
+        try std.testing.expectError(error.ExecutionFailed, simulation.handleEthCall(allocator, &rt, oog_params.value));
+
+        const exact_json = try std.fmt.allocPrint(
+            allocator,
+            "[{{\"to\":\"0x0000000000000000000000000000000000000100\",\"gas\":\"0x{x}\",\"data\":\"0x{s}\"}},\"latest\"]",
+            .{ p256_intrinsic + 6900, p256_valid_hex },
+        );
+        defer allocator.free(exact_json);
+        var exact_params = try parseJson(exact_json);
+        defer exact_params.deinit();
+        const exact_res = try simulation.handleEthCall(allocator, &rt, exact_params.value);
+        defer allocator.free(exact_res.string);
+        try std.testing.expectEqualStrings(expected_one, exact_res.string);
+    }
+
+    // EIP-2935 canonical history contract serves block 1's canonical hash via eth_call.
+    {
+        var block1_num_word: [32]u8 = [_]u8{0} ** 32;
+        block1_num_word[31] = 1;
+        const word_hex = std.fmt.bytesToHex(block1_num_word, .lower);
+        const req_json = try std.fmt.allocPrint(
+            allocator,
+            "[{{\"to\":\"0x0000f90827f1c53a10cb7a02335b175320002935\",\"data\":\"0x{s}\"}},\"latest\"]",
+            .{&word_hex},
+        );
+        defer allocator.free(req_json);
+        var params = try parseJson(req_json);
+        defer params.deinit();
+
+        const res = try simulation.handleEthCall(allocator, &rt, params.value);
+        defer allocator.free(res.string);
+        const expected_hash_hex = try std.fmt.allocPrint(allocator, "0x{s}", .{&std.fmt.bytesToHex(block1.hash, .lower)});
+        defer allocator.free(expected_hash_hex);
+        try std.testing.expectEqualStrings(expected_hash_hex, res.string);
+    }
+
+    // EIP-7002 canonical withdrawal requests contract returns min fee (1 wei) on empty calldata.
+    {
+        var params = try parseJson(
+            \\[{"to":"0x00000961ef480eb55e80d19ad83579a64c007002","data":"0x"},"latest"]
+        );
+        defer params.deinit();
+        const res = try simulation.handleEthCall(allocator, &rt, params.value);
+        defer allocator.free(res.string);
+        try std.testing.expectEqualStrings(expected_one, res.string);
+    }
 }

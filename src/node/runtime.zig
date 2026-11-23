@@ -589,12 +589,9 @@ pub const NodeRuntime = struct {
             genesis_extra_data = genesis_header.extra_data;
             break :blk loaded.account_count;
         } else blk: {
-            // Seed deterministic dev accounts as the local writable overlay.
-            // Use initAccount to bypass fork backend reads — dev accounts are
-            // unconditional local overrides regardless of remote state.
-            for (&managed_accounts) |account| {
-                try state.initAccount(account.address, config.initial_balance);
-            }
+            // Seed deterministic dev accounts as the local writable overlay,
+            // plus the canonical Cancun/Prague system contracts on a non-forked chain.
+            try genesis.seedDevGenesisState(&state, &managed_accounts, config.initial_balance, fork_backend != null);
             break :blk managed_accounts.len;
         };
         const genesis_state_root = try block_builder.computeStateRoot(allocator, &state);
@@ -2084,9 +2081,8 @@ pub const NodeRuntime = struct {
             var loaded = try genesis_alloc.loadGenesisFile(self.allocator, &historical, path);
             defer loaded.deinit(self.allocator);
         } else {
-            for (&self.managed_accounts) |account| {
-                try historical.initAccount(account.address, self.initial_balance);
-            }
+            // Replay starts from the same genesis allocation `init` built.
+            try genesis.seedDevGenesisState(&historical, &self.managed_accounts, self.initial_balance, self.fork_backend != null);
         }
 
         return historical;
@@ -2445,9 +2441,7 @@ pub const NodeRuntime = struct {
         var new_state = try state_manager.StateManager.init(self.allocator, new_backend);
         errdefer new_state.deinit();
 
-        for (&self.managed_accounts) |account| {
-            try new_state.initAccount(account.address, self.initial_balance);
-        }
+        try genesis.seedDevGenesisState(&new_state, &self.managed_accounts, self.initial_balance, new_backend != null);
 
         self.state.deinit();
         destroyForkBackend(self.allocator, self.fork_backend);
@@ -2638,7 +2632,7 @@ pub const NodeRuntime = struct {
         const hardfork = self.hardforkForBlockContext(block_ctx);
         const transactions_root = try block_builder.computeRawTransactionsRoot(self.allocator, transactions);
 
-        var header = primitives.BlockHeader.BlockHeader{
+        const header = primitives.BlockHeader.BlockHeader{
             .parent_hash = parent.hash,
             .ommers_hash = primitives.BlockHeader.EMPTY_OMMERS_HASH,
             .beneficiary = block_ctx.block_coinbase,
@@ -2660,8 +2654,8 @@ pub const NodeRuntime = struct {
             .blob_gas_used = if (hardfork.isAtLeast(.CANCUN)) result.blob_gas_used else null,
             .excess_blob_gas = if (hardfork.isAtLeast(.CANCUN)) block_excess_blob_gas else null,
             .parent_beacon_block_root = if (hardfork.isAtLeast(.CANCUN)) primitives.Hash.ZERO else null,
+            .requests_hash = result.requests_hash,
         };
-        _ = &header;
 
         const empty_withdrawals: []const primitives.BlockBody.Withdrawal = &.{};
         const body = primitives.BlockBody.BlockBody{
@@ -2670,8 +2664,7 @@ pub const NodeRuntime = struct {
             .withdrawals = if (header.withdrawals_root != null) empty_withdrawals else null,
         };
 
-        var block = try primitives.Block.from(&header, &body, self.allocator);
-        block.hash = try block_builder.computeHeaderHashWithRequestsHash(self.allocator, &header, result.requests_hash);
+        const block = try primitives.Block.from(&header, &body, self.allocator);
         try finalizeReceiptsForBlock(result, ready, block.hash, block.header.number);
 
         try self.blockchain.putBlock(block);

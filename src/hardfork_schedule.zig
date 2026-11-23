@@ -101,6 +101,31 @@ pub const MAINNET_BLOB_SCHEDULE = BlobSchedule.init(&.{ MAINNET_BPO1, MAINNET_BP
 
 pub const MAINNET_CHAIN_CONFIG = ChainConfig{};
 
+/// Devnet schedule with every hardfork through Osaka active from genesis
+/// (block 0 / timestamp 0). Keeps `blob_schedule` empty so BPO entries are
+/// opt-in for local devnets.
+pub const DEVNET_OSAKA_CHAIN_CONFIG = ChainConfig{
+    .homestead_block = 0,
+    .dao_block = 0,
+    .tangerine_whistle_block = 0,
+    .spurious_dragon_block = 0,
+    .byzantium_block = 0,
+    .constantinople_block = 0,
+    .petersburg_block = 0,
+    .istanbul_block = 0,
+    .muir_glacier_block = 0,
+    .berlin_block = 0,
+    .london_block = 0,
+    .arrow_glacier_block = 0,
+    .gray_glacier_block = 0,
+    .merge_block = 0,
+    .shanghai_timestamp = 0,
+    .cancun_timestamp = 0,
+    .prague_timestamp = 0,
+    .osaka_timestamp = 0,
+    .blob_schedule = BlobSchedule.empty,
+};
+
 pub const ChainConfig = struct {
     homestead_block: u64 = 1_150_000,
     dao_block: u64 = 1_920_000,
@@ -126,6 +151,18 @@ pub const ChainConfig = struct {
     osaka_blob_config: BlobConfig = MAINNET_OSAKA_BLOB_CONFIG,
     /// EIP-7892 BPO entries, consulted only once Osaka is active.
     blob_schedule: BlobSchedule = MAINNET_BLOB_SCHEDULE,
+
+    pub fn hasOsaka(self: ChainConfig) bool {
+        return self.osaka_timestamp < std.math.maxInt(u64);
+    }
+
+    pub fn hasPrague(self: ChainConfig) bool {
+        return self.prague_timestamp < std.math.maxInt(u64) or self.hasOsaka();
+    }
+
+    pub fn hasCancun(self: ChainConfig) bool {
+        return self.cancun_timestamp < std.math.maxInt(u64) or self.hasPrague();
+    }
 };
 
 pub fn resolveHardfork(block_number: u64, timestamp: u64) primitives.Hardfork {
@@ -191,4 +228,29 @@ test "BlobSchedule.init rejects unordered, duplicate, oversized, and invalid ent
 
     const ok = try BlobSchedule.init(&.{ a, b });
     try std.testing.expectEqual(@as(usize, 2), ok.entries().len);
+}
+
+test "mainnet hardfork schedule transitions Prague to Osaka at 1764798551" {
+    const merge_block = MAINNET_CHAIN_CONFIG.merge_block;
+    try std.testing.expectEqual(primitives.Hardfork.CANCUN, resolveHardfork(merge_block, MAINNET_CHAIN_CONFIG.prague_timestamp - 1));
+    try std.testing.expectEqual(primitives.Hardfork.PRAGUE, resolveHardfork(merge_block, MAINNET_CHAIN_CONFIG.prague_timestamp));
+    try std.testing.expectEqual(primitives.Hardfork.PRAGUE, resolveHardfork(merge_block, 1_764_798_550));
+    try std.testing.expectEqual(primitives.Hardfork.OSAKA, resolveHardfork(merge_block, 1_764_798_551));
+    try std.testing.expect(MAINNET_CHAIN_CONFIG.hasCancun());
+    try std.testing.expect(MAINNET_CHAIN_CONFIG.hasPrague());
+    try std.testing.expect(MAINNET_CHAIN_CONFIG.hasOsaka());
+
+    try std.testing.expectEqual(primitives.Hardfork.OSAKA, resolveHardforkWithConfig(DEVNET_OSAKA_CHAIN_CONFIG, 0, 0));
+    try std.testing.expect(DEVNET_OSAKA_CHAIN_CONFIG.hasCancun());
+    try std.testing.expect(DEVNET_OSAKA_CHAIN_CONFIG.hasPrague());
+    try std.testing.expect(DEVNET_OSAKA_CHAIN_CONFIG.hasOsaka());
+
+    const cancun_only = ChainConfig{
+        .cancun_timestamp = 0,
+        .prague_timestamp = std.math.maxInt(u64),
+        .osaka_timestamp = std.math.maxInt(u64),
+    };
+    try std.testing.expect(cancun_only.hasCancun());
+    try std.testing.expect(!cancun_only.hasPrague());
+    try std.testing.expect(!cancun_only.hasOsaka());
 }

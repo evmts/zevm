@@ -8,6 +8,7 @@ const dev_runtime = @import("rpc/dev_runtime.zig");
 const hardfork_schedule = @import("hardfork_schedule.zig");
 const blob_fee = @import("blob_fee.zig");
 const host_adapter = @import("host_adapter.zig");
+const system_contracts = @import("system_contracts.zig");
 
 const INITIAL_BASE_FEE_PER_GAS: u256 = 1_000_000_000;
 const BASE_FEE_CHANGE_DENOMINATOR: u256 = 8;
@@ -34,30 +35,11 @@ pub const OSAKA_DEFAULT_BLOCK_GAS_LIMIT: u64 = 60_000_000;
 /// `extraData`, and every integer at its widest encoding.
 const MAX_HEADER_RLP_SIZE: usize = 742;
 
-pub const BEACON_ROOTS_ADDRESS = primitives.Address{ .bytes = .{
-    0x00, 0x0f, 0x3d, 0xf6, 0xd7, 0x32, 0x80, 0x7e, 0xf1, 0x31,
-    0x9f, 0xb7, 0xb8, 0xbb, 0x85, 0x22, 0xd0, 0xbe, 0xac, 0x02,
-} };
-
-pub const HISTORY_STORAGE_ADDRESS = primitives.Address{ .bytes = .{
-    0x00, 0x00, 0xf9, 0x08, 0x27, 0xf1, 0xc5, 0x3a, 0x10, 0xcb,
-    0x7a, 0x02, 0x33, 0x5b, 0x17, 0x53, 0x20, 0x00, 0x29, 0x35,
-} };
-
-pub const WITHDRAWAL_REQUESTS_ADDRESS = primitives.Address{ .bytes = .{
-    0x00, 0x00, 0x09, 0x61, 0xef, 0x48, 0x0e, 0xb5, 0x5e, 0x80,
-    0xd1, 0x9a, 0xd8, 0x35, 0x79, 0xa6, 0x4c, 0x00, 0x70, 0x02,
-} };
-
-pub const CONSOLIDATION_REQUESTS_ADDRESS = primitives.Address{ .bytes = .{
-    0x00, 0x00, 0xbb, 0xdd, 0xc7, 0xce, 0x48, 0x86, 0x42, 0xfb,
-    0x57, 0x9f, 0x8b, 0x00, 0xf3, 0xa5, 0x90, 0x00, 0x72, 0x51,
-} };
-
-pub const SYSTEM_ADDRESS = primitives.Address{ .bytes = .{
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe,
-} };
+pub const BEACON_ROOTS_ADDRESS = system_contracts.BEACON_ROOTS_ADDRESS;
+pub const HISTORY_STORAGE_ADDRESS = system_contracts.HISTORY_STORAGE_ADDRESS;
+pub const WITHDRAWAL_REQUESTS_ADDRESS = system_contracts.WITHDRAWAL_REQUESTS_ADDRESS;
+pub const CONSOLIDATION_REQUESTS_ADDRESS = system_contracts.CONSOLIDATION_REQUESTS_ADDRESS;
+pub const SYSTEM_ADDRESS = system_contracts.SYSTEM_ADDRESS;
 
 pub const Hardfork = enum(u8) {
     frontier,
@@ -223,12 +205,38 @@ pub fn buildBlockWithOptions(
 
     if (options.parent_beacon_block_root) |root| {
         if (!atLeast(effective_fork, .cancun)) return error.BeaconRootBeforeCancun;
-        try applyBeaconRootsSystemCall(sm, effective_block_ctx.block_timestamp, root);
+        if ((try sm.getCode(BEACON_ROOTS_ADDRESS)).len > 0) {
+            const output = try runSystemContractCall(
+                allocator,
+                sm,
+                host_iface,
+                effective_block_ctx,
+                evmHardforkFromBlockBuilderFork(effective_fork),
+                BEACON_ROOTS_ADDRESS,
+                &root,
+            );
+            allocator.free(output);
+        } else {
+            try applyBeaconRootsSystemCall(sm, effective_block_ctx.block_timestamp, root);
+        }
     }
 
     if (atLeast(effective_fork, .prague)) {
         const parent_hash = options.parent_hash orelse return error.MissingParentHash;
-        try applyHistoricalBlockHashSystemCall(sm, effective_block_ctx.block_number, parent_hash);
+        if (effective_block_ctx.block_number > 0 and (try sm.getCode(HISTORY_STORAGE_ADDRESS)).len > 0) {
+            const output = try runSystemContractCall(
+                allocator,
+                sm,
+                host_iface,
+                effective_block_ctx,
+                evmHardforkFromBlockBuilderFork(effective_fork),
+                HISTORY_STORAGE_ADDRESS,
+                &parent_hash,
+            );
+            allocator.free(output);
+        } else {
+            try applyHistoricalBlockHashSystemCall(sm, effective_block_ctx.block_number, parent_hash);
+        }
     }
 
     var preserved_empty_accounts = if (atLeast(effective_fork, .byzantium))
@@ -999,7 +1007,13 @@ pub fn collectPragueRequestsSystemCalls(
     return requests;
 }
 
-fn runSystemContractCall(
+/// Executes `to` as `SYSTEM_ADDRESS` with the 30M system-call gas limit and
+/// returns its output. The call consumes no block gas and pays no fees.
+///
+/// EIP-7002 and EIP-7251: a block is invalid when the contract has no code or
+/// the call fails, so both cases are errors here. A node-owned genesis
+/// carries the code (`system_contracts.installGenesis`).
+pub fn runSystemContractCall(
     allocator: std.mem.Allocator,
     sm: *state_manager.StateManager,
     host_iface: guillotine_mini.HostInterface,

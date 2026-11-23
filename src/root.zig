@@ -35,6 +35,7 @@ pub const cli = @import("cli.zig");
 pub const config = @import("config.zig");
 pub const genesis = @import("genesis.zig");
 pub const genesis_alloc = @import("genesis_alloc.zig");
+pub const system_contracts = @import("system_contracts.zig");
 pub const node_runtime = @import("node/runtime.zig");
 pub const rpc = @import("rpc/root.zig");
 pub const release_metadata = @import("release_metadata.zig");
@@ -64,6 +65,7 @@ test {
     _ = @import("config_test.zig");
     _ = @import("genesis_alloc_test.zig");
     _ = @import("genesis_test.zig");
+    _ = @import("system_contracts_test.zig");
     _ = @import("log_index_test.zig");
     _ = @import("main_test.zig");
     _ = @import("node_test.zig");
