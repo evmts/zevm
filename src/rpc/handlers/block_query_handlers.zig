@@ -318,10 +318,12 @@ pub fn handleGetLogs(
     ctx: *const BlockQueryContext,
     params: jsonrpc.eth.GetLogs.Params,
 ) !jsonrpc.eth.GetLogs.Result {
-    const filter = rpcFilterToInternal(allocator, ctx, params.filter) catch |err| switch (err) {
+    var filter = rpcFilterToInternal(allocator, ctx, params.filter) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.InvalidParams,
     };
+
+    defer log_index_mod.deinitLogFilter(allocator, &filter);
 
     const internal = block_queries.getLogs(allocator, ctx.blockchain, ctx.log_index, filter) catch |err| switch (err) {
         error.InvalidFilter => return error.InvalidParams,
@@ -1058,6 +1060,7 @@ pub fn rpcFilterToInternal(
     };
 
     var result: log_index_mod.LogFilter = .{};
+    errdefer log_index_mod.deinitLogFilter(allocator, &result);
     var saw_from_block = false;
     var saw_to_block = false;
 
@@ -1142,11 +1145,13 @@ fn parseAddressFilter(
     switch (value) {
         .string => {
             const addresses = try allocator.alloc(primitives.Address.Address, 1);
+            errdefer allocator.free(addresses);
             addresses[0] = try parseAddressValue(value);
             return addresses;
         },
         .array => |array| {
             const addresses = try allocator.alloc(primitives.Address.Address, array.items.len);
+            errdefer allocator.free(addresses);
             for (array.items, 0..) |item, i| {
                 addresses[i] = try parseAddressValue(item);
             }
@@ -1166,20 +1171,25 @@ fn parseTopicsFilter(
     };
 
     const topics = try allocator.alloc(?[]const [32]u8, items.len);
+    @memset(topics, null);
+    errdefer {
+        for (topics) |set| if (set) |hashes| allocator.free(hashes);
+        allocator.free(topics);
+    }
     for (items, 0..) |item, i| {
         switch (item) {
             .null => topics[i] = null,
             .string => {
                 const hashes = try allocator.alloc([32]u8, 1);
-                hashes[0] = try parseHashValue(item);
                 topics[i] = hashes;
+                hashes[0] = try parseHashValue(item);
             },
             .array => |array| {
                 const hashes = try allocator.alloc([32]u8, array.items.len);
+                topics[i] = hashes;
                 for (array.items, 0..) |hash_value, j| {
                     hashes[j] = try parseHashValue(hash_value);
                 }
-                topics[i] = hashes;
             },
             else => return error.InvalidParams,
         }

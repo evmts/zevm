@@ -118,8 +118,10 @@ pub fn build(b: *std.Build) void {
     }
 
     // Tests
+    const test_filter = b.option([]const u8, "test-filter", "Run matching ZEVM module tests (e.g. safety_rpc_fuzz_test)");
     const mod_tests = b.addTest(.{
         .root_module = mod,
+        .filters = if (test_filter) |filter| &.{filter} else &.{},
     });
     mod_tests.step.dependOn(&modules.voltaire_rust_crypto.step);
     linkRustSupport(mod_tests, target);

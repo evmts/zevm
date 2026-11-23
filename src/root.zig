@@ -66,6 +66,7 @@ test {
     _ = @import("node_test.zig");
     _ = @import("node/runtime_test.zig");
     _ = @import("receipt_index_test.zig");
+    _ = @import("safety_rpc_fuzz_test.zig");
     _ = @import("txpool.zig");
     _ = @import("rpc/root.zig");
     _ = @import("release_metadata.zig");

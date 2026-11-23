@@ -1223,6 +1223,10 @@ pub const NodeRuntime = struct {
             }
         }
 
+        // Validate the last timestamp before committing any block in the batch.
+        const span = std.math.mul(u64, count - 1, @max(interval, 1)) catch return error.InvalidParams;
+        _ = std.math.add(u64, first_timestamp, span) catch return error.InvalidParams;
+
         var coordinator = miningCoordinatorFromRuntime(self);
         defer coordinator.deinit(self.allocator);
         coordinator.current_timestamp = first_timestamp;
@@ -1313,10 +1317,7 @@ pub const NodeRuntime = struct {
     }
 
     pub fn mineBlocksWithTimestampInterval(self: *NodeRuntime, count: u64, explicit_interval: ?u64) !void {
-        if (explicit_interval) |interval| {
-            return self.mineBlocks(count, interval);
-        }
-        const interval = self.block_timestamp_interval orelse return self.mineBlocks(count, 0);
+        const interval = explicit_interval orelse self.block_timestamp_interval orelse return self.mineBlocks(count, 0);
         if (count == 0) return;
 
         const had_next_block_timestamp = self.next_block_timestamp != null;
