@@ -299,6 +299,8 @@ const locally_handled_methods = std.StaticStringMap(void).initComptime(.{
     .{ "zevm_nodeInfo", {} },
     .{ "anvil_nodeInfo", {} },
     .{ "zevm_lightSyncStatus", {} },
+    .{ "eth_config", {} },
+    .{ "tevm_drainConsoleLogs", {} },
 });
 
 fn isLocallyHandledMethod(method_name: []const u8) bool {

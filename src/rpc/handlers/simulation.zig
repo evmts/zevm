@@ -6,6 +6,7 @@ const runtime = @import("../../node/runtime.zig");
 const blob_fee = @import("../../blob_fee.zig");
 const block_builder = @import("../../block_builder.zig");
 const host_adapter = @import("../../host_adapter.zig");
+const console_log = @import("../../console_log.zig");
 const tx_encoding = @import("../../transaction_encoding.zig");
 const tx_processor = @import("../../tx_processor.zig");
 const precompile_compat = @import("../../precompile_compat.zig");
@@ -102,6 +103,9 @@ const ExecuteOptions = struct {
     allow_failure: bool = false,
     persist_state: bool = false,
     increment_nonce: bool = false,
+    /// Record Hardhat console.log calldata in the node buffer. Gas-estimation
+    /// probes turn this off so one request records each log once.
+    capture_console_logs: bool = true,
 };
 
 const SimulateOptions = struct {
@@ -1186,7 +1190,7 @@ fn simulateBlock(
         null;
     defer if (preserved_empty_accounts) |*accounts| accounts.deinit();
 
-    var adapter = host_adapter.HostAdapter{ .state = &rt.state };
+    var adapter = host_adapter.HostAdapter{ .state = &rt.state, .console_logs = &rt.console_logs };
     const host = adapter.hostInterface();
 
     var receipts = std.ArrayList(primitives.Receipt.Receipt){};
@@ -1771,7 +1775,7 @@ fn estimateGas(
     var low = intrinsic;
     while (low < high) {
         const mid = low + (high - low) / 2;
-        var attempt = executeOnce(allocator, rt, tx, block_ctx, mid) catch |err| switch (err) {
+        var attempt = executeOnceWithOptions(allocator, rt, tx, block_ctx, mid, .{ .capture_console_logs = false }) catch |err| switch (err) {
             error.ExecutionFailed => {
                 low = mid + 1;
                 continue;
@@ -1823,7 +1827,10 @@ fn executeOnceWithOptions(
         rt.state.setNonce(caller, current_nonce + 1) catch return error.ExecutionFailed;
     }
 
-    var adapter = host_adapter.HostAdapter{ .state = &rt.state };
+    var adapter = host_adapter.HostAdapter{
+        .state = &rt.state,
+        .console_logs = if (options.capture_console_logs) &rt.console_logs else null,
+    };
     const host = adapter.hostInterface();
     var execution_block_ctx = block_ctx;
     if (!tx.has_fee_fields) execution_block_ctx.block_base_fee = 0;
@@ -1844,6 +1851,9 @@ fn executeOnceWithOptions(
     };
     defer evm.deinit();
     if (options.tracer) |tracer| evm.setTracer(tracer);
+    // Nested CALL/STATICCALL to the Hardhat console address records calldata.
+    const console_overrides = [_]guillotine_mini.PrecompileOverride{rt.console_logs.precompileOverride()};
+    if (adapter.console_logs != null) evm.precompile_overrides = &console_overrides;
 
     var result: ExecutionResult = if (tx.to) |to|
         try executeCall(allocator, &evm, &adapter, caller, to, tx, execution_gas, intrinsic, options.allow_failure)
@@ -1884,6 +1894,12 @@ fn executeCall(
 
     var owned = evm.call(call_params).toOwnedResult(allocator) catch return error.OutOfMemory;
     defer owned.deinit(allocator);
+
+    // The EVM consults precompile overrides only for nested calls, so a
+    // top-level call straight to the console address is recorded here.
+    if (to.equals(console_log.ADDRESS) and owned.success) {
+        if (adapter.console_logs) |buffer| buffer.record(tx.data);
+    }
 
     if (adapter.takeHostError() != null) return error.ExecutionFailed;
     if (!owned.success and !allow_failure) {

@@ -572,6 +572,7 @@ Readiness and head-coherence invariants:
 | `eth_getWork` | `[]` or omitted | three zero `Hash32` values (`powHash`, `seedHash`, `target`) because ZEVM does not expose PoW mining work | `-32602` for non-empty params |
 | `eth_maxPriorityFeePerGas` | `[]` or omitted | `QuantityHex` | `-32602` for non-empty params |
 | `eth_blobBaseFee` | `[]` or omitted | `QuantityHex` | `-32602` for non-empty params |
+| `eth_config` | `[]` or omitted | EIP-7910 object `{ current, next, last }`; each fork config has `activationTime`, `blobSchedule` (`baseFeeUpdateFraction`, `max`, `target`), `chainId`, `forkId`, `precompiles`, `systemContracts`; `next` and `last` are `null` when no fork is scheduled | `-32602` for non-empty params; `-32010` in light mode |
 | `eth_feeHistory` | `[blockCount, newestBlock]` or `[blockCount, newestBlock, rewardPercentiles]` | `FeeHistoryResult` | `-32602` on malformed count, selector, or percentiles |
 
 Trusted-mode state-backed reads (`eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getStorageValues`, `eth_getProof`, and `eth_getTransactionCount`) are current-head only. `latest`, `pending`, `safe`, and `finalized` are accepted because they alias the head; `earliest` is accepted only while the current head is genesis; numeric selectors are accepted only when equal to the current head. Other resolved non-head selectors return `-32602`.
@@ -925,6 +926,7 @@ Field contract:
 | `hardhat_setLoggingEnabled` | `[enabled]` | `true` | none |
 | `zevm_metadata` | `[]` or omitted | `NodeMetadata` | `anvil_metadata`, `hardhat_metadata` |
 | `zevm_nodeInfo` | `[]` or omitted | `NodeInfo` | `anvil_nodeInfo` |
+| `tevm_drainConsoleLogs` | `[]` or omitted | `DataHex[]`: raw calldata of each call to the Hardhat console address `0x000000000000000000636f6e736f6c652e6c6f67` since the last drain, in FIFO order; the call clears the buffer; always `[]` in light mode | none |
 
 Parameter token typing contract (applies to the `Exact params` column above):
 

@@ -14,6 +14,7 @@ const log_index_mod = @import("../log_index.zig");
 const block_query_handlers = @import("handlers/block_query_handlers.zig");
 const debug_raw_handlers = @import("handlers/debug_raw.zig");
 const eth_read = @import("handlers/eth_read.zig");
+const eth_config = @import("handlers/eth_config.zig");
 const host_adapter = @import("../host_adapter.zig");
 const mining_coordinator = @import("../mining_coordinator.zig");
 const runtime_mod = @import("../node/runtime.zig");
@@ -141,6 +142,14 @@ fn dispatchMethod(
     if (std.mem.eql(u8, method_name, "eth_blobBaseFee")) {
         try validateNoParams(params);
         return hexU256(allocator, eth_read.currentBlobBaseFee(rt));
+    }
+    if (std.mem.eql(u8, method_name, "eth_config")) {
+        try validateNoParams(params);
+        return ethConfigValue(allocator, rt);
+    }
+    if (std.mem.eql(u8, method_name, "tevm_drainConsoleLogs")) {
+        try validateNoParams(params);
+        return drainConsoleLogsValue(allocator, rt);
     }
     if (std.mem.eql(u8, method_name, "eth_feeHistory")) {
         const fee_history_params = try eth_read.parseEthFeeHistoryParams(allocator, params);
@@ -668,6 +677,11 @@ fn dispatchLightMethod(
         try validateNoParams(params);
         rt.refreshLightSyncForStatus();
         return lightSyncStatusValue(allocator, rt);
+    }
+    if (std.mem.eql(u8, method_name, "tevm_drainConsoleLogs")) {
+        // Light mode executes no local EVM calls, so the buffer is always empty.
+        try validateNoParams(params);
+        return drainConsoleLogsValue(allocator, rt);
     }
     if (std.mem.eql(u8, method_name, "eth_chainId")) {
         try validateNoParams(params);
@@ -2466,6 +2480,7 @@ fn isLightModeUnsupportedMethod(method_name: []const u8) bool {
         "eth_gasPrice",
         "eth_maxPriorityFeePerGas",
         "eth_blobBaseFee",
+        "eth_config",
         "eth_feeHistory",
         "eth_coinbase",
         "eth_accounts",
@@ -2637,6 +2652,7 @@ fn validateLightUnsupportedParams(
         "eth_gasPrice",
         "eth_maxPriorityFeePerGas",
         "eth_blobBaseFee",
+        "eth_config",
         "eth_coinbase",
         "eth_accounts",
         "eth_mining",
@@ -4354,6 +4370,36 @@ fn metadataValue(allocator: std.mem.Allocator, rt: *const runtime_mod.NodeRuntim
         try putOwnedJson(&obj, allocator, "forkBlockNumber", .null);
     }
     return .{ .object = obj };
+}
+
+/// EIP-7910 `eth_config` for the fork schedule of this node.
+fn ethConfigValue(allocator: std.mem.Allocator, rt: *runtime_mod.NodeRuntime) !std.json.Value {
+    const genesis = (try rt.blockchain.getBlockByNumber(0)) orelse return error.MissingGenesisBlock;
+    return eth_config.ethConfigValue(allocator, rt.hardfork_config, .{
+        .chain_id = rt.chain_id,
+        .genesis_hash = genesis.hash,
+        .genesis_timestamp = genesis.header.timestamp,
+        .head_block_number = rt.head_block_number,
+        .head_timestamp = rt.head_block_timestamp,
+    });
+}
+
+/// `tevm_drainConsoleLogs`: returns captured Hardhat console.log calldata as
+/// 0x-hex strings in FIFO order and clears the node buffer.
+fn drainConsoleLogsValue(allocator: std.mem.Allocator, rt: *runtime_mod.NodeRuntime) !std.json.Value {
+    var drained = rt.console_logs.drain();
+    defer drained.deinit();
+
+    var array = std.json.Array.init(allocator);
+    errdefer {
+        var value = std.json.Value{ .array = array };
+        deinitJsonValue(allocator, &value);
+    }
+    try array.ensureTotalCapacity(drained.entries.items.len);
+    for (drained.entries.items) |calldata| {
+        array.appendAssumeCapacity(try hexBytes(allocator, calldata));
+    }
+    return .{ .array = array };
 }
 
 fn nodeInfoValue(allocator: std.mem.Allocator, rt: *const runtime_mod.NodeRuntime) !std.json.Value {

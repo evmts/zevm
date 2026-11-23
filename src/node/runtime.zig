@@ -10,6 +10,7 @@ const txpool = @import("../txpool.zig");
 const genesis = @import("../genesis.zig");
 const genesis_alloc = @import("../genesis_alloc.zig");
 const chain_import = @import("../chain_import.zig");
+const console_log = @import("../console_log.zig");
 const host_adapter = @import("../host_adapter.zig");
 const dev_runtime_mod = @import("../rpc/dev_runtime.zig");
 const receipt_index_mod = @import("../receipt_index.zig");
@@ -492,6 +493,8 @@ pub const NodeRuntime = struct {
     next_block_timestamp: ?u64,
     block_timestamp_interval: ?u64,
     dev_runtime: dev_runtime_mod.DevRuntime,
+    /// Hardhat console.log calldata captured since the last `tevm_drainConsoleLogs`.
+    console_logs: console_log.ConsoleLogBuffer,
     state: state_manager.StateManager,
     blockchain: blockchain_mod.Blockchain,
     owned_block_bodies: std.ArrayList(OwnedBlockBody),
@@ -756,6 +759,7 @@ pub const NodeRuntime = struct {
                 default_coinbase,
                 genesis_gas_limit,
             ),
+            .console_logs = console_log.ConsoleLogBuffer.init(allocator),
             .state = state,
             .blockchain = blockchain,
             .owned_block_bodies = owned_block_bodies,
@@ -1231,7 +1235,7 @@ pub const NodeRuntime = struct {
         defer coordinator.deinit(self.allocator);
         coordinator.current_timestamp = first_timestamp;
 
-        var adapter = host_adapter.HostAdapter{ .state = &self.state };
+        var adapter = host_adapter.HostAdapter{ .state = &self.state, .console_logs = &self.console_logs };
         var i: u64 = 0;
         while (i < count) : (i += 1) {
             if (i > 0 and interval > 0) {
@@ -1928,6 +1932,7 @@ pub const NodeRuntime = struct {
         self.clearEngineInvalidPayloads();
         self.pool.deinit();
         self.dev_runtime.deinit(self.allocator);
+        self.console_logs.deinit();
         self.snapshots.deinit();
         self.rpc_filters.deinit();
         self.engine_payload_jobs.deinit();

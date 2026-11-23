@@ -12,6 +12,7 @@ pub const std_options: std.Options = .{
 pub const database = @import("database/root.zig");
 pub const blockchain = @import("blockchain");
 pub const host_adapter = @import("host_adapter.zig");
+pub const console_log = @import("console_log.zig");
 pub const tx_processor = @import("tx_processor.zig");
 pub const transaction_encoding = @import("transaction_encoding.zig");
 pub const block_builder = @import("block_builder.zig");
@@ -55,6 +56,7 @@ test {
     _ = @import("light_proof.zig");
     _ = @import("checkpoint_test.zig");
     _ = @import("chain_import_test.zig");
+    _ = @import("console_log.zig");
     _ = @import("mpt_proof.zig");
     _ = @import("mining_test.zig");
     _ = @import("cli_test.zig");

@@ -337,6 +337,8 @@ fn contractProbeParams(allocator: std.mem.Allocator, method: []const u8) !?std.j
         "eth_gasPrice",
         "eth_maxPriorityFeePerGas",
         "eth_blobBaseFee",
+        "eth_config",
+        "tevm_drainConsoleLogs",
         "eth_coinbase",
         "eth_accounts",
         "eth_mining",
@@ -3279,4 +3281,184 @@ test "dev mutation methods reject negative numeric params without mutating state
     try std.testing.expectEqual(gas_limit_before, rt.dev_runtime.config.block_gas_limit);
     try std.testing.expectEqual(mining_before, std.meta.activeTag(rt.mining_config));
     try std.testing.expectEqual(@as(u64, 0), rt.head_block_number);
+}
+
+const CONSOLE_LOG_SELECTOR_HEX = "0xf82c50f1";
+
+/// Runtime code that sends the 4-byte selector 0xf82c50f1 to the Hardhat console
+/// address with `call_opcode` (0xfa STATICCALL or 0xf1 CALL) and returns the
+/// call's success flag as one 32-byte word.
+fn consoleLogCallerCode(comptime call_opcode: u8) []const u8 {
+    const console_address = [_]u8{
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x63,
+        0x6f, 0x6e, 0x73, 0x6f, 0x6c, 0x65, 0x2e, 0x6c, 0x6f, 0x67,
+    };
+    const prefix = [_]u8{
+        0x63, 0xf8, 0x2c, 0x50, 0xf1, // PUSH4 selector
+        0x60, 0x00, 0x52, // MSTORE at 0: selector occupies memory[28..32]
+        0x60, 0x00, // retSize
+        0x60, 0x00, // retOffset
+        0x60, 0x04, // argsSize
+        0x60, 0x1c, // argsOffset
+    };
+    const value = if (call_opcode == 0xf1) [_]u8{ 0x60, 0x00 } else [_]u8{};
+    const suffix = [_]u8{
+        0x5a, call_opcode, // GAS, CALL or STATICCALL
+        0x60, 0x00, 0x52, // MSTORE success flag at 0
+        0x60, 0x20, 0x60, 0x00, 0xf3, // RETURN 32 bytes
+    };
+    const code = prefix ++ value ++ [_]u8{0x73} ++ console_address ++ suffix;
+    return &code;
+}
+
+const CONSOLE_CALLER_ADDRESS_TEXT = "0x00000000000000000000000000000000000c0de1";
+
+fn installConsoleLogCaller(rt: *runtime_mod.NodeRuntime, comptime call_opcode: u8) !void {
+    const address = try primitives.Address.fromHex(CONSOLE_CALLER_ADDRESS_TEXT);
+    try rt.state.setCode(address, consoleLogCallerCode(call_opcode));
+}
+
+fn dispatchCallToForTest(rt: *runtime_mod.NodeRuntime, method: []const u8, to: []const u8, data: ?[]const u8) !jsonrpc.envelope.ResponseEnvelope {
+    var tx = std.json.ObjectMap.init(std.testing.allocator);
+    defer tx.deinit();
+    try tx.put("from", .{ .string = managedAddressText() });
+    try tx.put("to", .{ .string = to });
+    if (data) |bytes| try tx.put("data", .{ .string = bytes });
+
+    var params = std.json.Array.init(std.testing.allocator);
+    defer params.deinit();
+    try params.append(.{ .object = tx });
+    if (std.mem.eql(u8, method, "eth_call")) try params.append(.{ .string = "latest" });
+    return dispatchForTest(rt, method, .{ .array = params });
+}
+
+fn expectDrainedConsoleLogs(rt: *runtime_mod.NodeRuntime, expected: []const []const u8) !void {
+    var response = try dispatchForTest(rt, "tevm_drainConsoleLogs", null);
+    defer response.deinit(std.testing.allocator);
+    try std.testing.expect(response.error_value == null);
+    const logs = response.result.?.array.items;
+    try std.testing.expectEqual(expected.len, logs.len);
+    for (expected, logs) |want, got| try std.testing.expectEqualStrings(want, got.string);
+}
+
+test "tevm_drainConsoleLogs returns STATICCALL console calldata from eth_call and clears the buffer" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+    try installConsoleLogCaller(&rt, 0xfa);
+
+    try expectDrainedConsoleLogs(&rt, &.{});
+
+    {
+        var response = try dispatchCallToForTest(&rt, "eth_call", CONSOLE_CALLER_ADDRESS_TEXT, null);
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        // The console call succeeds: the contract returns its success flag.
+        try std.testing.expectEqualStrings(
+            "0x0000000000000000000000000000000000000000000000000000000000000001",
+            response.result.?.string,
+        );
+    }
+
+    try expectDrainedConsoleLogs(&rt, &.{CONSOLE_LOG_SELECTOR_HEX});
+    try expectDrainedConsoleLogs(&rt, &.{});
+}
+
+test "tevm_drainConsoleLogs keeps FIFO order across CALL and direct console calls" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+    try installConsoleLogCaller(&rt, 0xf1);
+
+    {
+        var response = try dispatchCallToForTest(&rt, "eth_call", CONSOLE_CALLER_ADDRESS_TEXT, null);
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expectEqualStrings(
+            "0x0000000000000000000000000000000000000000000000000000000000000001",
+            response.result.?.string,
+        );
+    }
+    {
+        // A top-level call straight to the console address returns empty output.
+        var response = try dispatchCallToForTest(&rt, "eth_call", "0x000000000000000000636f6e736f6c652e6c6f67", "0xaabbccdd01");
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expectEqualStrings("0x", response.result.?.string);
+    }
+
+    try expectDrainedConsoleLogs(&rt, &.{ CONSOLE_LOG_SELECTOR_HEX, "0xaabbccdd01" });
+}
+
+test "tevm_drainConsoleLogs records one entry per eth_estimateGas request" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+    try installConsoleLogCaller(&rt, 0xfa);
+
+    var response = try dispatchCallToForTest(&rt, "eth_estimateGas", CONSOLE_CALLER_ADDRESS_TEXT, null);
+    defer response.deinit(std.testing.allocator);
+    try std.testing.expect(response.error_value == null);
+
+    try expectDrainedConsoleLogs(&rt, &.{CONSOLE_LOG_SELECTOR_HEX});
+}
+
+test "tevm_drainConsoleLogs records console calldata from a mined eth_sendTransaction" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+    try installConsoleLogCaller(&rt, 0xfa);
+
+    var tx = std.json.ObjectMap.init(std.testing.allocator);
+    defer tx.deinit();
+    try tx.put("from", .{ .string = managedAddressText() });
+    try tx.put("to", .{ .string = CONSOLE_CALLER_ADDRESS_TEXT });
+    try tx.put("gas", .{ .string = "0x186a0" });
+
+    var params = std.json.Array.init(std.testing.allocator);
+    defer params.deinit();
+    try params.append(.{ .object = tx });
+
+    var response = try dispatchForTest(&rt, "eth_sendTransaction", .{ .array = params });
+    defer response.deinit(std.testing.allocator);
+    try std.testing.expect(response.error_value == null);
+    try std.testing.expectEqual(@as(u64, 1), rt.head_block_number);
+
+    try expectDrainedConsoleLogs(&rt, &.{CONSOLE_LOG_SELECTOR_HEX});
+}
+
+test "tevm_drainConsoleLogs rejects params" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var params = std.json.Array.init(std.testing.allocator);
+    defer params.deinit();
+    try params.append(.{ .string = "0x1" });
+    try expectErrorCode(&rt, "tevm_drainConsoleLogs", .{ .array = params }, jsonrpc.envelope.ErrorCode.INVALID_PARAMS);
+}
+
+test "eth_config returns current fork config with null next and last on the default dev chain" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var response = try dispatchForTest(&rt, "eth_config", null);
+    defer response.deinit(std.testing.allocator);
+    try std.testing.expect(response.error_value == null);
+
+    const result = response.result.?.object;
+    const current = (try objectField(&result, "current")).object;
+    try std.testing.expectEqual(@as(i64, 0), (try objectField(&current, "activationTime")).integer);
+    const schedule = (try objectField(&current, "blobSchedule")).object;
+    try std.testing.expectEqual(@as(i64, 3_338_477), (try objectField(&schedule, "baseFeeUpdateFraction")).integer);
+    try std.testing.expectEqual(@as(i64, 6), (try objectField(&schedule, "max")).integer);
+    try std.testing.expectEqual(@as(i64, 3), (try objectField(&schedule, "target")).integer);
+
+    var chain_id_buf: [32]u8 = undefined;
+    const chain_id = try std.fmt.bufPrint(&chain_id_buf, "0x{x}", .{rt.chain_id});
+    try std.testing.expectEqualStrings(chain_id, (try objectField(&current, "chainId")).string);
+    try std.testing.expectEqual(@as(usize, 10), (try objectField(&current, "forkId")).string.len);
+    const precompiles_object = (try objectField(&current, "precompiles")).object;
+    try std.testing.expectEqualStrings("0x000000000000000000000000000000000000000a", (try objectField(&precompiles_object, "KZG_POINT_EVALUATION")).string);
+    try std.testing.expect(precompiles_object.get("P256VERIFY") == null);
+    const system_contracts = (try objectField(&current, "systemContracts")).object;
+    try std.testing.expectEqualStrings("0x000f3df6d732807ef1319fb7b8bb8522d0beac02", (try objectField(&system_contracts, "BEACON_ROOTS_ADDRESS")).string);
+
+    try std.testing.expect((try objectField(&result, "next")) == .null);
+    try std.testing.expect((try objectField(&result, "last")) == .null);
 }

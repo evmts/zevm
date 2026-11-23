@@ -19,6 +19,7 @@ test {
     _ = @import("handlers/block_query_handlers_test.zig");
     _ = @import("handlers/block_spec_test.zig");
     _ = @import("handlers/eth_read_test.zig");
+    _ = @import("handlers/eth_config.zig");
     _ = @import("handlers/simulation_test.zig");
     _ = @import("handlers/tx_submission_test.zig");
     _ = @import("handlers/txpool_test.zig");

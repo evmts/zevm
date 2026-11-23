@@ -2,12 +2,16 @@ const std = @import("std");
 const primitives = @import("primitives");
 const state_manager = @import("state-manager");
 const guillotine_mini = @import("guillotine_mini");
+const console_log = @import("console_log.zig");
 
 pub const HostAdapter = struct {
     state: *state_manager.StateManager,
     host_error: ?HostError = null,
     balance_change_allocator: ?std.mem.Allocator = null,
     balance_changes: ?*std.ArrayList(BalanceChange) = null,
+    /// Node console-log buffer. When set, EVM calls to the Hardhat console
+    /// address record their calldata here. Not owned by the adapter.
+    console_logs: ?*console_log.ConsoleLogBuffer = null,
 
     pub const BalanceChange = struct {
         address: primitives.Address,

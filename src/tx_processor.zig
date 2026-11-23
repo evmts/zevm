@@ -362,14 +362,18 @@ pub fn processTransactionWithOptions(
         .address = primitives.Address.fromU256(1),
         .fork = hardfork,
     };
+    // Hardhat console.log capture: the host adapter carries the node buffer.
+    const console_logs = if (adapter) |a| a.console_logs else null;
     const effective_precompile_overrides = blk: {
-        const overrides = allocator.alloc(guillotine_mini.PrecompileOverride, options.precompile_overrides.len + 1) catch return TxError.OutOfMemory;
+        const extra: usize = if (console_logs != null) 2 else 1;
+        const overrides = allocator.alloc(guillotine_mini.PrecompileOverride, options.precompile_overrides.len + extra) catch return TxError.OutOfMemory;
         @memcpy(overrides[0..options.precompile_overrides.len], options.precompile_overrides);
         overrides[options.precompile_overrides.len] = .{
             .address = ecrecover_context.address,
             .execute = executeStandardPrecompile,
             .context = &ecrecover_context,
         };
+        if (console_logs) |buffer| overrides[options.precompile_overrides.len + 1] = buffer.precompileOverride();
         break :blk overrides;
     };
     defer allocator.free(effective_precompile_overrides);
