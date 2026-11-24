@@ -326,12 +326,45 @@ pub fn build(b: *std.Build) void {
         run_external_verify.addArgs(args);
     }
 
+    const trie_tests_module = b.createModule(.{
+        .root_source_file = b.path("tools/trie_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "zevm", .module = mod },
+            .{ .name = "primitives", .module = modules.primitives_mod },
+        },
+    });
+    const trie_tests_exe = b.addExecutable(.{
+        .name = "trie-tests",
+        .root_module = trie_tests_module,
+    });
+    trie_tests_exe.step.dependOn(&modules.voltaire_rust_crypto.step);
+    linkRustSupport(trie_tests_exe, target);
+    const run_trie_tests = b.addRunArtifact(trie_tests_exe);
+    run_trie_tests.step.dependOn(launch_policy_preflight_step);
+    run_trie_tests.addDirectoryArg(b.path("."));
+    const trie_tests_step = b.step("trie-tests", "Run ethereum-tests/TrieTests against ZEVM trie roots and proofs");
+    trie_tests_step.dependOn(&run_trie_tests.step);
+
+    const trie_tests_unit = b.addTest(.{ .root_module = trie_tests_module });
+    trie_tests_unit.step.dependOn(&modules.voltaire_rust_crypto.step);
+    linkRustSupport(trie_tests_unit, target);
+    const run_trie_tests_unit = b.addRunArtifact(trie_tests_unit);
+    run_trie_tests_unit.step.dependOn(launch_policy_preflight_step);
+    test_step.dependOn(&run_trie_tests_unit.step);
+    trie_tests_step.dependOn(&run_trie_tests_unit.step);
+
     const verify_fast_step = b.step("verify-fast", "Run fast local verification");
     verify_fast_step.dependOn(test_step);
 
     const verify_step = b.step("verify", "Run fast checks and active external suite slices");
     run_external_verify.step.dependOn(verify_fast_step);
     verify_step.dependOn(&run_external_verify.step);
+    const run_verify_trie_tests = b.addRunArtifact(trie_tests_exe);
+    run_verify_trie_tests.addDirectoryArg(b.path("."));
+    run_verify_trie_tests.step.dependOn(verify_fast_step);
+    verify_step.dependOn(&run_verify_trie_tests.step);
 
     const abi_tests_exe = b.addExecutable(.{
         .name = "abi-tests",

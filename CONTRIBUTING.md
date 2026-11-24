@@ -47,6 +47,8 @@ zig build verify
 bun tools/hive_rpc_compat_smoke.js
 ```
 
+`zig build verify` includes `zig build trie-tests`, which replays `lib/ethereum-tests/TrieTests` against `primitives.TrieHash` roots and ZEVM `eth_getProof` proofs (`tools/trie_tests.zig`). `trietestnextprev.json` is excluded because ZEVM exposes no trie iterator; any new unclassified fixture file fails the run.
+
 ## Release Artifacts
 
 Build release-style artifacts for the selected target:
