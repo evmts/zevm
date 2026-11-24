@@ -172,7 +172,11 @@ run_local_linux() {
 
             local attempt_log="${log}.attempt${attempt}"
             local rc=0
-            timeout --signal=INT "${remaining}s" \
+            # SIGTERM, not SIGINT: this runs in a background job, where bash
+            # ignores SIGINT. uutils timeout (Ubuntu 26.04 runners) passes that
+            # disposition to zig, so SIGINT never stopped `zig build --fuzz`
+            # and the CI job hung until its timeout. --kill-after is the backstop.
+            timeout --signal=TERM --kill-after=30s "${remaining}s" \
                 "$zig_bin" build "$step" \
                 "-Doptimize=$OPTIMIZE" \
                 -Dskip-rust-build=true \
