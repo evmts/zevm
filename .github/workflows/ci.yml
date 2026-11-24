@@ -35,9 +35,9 @@ jobs:
         with:
           path: zevm
 
-      - name: Checkout execution-apis test fixtures
+      - name: Checkout execution-apis and ethereum-tests fixtures
         working-directory: zevm
-        run: git submodule update --init --depth 1 -- lib/execution-apis
+        run: git submodule update --init --depth 1 -- lib/execution-apis lib/ethereum-tests
 
       - name: Checkout pinned native dependencies
         working-directory: zevm
@@ -75,6 +75,10 @@ jobs:
       - name: Fast verification
         working-directory: zevm
         run: zig build verify-fast
+
+      - name: Ethereum TransactionTests
+        working-directory: zevm
+        run: zig build transaction-tests
 
       - name: C ABI smoke
         working-directory: zevm

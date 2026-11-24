@@ -250,6 +250,7 @@ Submission contract:
 - `eth_sendRawTransaction` accepts legacy plus EIP-2930 (`0x1`) from Berlin, EIP-1559 (`0x2`) from London, EIP-4844 (`0x3`) from Cancun, and EIP-7702 (`0x4`) from Prague
 - unknown or not-yet-active typed envelopes fail with `-32602`
 - transaction admission computes intrinsic gas and EIP-3860 initcode limits from the runtime-owned hardfork policy configured at trusted startup
+- raw submission validates the chain ID, fee cap, nonce range, and fork-specific signature and minimum gas rules before admitting the transaction to the pool
 - from Osaka, `eth_sendTransaction`, `eth_sendRawTransaction`, and `eth_signTransaction` reject a declared gas limit above 16,777,216 with code `-32000` and message `transaction gas limit exceeds Osaka cap (16777216)`; exactly 16,777,216 is permitted subject to other validation
 - rejection leaves sender nonce, balances and the transaction pool unchanged; the same cap applies to included transactions during block execution
 - `eth_simulateV1` with `validation: true` enforces this cap with the same error; non-validating simulations and `eth_call` retain their simulation block gas bound

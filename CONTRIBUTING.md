@@ -49,6 +49,17 @@ bun tools/hive_rpc_compat_smoke.js
 
 `zig build verify` includes `zig build trie-tests`, which replays `lib/ethereum-tests/TrieTests` against `primitives.TrieHash` roots and ZEVM `eth_getProof` proofs (`tools/trie_tests.zig`). `trietestnextprev.json` is excluded because ZEVM exposes no trie iterator; any new unclassified fixture file fails the run.
 
+## Ethereum TransactionTests
+
+With the pinned `lib/ethereum-tests` submodule populated, run `zig build transaction-tests`.
+Use `zig build transaction-tests -- /path/to/TransactionTests` to select a different
+fixture directory. CI runs the pinned corpus and records the total pass and fail
+counts in the Ethereum TransactionTests step log. Each result is evaluated at
+its specified fork on chain ID 1. The runner checks acceptance and rejection,
+and compares the sender, transaction hash, and intrinsic gas on acceptance.
+Fixture exception strings identify the expected rejection in diagnostics.
+The pinned corpus contains no valid blob or EIP-7702 envelopes.
+
 ## Release Artifacts
 
 Build release-style artifacts for the selected target:

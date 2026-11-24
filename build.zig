@@ -355,6 +355,25 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_trie_tests_unit.step);
     trie_tests_step.dependOn(&run_trie_tests_unit.step);
 
+    const transaction_tests = b.addExecutable(.{
+        .name = "transaction-tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/transaction_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zevm", .module = mod },
+                .{ .name = "guillotine_mini", .module = modules.guillotine_mini_mod },
+            },
+        }),
+    });
+    transaction_tests.step.dependOn(&modules.voltaire_rust_crypto.step);
+    linkRustSupport(transaction_tests, target);
+    const run_transaction_tests = b.addRunArtifact(transaction_tests);
+    run_transaction_tests.step.dependOn(launch_policy_preflight_step);
+    if (b.args) |args| run_transaction_tests.addArgs(args);
+    b.step("transaction-tests", "Run the ethereum-tests TransactionTests fixtures").dependOn(&run_transaction_tests.step);
+
     const verify_fast_step = b.step("verify-fast", "Run fast local verification");
     verify_fast_step.dependOn(test_step);
 

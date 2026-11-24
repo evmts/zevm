@@ -16,6 +16,7 @@ const CALLDATA_NONZERO_TOKEN_COUNT: u64 = 4;
 const PRAGUE_CALLDATA_FLOOR_GAS_PER_TOKEN: u64 = 10;
 const CREATE_GAS: u64 = 32_000;
 const INITCODE_WORD_GAS: u64 = 2;
+pub const MAX_INITCODE_SIZE: usize = 49152;
 const AUTH_PER_EMPTY_ACCOUNT_GAS: u64 = 25_000;
 const REFUND_AUTH_PER_EXISTING_ACCOUNT_GAS: u64 = 12_500;
 const EOA_DELEGATION_MARKER = [_]u8{ 0xef, 0x01, 0x00 };
@@ -148,7 +149,7 @@ pub fn intrinsicGas(data: []const u8, is_create: bool) u64 {
 
 pub fn intrinsicGasForFork(data: []const u8, is_create: bool, hardfork: guillotine_mini.Hardfork) u64 {
     var gas: u64 = INTRINSIC_GAS;
-    if (is_create) {
+    if (is_create and hardfork.isAtLeast(.HOMESTEAD)) {
         gas += CREATE_GAS;
         if (hardfork.isAtLeast(.SHANGHAI)) {
             gas += INITCODE_WORD_GAS * @as(u64, @intCast((data.len + 31) / 32));
@@ -161,7 +162,7 @@ pub fn intrinsicGasForFork(data: []const u8, is_create: bool, hardfork: guilloti
     return gas;
 }
 
-fn calldataTokenCount(data: []const u8) TxError!u64 {
+fn calldataTokenCount(data: []const u8) error{IntrinsicGasExceedsLimit}!u64 {
     var tokens: u64 = 0;
     for (data) |byte| {
         tokens = std.math.add(
@@ -173,7 +174,7 @@ fn calldataTokenCount(data: []const u8) TxError!u64 {
     return tokens;
 }
 
-fn transactionGasFloorForFork(data: []const u8, hardfork: guillotine_mini.Hardfork) TxError!u64 {
+fn transactionGasFloorForFork(data: []const u8, hardfork: guillotine_mini.Hardfork) error{IntrinsicGasExceedsLimit}!u64 {
     if (hardfork.isBefore(.PRAGUE)) return 0;
     const data_floor = std.math.mul(
         u64,
@@ -226,6 +227,56 @@ fn transactionTypeSupported(receipt_type: primitives.Receipt.TransactionType, ha
         .eip4844 => hardfork.isAtLeast(.CANCUN),
         .eip7702 => hardfork.isAtLeast(.PRAGUE),
     };
+}
+
+/// Gas charged before execution, including the envelope's access and authorization lists.
+fn envelopeIntrinsicGas(decoded: tx_encoding.DecodedEnvelope, hardfork: guillotine_mini.Hardfork) error{IntrinsicGasExceedsLimit}!u64 {
+    const tx = tx_encoding.envelopeToLegacyLikeTx(decoded);
+    var gas = intrinsicGasForFork(tx.data, tx.to == null, hardfork);
+    for (tx_encoding.envelopeAccessList(decoded)) |entry| {
+        gas = std.math.add(u64, gas, primitives.AccessList.ACCESS_LIST_ADDRESS_COST) catch return error.IntrinsicGasExceedsLimit;
+        const keys = std.math.mul(u64, primitives.AccessList.ACCESS_LIST_STORAGE_KEY_COST, entry.storage_keys.len) catch return error.IntrinsicGasExceedsLimit;
+        gas = std.math.add(u64, gas, keys) catch return error.IntrinsicGasExceedsLimit;
+    }
+    const auth = std.math.mul(u64, AUTH_PER_EMPTY_ACCOUNT_GAS, tx_encoding.envelopeAuthorizationList(decoded).len) catch return error.IntrinsicGasExceedsLimit;
+    return std.math.add(u64, gas, auth) catch return error.IntrinsicGasExceedsLimit;
+}
+
+/// Validate a decoded signed envelope without block context or account state.
+pub fn validateEnvelope(
+    decoded: tx_encoding.DecodedEnvelope,
+    hardfork: guillotine_mini.Hardfork,
+    chain_id: u64,
+) error{
+    UnsupportedTransactionType,
+    ChainIdMismatch,
+    InitcodeTooLarge,
+    NonceTooLarge,
+    TipExceedsFeeCap,
+    GasCostOverflow,
+    IntrinsicGasExceedsLimit,
+    TransactionGasLimitExceeded,
+}!u64 {
+    const receipt_type = tx_encoding.envelopeReceiptType(decoded);
+    if (!transactionTypeSupported(receipt_type, hardfork)) return error.UnsupportedTransactionType;
+    if (tx_encoding.envelopeChainId(decoded)) |id| {
+        if (id != chain_id or (receipt_type == .legacy and hardfork.isBefore(.SPURIOUS_DRAGON))) return error.ChainIdMismatch;
+    }
+
+    const tx = tx_encoding.envelopeToLegacyLikeTx(decoded);
+    if (hardfork.isAtLeast(.SHANGHAI) and tx.to == null and tx.data.len > MAX_INITCODE_SIZE) return error.InitcodeTooLarge;
+    if (tx.nonce == std.math.maxInt(u64)) return error.NonceTooLarge;
+    const max_fee = tx_encoding.envelopeMaxFeePerGas(decoded) orelse tx.gas_price;
+    if (tx_encoding.envelopeMaxPriorityFeePerGas(decoded)) |tip| {
+        if (tip > max_fee) return error.TipExceedsFeeCap;
+    }
+    _ = std.math.mul(u256, max_fee, tx.gas_limit) catch return error.GasCostOverflow;
+
+    const intrinsic = try envelopeIntrinsicGas(decoded, hardfork);
+    const floor = try transactionGasFloorForFork(tx.data, hardfork);
+    try validateTransactionGasLimit(tx.gas_limit, hardfork);
+    if (tx.gas_limit < @max(intrinsic, floor)) return error.IntrinsicGasExceedsLimit;
+    return intrinsic;
 }
 
 fn allocateEventLogs(

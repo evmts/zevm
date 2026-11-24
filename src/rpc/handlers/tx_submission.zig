@@ -37,8 +37,7 @@ pub const TxSubmissionError = error{
     StateError,
 };
 
-// EIP-3860: 49152 = 2 * MAX_CODE_SIZE
-const MAX_INITCODE_SIZE: usize = 49152;
+const MAX_INITCODE_SIZE = tx_processor.MAX_INITCODE_SIZE;
 
 pub fn handleSendRawTransaction(
     allocator: std.mem.Allocator,
@@ -71,15 +70,17 @@ pub fn handleSendRawTransaction(
     };
     const tx = tx_encoding.envelopeToLegacyLikeTx(decoded);
 
-    if (tx_encoding.envelopeChainId(decoded)) |cid| {
-        if (cid != rt.chain_id) return TxSubmissionError.ChainIdMismatch;
-    }
-
-    const is_create = tx.to == null;
     const receipt_type = tx_encoding.envelopeReceiptType(decoded);
-    if (!rawTransactionTypeSupported(receipt_type, hardfork)) {
-        return TxSubmissionError.UnsupportedTxType;
-    }
+    _ = tx_processor.validateEnvelope(decoded, hardfork, rt.chain_id) catch |err| return switch (err) {
+        error.ChainIdMismatch => error.ChainIdMismatch,
+        error.UnsupportedTransactionType => error.UnsupportedTxType,
+        error.InitcodeTooLarge => error.InitcodeTooLarge,
+        error.NonceTooLarge => error.NonceMismatch,
+        error.TipExceedsFeeCap => error.DecodeFailed,
+        error.GasCostOverflow => error.InsufficientBalance,
+        error.TransactionGasLimitExceeded => error.TransactionGasLimitExceeded,
+        error.IntrinsicGasExceedsLimit => error.IntrinsicGasExceedsLimit,
+    };
     if (receipt_type == .eip4844) {
         const versioned_hashes = tx_encoding.envelopeBlobVersionedHashes(decoded) orelse &.{};
         const blob_params = blob_fee.blobParamsForFork(rt.hardfork_config, hardfork, pending_timestamp);
@@ -91,19 +92,11 @@ pub fn handleSendRawTransaction(
         try validateBlobWrapperForFork(raw_bytes, versioned_hashes, hardfork);
     }
 
-    const sender = tx_encoding.recoverEnvelopeSender(arena_alloc, decoded) catch return TxSubmissionError.SenderRecoveryFailed;
-
-    // EIP-3860: cap initcode size for create transactions.
-    if (hardfork.isAtLeast(.SHANGHAI) and is_create and tx.data.len > MAX_INITCODE_SIZE) {
-        return TxSubmissionError.InitcodeTooLarge;
-    }
+    const sender = tx_encoding.recoverEnvelopeSenderForFork(arena_alloc, decoded, hardfork) catch return TxSubmissionError.SenderRecoveryFailed;
 
     const current_nonce = rt.state.getNonce(sender) catch return TxSubmissionError.StateError;
     if (tx.nonce < current_nonce) return TxSubmissionError.NonceMismatch;
 
-    const intrinsic = computeEnvelopeIntrinsicGas(decoded, is_create, hardfork) catch return TxSubmissionError.IntrinsicGasExceedsLimit;
-    try tx_processor.validateTransactionGasLimit(tx.gas_limit, hardfork);
-    if (intrinsic > tx.gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
     if (tx.gas_limit > rt.dev_runtime.config.block_gas_limit) return TxSubmissionError.IntrinsicGasExceedsLimit;
 
     // Balance covers value + max gas cost.
@@ -455,36 +448,6 @@ fn computeLegacyIntrinsicGas(is_create: bool, data: []const u8, hardfork: guillo
     return tx_processor.intrinsicGasForFork(data, is_create, hardfork);
 }
 
-fn computeEnvelopeIntrinsicGas(
-    decoded: tx_encoding.DecodedEnvelope,
-    is_create: bool,
-    hardfork: guillotine_mini.Hardfork,
-) error{Overflow}!u64 {
-    const tx = tx_encoding.envelopeToLegacyLikeTx(decoded);
-    var gas = tx_processor.intrinsicGasForFork(tx.data, is_create, hardfork);
-    const access_list_gas = try transactionAccessListGasCost(tx_encoding.envelopeAccessList(decoded));
-    gas = try std.math.add(u64, gas, access_list_gas);
-    if (tx_encoding.envelopeReceiptType(decoded) == .eip7702) {
-        const auth_cost = try std.math.mul(u64, 25_000, tx_encoding.envelopeAuthorizationList(decoded).len);
-        gas = try std.math.add(u64, gas, auth_cost);
-    }
-    return gas;
-}
-
-fn transactionAccessListGasCost(access_list: []const primitives.Transaction.AccessListItem) error{Overflow}!u64 {
-    var gas: u64 = 0;
-    for (access_list) |entry| {
-        gas = try std.math.add(u64, gas, primitives.AccessList.ACCESS_LIST_ADDRESS_COST);
-        const storage_cost = try std.math.mul(
-            u64,
-            primitives.AccessList.ACCESS_LIST_STORAGE_KEY_COST,
-            @as(u64, @intCast(entry.storage_keys.len)),
-        );
-        gas = try std.math.add(u64, gas, storage_cost);
-    }
-    return gas;
-}
-
 /// EIP-7594 pool gating for a type-3 submission. A bare canonical envelope
 /// carries no wrapper and passes. A wrapper must be structurally valid, commit
 /// to the transaction's versioned hashes, and use v1 (cell proofs) from Osaka
@@ -497,16 +460,6 @@ pub fn validateBlobWrapperForFork(
     const wrapper = (tx_encoding.decodeBlobNetworkWrapper(raw) catch return TxSubmissionError.DecodeFailed) orelse return;
     tx_encoding.validateWrapperCommitments(wrapper, versioned_hashes) catch return TxSubmissionError.DecodeFailed;
     if (!wrapper.version.activeAt(hardfork)) return TxSubmissionError.BlobWrapperVersionMismatch;
-}
-
-fn rawTransactionTypeSupported(receipt_type: primitives.Receipt.TransactionType, hardfork: guillotine_mini.Hardfork) bool {
-    return switch (receipt_type) {
-        .legacy => true,
-        .eip2930 => hardfork.isAtLeast(.BERLIN),
-        .eip1559 => hardfork.isAtLeast(.LONDON),
-        .eip4844 => hardfork.isAtLeast(.CANCUN),
-        .eip7702 => hardfork.isAtLeast(.PRAGUE),
-    };
 }
 
 fn keccak(input: []const u8) [32]u8 {

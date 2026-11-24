@@ -51,6 +51,11 @@ fn balanceProbeBytecode(address: primitives.Address) [23]u8 {
     return code;
 }
 
+test "contract creation intrinsic gas changes at Homestead" {
+    try std.testing.expectEqual(@as(u64, 21_000), tx_processor.intrinsicGasForFork(&.{}, true, .FRONTIER));
+    try std.testing.expectEqual(@as(u64, 53_000), tx_processor.intrinsicGasForFork(&.{}, true, .HOMESTEAD));
+}
+
 test "intrinsic gas calculation" {
     try std.testing.expectEqual(@as(u64, 21_000), tx_processor.intrinsicGas(&[_]u8{}, false));
     try std.testing.expectEqual(@as(u64, 21_000 + 32_000), tx_processor.intrinsicGas(&[_]u8{}, true));

@@ -817,21 +817,45 @@ pub fn recoverLegacySender(
     allocator: std.mem.Allocator,
     tx: primitives.Transaction.LegacyTransaction,
 ) !primitives.Address {
+    return recoverLegacySenderWithRule(allocator, tx, false);
+}
+
+fn recoverLegacySenderWithRule(
+    allocator: std.mem.Allocator,
+    tx: primitives.Transaction.LegacyTransaction,
+    allow_high_s: bool,
+) !primitives.Address {
     const signing_hash = try legacySigningHash(allocator, tx);
-    const sig = crypto.Crypto.Signature{
+    const order = crypto.Crypto.SECP256K1_N;
+    var s = bytes32ToU256(tx.s);
+    var recovery_id = legacyRecoveryId(tx.v);
+    // Frontier permits high-s signatures. The recovery primitive requires
+    // low-s, so use the equivalent signature with the opposite parity.
+    if (allow_high_s and s > order / 2 and s < order) {
+        s = order - s;
+        recovery_id ^= 1;
+    }
+    return crypto.Crypto.unaudited_recoverAddress(signing_hash, .{
         .r = bytes32ToU256(tx.r),
-        .s = bytes32ToU256(tx.s),
-        .v = legacyRecoveryId(tx.v) + 27,
-    };
-    return crypto.Crypto.unaudited_recoverAddress(signing_hash, sig);
+        .s = s,
+        .v = recovery_id + 27,
+    });
 }
 
 pub fn recoverEnvelopeSender(
     allocator: std.mem.Allocator,
     decoded: DecodedEnvelope,
 ) !primitives.Address {
+    return recoverEnvelopeSenderForFork(allocator, decoded, .HOMESTEAD);
+}
+
+pub fn recoverEnvelopeSenderForFork(
+    allocator: std.mem.Allocator,
+    decoded: DecodedEnvelope,
+    fork: primitives.Hardfork,
+) !primitives.Address {
     return switch (decoded) {
-        .legacy => |tx| recoverLegacySender(allocator, tx),
+        .legacy => |tx| recoverLegacySenderWithRule(allocator, tx, fork.isBefore(.HOMESTEAD)),
         .eip2930 => |tx| recoverTypedSender(allocator, 0x01, tx.y_parity, tx.r, tx.s, tx),
         .eip1559 => |tx| recoverTypedSender(allocator, 0x02, tx.y_parity, tx.r, tx.s, tx),
         .eip4844 => |tx| recoverTypedSender(allocator, 0x03, tx.y_parity, tx.r, tx.s, tx),
