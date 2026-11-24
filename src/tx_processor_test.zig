@@ -64,6 +64,11 @@ test "intrinsic gas calculation" {
     try std.testing.expectEqual(@as(u64, 21_000 + 32_000 + 16 * 100), tx_processor.intrinsicGasForFork(&([_]u8{0x01} ** 100), true, .LONDON));
 }
 
+test "contract creation intrinsic gas follows the Homestead boundary" {
+    try std.testing.expectEqual(@as(u64, 21_068), tx_processor.intrinsicGasForFork(&.{0x01}, true, .FRONTIER));
+    try std.testing.expectEqual(@as(u64, 53_068), tx_processor.intrinsicGasForFork(&.{0x01}, true, .HOMESTEAD));
+}
+
 test "resolveHardfork follows block number and timestamp schedule" {
     var ctx = defaultBlockContext();
 

@@ -123,8 +123,14 @@ const ProgressState = struct {
     }
 };
 
+// These are names from the post map. ConstantinopleFix is Petersburg.
+const EarlyFork = enum { Frontier, Homestead, Byzantium, Constantinople, Istanbul };
+const ForkCounts = struct { discovered: usize = 0, passed: usize = 0, failed: usize = 0 };
+const EarlyCounts = std.EnumArray(EarlyFork, ForkCounts);
+
 const VerifyContext = struct {
     options: VerifyOptions,
+    early_counts: ?*EarlyCounts = null,
     progress: *ProgressState,
     timer: *std.time.Timer,
 
@@ -356,7 +362,6 @@ pub fn main() !void {
     if (args.len < 3) return VerifyError.MissingArgument;
 
     const repo_root = args[1];
-    const zevm_bin = args[2];
     const options = try parseVerifyOptions(allocator, args[3..]);
 
     var timer = try std.time.Timer.start();
@@ -388,7 +393,11 @@ pub fn main() !void {
     defer watchdog.join();
     defer progress.done.store(true, .release);
 
-    runExternalVerify(allocator, repo_root, zevm_bin, &ctx) catch |err| {
+    const verification = if (std.mem.eql(u8, args[2], "--early-state"))
+        runEarlyStateFixtures(allocator, repo_root, &ctx)
+    else
+        runExternalVerify(allocator, repo_root, args[2], &ctx);
+    verification catch |err| {
         var task_buffer: [1024]u8 = undefined;
         const current = progress.copyCurrentTask(&task_buffer);
         std.debug.print("external-verify: failed error={s} elapsed_ms={d} current=\"{s}\"\n", .{
@@ -567,6 +576,33 @@ fn runLegacyInvalidIntrinsicGasFixtureTask(parent_allocator: std.mem.Allocator, 
     try assertState(allocator, &sm, expected);
 }
 
+fn runEarlyStateFixtures(allocator: std.mem.Allocator, repo_root: []const u8, ctx: *VerifyContext) !void {
+    var counts = EarlyCounts.initFill(.{});
+    ctx.early_counts = &counts;
+    defer ctx.early_counts = null;
+    var files = std.mem.tokenizeScalar(u8, @embedFile("early_state_files.txt"), '\n');
+    while (files.next()) |relative_path| {
+        const path = try std.fs.path.join(allocator, &.{ repo_root, ".cache/early-state-v5.4.0", relative_path });
+        defer allocator.free(path);
+        try runLegacyStateFixtureFile(allocator, path, relative_path, ctx);
+    }
+
+    if (ctx.options.extra_legacy_state_dir) |relative_path| {
+        const path = try resolveRepoPath(allocator, repo_root, relative_path);
+        defer allocator.free(path);
+        try runLegacyStateFixtureDir(allocator, path, relative_path, ctx);
+    }
+
+    var missing_fork = false;
+    for (std.enums.values(EarlyFork)) |fork| {
+        const count = counts.get(fork);
+        std.debug.print("early-state: fork={s} discovered={d} passed={d} failed={d}\n", .{ @tagName(fork), count.discovered, count.passed, count.failed });
+        if (count.discovered == 0) missing_fork = true;
+    }
+    if (missing_fork) return VerifyError.InvalidFixture;
+    if (ctx.progress.failed.load(.monotonic) != 0) return VerifyError.UnexpectedState;
+}
+
 fn runLegacyStateFixtures(allocator: std.mem.Allocator, repo_root: []const u8, ctx: *VerifyContext) !void {
     for (legacy_state_fixture_dirs) |relative_path| {
         const path = try std.fs.path.join(allocator, &.{ repo_root, relative_path });
@@ -623,17 +659,18 @@ fn runLegacyStateFixtureFile(allocator: std.mem.Allocator, path: []const u8, lab
     var parsed = try readJson(allocator, path);
     defer parsed.deinit();
 
+    if (parsed.value != .object) return VerifyError.InvalidFixture;
     var case_count: usize = 0;
     var it = parsed.value.object.iterator();
     while (it.next()) |entry| {
-        try runLegacyCancunStateFixture(allocator, entry.value_ptr.*, label_path, entry.key_ptr.*, ctx);
+        try runLegacyStateFixture(allocator, entry.value_ptr.*, label_path, entry.key_ptr.*, ctx);
         case_count += 1;
     }
 
     if (case_count == 0) return VerifyError.InvalidFixture;
 }
 
-fn runLegacyCancunStateFixture(
+fn runLegacyStateFixture(
     allocator: std.mem.Allocator,
     fixture: std.json.Value,
     label_path: []const u8,
@@ -641,12 +678,21 @@ fn runLegacyCancunStateFixture(
     ctx: *VerifyContext,
 ) !void {
     const post_by_fork = try field(fixture, "post");
-    var ran: usize = 0;
+    if (post_by_fork != .object or post_by_fork.object.count() == 0) return VerifyError.InvalidFixture;
+    var post_count: usize = 0;
+    const suite = if (ctx.early_counts != null) "early-state" else "legacy-state";
     var fork_it = post_by_fork.object.iterator();
     while (fork_it.next()) |fork_entry| {
-        const hardfork = try hardforkFromFixtureName(fork_entry.key_ptr.*);
+        const fork_name = fork_entry.key_ptr.*;
+        const count = if (ctx.early_counts) |counts|
+            counts.getPtr(std.meta.stringToEnum(EarlyFork, fork_name) orelse continue)
+        else
+            null;
+        const hardfork = try hardforkFromFixtureName(fork_name);
         const post_cases = fork_entry.value_ptr.*;
         if (post_cases != .array) return VerifyError.InvalidFixture;
+        post_count += post_cases.array.items.len;
+        if (count) |c| c.discovered += post_cases.array.items.len;
 
         for (post_cases.array.items, 0..) |post_case, post_index| {
             const task_label = try std.fmt.allocPrint(allocator, "{s} :: {s} :: {s} post={d}", .{
@@ -657,18 +703,21 @@ fn runLegacyCancunStateFixture(
             });
             defer allocator.free(task_label);
             if (ctx.claimTask(task_label)) |task_id| {
-                const started_ns = ctx.startTask(task_id, "legacy-state", task_label);
+                const started_ns = ctx.startTask(task_id, suite, task_label);
                 runLegacyStatePostCase(allocator, fixture, post_case, hardfork, ctx.options.dump_state_on_mismatch) catch |err| {
-                    ctx.failTask(task_id, "legacy-state", task_label, started_ns, err);
+                    ctx.failTask(task_id, suite, task_label, started_ns, err);
+                    if (count) |c| {
+                        c.failed += 1;
+                        continue;
+                    }
                     return err;
                 };
-                ctx.finishTask(task_id, "legacy-state", started_ns);
+                if (count) |c| c.passed += 1;
+                ctx.finishTask(task_id, suite, started_ns);
             }
-            ran += 1;
         }
     }
-
-    if (ran == 0) return VerifyError.InvalidFixture;
+    if (ctx.early_counts == null and post_count == 0) return VerifyError.InvalidFixture;
 }
 
 fn runLegacyStatePostCase(

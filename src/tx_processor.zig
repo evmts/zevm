@@ -149,6 +149,7 @@ pub fn intrinsicGas(data: []const u8, is_create: bool) u64 {
 
 pub fn intrinsicGasForFork(data: []const u8, is_create: bool, hardfork: guillotine_mini.Hardfork) u64 {
     var gas: u64 = INTRINSIC_GAS;
+    // EIP-2 introduced the creation surcharge at Homestead.
     if (is_create and hardfork.isAtLeast(.HOMESTEAD)) {
         gas += CREATE_GAS;
         if (hardfork.isAtLeast(.SHANGHAI)) {

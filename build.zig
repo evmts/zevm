@@ -374,6 +374,14 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run_transaction_tests.addArgs(args);
     b.step("transaction-tests", "Run the ethereum-tests TransactionTests fixtures").dependOn(&run_transaction_tests.step);
 
+    const early_state_step = b.step("verify-early-state", "Verify Frontier through Istanbul state fixtures and report each fork");
+    const run_early_state = b.addRunArtifact(external_verify_exe);
+    run_early_state.step.dependOn(launch_policy_preflight_step);
+    run_early_state.addDirectoryArg(b.path("."));
+    run_early_state.addArg("--early-state");
+    if (b.args) |args| run_early_state.addArgs(args);
+    early_state_step.dependOn(&run_early_state.step);
+
     const verify_fast_step = b.step("verify-fast", "Run fast local verification");
     verify_fast_step.dependOn(test_step);
 

@@ -255,6 +255,12 @@ jobs:
         working-directory: zevm
         run: zig build --fetch
 
+      - name: Early-fork state tests
+        working-directory: zevm
+        run: |
+          bash tools/fetch-early-state.sh
+          zig build verify-early-state -Doptimize=ReleaseSafe
+
       - name: Verify release qualification coverage
         working-directory: zevm
         run: zig build qualification-check -- --require-covered
