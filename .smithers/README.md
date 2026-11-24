@@ -4,7 +4,8 @@
 in `.smithers/cache` and sync through `https://build.smithers.sh` when
 `SMITHERS_CACHE_READ_TOKEN` / `SMITHERS_CACHE_WRITE_TOKEN` are set.
 
-- Workspace: `.smithers/WORKSPACE.ts` (`WORKSPACE.smithers` re-exports it).
+- Workspace: `.smithers/WORKSPACE.ts`, the only declaration; smthrs refuses a
+  second `.smithers/WORKSPACE.smithers` beside it.
 - Targets: root `PACKAGE.ts`, `bench/**/PACKAGE.ts`, `.smithers/PACKAGE.ts`.
 - Factory: `.smithers/FACTORY.ts` and `.smithers/flows/**`, projected into the
   checked-in `factory.json` and `home.json`.

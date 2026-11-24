@@ -1,4 +1,3 @@
-// Current smthrs discovers this file; WORKSPACE.smithers is a compatibility entry.
 import { Smithers as S } from "@smthrs/targets"
 
 // Smithers incremental build graph for ZEVM.
