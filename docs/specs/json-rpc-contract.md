@@ -335,7 +335,6 @@ Rules:
   "transactions": [],
   "uncles": [],
   "difficulty": "0x0",
-  "totalDifficulty": "0x0",
   "baseFeePerGas": "0x0",
   "withdrawalsRoot": "0x...",
   "blobGasUsed": "0x0",
@@ -375,7 +374,6 @@ Field contract:
 | `transactions` | yes | array | element type depends on `fullTransactions` |
 | `uncles` | yes | array of `Hash32` | non-null (empty array allowed) |
 | `difficulty` | yes | `QuantityHex` | non-null; zero is `"0x0"` |
-| `totalDifficulty` | yes | `QuantityHex` | non-null; `"0x0"` when no cumulative difficulty is stored |
 | `baseFeePerGas` | conditional | `QuantityHex` | omitted when not applicable |
 | `withdrawalsRoot` | conditional | `Hash32` | omitted when not applicable |
 | `blobGasUsed` | conditional | `QuantityHex` | omitted when not applicable |

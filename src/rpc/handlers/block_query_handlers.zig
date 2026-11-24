@@ -621,7 +621,6 @@ fn blockResponseValue(
     try putJson(&obj, allocator, "transactions", try blockTransactionsValue(allocator, resp.transactions));
     try putJson(&obj, allocator, "uncles", try hashArrayValue(allocator, resp.uncleHashes));
     try putJson(&obj, allocator, "difficulty", try quantityValue(allocator, resp.difficulty));
-    try putJson(&obj, allocator, "totalDifficulty", try quantityValue(allocator, resp.totalDifficulty orelse 0));
     if (resp.baseFeePerGas) |bfpg| try putJson(&obj, allocator, "baseFeePerGas", try quantityValue(allocator, bfpg));
     if (resp.withdrawalsRoot) |wr| {
         try putJson(&obj, allocator, "withdrawalsRoot", try hashValue(allocator, wr));
@@ -916,7 +915,8 @@ fn internalBlockToRpc(
         .transactions = txs,
         .uncles = &.{},
         .difficulty = try quantityFromU256(allocator, resp.difficulty),
-        .totalDifficulty = try quantityFromU256(allocator, resp.totalDifficulty orelse 0),
+        // execution-apis removed totalDifficulty from the Block schema; Hive rpc-compat requires an exact match.
+        .totalDifficulty = null,
         .baseFeePerGas = if (resp.baseFeePerGas) |bfpg| try quantityFromU256(allocator, bfpg) else null,
         .withdrawalsRoot = if (resp.withdrawalsRoot) |wr| hashToRpc(wr) else null,
         .blobGasUsed = if (resp.blobGasUsed) |bgu| try quantityFromU64(allocator, bgu) else null,

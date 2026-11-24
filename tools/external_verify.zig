@@ -1350,7 +1350,10 @@ fn runHiveHeadForkchoice(allocator: std.mem.Allocator, engine_port: u16, path: [
     if (params != .array or params.array.items.len < 1) return VerifyError.InvalidFixture;
     const head_hash = try stringField(params.array.items[0], "headBlockHash");
 
-    const response_text = try waitForRpc(allocator, engine_port, body);
+    // The Engine listener enforces JWT auth; Hive signs with the same default secret.
+    const authorization = try zevm.rpc.server.engineJwtAuthorization(allocator, zevm.rpc.server.DEFAULT_ENGINE_JWT_SECRET, std.time.timestamp());
+    defer allocator.free(authorization);
+    const response_text = try waitForRpc(allocator, engine_port, body, authorization);
     defer allocator.free(response_text);
     var parsed_response = std.json.parseFromSlice(std.json.Value, allocator, response_text, .{
         .allocate = .alloc_always,
@@ -1440,7 +1443,7 @@ fn runRpcIoTest(allocator: std.mem.Allocator, port: u16, test_case: RpcIoTest) !
                 allocator.free(old_body);
                 response = null;
             }
-            response = try waitForRpc(allocator, port, message.data);
+            response = try waitForRpc(allocator, port, message.data, null);
         } else {
             const body = response orelse return VerifyError.InvalidFixture;
             if (test_case.speconly and !try jsonTextHasError(allocator, body)) {
@@ -2230,11 +2233,11 @@ fn hexBytes(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
     return out;
 }
 
-fn waitForRpc(allocator: std.mem.Allocator, port: u16, body: []const u8) ![]u8 {
+fn waitForRpc(allocator: std.mem.Allocator, port: u16, body: []const u8, authorization: ?[]const u8) ![]u8 {
     var attempt: usize = 0;
     var last_error: ?anyerror = null;
     while (attempt < 100) : (attempt += 1) {
-        if (sendRpcRequest(allocator, port, body)) |response| {
+        if (sendRpcRequest(allocator, port, body, authorization)) |response| {
             return response;
         } else |err| {
             last_error = err;
@@ -2253,11 +2256,15 @@ fn waitForRpc(allocator: std.mem.Allocator, port: u16, body: []const u8) ![]u8 {
     return VerifyError.RpcSmokeFailed;
 }
 
-fn sendRpcRequest(allocator: std.mem.Allocator, port: u16, body: []const u8) ![]u8 {
+fn sendRpcRequest(allocator: std.mem.Allocator, port: u16, body: []const u8, authorization: ?[]const u8) ![]u8 {
     var stream = try std.net.tcpConnectToHost(allocator, "127.0.0.1", port);
     defer stream.close();
 
-    const request = try std.fmt.allocPrint(
+    const request = if (authorization) |value| try std.fmt.allocPrint(
+        allocator,
+        "POST / HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\nAuthorization: {s}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}",
+        .{ port, value, body.len, body },
+    ) else try std.fmt.allocPrint(
         allocator,
         "POST / HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}",
         .{ port, body.len, body },

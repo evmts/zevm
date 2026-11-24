@@ -578,7 +578,7 @@ fn checkRpc(rt: *NodeRuntime, bytes: []const u8) !void {
     defer block_result.deinit(alloc);
     const header = (block_result.result orelse return error.MissingBlock).object;
     try t.expectEqual(block.header.difficulty, try parse.parseQuantityValue(u256, header.get("difficulty").?));
-    try t.expectEqual(block.total_difficulty orelse 0, try parse.parseQuantityValue(u256, header.get("totalDifficulty").?));
+    try t.expect(header.get("totalDifficulty") == null);
     var selected_receipts = try rpc(rt, "eth_getBlockReceipts", &.{block_arg});
     defer selected_receipts.deinit(alloc);
     const receipts = (selected_receipts.result orelse return error.MissingBlock).array.items;

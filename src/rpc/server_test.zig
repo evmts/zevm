@@ -655,6 +655,33 @@ test "engine JWT auth validates bearer signature and time drift" {
     ));
 }
 
+test "engine JWT client authorization is accepted by the engine listener validator" {
+    const now: i64 = 1_700_000_000;
+    const authorization = try server.engineJwtAuthorization(std.testing.allocator, server.DEFAULT_ENGINE_JWT_SECRET, now);
+    defer std.testing.allocator.free(authorization);
+
+    const token = try makeJwt(std.testing.allocator, server.DEFAULT_ENGINE_JWT_SECRET, now);
+    defer std.testing.allocator.free(token);
+    const expected = try std.fmt.allocPrint(std.testing.allocator, "Bearer {s}", .{token});
+    defer std.testing.allocator.free(expected);
+    try std.testing.expectEqualStrings(expected, authorization);
+
+    try std.testing.expect(try server.validateJwtAuthorizationForTest(
+        std.testing.allocator,
+        authorization,
+        server.DEFAULT_ENGINE_JWT_SECRET,
+        now,
+        server.DEFAULT_ENGINE_JWT_MAX_TIME_DRIFT_SECONDS,
+    ));
+    try std.testing.expect(!try server.validateJwtAuthorizationForTest(
+        std.testing.allocator,
+        authorization,
+        "wrongsecretwrongsecretwrongsecre",
+        now,
+        server.DEFAULT_ENGINE_JWT_MAX_TIME_DRIFT_SECONDS,
+    ));
+}
+
 test "engine JWT auth rejects incorrect secrets and malformed bearer values" {
     const now: i64 = 1_700_000_000;
     const token = try makeJwt(std.testing.allocator, "wrongsecret", now);

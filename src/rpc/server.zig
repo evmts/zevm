@@ -564,6 +564,28 @@ fn validateJwtAuthorization(
     return validateJwtToken(allocator, token, secret, now_seconds, max_time_drift_seconds);
 }
 
+/// Builds the `Authorization` header value an Engine API client sends:
+/// `Bearer <HS256 JWT>` whose payload carries only `iat`. Caller owns the result.
+pub fn engineJwtAuthorization(allocator: std.mem.Allocator, secret: []const u8, iat_seconds: i64) ![]u8 {
+    const encoder = std.base64.url_safe_no_pad.Encoder;
+    const header_json = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
+    var payload_buffer: [64]u8 = undefined;
+    const payload_json = try std.fmt.bufPrint(&payload_buffer, "{{\"iat\":{d}}}", .{iat_seconds});
+
+    const signing_input = try allocator.alloc(u8, encoder.calcSize(header_json.len) + 1 + encoder.calcSize(payload_json.len));
+    defer allocator.free(signing_input);
+    const header_segment = encoder.encode(signing_input, header_json);
+    signing_input[header_segment.len] = '.';
+    _ = encoder.encode(signing_input[header_segment.len + 1 ..], payload_json);
+
+    var signature: [HmacSha256.mac_length]u8 = undefined;
+    HmacSha256.create(&signature, signing_input, secret);
+    var signature_segment: [encoder.calcSize(HmacSha256.mac_length)]u8 = undefined;
+    _ = encoder.encode(&signature_segment, &signature);
+
+    return std.fmt.allocPrint(allocator, "Bearer {s}.{s}", .{ signing_input, signature_segment });
+}
+
 fn bearerToken(authorization: []const u8) ?[]const u8 {
     var parts = std.mem.tokenizeAny(u8, authorization, " \t");
     const scheme = parts.next() orelse return null;

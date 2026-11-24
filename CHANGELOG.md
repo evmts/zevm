@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Omit `totalDifficulty` from block responses to match the execution-apis `Block`
+  schema. Hive `ethereum/rpc-compat` requires an exact match and failed 11 block
+  transcripts on the extra field. The external verifier now signs its Engine API
+  `engine_forkchoiceUpdatedV3` request with the default JWT secret.
 - Record each Hardhat `console.log` call once when `eth_sendTransaction` omits `gas`.
   The gas estimate it ran first recorded every call a second time. The internal gas
   estimates of `eth_signTransaction` and `eth_createAccessList` now record nothing, so

@@ -146,7 +146,7 @@ test "handleGetBlockByNumber: returns genesis at earliest" {
     );
 }
 
-test "block responses: required difficulty quantities survive JSON serialization" {
+test "block responses: serialize difficulty and omit totalDifficulty like execution-apis" {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -155,7 +155,7 @@ test "block responses: required difficulty quantities survive JSON serialization
     defer state.deinit(allocator);
     var ctx = state.getCtx();
 
-    // Cover genesis, a post-merge zero-difficulty block, and stored PoW totals.
+    // Cover genesis, a post-merge zero-difficulty block, and a stored PoW total.
     for (0..3) |number| {
         if (number > 0) {
             const parent = try state.bc.getCanonicalHeadBlock();
@@ -174,7 +174,6 @@ test "block responses: required difficulty quantities survive JSON serialization
         }
         const block = try state.bc.getCanonicalHeadBlock();
         const expected_difficulty = try std.fmt.allocPrint(scratch, "0x{x}", .{block.header.difficulty});
-        const expected_total = try std.fmt.allocPrint(scratch, "0x{x}", .{block.total_difficulty orelse 0});
         const number_params = jsonrpc.eth.GetBlockByNumber.Params{
             .block = makeBlockSpec(try std.fmt.allocPrint(scratch, "0x{x}", .{number})),
             .hydrated_transactions = false,
@@ -186,19 +185,19 @@ test "block responses: required difficulty quantities survive JSON serialization
         const by_number = try block_query_handlers.handleGetBlockByNumber(scratch, &ctx, number_params);
         const by_hash = try block_query_handlers.handleGetBlockByHash(scratch, &ctx, hash_params);
         const wires = [_][]const u8{
-            try std.json.Stringify.valueAlloc(scratch, by_number.block.?, .{}),
-            try std.json.Stringify.valueAlloc(scratch, by_hash.block.?, .{}),
+            // Typed responses mark schema-optional fields (baseFeePerGas, totalDifficulty, ...) as null.
+            try std.json.Stringify.valueAlloc(scratch, by_number.block.?, .{ .emit_null_optional_fields = false }),
+            try std.json.Stringify.valueAlloc(scratch, by_hash.block.?, .{ .emit_null_optional_fields = false }),
             try std.json.Stringify.valueAlloc(scratch, try block_query_handlers.handleGetBlockByNumberValue(scratch, &ctx, number_params), .{}),
             try std.json.Stringify.valueAlloc(scratch, try block_query_handlers.handleGetBlockByHashValue(scratch, &ctx, hash_params), .{}),
         };
         for (wires) |wire| {
             const parsed = try std.json.parseFromSlice(std.json.Value, scratch, wire, .{});
             const difficulty = parsed.value.object.get("difficulty") orelse return error.MissingDifficulty;
-            const total = parsed.value.object.get("totalDifficulty") orelse return error.MissingTotalDifficulty;
             try std.testing.expect(difficulty == .string);
-            try std.testing.expect(total == .string);
             try std.testing.expectEqualStrings(expected_difficulty, difficulty.string);
-            try std.testing.expectEqualStrings(expected_total, total.string);
+            // Hive rpc-compat compares block objects exactly; the schema has no totalDifficulty.
+            try std.testing.expect(parsed.value.object.get("totalDifficulty") == null);
         }
     }
 }
