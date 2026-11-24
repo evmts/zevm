@@ -415,6 +415,28 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run_mid_forks.addArgs(args);
     b.step("verify-mid-forks", "Verify Berlin and Shanghai external state tests").dependOn(&run_mid_forks.step);
 
+    const external_verify_tests = b.addTest(.{ .root_module = external_verify_exe.root_module });
+    external_verify_tests.step.dependOn(&modules.voltaire_rust_crypto.step);
+    linkRustSupport(external_verify_tests, target);
+    const run_external_verify_tests = b.addRunArtifact(external_verify_tests);
+    run_external_verify_tests.step.dependOn(launch_policy_preflight_step);
+    test_step.dependOn(&run_external_verify_tests.step);
+    const external_verify_test_step = b.step("test-external-verify", "Run external verification runner unit tests");
+    external_verify_test_step.dependOn(&run_external_verify_tests.step);
+
+    // Cancun/Prague GeneralStateTests report from the pinned ethereum/tests
+    // archive, gated by tools/latest_fork_state_baseline.json.
+    const run_latest_fork_state = b.addRunArtifact(external_verify_exe);
+    run_latest_fork_state.step.dependOn(launch_policy_preflight_step);
+    run_latest_fork_state.addDirectoryArg(b.path("."));
+    run_latest_fork_state.addArtifactArg(exe);
+    run_latest_fork_state.addArg("--latest-fork-state");
+    if (b.args) |args| {
+        run_latest_fork_state.addArgs(args);
+    }
+    const latest_fork_state_step = b.step("verify-latest-state", "Run Cancun and Prague GeneralStateTests and check per-category pass floors");
+    latest_fork_state_step.dependOn(&run_latest_fork_state.step);
+
     const verify_fast_step = b.step("verify-fast", "Run fast local verification");
     verify_fast_step.dependOn(test_step);
 

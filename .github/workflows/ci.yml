@@ -273,6 +273,10 @@ jobs:
         working-directory: zevm
         run: zig build verify
 
+      - name: Latest-fork state tests (Cancun and Prague)
+        working-directory: zevm
+        run: zig build verify-latest-state -Doptimize=ReleaseFast
+
       - name: Dirty worktree preflight
         working-directory: zevm
         run: git diff --exit-code -- .

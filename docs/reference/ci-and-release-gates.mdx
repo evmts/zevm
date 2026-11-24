@@ -74,6 +74,7 @@ Tag pushes, manual dispatches, and the weekly scheduled workflow run the officia
 zig build verify-mid-forks
 zig build qualification-check -- --require-covered
 zig build verify
+zig build verify-latest-state -Doptimize=ReleaseFast
 ```
 
 With the pinned `lib/ethereum-tests/LegacyTests` submodule initialized, `zig build verify-mid-forks` runs Berlin and Shanghai post-states through the shared legacy state-test verifier. It checks state roots, log hashes, and expected transaction rejections. The pinned Cancun archive includes gas-cost and access-list fixtures plus the Shanghai warm-coinbase, PUSH0, and initcode suites. The fixture's `post` key selects the execution fork.
@@ -88,7 +89,7 @@ zig build verify-mid-forks -- --match=creationTxInitCodeSizeLimit
 
 EIP-4895 withdrawals are block-level operations. GeneralStateTests supplies a single transaction and has no withdrawals list. The block builder tests cover withdrawal credits and roots.
 
-This is the required CI path for release-candidate confidence. It currently verifies the active official suite coverage encoded in `tools/external_verify.zig`; it is not a claim that every Hive simulator or every Ethereum fixture directory is already fully active.
+This is the required CI path for release-candidate confidence. It currently verifies the active official suite coverage encoded in `tools/external_verify.zig`; it is not a claim that every Hive simulator or every Ethereum fixture directory is already fully active. `zig build verify-latest-state` runs every Cancun and Prague `GeneralStateTests` case, reports per-fork and per-category counts, and fails when a category drops below `tools/latest_fork_state_baseline.json`. See [Latest-Fork State Tests](../latest-fork-state-tests/).
 
 Those same tag, manual, and scheduled workflows also run the Hive RPC compat smoke job described below. Main branch pushes, manual dispatches, and weekly schedules also run the `Coverage-Guided Fuzzing` job on `ubuntu-latest` (`bash tools/fuzz_ubuntu.sh --local --optimize ReleaseSafe --seconds 15 --jobs 4`), which first runs `zig build fuzz -Doptimize=ReleaseSafe` at full trial counts and then drives every native `std.testing.fuzz` target with `--fuzz`.
 

@@ -19,6 +19,7 @@ const VerifyError = error{
     UnexpectedTransactionResult,
     UnexpectedRpcResponse,
     RpcSmokeFailed,
+    LatestForkStateRegression,
 };
 
 const execution_spec_state_fixture_paths = [_][]const u8{
@@ -95,6 +96,9 @@ const VerifyOptions = struct {
     match: ?[]const u8 = null,
     extra_legacy_state_dir: ?[]const u8 = null,
     dump_state_on_mismatch: bool = false,
+    latest_fork_state: bool = false,
+    latest_fork_state_archive: []const u8 = latest_fork_state_archive_path,
+    latest_fork_state_baseline: []const u8 = latest_fork_state_baseline_path,
 };
 
 const ProgressState = struct {
@@ -271,6 +275,12 @@ fn parseVerifyOptions(allocator: std.mem.Allocator, args: []const []const u8) !V
             options.extra_legacy_state_dir = arg["--legacy-state-dir=".len..];
         } else if (std.mem.eql(u8, arg, "--dump-state-on-mismatch")) {
             options.dump_state_on_mismatch = true;
+        } else if (std.mem.eql(u8, arg, "--latest-fork-state")) {
+            options.latest_fork_state = true;
+        } else if (std.mem.startsWith(u8, arg, "--latest-fork-state-archive=")) {
+            options.latest_fork_state_archive = arg["--latest-fork-state-archive=".len..];
+        } else if (std.mem.startsWith(u8, arg, "--latest-fork-state-baseline=")) {
+            options.latest_fork_state_baseline = arg["--latest-fork-state-baseline=".len..];
         } else {
             return VerifyError.InvalidArgument;
         }
@@ -416,7 +426,9 @@ pub fn main() !void {
     defer watchdog.join();
     defer progress.done.store(true, .release);
 
-    const verification = if (std.mem.eql(u8, args[2], "--early-state"))
+    const verification = if (options.latest_fork_state)
+        runLatestForkStateReport(allocator, repo_root, &ctx)
+    else if (std.mem.eql(u8, args[2], "--early-state"))
         runEarlyStateFixtures(allocator, repo_root, &ctx)
     else if (ctx.mid_forks_only)
         runMidForkStateFixtures(allocator, repo_root, &ctx)
@@ -769,7 +781,7 @@ fn runLegacyStateFixture(
             defer allocator.free(task_label);
             if (ctx.claimTask(task_label)) |task_id| {
                 const started_ns = ctx.startTask(task_id, suite, task_label);
-                runLegacyStatePostCase(allocator, fixture, post_case, hardfork, ctx.options.dump_state_on_mismatch) catch |err| {
+                runLegacyStatePostCase(allocator, fixture, post_case, hardfork, ctx.options.dump_state_on_mismatch, .exact) catch |err| {
                     ctx.state_counts.getPtr(hardfork).failed += 1;
                     ctx.failTask(task_id, suite, task_label, started_ns, err);
                     if (count) |c| {
@@ -794,6 +806,7 @@ fn runLegacyStatePostCase(
     post_case: std.json.Value,
     hardfork: guillotine_mini.Hardfork,
     dump_state_on_mismatch: bool,
+    exception_match: ExceptionMatch,
 ) !void {
     var arena = std.heap.ArenaAllocator.init(parent_allocator);
     defer arena.deinit();
@@ -820,7 +833,7 @@ fn runLegacyStatePostCase(
     );
 
     if (post_case.object.get("expectException")) |expected_exception| {
-        try expectFixtureTxError(allocator, expected_exception, receipt_result);
+        try expectFixtureTxError(allocator, expected_exception, receipt_result, exception_match);
         try assertLegacyStateRoot(allocator, &sm, hardfork, block_ctx.block_coinbase, try field(fixture, "pre"), post_case, indexes, dump_state_on_mismatch);
         try assertLegacyLogsHash(allocator, &.{}, post_case);
         return;
@@ -831,6 +844,284 @@ fn runLegacyStatePostCase(
 
     try assertLegacyStateRoot(allocator, &sm, hardfork, block_ctx.block_coinbase, try field(fixture, "pre"), post_case, indexes, dump_state_on_mismatch);
     try assertLegacyLogsHash(allocator, receipt.logs, post_case);
+}
+
+// ---------------------------------------------------------------------------
+// Latest-fork state report (Cancun and Prague GeneralStateTests).
+//
+// Source: `fixtures_general_state_tests.tgz` in the pinned `ethereum/tests`
+// submodule, read in place without extraction. Every Cancun and Prague post
+// case is classified as passed, failed, or unsupported and tallied per fork
+// and per category (the directory below `GeneralStateTests/`). Failures do
+// not stop the run. A full run then compares the tallies against the
+// committed floor in `latest_fork_state_baseline_path`. See
+// docs/specs/latest-fork-state-tests.md for the fixture source strategy.
+// ---------------------------------------------------------------------------
+
+const latest_fork_state_archive_path = "lib/ethereum-tests/fixtures_general_state_tests.tgz";
+const latest_fork_state_baseline_path = "tools/latest_fork_state_baseline.json";
+const latest_fork_state_forks = [_][]const u8{ "Cancun", "Prague" };
+const latest_fork_state_max_fixture_bytes = 256 * 1024 * 1024;
+
+const LatestForkStateUnsupportedCategory = struct {
+    category: []const u8,
+    reason: []const u8,
+};
+
+/// Categories ZEVM's state runner does not execute. Every case in them is
+/// counted as `unsupported` with this reason; nothing is skipped silently.
+const latest_fork_state_unsupported_categories = [_]LatestForkStateUnsupportedCategory{};
+
+const LatestForkStateTally = struct {
+    fork: []const u8,
+    category: []const u8,
+    passed: usize = 0,
+    failed: usize = 0,
+    unsupported: usize = 0,
+};
+
+const LatestForkStateReport = struct {
+    tallies: std.StringArrayHashMapUnmanaged(LatestForkStateTally) = .empty,
+    other_fork_cases: usize = 0,
+
+    fn deinit(self: *LatestForkStateReport, allocator: std.mem.Allocator) void {
+        for (self.tallies.keys(), self.tallies.values()) |key, entry| {
+            allocator.free(key);
+            allocator.free(entry.category);
+        }
+        self.tallies.deinit(allocator);
+    }
+
+    fn tally(self: *LatestForkStateReport, allocator: std.mem.Allocator, fork: []const u8, category: []const u8) !*LatestForkStateTally {
+        const fork_name = latestForkStateForkName(fork) orelse return VerifyError.InvalidFixture;
+        const key = try std.fmt.allocPrint(allocator, "{s}|{s}", .{ fork_name, category });
+        const entry = self.tallies.getOrPut(allocator, key) catch |err| {
+            allocator.free(key);
+            return err;
+        };
+        if (entry.found_existing) {
+            allocator.free(key);
+        } else {
+            errdefer {
+                _ = self.tallies.pop();
+                allocator.free(key);
+            }
+            entry.value_ptr.* = .{ .fork = fork_name, .category = try allocator.dupe(u8, category) };
+        }
+        return entry.value_ptr;
+    }
+
+    fn get(self: *const LatestForkStateReport, allocator: std.mem.Allocator, fork: []const u8, category: []const u8) !?LatestForkStateTally {
+        const key = try std.fmt.allocPrint(allocator, "{s}|{s}", .{ fork, category });
+        defer allocator.free(key);
+        return self.tallies.get(key);
+    }
+
+    fn sort(self: *LatestForkStateReport) void {
+        const Context = struct {
+            keys: []const []const u8,
+            pub fn lessThan(ctx: @This(), a: usize, b: usize) bool {
+                return std.mem.lessThan(u8, ctx.keys[a], ctx.keys[b]);
+            }
+        };
+        self.tallies.sort(Context{ .keys = self.tallies.keys() });
+    }
+};
+
+/// Canonical fork name when `name` is one of `latest_fork_state_forks`.
+fn latestForkStateForkName(name: []const u8) ?[]const u8 {
+    for (latest_fork_state_forks) |fork| {
+        if (std.mem.eql(u8, fork, name)) return fork;
+    }
+    return null;
+}
+
+/// Category for an archive member: its directory below `GeneralStateTests/`,
+/// for example `Cancun/stEIP4844-blobtransactions` or `stCreate2`. Returns
+/// null for non-fixture members (directories, `.meta`, non-JSON files).
+fn latestForkStateCategory(member_name: []const u8) ?[]const u8 {
+    const marker = "GeneralStateTests/";
+    if (!std.mem.endsWith(u8, member_name, ".json")) return null;
+    const start = (std.mem.indexOf(u8, member_name, marker) orelse return null) + marker.len;
+    const relative = member_name[start..];
+    const slash = std.mem.lastIndexOfScalar(u8, relative, '/') orelse return null;
+    const category = relative[0..slash];
+    if (category.len == 0 or category[0] == '.') return null;
+    return category;
+}
+
+fn latestForkStateUnsupportedReason(category: []const u8) ?[]const u8 {
+    for (latest_fork_state_unsupported_categories) |entry| {
+        if (std.mem.eql(u8, entry.category, category)) return entry.reason;
+    }
+    return null;
+}
+
+fn runLatestForkStateReport(allocator: std.mem.Allocator, repo_root: []const u8, ctx: *VerifyContext) !void {
+    const archive_path = try resolveRepoPath(allocator, repo_root, ctx.options.latest_fork_state_archive);
+    defer allocator.free(archive_path);
+    std.debug.print("latest-fork-state: archive=\"{s}\" forks=Cancun,Prague\n", .{ctx.options.latest_fork_state_archive});
+
+    var report = LatestForkStateReport{};
+    defer report.deinit(allocator);
+
+    var file = try std.fs.openFileAbsolute(archive_path, .{});
+    defer file.close();
+    var file_buffer: [64 * 1024]u8 = undefined;
+    var file_reader = file.reader(&file_buffer);
+    const window = try allocator.alloc(u8, std.compress.flate.max_window_len);
+    defer allocator.free(window);
+    var decompress = std.compress.flate.Decompress.init(&file_reader.interface, .gzip, window);
+    var file_name_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    var link_name_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    var it = std.tar.Iterator.init(&decompress.reader, .{
+        .file_name_buffer = &file_name_buffer,
+        .link_name_buffer = &link_name_buffer,
+    });
+
+    var fixture_files: usize = 0;
+    while (try it.next()) |member| {
+        if (member.kind != .file) continue;
+        const category = latestForkStateCategory(member.name) orelse continue;
+        if (member.size > latest_fork_state_max_fixture_bytes) return VerifyError.InvalidFixture;
+
+        var contents: std.Io.Writer.Allocating = .init(allocator);
+        defer contents.deinit();
+        try it.streamRemaining(member, &contents.writer);
+
+        const label_path = try allocator.dupe(u8, member.name);
+        defer allocator.free(label_path);
+        const category_owned = try allocator.dupe(u8, category);
+        defer allocator.free(category_owned);
+
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, contents.written(), .{ .allocate = .alloc_always });
+        defer parsed.deinit();
+        if (parsed.value != .object) return VerifyError.InvalidFixture;
+        fixture_files += 1;
+
+        var fixture_it = parsed.value.object.iterator();
+        while (fixture_it.next()) |entry| {
+            try runLatestForkStateFixture(allocator, &report, entry.value_ptr.*, label_path, category_owned, entry.key_ptr.*, ctx);
+        }
+    }
+    if (fixture_files == 0) return VerifyError.InvalidFixture;
+
+    report.sort();
+    printLatestForkStateReport(&report);
+
+    const full_run = ctx.options.match == null and ctx.options.shard_total == 1;
+    if (!full_run) {
+        std.debug.print("latest-fork-state: baseline check skipped for a filtered or sharded run\n", .{});
+        return;
+    }
+    const baseline_path = try resolveRepoPath(allocator, repo_root, ctx.options.latest_fork_state_baseline);
+    defer allocator.free(baseline_path);
+    var baseline = try readJson(allocator, baseline_path);
+    defer baseline.deinit();
+    const regressions = try checkLatestForkStateBaseline(allocator, &report, baseline.value, true);
+    if (regressions != 0) {
+        std.debug.print("latest-fork-state: {d} categories fell below {s}\n", .{ regressions, ctx.options.latest_fork_state_baseline });
+        return VerifyError.LatestForkStateRegression;
+    }
+    std.debug.print("latest-fork-state: baseline ok ({s})\n", .{ctx.options.latest_fork_state_baseline});
+}
+
+fn runLatestForkStateFixture(
+    allocator: std.mem.Allocator,
+    report: *LatestForkStateReport,
+    fixture: std.json.Value,
+    label_path: []const u8,
+    category: []const u8,
+    fixture_name: []const u8,
+    ctx: *VerifyContext,
+) !void {
+    const post_by_fork = try field(fixture, "post");
+    if (post_by_fork != .object) return VerifyError.InvalidFixture;
+    var fork_it = post_by_fork.object.iterator();
+    while (fork_it.next()) |fork_entry| {
+        const fork_key = fork_entry.key_ptr.*;
+        const post_cases = fork_entry.value_ptr.*;
+        if (post_cases != .array) return VerifyError.InvalidFixture;
+        if (latestForkStateForkName(fork_key) == null) {
+            report.other_fork_cases += post_cases.array.items.len;
+            continue;
+        }
+        const hardfork = try hardforkFromFixtureName(fork_key);
+
+        for (post_cases.array.items, 0..) |post_case, post_index| {
+            const task_label = try std.fmt.allocPrint(allocator, "{s} :: {s} :: {s} post={d}", .{ label_path, fixture_name, fork_key, post_index });
+            defer allocator.free(task_label);
+            const task_id = ctx.claimTask(task_label) orelse continue;
+            const tally = try report.tally(allocator, fork_key, category);
+
+            if (latestForkStateUnsupportedReason(category)) |reason| {
+                tally.unsupported += 1;
+                ctx.skipTask(task_id, "latest-fork-state", task_label, reason);
+                continue;
+            }
+
+            const started_ns = ctx.startTask(task_id, "latest-fork-state", task_label);
+            if (runLegacyStatePostCase(allocator, fixture, post_case, hardfork, ctx.options.dump_state_on_mismatch, .any_rejection)) {
+                tally.passed += 1;
+                ctx.finishTask(task_id, "latest-fork-state", started_ns);
+            } else |err| {
+                if (err == error.OutOfMemory) return err;
+                tally.failed += 1;
+                _ = ctx.progress.failed.fetchAdd(1, .monotonic);
+                ctx.progress.clearCurrentTask();
+                std.debug.print("latest-fork-state: FAIL #{d} fixture=\"{s}\" error={s}\n", .{ task_id, task_label, @errorName(err) });
+            }
+        }
+    }
+}
+
+fn printLatestForkStateReport(report: *const LatestForkStateReport) void {
+    for (latest_fork_state_forks) |fork| {
+        var passed: usize = 0;
+        var failed: usize = 0;
+        var unsupported: usize = 0;
+        for (report.tallies.values()) |tally| {
+            if (!std.mem.eql(u8, tally.fork, fork)) continue;
+            std.debug.print("latest-fork-state: fork={s} category={s} passed={d} failed={d} unsupported={d}\n", .{ fork, tally.category, tally.passed, tally.failed, tally.unsupported });
+            passed += tally.passed;
+            failed += tally.failed;
+            unsupported += tally.unsupported;
+        }
+        std.debug.print("latest-fork-state: fork={s} total passed={d} failed={d} unsupported={d}\n", .{ fork, passed, failed, unsupported });
+    }
+    for (latest_fork_state_unsupported_categories) |entry| {
+        std.debug.print("latest-fork-state: unsupported category={s} reason=\"{s}\"\n", .{ entry.category, entry.reason });
+    }
+    std.debug.print("latest-fork-state: other_fork_cases={d}\n", .{report.other_fork_cases});
+}
+
+/// Compares `report` with a baseline of the form
+/// `{"minimumPassed": {"<fork>": {"<category>": <count>}}}` and returns the
+/// number of categories whose pass count fell below its floor. A baseline
+/// category missing from the report counts as a regression.
+fn checkLatestForkStateBaseline(
+    allocator: std.mem.Allocator,
+    report: *const LatestForkStateReport,
+    baseline: std.json.Value,
+    log: bool,
+) !usize {
+    const minimum_passed = try field(baseline, "minimumPassed");
+    if (minimum_passed != .object) return VerifyError.InvalidFixture;
+    var regressions: usize = 0;
+    var fork_it = minimum_passed.object.iterator();
+    while (fork_it.next()) |fork_entry| {
+        if (fork_entry.value_ptr.* != .object) return VerifyError.InvalidFixture;
+        var category_it = fork_entry.value_ptr.object.iterator();
+        while (category_it.next()) |category_entry| {
+            const floor = std.math.cast(usize, try parseQuantity(category_entry.value_ptr.*)) orelse return VerifyError.InvalidQuantity;
+            const actual = if (try report.get(allocator, fork_entry.key_ptr.*, category_entry.key_ptr.*)) |tally| tally.passed else 0;
+            if (actual < floor) {
+                regressions += 1;
+                if (log) std.debug.print("latest-fork-state: REGRESSION fork={s} category={s} passed={d} baseline={d}\n", .{ fork_entry.key_ptr.*, category_entry.key_ptr.*, actual, floor });
+            }
+        }
+    }
+    return regressions;
 }
 
 fn assertLegacyStateRoot(
@@ -1626,6 +1917,8 @@ const FixtureTx = struct {
         if (self.options.access_list) |access_list| {
             freeAccessList(allocator, access_list);
         }
+        if (self.options.blob_versioned_hashes) |hashes| allocator.free(hashes);
+        if (self.options.authorization_list) |authorizations| allocator.free(authorizations);
     }
 };
 
@@ -1662,14 +1955,31 @@ fn legacyTxFromFixtureCase(allocator: std.mem.Allocator, fixture: std.json.Value
     else
         null;
 
+    const blob_versioned_hashes = try blobVersionedHashesFromTransaction(allocator, transaction);
+    errdefer if (blob_versioned_hashes) |hashes| allocator.free(hashes);
+    const max_fee_per_blob_gas: ?u256 = if (transaction.object.get("maxFeePerBlobGas")) |blob_fee_value|
+        try parseQuantity(blob_fee_value)
+    else
+        null;
+    const authorization_list = try authorizationListFromTransaction(allocator, transaction);
+    errdefer if (authorization_list) |authorizations| allocator.free(authorizations);
+
     const to_text = try stringField(transaction, "to");
     const to = if (to_text.len == 0) null else try parseAddressText(to_text);
-    const receipt_type: primitives.Receipt.TransactionType = if (transaction.object.get("maxFeePerGas") != null)
+    const receipt_type: primitives.Receipt.TransactionType = if (authorization_list != null)
+        .eip7702
+    else if (blob_versioned_hashes != null)
+        .eip4844
+    else if (transaction.object.get("maxFeePerGas") != null)
         .eip1559
     else if (access_list != null)
         .eip2930
     else
         .legacy;
+    const blob_gas_used: ?u256 = if (blob_versioned_hashes) |hashes|
+        @as(u256, hashes.len) * zevm.blob_fee.GAS_PER_BLOB
+    else
+        null;
 
     return .{
         .sender = sender,
@@ -1689,8 +1999,50 @@ fn legacyTxFromFixtureCase(allocator: std.mem.Allocator, fixture: std.json.Value
             .receipt_type = receipt_type,
             .max_fee_per_gas = max_fee_per_gas,
             .max_priority_fee_per_gas = max_priority_fee_per_gas,
+            .authorization_list = authorization_list,
+            .blob_gas_used = blob_gas_used,
+            .max_fee_per_blob_gas = max_fee_per_blob_gas,
+            .blob_versioned_hashes = blob_versioned_hashes,
         },
     };
+}
+
+fn blobVersionedHashesFromTransaction(allocator: std.mem.Allocator, transaction: std.json.Value) !?[]const [32]u8 {
+    const hashes_value = transaction.object.get("blobVersionedHashes") orelse return null;
+    if (hashes_value != .array) return VerifyError.InvalidFixture;
+    const hashes = try allocator.alloc([32]u8, hashes_value.array.items.len);
+    errdefer allocator.free(hashes);
+    for (hashes_value.array.items, 0..) |hash_value, i| {
+        hashes[i] = try parseHashValue(hash_value);
+    }
+    return hashes;
+}
+
+/// EIP-7702 authorization tuples. Out-of-range `chainId`, `nonce`, and `v`
+/// values saturate to `maxInt(u64)`: each saturated value is still invalid
+/// for the same reason, so ZEVM skips the tuple exactly as it would the
+/// original. The fixture's `signer` hint is ignored; ZEVM recovers it.
+fn authorizationListFromTransaction(allocator: std.mem.Allocator, transaction: std.json.Value) !?[]const primitives.Authorization.Authorization {
+    const list_value = transaction.object.get("authorizationList") orelse return null;
+    if (list_value != .array) return VerifyError.InvalidFixture;
+    const authorizations = try allocator.alloc(primitives.Authorization.Authorization, list_value.array.items.len);
+    errdefer allocator.free(authorizations);
+    for (list_value.array.items, 0..) |item, i| {
+        const y_parity = item.object.get("v") orelse try field(item, "yParity");
+        authorizations[i] = .{
+            .chain_id = saturatingU64(try parseQuantity(try field(item, "chainId"))),
+            .address = try parseAddressValue(try field(item, "address")),
+            .nonce = saturatingU64(try parseQuantity(try field(item, "nonce"))),
+            .v = saturatingU64(try parseQuantity(y_parity)),
+            .r = std.mem.toBytes(std.mem.nativeToBig(u256, try parseQuantity(try field(item, "r")))),
+            .s = std.mem.toBytes(std.mem.nativeToBig(u256, try parseQuantity(try field(item, "s")))),
+        };
+    }
+    return authorizations;
+}
+
+fn saturatingU64(value: u256) u64 {
+    return std.math.cast(u64, value) orelse std.math.maxInt(u64);
 }
 
 fn effectiveGasPriceFromFixture(fixture: std.json.Value, transaction: std.json.Value) !u256 {
@@ -1835,8 +2187,18 @@ fn blockContextFromFixture(fixture: std.json.Value, hardfork: guillotine_mini.Ha
         .block_coinbase = try parseAddressValue(try field(env, "currentCoinbase")),
         .block_gas_limit = std.math.cast(u64, try parseQuantity(try field(env, "currentGasLimit"))) orelse return VerifyError.InvalidQuantity,
         .block_base_fee = base_fee,
-        .blob_base_fee = 0,
+        .blob_base_fee = try blobBaseFeeFromFixtureEnv(env, hardfork),
     };
+}
+
+/// EIP-4844 blob base fee for a state-test `env`. Uses the mainnet blob
+/// schedule of the fixture fork; pre-Cancun forks have no blob fee.
+fn blobBaseFeeFromFixtureEnv(env: std.json.Value, hardfork: guillotine_mini.Hardfork) !u256 {
+    const excess_value = env.object.get("currentExcessBlobGas") orelse return 0;
+    const excess = std.math.cast(u64, try parseQuantity(excess_value)) orelse return VerifyError.InvalidQuantity;
+    const timestamp = std.math.cast(u64, try parseQuantity(try field(env, "currentTimestamp"))) orelse return VerifyError.InvalidQuantity;
+    const params = zevm.blob_fee.blobParamsForFork(zevm.hardfork_schedule.MAINNET_CHAIN_CONFIG, hardfork, timestamp);
+    return params.baseFee(excess);
 }
 
 fn assertState(allocator: std.mem.Allocator, sm: *state_manager.StateManager, expected_state: std.json.Value) !void {
@@ -2124,17 +2486,28 @@ fn expectFixtureTxError(
     allocator: std.mem.Allocator,
     expected_exception: std.json.Value,
     actual: zevm.tx_processor.TxError!primitives.Receipt.Receipt,
+    exception_match: ExceptionMatch,
 ) !void {
     if (expected_exception != .string) return VerifyError.InvalidFixture;
-    const expected = txErrorFromFixtureException(expected_exception.string) orelse return VerifyError.InvalidFixture;
+    const expected = txErrorFromFixtureException(expected_exception.string);
+    if (expected == null and exception_match == .exact) return VerifyError.InvalidFixture;
     if (actual) |receipt| {
         var owned_receipt = receipt;
         owned_receipt.deinit(allocator);
         return VerifyError.UnexpectedTransactionResult;
     } else |err| {
-        if (err != expected) return VerifyError.UnexpectedTransactionResult;
+        if (expected) |expected_err| {
+            if (err != expected_err) return VerifyError.UnexpectedTransactionResult;
+        }
     }
 }
+
+/// How a fixture's `expectException` is compared with ZEVM's rejection.
+/// `.exact` requires a mapped exception name and the matching `TxError`.
+/// `.any_rejection` also accepts any rejection for exception names that have
+/// no `TxError` mapping (for example EEST `TransactionException.*` names);
+/// the post-state root check still applies.
+const ExceptionMatch = enum { exact, any_rejection };
 
 fn txErrorFromFixtureException(name: []const u8) ?zevm.tx_processor.TxError {
     if (std.ascii.eqlIgnoreCase(name, "SenderNotEOA")) return zevm.tx_processor.TxError.SenderNotEOA;
@@ -2319,4 +2692,106 @@ fn parseHttpContentLength(headers: []const u8) ?usize {
         return std.fmt.parseInt(usize, value, 10) catch null;
     }
     return null;
+}
+
+fn parseTestJson(allocator: std.mem.Allocator, text: []const u8) !std.json.Parsed(std.json.Value) {
+    return std.json.parseFromSlice(std.json.Value, allocator, text, .{ .allocate = .alloc_always });
+}
+
+test "latest-fork state categories come from the directory below GeneralStateTests" {
+    try std.testing.expectEqualStrings("stCreate2", latestForkStateCategory("GeneralStateTests/stCreate2/create2collisionBalance.json").?);
+    try std.testing.expectEqualStrings("Cancun/stEIP4844-blobtransactions", latestForkStateCategory("./GeneralStateTests/Cancun/stEIP4844-blobtransactions/blobhashListBounds3.json").?);
+    try std.testing.expectEqualStrings("VMTests/vmArithmeticTest", latestForkStateCategory("GeneralStateTests/VMTests/vmArithmeticTest/add.json").?);
+    try std.testing.expect(latestForkStateCategory("GeneralStateTests/.meta/meta.json") == null);
+    try std.testing.expect(latestForkStateCategory("GeneralStateTests/stCreate2/") == null);
+    try std.testing.expect(latestForkStateCategory("GeneralStateTests/top.json") == null);
+    try std.testing.expect(latestForkStateForkName("Prague") != null);
+    try std.testing.expect(latestForkStateForkName("Cancun") != null);
+    try std.testing.expect(latestForkStateForkName("Shanghai") == null);
+    try std.testing.expectEqual(guillotine_mini.Hardfork.PRAGUE, try hardforkFromFixtureName("Prague"));
+}
+
+test "state fixture blob transactions map to EIP-4844 options" {
+    const allocator = std.testing.allocator;
+    var parsed = try parseTestJson(allocator,
+        \\{"env":{"currentCoinbase":"0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba","currentGasLimit":"0x016345785d8a0000","currentNumber":"0x01","currentTimestamp":"0x03e8","currentBaseFee":"0x07","currentExcessBlobGas":"0x00"},
+        \\ "pre":{},
+        \\ "transaction":{"nonce":"0x00","maxFeePerGas":"0x0a","maxPriorityFeePerGas":"0x01","maxFeePerBlobGas":"0x64",
+        \\  "gasLimit":["0x0186a0"],"to":"0x0000000000000000000000000000000000001000","value":["0x00"],"data":["0x"],
+        \\  "accessLists":[[]],"sender":"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b",
+        \\  "blobVersionedHashes":["0x0100000000000000000000000000000000000000000000000000000000000000","0x0100000000000000000000000000000000000000000000000000000000000001"]}}
+    );
+    defer parsed.deinit();
+
+    const tx = try legacyTxFromFixtureCase(allocator, parsed.value, .{});
+    defer tx.deinit(allocator);
+    try std.testing.expectEqual(primitives.Receipt.TransactionType.eip4844, tx.options.receipt_type);
+    try std.testing.expectEqual(@as(usize, 2), tx.options.blob_versioned_hashes.?.len);
+    try std.testing.expectEqual(@as(u8, 0x01), tx.options.blob_versioned_hashes.?[1][31]);
+    try std.testing.expectEqual(@as(u256, 2 * zevm.blob_fee.GAS_PER_BLOB), tx.options.blob_gas_used.?);
+    try std.testing.expectEqual(@as(u256, 100), tx.options.max_fee_per_blob_gas.?);
+
+    const cancun_ctx = try blockContextFromFixture(parsed.value, .CANCUN);
+    try std.testing.expectEqual(@as(u256, 1), cancun_ctx.blob_base_fee);
+    const shanghai_ctx = try blockContextFromFixture(parsed.value, .SHANGHAI);
+    try std.testing.expectEqual(@as(u256, 0), shanghai_ctx.blob_base_fee);
+}
+
+test "state fixture authorization lists map to EIP-7702 options" {
+    const allocator = std.testing.allocator;
+    var parsed = try parseTestJson(allocator,
+        \\{"env":{"currentBaseFee":"0x07"},"pre":{},
+        \\ "transaction":{"nonce":"0x00","maxFeePerGas":"0x0a","maxPriorityFeePerGas":"0x01",
+        \\  "gasLimit":["0x0186a0"],"to":"0x0000000000000000000000000000000000001000","value":["0x00"],"data":["0x"],
+        \\  "sender":"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b",
+        \\  "authorizationList":[
+        \\   {"chainId":"0x01","address":"0x0000000000000000000000000000000000002000","nonce":"0x00","v":"0x01","r":"0x02","s":"0x03","signer":"0x8a0a19589531694250d570040a0c4b74576919b8"},
+        \\   {"chainId":"0x010000000000000000","address":"0x0000000000000000000000000000000000002000","nonce":"0xffffffffffffffff","yParity":"0x00","r":"0x01","s":"0x01"}]}}
+    );
+    defer parsed.deinit();
+
+    const tx = try legacyTxFromFixtureCase(allocator, parsed.value, .{});
+    defer tx.deinit(allocator);
+    try std.testing.expectEqual(primitives.Receipt.TransactionType.eip7702, tx.options.receipt_type);
+    const authorizations = tx.options.authorization_list.?;
+    try std.testing.expectEqual(@as(usize, 2), authorizations.len);
+    try std.testing.expectEqual(@as(u64, 1), authorizations[0].chain_id);
+    try std.testing.expectEqual(@as(u64, 1), authorizations[0].v);
+    try std.testing.expectEqual(@as(u8, 0x02), authorizations[0].r[31]);
+    try std.testing.expectEqual(@as(u8, 0x03), authorizations[0].s[31]);
+    try std.testing.expectEqual(std.math.maxInt(u64), authorizations[1].chain_id);
+    try std.testing.expectEqual(std.math.maxInt(u64), authorizations[1].nonce);
+}
+
+test "unmapped expectException names accept any rejection only in any_rejection mode" {
+    const allocator = std.testing.allocator;
+    const rejected: zevm.tx_processor.TxError!primitives.Receipt.Receipt = zevm.tx_processor.TxError.TooManyBlobs;
+    const unmapped = std.json.Value{ .string = "TransactionException.TYPE_3_TX_MAX_BLOB_GAS_ALLOWANCE_EXCEEDED" };
+    try expectFixtureTxError(allocator, unmapped, rejected, .any_rejection);
+    try std.testing.expectError(VerifyError.InvalidFixture, expectFixtureTxError(allocator, unmapped, rejected, .exact));
+    const mapped = std.json.Value{ .string = "TR_NoFunds" };
+    try std.testing.expectError(VerifyError.UnexpectedTransactionResult, expectFixtureTxError(allocator, mapped, rejected, .any_rejection));
+}
+
+test "latest-fork state baseline flags categories below their floor" {
+    const allocator = std.testing.allocator;
+    var report = LatestForkStateReport{};
+    defer report.deinit(allocator);
+    (try report.tally(allocator, "Prague", "stCreate2")).passed = 5;
+    (try report.tally(allocator, "Cancun", "stCreate2")).passed = 3;
+    (try report.tally(allocator, "Prague", "stCreate2")).failed += 1;
+    try std.testing.expectEqual(@as(usize, 2), report.tallies.count());
+    try std.testing.expectEqual(@as(usize, 1), (try report.get(allocator, "Prague", "stCreate2")).?.failed);
+
+    var ok = try parseTestJson(allocator,
+        \\{"minimumPassed":{"Prague":{"stCreate2":5},"Cancun":{"stCreate2":3}}}
+    );
+    defer ok.deinit();
+    try std.testing.expectEqual(@as(usize, 0), try checkLatestForkStateBaseline(allocator, &report, ok.value, false));
+
+    var regressed = try parseTestJson(allocator,
+        \\{"minimumPassed":{"Prague":{"stCreate2":6,"stMissing":1},"Cancun":{"stCreate2":3}}}
+    );
+    defer regressed.deinit();
+    try std.testing.expectEqual(@as(usize, 2), try checkLatestForkStateBaseline(allocator, &report, regressed.value, false));
 }
