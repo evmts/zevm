@@ -1,5 +1,4 @@
 const std = @import("std");
-const primitives = @import("primitives");
 const runtime_mod = @import("../node/runtime.zig");
 const dispatcher = @import("../rpc/dispatcher.zig");
 const dispatch_wiring = @import("../rpc/dispatch_wiring.zig");

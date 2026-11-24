@@ -1,7 +1,6 @@
 const std = @import("std");
 const genesis = @import("genesis.zig");
 const primitives = @import("primitives");
-const state_manager = @import("state-manager");
 const blockchain_mod = @import("blockchain");
 const database = @import("database/root.zig");
 

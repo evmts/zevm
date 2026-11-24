@@ -1,7 +1,6 @@
 const std = @import("std");
 const primitives = @import("primitives");
 const state_manager = @import("state-manager");
-const jsonrpc = @import("jsonrpc");
 const cli = @import("../cli.zig");
 const config = @import("../config.zig");
 const genesis = @import("../genesis.zig");

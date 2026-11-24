@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Keeps the Starlight content tree (docs/src/content/docs) a mirror of the
-// authored docs (docs/**/*.md{,x} outside docs/src and docs/_snippets).
+// authored docs (docs/**/*.md{,x} outside docs/src).
 //
 //   node tools/docs_mirror.mjs           # fail when the mirror has drifted
 //   node tools/docs_mirror.mjs --write   # rewrite the mirror from docs/
@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "docs");
 const mirror = join(root, "src", "content", "docs");
-const skipped = new Set(["src", "node_modules", "_snippets", "dist"]);
+const skipped = new Set(["src", "node_modules", "dist"]);
 
 function pages(dir, base, skip) {
   const out = [];

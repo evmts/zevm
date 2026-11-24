@@ -83,18 +83,6 @@ fn setFirstParticipants(bits: *[64]u8, count: usize) void {
     }
 }
 
-fn canonicalBeacon(
-    beacon: primitives.LightClientHeader.LightClientHeader.BeaconBlockHeader,
-) primitives.LightClientHeader.LightClientHeader.BeaconBlockHeader {
-    return primitives.LightClientHeader.LightClientHeader.BeaconBlockHeader.from(
-        beacon.slot,
-        beacon.proposer_index,
-        beacon.parent_root,
-        beacon.state_root,
-        beacon.body_root,
-    );
-}
-
 test "computeDomain with known inputs" {
     const domain_type: [4]u8 = .{ 0x11, 0x22, 0x33, 0x44 };
     const fork_data_root: [32]u8 = .{

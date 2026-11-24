@@ -1213,13 +1213,6 @@ fn encodeRlpListFromEncodedFields(
     return try result.toOwnedSlice(allocator);
 }
 
-fn freeEncodedFields(allocator: std.mem.Allocator, fields: *std.ArrayList([]u8)) void {
-    for (fields.items) |field| {
-        allocator.free(field);
-    }
-    fields.deinit(allocator);
-}
-
 test "legacy envelope encodes signature scalars canonically" {
     const data = [_]u8{ 0xaa, 0xbb };
     var r = [_]u8{0} ** 32;

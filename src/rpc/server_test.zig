@@ -6,10 +6,7 @@ const dispatch_wiring = @import("dispatch_wiring.zig");
 const runtime_mod = @import("../node/runtime.zig");
 const server = @import("server.zig");
 
-const RETURN_32_BYTE_42 = [_]u8{ 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
 const SSTORE_THEN_RETURN_42 = [_]u8{ 0x60, 0x01, 0x60, 0x00, 0x55, 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
-const TARGET = "0x1000000000000000000000000000000000000001";
-const TARGET_OVERRIDE = "0x2000000000000000000000000000000000000002";
 const EXPECTED_32_BYTE_42 = "0x000000000000000000000000000000000000000000000000000000000000002a";
 
 fn getObjectField(value: std.json.Value, key: []const u8) !std.json.Value {

@@ -1109,10 +1109,6 @@ fn isTrustedBlockSelector(text: []const u8) bool {
     return rpc_parse.isTrustedBlockSelectorString(text);
 }
 
-fn isQuantityHex(text: []const u8) bool {
-    return rpc_parse.isQuantityHex(text);
-}
-
 fn resolveFilterBlock(ctx: *const BlockQueryContext, value: std.json.Value) !u64 {
     switch (value) {
         .string => |s| {

@@ -2061,10 +2061,6 @@ fn effectiveGasPriceFromFixture(fixture: std.json.Value, transaction: std.json.V
     return @min(max_fee_per_gas, fee_cap_with_tip);
 }
 
-fn dataFromTransaction(allocator: std.mem.Allocator, transaction: std.json.Value) ![]u8 {
-    return dataFromTransactionAtIndex(allocator, transaction, 0);
-}
-
 fn dataFromTransactionAtIndex(allocator: std.mem.Allocator, transaction: std.json.Value, index: usize) ![]u8 {
     const data_value = try field(transaction, "data");
     const data_text = switch (data_value) {
@@ -2551,10 +2547,6 @@ fn parseHashText(text: []const u8) !primitives.Hash.Hash {
     var out: primitives.Hash.Hash = undefined;
     _ = std.fmt.hexToBytes(&out, hex) catch return VerifyError.InvalidHexData;
     return out;
-}
-
-fn parseFirstQuantity(value: std.json.Value) !u256 {
-    return parseQuantityAtIndex(value, 0);
 }
 
 fn parseQuantityAtIndex(value: std.json.Value, index: usize) !u256 {

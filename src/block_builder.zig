@@ -1341,13 +1341,6 @@ fn receiptBlobGasUsed(receipt: primitives.Receipt.Receipt) !u64 {
     return std.math.cast(u64, blob_gas) orelse error.BlobGasOverflow;
 }
 
-fn encodeLegacyTransactionEnvelope(
-    allocator: std.mem.Allocator,
-    tx: primitives.Transaction.LegacyTransaction,
-) ![]u8 {
-    return tx_encoding.encodeLegacyTransactionEnvelope(allocator, tx);
-}
-
 pub fn encodeReceiptEnvelope(
     allocator: std.mem.Allocator,
     receipt: primitives.Receipt.Receipt,

@@ -71,16 +71,8 @@ fn parseAddressJson(value: std.json.Value) !primitives.Address {
     return rpc_parse.parseAddressValue(value);
 }
 
-fn parseAddressString(text: []const u8) !primitives.Address {
-    return rpc_parse.parseAddressString(text);
-}
-
 fn parseU256Json(value: std.json.Value) !u256 {
     return rpc_parse.parseQuantityValue(u256, value);
-}
-
-fn parseU256String(text: []const u8) !u256 {
-    return rpc_parse.parseQuantityString(u256, text);
 }
 
 fn mappingSlot(key: primitives.Address, slot: u256) u256 {
@@ -91,12 +83,4 @@ fn mappingSlot(key: primitives.Address, slot: u256) u256 {
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha3.Keccak256.hash(&input, &digest, .{});
     return std.mem.readInt(u256, &digest, .big);
-}
-
-fn hasHexPrefix(text: []const u8) bool {
-    return rpc_parse.hasHexPrefix(text);
-}
-
-fn isQuantityHex(text: []const u8) bool {
-    return rpc_parse.isQuantityHex(text);
 }

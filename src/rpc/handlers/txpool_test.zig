@@ -1,6 +1,5 @@
 const std = @import("std");
 const jsonrpc = @import("jsonrpc");
-const primitives = @import("primitives");
 const dispatcher = @import("../dispatcher.zig");
 const dispatch_wiring = @import("../dispatch_wiring.zig");
 const runtime = @import("../../node/runtime.zig");

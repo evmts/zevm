@@ -321,12 +321,3 @@ fn validateSetRpcUrlParams(params: ?std.json.Value) !void {
     if (items.len != 1) return error.InvalidParams;
     if (items[0] != .string) return error.InvalidParams;
 }
-
-fn isHexQuantity(value: std.json.Value) bool {
-    const text = switch (value) {
-        .string => |str| str,
-        else => return false,
-    };
-    if (text.len < 3) return false;
-    return text[0] == '0' and (text[1] == 'x' or text[1] == 'X');
-}

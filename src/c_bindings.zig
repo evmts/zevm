@@ -16,7 +16,6 @@
 //!   today, so this is the honest contract.
 
 const std = @import("std");
-const builtin = @import("builtin");
 
 // Embedded hosts own request logging and event delivery.
 pub const std_options: std.Options = .{ .log_level = .err };

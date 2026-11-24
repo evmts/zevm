@@ -25,14 +25,6 @@ const FINALIZED_ROOT_GINDEX: u64 = 105;
 const CURRENT_SYNC_COMMITTEE_GINDEX_ELECTRA: u64 = 86;
 const NEXT_SYNC_COMMITTEE_GINDEX_ELECTRA: u64 = 87;
 const FINALIZED_ROOT_GINDEX_ELECTRA: u64 = 169;
-const MAX_NORMALIZED_BRANCH_DEPTH: usize = 7;
-
-const ExecutionPayloadHeaderFork = enum {
-    bellatrix,
-    capella,
-    deneb,
-    electra,
-};
 
 pub fn computeDomain(domain_type: [4]u8, fork_data_root: [32]u8) [32]u8 {
     var domain: [32]u8 = [_]u8{0} ** 32;

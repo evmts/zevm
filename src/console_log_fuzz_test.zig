@@ -76,17 +76,6 @@ const Source = struct {
             else => raw % 200_000_000,
         };
     }
-
-    fn interestingU256(self: *Source) u256 {
-        return switch (self.byte() % 6) {
-            0 => @as(u256, self.int(u16) % 1_000),
-            1 => @as(u256, self.interestingU64()),
-            2 => self.int(u256) >> self.byte(),
-            3 => @as(u256, std.math.maxInt(u256)) - self.byte(),
-            4 => @as(u256, self.int(u16)) * 1_000_000_000,
-            else => self.int(u256),
-        };
-    }
 };
 
 fn printInput(input: []const u8) void {
@@ -157,10 +146,6 @@ fn fuzzTarget(comptime testOne: fn ([]const u8) anyerror!void) fn (void, []const
             try testOne(input);
         }
     }.run;
-}
-
-fn clampU64(value: anytype) u64 {
-    return if (value > std.math.maxInt(u64)) std.math.maxInt(u64) else @intCast(value);
 }
 
 // ============================================================================

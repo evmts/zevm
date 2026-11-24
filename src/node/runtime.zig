@@ -3118,17 +3118,6 @@ fn importedBlockContext(
     };
 }
 
-fn recentBlockHashesForImportedExecution(
-    blockchain: *blockchain_mod.Blockchain,
-    execution_block_number: u64,
-    out: *[256][32]u8,
-) ![]const [32]u8 {
-    if (execution_block_number == 0) return out[0..0];
-    const tip_number = execution_block_number - 1;
-    const tip_hash = blockchain.getCanonicalHash(tip_number) orelse return error.MissingParentBlock;
-    return try blockchain.last256BlockHashesLocal(tip_hash, out);
-}
-
 fn processorAccessListFromEnvelope(
     allocator: std.mem.Allocator,
     access_list: []const primitives.Transaction.AccessListItem,

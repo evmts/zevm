@@ -106,10 +106,6 @@ fn parseQuantityHexU64(value: std.json.Value) ?u64 {
     return rpc_parse.parseQuantityValue(u64, value) catch null;
 }
 
-fn isQuantityHex(text: []const u8) bool {
-    return rpc_parse.isQuantityHex(text);
-}
-
 test "handleZevmReset with omitted params keeps fork configuration and invalidates snapshots" {
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, .{
         .fork_url = "https://rpc-a.example",

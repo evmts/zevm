@@ -1,8 +1,6 @@
 const std = @import("std");
 const primitives = @import("primitives");
 
-const MAX_EXTRA_DATA_BYTES: usize = 32;
-
 pub const GenesisInfo = struct {
     genesis_time: u64,
     genesis_validators_root: [32]u8,

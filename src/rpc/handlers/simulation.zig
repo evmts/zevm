@@ -922,38 +922,6 @@ fn applyBlockOverridesToContext(block_ctx: *guillotine_mini.BlockContext, overri
     if (overrides.prev_randao) |prev_randao| block_ctx.block_prevrandao = prev_randao;
 }
 
-fn applyBlockOverrides(block_ctx: *guillotine_mini.BlockContext, value: std.json.Value) !void {
-    const object = switch (value) {
-        .object => |obj| obj,
-        else => return error.InvalidParams,
-    };
-
-    var it = object.iterator();
-    while (it.next()) |entry| {
-        const key = entry.key_ptr.*;
-        const field = entry.value_ptr.*;
-        if (std.mem.eql(u8, key, "number")) {
-            block_ctx.block_number = try parseQuantityU64Value(field);
-        } else if (std.mem.eql(u8, key, "time") or std.mem.eql(u8, key, "timestamp")) {
-            block_ctx.block_timestamp = try parseQuantityU64Value(field);
-        } else if (std.mem.eql(u8, key, "gasLimit")) {
-            block_ctx.block_gas_limit = try parseQuantityU64Value(field);
-        } else if (std.mem.eql(u8, key, "feeRecipient")) {
-            block_ctx.block_coinbase = try parseAddressValue(field);
-        } else if (std.mem.eql(u8, key, "baseFeePerGas")) {
-            block_ctx.block_base_fee = try parseQuantityU256Value(field);
-        } else if (std.mem.eql(u8, key, "blobBaseFee")) {
-            block_ctx.blob_base_fee = try parseQuantityU256Value(field);
-        } else if (std.mem.eql(u8, key, "prevRandao")) {
-            block_ctx.block_prevrandao = try parsePrevRandaoValue(field);
-        } else if (std.mem.eql(u8, key, "withdrawals")) {
-            _ = try arrayItemsValue(field);
-        } else {
-            return error.InvalidParams;
-        }
-    }
-}
-
 fn resolveTrustedBlockSelector(rt: *const runtime.NodeRuntime, value: std.json.Value) !u64 {
     switch (value) {
         .string => |text| {
@@ -2042,10 +2010,6 @@ fn parseQuantityU64Value(value: std.json.Value) !u64 {
     return rpc_parse.parseQuantityValue(u64, value);
 }
 
-fn parseQuantityU64String(text: []const u8) !u64 {
-    return rpc_parse.parseQuantityString(u64, text);
-}
-
 fn parseQuantityU256Value(value: std.json.Value) !u256 {
     return rpc_parse.parseQuantityValue(u256, value);
 }
@@ -2056,10 +2020,6 @@ fn parsePrevRandaoValue(value: std.json.Value) !u256 {
     return std.mem.readInt(u256, &hash, .big);
 }
 
-fn parseQuantityU256String(text: []const u8) !u256 {
-    return rpc_parse.parseQuantityString(u256, text);
-}
-
 fn parseHexDataValue(allocator: std.mem.Allocator, value: std.json.Value) ![]u8 {
     return rpc_parse.parseHexDataBytes(allocator, value);
 }
@@ -2067,14 +2027,6 @@ fn parseHexDataValue(allocator: std.mem.Allocator, value: std.json.Value) ![]u8 
 fn parseBytes32U256(text: []const u8) !u256 {
     _ = try rpc_parse.parseHash32String(text);
     return std.fmt.parseInt(u256, text[2..], 16) catch return error.InvalidParams;
-}
-
-fn hasHexPrefix(text: []const u8) bool {
-    return rpc_parse.hasHexPrefix(text);
-}
-
-fn isQuantityHex(text: []const u8) bool {
-    return rpc_parse.isQuantityHex(text);
 }
 
 fn hexQuantity(allocator: std.mem.Allocator, value: u64) !std.json.Value {

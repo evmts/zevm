@@ -1,7 +1,6 @@
 const std = @import("std");
 const primitives = @import("primitives");
 const blockchain = @import("blockchain");
-const state_manager = @import("state-manager");
 const zevm = @import("zevm");
 const harness = @import("harness");
 

@@ -626,11 +626,6 @@ fn resolveTrustedRuntimeBlockSelector(rt: *const runtime.NodeRuntime, value: std
     return rpc_parse.resolveTrustedBlockSelector(rt.head_block_number, value);
 }
 
-fn ensureCurrentStateSelector(rt: *const runtime.NodeRuntime, spec: jsonrpc.types.BlockSpec) !void {
-    const selected = try resolveBlockParam(rt, spec);
-    if (selected != rt.head_block_number) return error.InvalidParams;
-}
-
 fn quantityHexU64(allocator: std.mem.Allocator, value: u64) !jsonrpc.types.Quantity {
     return .{ .value = .{ .string = try std.fmt.allocPrint(allocator, "0x{x}", .{value}) } };
 }
@@ -779,10 +774,6 @@ fn bytesValueHex(allocator: std.mem.Allocator, bytes: []const u8) !std.json.Valu
     out[1] = 'x';
     writeHexLower(out[2..], bytes);
     return .{ .string = out };
-}
-
-fn storageKeyValue(allocator: std.mem.Allocator, slot: u256) !std.json.Value {
-    return .{ .string = try std.fmt.allocPrint(allocator, "0x{x:0>64}", .{slot}) };
 }
 
 fn storageProofValue(

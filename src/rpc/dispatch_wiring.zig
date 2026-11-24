@@ -3911,20 +3911,8 @@ fn parseStorageSlotJson(value: std.json.Value) !u256 {
     return parseU256Json(value);
 }
 
-fn parseU256String(text: []const u8) !u256 {
-    return rpc_parse.parseQuantityString(u256, text);
-}
-
 fn hexStringToBytes(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
     return rpc_parse.parseHexDataBytes(allocator, .{ .string = text });
-}
-
-fn hasHexPrefix(text: []const u8) bool {
-    return rpc_parse.hasHexPrefix(text);
-}
-
-fn isQuantityHex(text: []const u8) bool {
-    return rpc_parse.isQuantityHex(text);
 }
 
 fn hexQuantity(allocator: std.mem.Allocator, n: u64) !std.json.Value {

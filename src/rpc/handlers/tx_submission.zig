@@ -422,20 +422,8 @@ fn parseAddressValue(value: std.json.Value) SendTransactionParseError!primitives
     return rpc_parse.parseAddressValue(value) catch error.InvalidAddress;
 }
 
-fn parseAddressString(text: []const u8) SendTransactionParseError!primitives.Address {
-    return rpc_parse.parseAddressString(text) catch error.InvalidAddress;
-}
-
 fn parseQuantityU256Value(value: std.json.Value) SendTransactionParseError!u256 {
     return rpc_parse.parseQuantityValue(u256, value) catch error.InvalidTransactionRequest;
-}
-
-fn parseQuantityString(comptime T: type, text: []const u8) SendTransactionParseError!T {
-    return rpc_parse.parseQuantityString(T, text) catch error.InvalidTransactionRequest;
-}
-
-fn isQuantityHex(text: []const u8) bool {
-    return rpc_parse.isQuantityHex(text);
 }
 
 fn parseHexDataValue(allocator: std.mem.Allocator, value: std.json.Value) SendTransactionParseError![]const u8 {

@@ -45,24 +45,6 @@ const STORAGE_LOG_BYTECODE = [_]u8{
 //   PUSH1 0x01, SWAP1, SUB
 //   PUSH1 0x02, JUMP
 // JUMPDEST (pc=0x1e): POP, PUSH1 0x20, PUSH1 0x00, RETURN
-const KECCAK_LOOP_BYTECODE = [_]u8{
-    0x60, 0x80, // 0..1: PUSH1 128
-    0x5b, // 2: JUMPDEST
-    0x80, // 3: DUP1
-    0x15, // 4: ISZERO
-    0x60, 0x16, // 5..6: PUSH1 0x16
-    0x57, // 7: JUMPI
-    0x60, 0x20, // 8..9: PUSH1 32
-    0x60, 0x00, // 10..11: PUSH1 0
-    0x20, // 12: KECCAK256
-    0x60, 0x00, // 13..14: PUSH1 0
-    0x52, // 15: MSTORE
-    0x60, 0x01, // 16..17: PUSH1 1
-    0x90, // 18: SWAP1
-    0x03, // 19: SUB
-    0x60, 0x02, // 20..21: PUSH1 2
-    0x56, // 22 -> wait let's check offsets: 0x56 is pc=22, so end is pc=23 (0x17)!
-};
 
 // Verified exact offsets:
 // 0: 60 80  (PUSH1 128)
