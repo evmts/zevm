@@ -737,6 +737,11 @@ fn addCAbiLibrary(
         .name = name,
         .linkage = linkage,
         .root_module = c_bindings_mod,
+        // Zig 0.15.2's self-hosted x86_64 backend (the Debug default on
+        // x86_64-linux) miscompiles this shared library: the first RPC
+        // dereferences a null allocator vtable. The static archive keeps the
+        // default backend, which bundles the Rust crypto objects c-smoke needs.
+        .use_llvm = if (linkage == .dynamic) true else null,
     });
     lib.linkLibC();
     lib.step.dependOn(&modules.voltaire_rust_crypto.step);
@@ -756,6 +761,9 @@ fn addNapiAddon(
         .name = "zevm_napi",
         .linkage = .dynamic,
         .root_module = c_bindings_mod,
+        // See addCAbiLibrary: the self-hosted x86_64 backend segfaults this
+        // addon on its first nodeRpc call.
+        .use_llvm = true,
     });
     napi_lib.addCSourceFile(.{ .file = b.path("npm/zevm/native/zevm_napi.c"), .flags = &.{"-std=c11"} });
     napi_lib.addIncludePath(b.path("include"));
