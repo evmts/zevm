@@ -146,6 +146,20 @@ pub fn build(b: *std.Build) void {
     });
     const run_dependency_preflight_tests = b.addRunArtifact(dependency_preflight_tests);
     run_dependency_preflight_tests.step.dependOn(launch_policy_preflight_step);
+    const abi_tests_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/abi_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "primitives", .module = modules.primitives_mod },
+            },
+        }),
+    });
+    abi_tests_tests.step.dependOn(&modules.voltaire_rust_crypto.step);
+    linkRustSupport(abi_tests_tests, target);
+    const run_abi_tests_tests = b.addRunArtifact(abi_tests_tests);
+    run_abi_tests_tests.step.dependOn(launch_policy_preflight_step);
     const run_test_graph_check = b.addRunArtifact(test_graph_check_exe);
     run_test_graph_check.step.dependOn(launch_policy_preflight_step);
 
@@ -285,6 +299,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_c_abi_fuzz_tests.step);
     test_step.dependOn(&run_qualification_check_tests.step);
     test_step.dependOn(&run_dependency_preflight_tests.step);
+    test_step.dependOn(&run_abi_tests_tests.step);
 
     const external_verify_exe = b.addExecutable(.{
         .name = "external-verify",
@@ -317,6 +332,27 @@ pub fn build(b: *std.Build) void {
     const verify_step = b.step("verify", "Run fast checks and active external suite slices");
     run_external_verify.step.dependOn(verify_fast_step);
     verify_step.dependOn(&run_external_verify.step);
+
+    const abi_tests_exe = b.addExecutable(.{
+        .name = "abi-tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/abi_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "primitives", .module = modules.primitives_mod },
+            },
+        }),
+    });
+    abi_tests_exe.step.dependOn(&modules.voltaire_rust_crypto.step);
+    linkRustSupport(abi_tests_exe, target);
+    const run_abi_tests = b.addRunArtifact(abi_tests_exe);
+    run_abi_tests.step.dependOn(launch_policy_preflight_step);
+    run_abi_tests.addDirectoryArg(b.path("."));
+    const abi_tests_step = b.step("abi-tests", "Run ethereum-tests/ABITests against primitives.Abi");
+    abi_tests_step.dependOn(&run_abi_tests_tests.step);
+    abi_tests_step.dependOn(&run_abi_tests.step);
+    verify_step.dependOn(&run_abi_tests.step);
 
     // C ABI libraries for embedding in non-Zig hosts (Swift, C/C++, N-API).
     // Additive only: the default `zig build` step still produces the CLI.
