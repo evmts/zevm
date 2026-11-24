@@ -4,7 +4,7 @@ ARG ZIG_VERSION=0.15.2
 ARG GETH_VERSION=v1.16.7
 ARG ZEVM_DOCKER_OPTIMIZE=ReleaseSafe
 
-FROM alpine:3.20 AS builder
+FROM alpine:3.23 AS builder
 ARG TARGETARCH
 ARG ZIG_VERSION
 ARG ZEVM_DOCKER_OPTIMIZE
@@ -44,7 +44,7 @@ RUN git clone --depth 1 --branch "${GETH_VERSION}" https://github.com/ethereum/g
     git apply /tmp/geth-hive.patch && \
     go build -trimpath -ldflags="-s -w" -o /usr/local/bin/geth ./cmd/geth
 
-FROM alpine:3.20
+FROM alpine:3.23
 RUN apk add --no-cache bash ca-certificates curl jq python3 socat
 COPY --from=builder /src/zevm/zig-out/bin/zevm /usr/local/bin/zevm
 COPY --from=geth-sidecar /usr/local/bin/geth /usr/local/bin/geth
