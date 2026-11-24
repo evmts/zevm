@@ -49,6 +49,14 @@ bun tools/hive_rpc_compat_smoke.js
 
 `zig build verify` includes `zig build trie-tests`, which replays `lib/ethereum-tests/TrieTests` against `primitives.TrieHash` roots and ZEVM `eth_getProof` proofs (`tools/trie_tests.zig`). `trietestnextprev.json` is excluded because ZEVM exposes no trie iterator; any new unclassified fixture file fails the run.
 
+`zig build verify` includes `ethereum-tests/RLPTests`. To run only that suite, check out `lib/ethereum-tests` and run:
+
+```bash
+zig build verify-rlp
+```
+
+It runs every case in `lib/ethereum-tests/RLPTests` against the voltaire RLP codec and prints `rlp-tests: files=3 cases=55 passed=55 failed=0 skipped=0`. The suite has no skips. Fix codec failures upstream in `../voltaire`.
+
 ## Ethereum TransactionTests
 
 With the pinned `lib/ethereum-tests` submodule populated, run `zig build transaction-tests`.

@@ -4,6 +4,7 @@ const primitives = @import("primitives");
 const state_manager = @import("state-manager");
 const guillotine_mini = @import("guillotine_mini");
 const zevm = @import("zevm");
+const rlp_tests = @import("rlp_tests");
 
 const VerifyError = error{
     MissingArgument,
@@ -454,7 +455,37 @@ fn runExternalVerify(allocator: std.mem.Allocator, repo_root: []const u8, zevm_b
     try runLegacyStateFixtures(allocator, repo_root, &legacy_state_fixture_dirs, ctx);
     try runBlockchainFixtureSmoke(allocator, repo_root, ctx);
     try runExecutionSpecBlockchainStructuralFixtures(allocator, repo_root, ctx);
+    try runRlpFixtures(allocator, repo_root, ctx);
     try runHiveRpcCompatibilityFixtures(allocator, repo_root, zevm_bin, ctx);
+}
+
+fn runRlpFixtures(allocator: std.mem.Allocator, repo_root: []const u8, ctx: *VerifyContext) !void {
+    const root_path = try std.fs.path.join(allocator, &.{ repo_root, rlp_tests.fixture_root });
+    defer allocator.free(root_path);
+    const files = try rlp_tests.listFixtureFiles(allocator, root_path);
+    defer rlp_tests.freeFixtureFiles(allocator, files);
+    if (files.len == 0) return VerifyError.InvalidFixture;
+
+    for (files) |relative_path| {
+        const path = try std.fs.path.join(allocator, &.{ root_path, relative_path });
+        defer allocator.free(path);
+        var parsed = try readJson(allocator, path);
+        defer parsed.deinit();
+        if (parsed.value != .object or parsed.value.object.count() == 0) return VerifyError.InvalidFixture;
+
+        var it = parsed.value.object.iterator();
+        while (it.next()) |entry| {
+            const task_label = try std.fmt.allocPrint(allocator, "{s}/{s} :: {s}", .{ rlp_tests.fixture_root, relative_path, entry.key_ptr.* });
+            defer allocator.free(task_label);
+            const task_id = ctx.claimTask(task_label) orelse continue;
+            const started_ns = ctx.startTask(task_id, "rlp", task_label);
+            rlp_tests.runCase(allocator, entry.value_ptr.*) catch |err| {
+                ctx.failTask(task_id, "rlp", task_label, started_ns, err);
+                return err;
+            };
+            ctx.finishTask(task_id, "rlp", started_ns);
+        }
+    }
 }
 
 fn runExecutionSpecStateFixtures(allocator: std.mem.Allocator, repo_root: []const u8, ctx: *VerifyContext) !void {

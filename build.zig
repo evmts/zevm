@@ -292,6 +292,30 @@ pub fn build(b: *std.Build) void {
     schema_config_smoke.addCheck(.{ .expect_stderr_match = "failureClass=schema" });
     startup_smoke_step.dependOn(&schema_config_smoke.step);
 
+    const rlp_tests_mod = b.createModule(.{
+        .root_source_file = b.path("tools/rlp_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "primitives", .module = modules.primitives_mod },
+        },
+    });
+    const rlp_tests_unit = b.addTest(.{ .root_module = rlp_tests_mod });
+    rlp_tests_unit.step.dependOn(&modules.voltaire_rust_crypto.step);
+    linkRustSupport(rlp_tests_unit, target);
+    const run_rlp_tests_unit = b.addRunArtifact(rlp_tests_unit);
+    run_rlp_tests_unit.step.dependOn(launch_policy_preflight_step);
+
+    const rlp_tests_exe = b.addExecutable(.{ .name = "rlp-tests", .root_module = rlp_tests_mod });
+    rlp_tests_exe.step.dependOn(&modules.voltaire_rust_crypto.step);
+    linkRustSupport(rlp_tests_exe, target);
+    const run_rlp_tests = b.addRunArtifact(rlp_tests_exe);
+    run_rlp_tests.step.dependOn(launch_policy_preflight_step);
+    run_rlp_tests.addDirectoryArg(b.path("."));
+    const verify_rlp_step = b.step("verify-rlp", "Run ethereum-tests/RLPTests against the RLP codec");
+    verify_rlp_step.dependOn(&run_rlp_tests_unit.step);
+    verify_rlp_step.dependOn(&run_rlp_tests.step);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_test_graph_check.step);
     test_step.dependOn(startup_smoke_step);
@@ -300,6 +324,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_qualification_check_tests.step);
     test_step.dependOn(&run_dependency_preflight_tests.step);
     test_step.dependOn(&run_abi_tests_tests.step);
+    test_step.dependOn(&run_rlp_tests_unit.step);
 
     const external_verify_exe = b.addExecutable(.{
         .name = "external-verify",
@@ -312,6 +337,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "primitives", .module = modules.primitives_mod },
                 .{ .name = "state-manager", .module = modules.state_manager_mod },
                 .{ .name = "guillotine_mini", .module = modules.guillotine_mini_mod },
+                .{ .name = "rlp_tests", .module = rlp_tests_mod },
             },
         }),
     });
