@@ -117,6 +117,70 @@ jobs:
         working-directory: zevm
         run: git diff --exit-code -- .
 
+  smithers:
+    name: smthrs ci //...
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      SMTHRS_VERSION: "1.0.0-rc.16"
+    steps:
+      - name: Checkout ZEVM
+        uses: actions/checkout@v7
+        with:
+          path: zevm
+          persist-credentials: false
+
+      - name: Checkout execution-apis test fixtures
+        working-directory: zevm
+        run: git submodule update --init --depth 1 -- lib/execution-apis
+
+      - name: Checkout pinned native dependencies
+        working-directory: zevm
+        run: bash tools/checkout-native.sh
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2.2.1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cargo perl rustc
+
+      - name: Restore Smithers local cache
+        uses: actions/cache@v4
+        with:
+          path: zevm/.smithers/cache
+          key: smithers-${{ runner.os }}-${{ github.sha }}
+          restore-keys: smithers-${{ runner.os }}-
+
+      - name: Fetch Zig package dependencies
+        working-directory: zevm
+        run: zig build --fetch
+
+      - name: Digest pinned native dependencies
+        working-directory: zevm
+        run: node tools/native_deps_digest.mjs .native-deps.digest
+
+      # Pull requests read the remote cache; pushes to main also publish to it.
+      - name: smthrs ci //...
+        working-directory: zevm
+        run: npx --yes --package=@smthrs/cli@"$SMTHRS_VERSION" smthrs ci '//...' --workspace . --verbose
+        env:
+          SMITHERS_CACHE_READ_TOKEN: ${{ secrets.SMITHERS_CACHE_READ_TOKEN }}
+          SMITHERS_CACHE_WRITE_TOKEN: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.SMITHERS_CACHE_WRITE_TOKEN || '' }}
+
+      - name: Dirty worktree preflight
+        working-directory: zevm
+        run: git diff --exit-code -- .
+
   fuzz:
     name: Coverage-Guided Fuzzing
     runs-on: ubuntu-latest

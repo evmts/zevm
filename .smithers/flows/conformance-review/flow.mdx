@@ -1,0 +1,29 @@
+---
+description: Audit ZEVM Ethereum spec conformance, native dependency pin drift, release qualification coverage, and benchmark deltas.
+capabilities: ["fs:read:**", "fs:write:.smithers/reports/conformance-review.json", "proc:spawn:rg *", "proc:spawn:jj --no-pager *", "proc:spawn:zig build *", "proc:spawn:node *", "proc:spawn:smthrs *"]
+model: sol
+budget:
+  tokens: 80000
+  milliseconds: 3600000
+---
+
+Run from the repository root. Use only `jj --no-pager` for version control. Do
+not modify source, push, or comment. Report only what you ran; never fabricate
+a pass.
+
+1. Native pins: compare `native-dependencies.json` against `main` of
+   evmts/voltaire and evmts/guillotine-mini when the siblings are available,
+   and run `zig build dependency-preflight -- --zig-version 0.15.2`.
+2. Qualification: run `zig build qualification-check` and, when the external
+   submodules are initialized, `zig build qualification-check -- --require-covered`.
+   List uncovered assertions from `docs/specs/qualification`.
+3. RPC contract: compare methods registered in `src/rpc/dispatch_wiring.zig`
+   with `lib/execution-apis/src` and `docs/specs/json-rpc-contract.md`.
+4. Hardforks: confirm the blob schedules in `src/hardfork_schedule.zig` and
+   the fork activations ZEVM configures per network match execution-specs.
+5. Benchmarks: run `smthrs ci //bench/...` and report suites whose p50 moved
+   more than 10% against `bench/baseline.json`. Cached bench results are
+   observations from an earlier run; label them as cached.
+
+Write only `.smithers/reports/conformance-review.json`:
+{"summary":"one sentence","pins":{"voltaire":"current|behind|unknown","guillotine_mini":"current|behind|unknown"},"qualification":{"status":"pass|fail|skipped","uncovered":[]},"rpc":{"missing":[],"extra":[]},"hardforks":"pass|fail|skipped","bench":{"status":"pass|regressed|skipped","regressions":[]}}

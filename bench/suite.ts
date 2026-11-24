@@ -8,6 +8,8 @@ const bun = S.Host.bin("bun")
 
 /** Shared root build/harness inputs every benchmark suite depends on. */
 const sharedBenchInputs: ReadonlyArray<Input.Declared> = [
+  // Digest of ../voltaire and ../guillotine-mini; see the root PACKAGE.ts.
+  S.file("//.native-deps.digest"),
   S.file("//build.zig"),
   S.file("//build.zig.zon"),
   S.file("//native-dependencies.json"),
@@ -53,7 +55,7 @@ export const benchSuite = (options: BenchSuiteOptions) => {
       ...options.srcs.map((src) => S.file(`//${src}`)),
       ...(options.extraData ?? []),
     ],
-    tools: [cargo, bun],
+    tools: [cargo, S.Host.bin("rustc"), S.Host.bin("cc"), bun],
     env: {
       ZEVM_LAUNCH_POLICY_TIMEOUT: "15",
     },

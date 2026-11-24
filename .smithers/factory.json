@@ -1,0 +1,219 @@
+{
+  "summary": "ZEVM: incremental Zig/C/N-API CI, Ethereum spec conformance, native pin hygiene, and maintainer triage.",
+  "flows": [
+    {
+      "id": "checks/review",
+      "description": "Review a ZEVM change for consensus correctness, JSON-RPC contract parity, light-client safety, Zig memory ownership, and native ABI stability.",
+      "summary": "Review consensus, JSON-RPC contract, light-client safety, Zig ownership, and native ABI changes.",
+      "featured": true,
+      "kind": "mdx",
+      "path": ".smithers/flows/checks/review/flow.mdx",
+      "capabilities": [
+        "fs:read:**"
+      ],
+      "model": null,
+      "modelInvocable": true,
+      "inputSchema": {
+        "dialect": "draft-2020-12",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "args": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "args"
+          ],
+          "additionalProperties": true
+        },
+        "definitions": {}
+      },
+      "flows": [
+        "coding/ReviewCheck"
+      ]
+    },
+    {
+      "id": "issue/repro",
+      "description": "Reproduce a ZEVM execution, JSON-RPC, light-client, or binding defect with real fixtures and minimal evidence before planning a fix.",
+      "summary": "Reproduce a ZEVM execution, RPC, or light-client defect with real fixtures before planning a fix.",
+      "featured": true,
+      "kind": "mdx",
+      "path": ".smithers/flows/issue/repro/flow.mdx",
+      "capabilities": [
+        "fs:read:**",
+        "proc:spawn:rg *",
+        "proc:spawn:jj --no-pager *",
+        "proc:spawn:zig build *",
+        "proc:spawn:node *",
+        "proc:spawn:smthrs *"
+      ],
+      "model": "sol",
+      "modelInvocable": true,
+      "inputSchema": {
+        "dialect": "draft-2020-12",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "args": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "args"
+          ],
+          "additionalProperties": true
+        },
+        "definitions": {}
+      },
+      "flows": [],
+      "budget": {
+        "tokens": 64000,
+        "milliseconds": 1800000
+      }
+    },
+    {
+      "id": "issue/poc",
+      "description": "Implement a bounded ZEVM issue proof of concept with a failing regression first, upstream fixes where owed, and incremental smthrs verification.",
+      "summary": "Implement a bounded fix with a failing regression first and incremental smthrs checks.",
+      "featured": true,
+      "kind": "mdx",
+      "path": ".smithers/flows/issue/poc/flow.mdx",
+      "capabilities": [
+        "fs:read:**",
+        "fs:write:**",
+        "proc:spawn:rg *",
+        "proc:spawn:jj --no-pager *",
+        "proc:spawn:zig build *",
+        "proc:spawn:zig fmt *",
+        "proc:spawn:node *",
+        "proc:spawn:smthrs *"
+      ],
+      "model": "sol",
+      "modelInvocable": true,
+      "inputSchema": {
+        "dialect": "draft-2020-12",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "args": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "args"
+          ],
+          "additionalProperties": true
+        },
+        "definitions": {}
+      },
+      "flows": [],
+      "budget": {
+        "tokens": 100000,
+        "milliseconds": 3600000
+      }
+    },
+    {
+      "id": "pr-triage",
+      "description": "Triage a ZEVM pull request from supplied metadata and diff without executing untrusted PR code.",
+      "summary": "Assess pull request readiness from its diff and CI evidence without executing PR code.",
+      "featured": true,
+      "kind": "mdx",
+      "path": ".smithers/flows/pr-triage/flow.mdx",
+      "capabilities": [
+        "fs:read:**",
+        "fs:write:.smithers/reports/pr-triage.json",
+        "proc:spawn:rg *"
+      ],
+      "model": "sol",
+      "modelInvocable": true,
+      "inputSchema": {
+        "dialect": "draft-2020-12",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "args": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "args"
+          ],
+          "additionalProperties": true
+        },
+        "definitions": {}
+      },
+      "flows": [],
+      "budget": {
+        "tokens": 64000,
+        "milliseconds": 600000
+      }
+    },
+    {
+      "id": "conformance-review",
+      "description": "Audit ZEVM Ethereum spec conformance, native dependency pin drift, release qualification coverage, and benchmark deltas.",
+      "summary": "Audit spec conformance, native pin drift, qualification coverage, and benchmark deltas.",
+      "featured": true,
+      "kind": "mdx",
+      "path": ".smithers/flows/conformance-review/flow.mdx",
+      "capabilities": [
+        "fs:read:**",
+        "fs:write:.smithers/reports/conformance-review.json",
+        "proc:spawn:rg *",
+        "proc:spawn:jj --no-pager *",
+        "proc:spawn:zig build *",
+        "proc:spawn:node *",
+        "proc:spawn:smthrs *"
+      ],
+      "model": "sol",
+      "modelInvocable": true,
+      "inputSchema": {
+        "dialect": "draft-2020-12",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "args": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "args"
+          ],
+          "additionalProperties": true
+        },
+        "definitions": {}
+      },
+      "flows": [],
+      "budget": {
+        "tokens": 80000,
+        "milliseconds": 3600000
+      }
+    }
+  ],
+  "on": [
+    {
+      "event": "schedule:17 9 * * 1",
+      "flow": "conformance-review",
+      "description": "Weekly Monday conformance, native pin, and benchmark audit"
+    }
+  ],
+  "github": {
+    "mirror": "pull",
+    "issues": "read",
+    "changes": "send-upstream",
+    "protectedPaths": [
+      "build.zig.zon",
+      "native-dependencies.json",
+      "include/zevm.h",
+      "src/c_bindings.zig",
+      "src/tx_processor.zig",
+      "src/consensus_verifier.zig",
+      "src/hardfork_schedule.zig",
+      "src/light_default_checkpoints.zig",
+      "docs/specs/qualification"
+    ],
+    "maintainers": [
+      "roninjin10"
+    ]
+  }
+}

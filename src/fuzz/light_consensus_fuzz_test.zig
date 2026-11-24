@@ -236,9 +236,9 @@ const empty_account = "{\"nonce\":\"0x0\",\"balance\":\"0x0\",\"codeHash\":\"0xc
 test "fuzz: EIP-1186 response decoding and authenticated RLP nodes" {
     try fuzzProof({}, "");
     try std.testing.fuzz({}, fuzzProof, .{ .corpus = &.{
-        empty_account,  "{\"accountProof\":[\"0xc0\",\"0xgg\"]}", "{\"accountProof\":[],\"storageProof\":[{\"key\":\"0x0\",\"value\":\"0x1\",\"proof\":[\"0xc0\"]},null]}",
-        "\xc0",         "\x80",
-        "\xc2\x20\x01", "\xd1" ++ "\x80" ** 17,                   "\xe3\xa1\x20" ++ "\x00" ** 32 ++ "\x01",
+        empty_account,          "{\"accountProof\":[\"0xc0\",\"0xgg\"]}", "{\"accountProof\":[],\"storageProof\":[{\"key\":\"0x0\",\"value\":\"0x1\",\"proof\":[\"0xc0\"]},null]}",
+        "\xc0",                 "\x80",                                   "\xc2\x20\x01",
+        "\xd1" ++ "\x80" ** 17, "\xe3\xa1\x20" ++ "\x00" ** 32 ++ "\x01",
     } });
 }
 fn fuzzProof(_: void, input: []const u8) !void {

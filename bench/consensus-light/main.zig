@@ -22,10 +22,12 @@ fn buildFinalityUpdateJson(allocator: std.mem.Allocator) ![]u8 {
         try w.print(
             "{{\"beacon\":{{\"slot\":\"8000000\",\"proposer_index\":\"123\",\"parent_root\":\"{s}\",\"state_root\":\"{s}\",\"body_root\":\"{s}\"}},\"execution\":{{\"parent_hash\":\"{s}\",\"fee_recipient\":\"{s}\",\"state_root\":\"{s}\",\"receipts_root\":\"{s}\",\"logs_bloom\":\"{s}\",\"prev_randao\":\"{s}\",\"block_number\":\"9000000\",\"gas_limit\":\"30000000\",\"gas_used\":\"12000000\",\"timestamp\":\"1700000000\",\"base_fee_per_gas\":\"1000000000\",\"block_hash\":\"{s}\",\"transactions_root\":\"{s}\",\"withdrawals_root\":\"{s}\",\"blob_gas_used\":\"0\",\"excess_blob_gas\":\"0\"}},\"execution_branch\":[\"{s}\",\"{s}\",\"{s}\",\"{s}\"]}}",
             .{
-                beacon_root, beacon_root, beacon_root,
-                execution_hash, fee_recipient, execution_hash, execution_hash,
-                logs_bloom, execution_hash, execution_hash, execution_hash,
-                execution_hash, branch_el, branch_el, branch_el, branch_el,
+                beacon_root,    beacon_root,    beacon_root,
+                execution_hash, fee_recipient,  execution_hash,
+                execution_hash, logs_bloom,     execution_hash,
+                execution_hash, execution_hash, execution_hash,
+                branch_el,      branch_el,      branch_el,
+                branch_el,
             },
         );
     }

@@ -3,7 +3,9 @@
 dist/
 /types/
 
-.smithers
+.smithers/cache/
+.smithers/reports/
+.native-deps.digest
 .flows/
 bench/**/.results/
 

@@ -39,7 +39,7 @@ const allSuites = [
  * Aggregates every suite's cached or freshly run JSON result, compares against
  * `bench/baseline.json`, prints the full table, and writes report.json/report.md.
  * Because every suite is a separate cached dependency, changing one module only
- * re-runs the affected suites while unchanged suites replay from `.flows`.
+ * re-runs the affected suites while unchanged suites replay from `.smithers/cache`.
  */
 const report = S.Shell.Build({
   summary: "Aggregate all ZEVM benchmark suites and compare against bench/baseline.json",

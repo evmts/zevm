@@ -1,28 +1,33 @@
 #!/bin/sh
-# Runs the Smithers build CLI (`smithers-build`) against this repository's WORKSPACE.ts and PACKAGE.ts graph.
+# Runs the Smithers CLI (`smthrs`) against this repository's
+# .smithers/WORKSPACE.ts graph (root PACKAGE.ts, bench/**/PACKAGE.ts, .smithers/PACKAGE.ts).
 #
 # Usage:
-#   scripts/smthrs build //bench/... --verbose --jobs 1
-#   scripts/smthrs affected build //bench/... --verbose --jobs 1
-#   scripts/smthrs affected test //bench/... --list
-#   scripts/smthrs target //bench:report --verbose --jobs 1
+#   scripts/smthrs ci '//...'
+#   scripts/smthrs ci //:test //:fmt
+#   scripts/smthrs ci '//bench/...'
+#   scripts/smthrs target //.smithers:factory-write --write
+#   scripts/smthrs explain //:build
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
-if [ -n "${SMITHERS_BUILD_BIN:-}" ] && [ -x "$SMITHERS_BUILD_BIN" ]; then
-  exec "$SMITHERS_BUILD_BIN" "$@"
+# Key Zig targets on the sibling native dependencies (see PACKAGE.ts).
+node tools/native_deps_digest.mjs .native-deps.digest
+
+if [ -n "${SMTHRS_BIN:-}" ] && [ -x "$SMTHRS_BIN" ]; then
+  exec "$SMTHRS_BIN" "$@"
 fi
 
-if command -v smithers-build >/dev/null 2>&1; then
-  exec smithers-build "$@"
+if command -v smthrs >/dev/null 2>&1; then
+  exec smthrs "$@"
 fi
 
-sibling="$root/../smithers/node_modules/.bin/smithers-build"
+sibling="$root/../smithers/node_modules/.bin/smthrs"
 if [ -x "$sibling" ]; then
   exec "$sibling" "$@"
 fi
 
-echo "error: smithers-build not found on PATH or at $sibling (set SMITHERS_BUILD_BIN to override)" >&2
+echo "error: smthrs not found on PATH or at $sibling (set SMTHRS_BIN to override, or run npx --package=@smthrs/cli smthrs)" >&2
 exit 1

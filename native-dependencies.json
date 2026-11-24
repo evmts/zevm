@@ -1,10 +1,10 @@
 {
   "voltaire": {
     "repository": "evmts/voltaire",
-    "revision": "cce50f40c8e23c84394569f7d44f938025116ae0"
+    "revision": "ab986286fa9e0247f95a019f2ff0ce4ddfa4d054"
   },
   "guillotine-mini": {
     "repository": "evmts/guillotine-mini",
-    "revision": "677c7d46f93b631e6804c03d46e4cbdb44b2e514"
+    "revision": "3b89d4d67952f6a400606f4257d21b50dae3a846"
   }
 }
