@@ -436,7 +436,8 @@ fn hexAlloc(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
     return text;
 }
 
-/// Sends `method` (eth_call or eth_estimateGas) to `to` with `data_hex` and returns the response.
+/// Sends `method` from the first dev account to `to` with `data_hex` and no gas
+/// limit, adding the `latest` block tag for eth_call, and returns the response.
 fn dispatchTransaction(rt: *runtime_mod.NodeRuntime, method: []const u8, to: []const u8, data_hex: []const u8) !jsonrpc.envelope.ResponseEnvelope {
     var tx = std.json.ObjectMap.init(std.testing.allocator);
     defer tx.deinit();
@@ -588,4 +589,60 @@ test "console regression: a direct call to the console address records one entry
     defer drained.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), drained.result.?.array.items.len);
     try std.testing.expectEqualStrings("0xaabbccdd01", drained.result.?.array.items[0].string);
+}
+
+/// `tevm_drainConsoleLogs` returns exactly `want`, oldest first.
+fn expectDrained(rt: *runtime_mod.NodeRuntime, want: []const []const u8) !void {
+    var drained = try dispatch(rt, "tevm_drainConsoleLogs", null);
+    defer drained.deinit(std.testing.allocator);
+    try std.testing.expect(drained.error_value == null);
+    const logs = drained.result.?.array.items;
+    try std.testing.expectEqual(want.len, logs.len);
+    for (want, logs) |expected, got| try std.testing.expectEqualStrings(expected, got.string);
+}
+
+test "console regression: eth_sendTransaction without gas records each log once" {
+    // An omitted gas limit runs the native gas estimate first. Its full-gas run
+    // recorded the log, and the mined transaction recorded it again (tevm#2057).
+    const allocator = std.testing.allocator;
+    var rt = try runtime_mod.NodeRuntime.init(allocator, null);
+    defer rt.deinit();
+    try rt.state.setCode(try primitives.Address.fromHex(STATICCALL_FORWARDER_TEXT), consoleForwarderCode(0xfa));
+
+    var response = try dispatchTransaction(&rt, "eth_sendTransaction", STATICCALL_FORWARDER_TEXT, "0xaabbccdd01");
+    defer response.deinit(allocator);
+    try std.testing.expect(response.error_value == null);
+    try std.testing.expectEqual(@as(u64, 1), rt.head_block_number);
+    try expectDrained(&rt, &.{"0xaabbccdd01"});
+
+    // eth_estimateGas still records the log once, from its full-gas run.
+    var estimate = try dispatchTransaction(&rt, "eth_estimateGas", STATICCALL_FORWARDER_TEXT, "0xaabbccdd02");
+    defer estimate.deinit(allocator);
+    try std.testing.expect(estimate.error_value == null);
+    try expectDrained(&rt, &.{"0xaabbccdd02"});
+}
+
+test "console regression: eth_signTransaction records no logs" {
+    // eth_signTransaction executes nothing, but its gas estimate recorded the log,
+    // and TEVM drains only after eth_call, eth_estimateGas, eth_sendTransaction and
+    // eth_sendRawTransaction, so the entry surfaced as output of the next call.
+    try expectMethodRecordsNoLogs("eth_signTransaction");
+}
+
+test "console regression: eth_createAccessList records no logs" {
+    // Same leak as eth_signTransaction: the access list gas estimate recorded the
+    // log, and TEVM never drains after eth_createAccessList.
+    try expectMethodRecordsNoLogs("eth_createAccessList");
+}
+
+fn expectMethodRecordsNoLogs(method: []const u8) !void {
+    const allocator = std.testing.allocator;
+    var rt = try runtime_mod.NodeRuntime.init(allocator, null);
+    defer rt.deinit();
+    try rt.state.setCode(try primitives.Address.fromHex(STATICCALL_FORWARDER_TEXT), consoleForwarderCode(0xfa));
+
+    var response = try dispatchTransaction(&rt, method, STATICCALL_FORWARDER_TEXT, "0xaabbccdd01");
+    defer response.deinit(allocator);
+    try std.testing.expect(response.error_value == null);
+    try expectDrained(&rt, &.{});
 }

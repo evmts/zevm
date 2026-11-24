@@ -927,7 +927,7 @@ Field contract:
 | `hardhat_setLoggingEnabled` | `[enabled]` | `true` | none |
 | `zevm_metadata` | `[]` or omitted | `NodeMetadata` | `anvil_metadata`, `hardhat_metadata` |
 | `zevm_nodeInfo` | `[]` or omitted | `NodeInfo` | `anvil_nodeInfo` |
-| `tevm_drainConsoleLogs` | `[]` or omitted | `DataHex[]`: raw calldata of each call to the Hardhat console address `0x000000000000000000636f6e736f6c652e6c6f67` since the last drain, in FIFO order; the call clears the buffer; always `[]` in light mode | none |
+| `tevm_drainConsoleLogs` | `[]` or omitted | `DataHex[]`: raw calldata of each call to the Hardhat console address `0x000000000000000000636f6e736f6c652e6c6f67` since the last drain, in FIFO order. Each executed console call is recorded once; gas estimate search probes and the gas estimates that `eth_sendTransaction`, `eth_signTransaction` and `eth_createAccessList` run internally record nothing. The call clears the buffer; always `[]` in light mode | none |
 
 Parameter token typing contract (applies to the `Exact params` column above):
 

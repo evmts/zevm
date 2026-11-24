@@ -107,6 +107,14 @@ const ExecuteOptions = struct {
     capture_console_logs: bool = true,
 };
 
+pub const EstimateOptions = struct {
+    /// Record Hardhat console.log calldata from the full-gas run. A method that
+    /// estimates on the caller's behalf turns this off: eth_sendTransaction
+    /// records each log when the transaction executes, and eth_signTransaction
+    /// executes nothing.
+    capture_console_logs: bool = true,
+};
+
 const SimulateOptions = struct {
     trace_transfers: bool = false,
     validation: bool = false,
@@ -374,6 +382,15 @@ pub fn handleEthEstimateGas(
     rt: *runtime.NodeRuntime,
     params: ?std.json.Value,
 ) !std.json.Value {
+    return handleEthEstimateGasWithOptions(allocator, rt, params, .{});
+}
+
+pub fn handleEthEstimateGasWithOptions(
+    allocator: std.mem.Allocator,
+    rt: *runtime.NodeRuntime,
+    params: ?std.json.Value,
+    options: EstimateOptions,
+) !std.json.Value {
     clearLastExecutionErrorData();
     // NodeRuntime mode gating lives in dispatch_wiring so light mode can return
     // JSON-RPC -32010 before the trusted simulation path is entered.
@@ -395,7 +412,7 @@ pub fn handleEthEstimateGas(
         try applyStateOverrides(allocator, rt, overrides, null, null);
     }
 
-    const estimate = try estimateGas(allocator, rt, parsed.tx, block_ctx);
+    const estimate = try estimateGas(allocator, rt, parsed.tx, block_ctx, options.capture_console_logs);
     return hexQuantity(allocator, estimate);
 }
 
@@ -419,12 +436,14 @@ pub fn handleEthCreateAccessList(
     try rt.state.checkpoint();
     defer rt.state.revert();
 
+    // TEVM drains console logs only after methods that return execution output,
+    // so an access list estimate records none.
     var gas_used = intrinsicGas(rt, parsed.tx, block_ctx);
     var execution_error = false;
-    if (estimateGas(allocator, rt, parsed.tx, block_ctx)) |estimate| {
+    if (estimateGas(allocator, rt, parsed.tx, block_ctx, false)) |estimate| {
         gas_used = estimate;
     } else |_| {
-        if (executeOnce(allocator, rt, parsed.tx, block_ctx, gasLimit(parsed.tx, block_ctx))) |result| {
+        if (executeOnceWithOptions(allocator, rt, parsed.tx, block_ctx, gasLimit(parsed.tx, block_ctx), .{ .capture_console_logs = false })) |result| {
             var owned_result = result;
             defer owned_result.deinit(allocator);
             gas_used = owned_result.gas_used;
@@ -1756,6 +1775,7 @@ fn estimateGas(
     rt: *runtime.NodeRuntime,
     tx: TransactionRequest,
     block_ctx: guillotine_mini.BlockContext,
+    capture_console_logs: bool,
 ) !u64 {
     const intrinsic = intrinsicGas(rt, tx, block_ctx);
     var high = gasLimit(tx, block_ctx);
@@ -1768,7 +1788,8 @@ fn estimateGas(
         if (high < intrinsic) return error.ExecutionFailed;
     }
 
-    var high_result = try executeOnce(allocator, rt, tx, block_ctx, high);
+    // Only the full-gas run may record console logs; the search probes never do.
+    var high_result = try executeOnceWithOptions(allocator, rt, tx, block_ctx, high, .{ .capture_console_logs = capture_console_logs });
     high_result.deinit(allocator);
 
     var low = intrinsic;

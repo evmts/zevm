@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Record each Hardhat `console.log` call once when `eth_sendTransaction` omits `gas`.
+  The gas estimate it ran first recorded every call a second time. The internal gas
+  estimates of `eth_signTransaction` and `eth_createAccessList` now record nothing, so
+  their calls no longer surface in the next `tevm_drainConsoleLogs`.
 - Install the canonical EIP-4788, EIP-2935, EIP-7002, and EIP-7251 system contract
   bytecode (nonce 1, empty storage) in every node-owned local/dev genesis. Mining a
   Prague or Osaka block on a dev or mainnet-configured chain previously failed with

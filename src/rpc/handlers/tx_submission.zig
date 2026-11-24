@@ -536,11 +536,13 @@ fn checkedTotalCost(value: u256, max_gas_cost: u256, max_blob_gas_cost: u256) er
 
 // An omitted gas limit must cover execution and code deposit, not just intrinsic
 // transaction cost. Reuse the native simulator so calls and submissions agree.
+// The estimate records no console logs: a sent transaction records each log
+// once when it executes, and a signed one never executes here.
 fn estimateRequestGas(allocator: std.mem.Allocator, rt: *runtime.NodeRuntime, transaction: std.json.Value) TxSubmissionError!u64 {
     var items = std.json.Array.init(allocator);
     defer items.deinit();
     try items.append(transaction);
-    const estimated = simulation.handleEthEstimateGas(allocator, rt, .{ .array = items }) catch |err| switch (err) {
+    const estimated = simulation.handleEthEstimateGasWithOptions(allocator, rt, .{ .array = items }, .{ .capture_console_logs = false }) catch |err| switch (err) {
         error.OutOfMemory => return TxSubmissionError.OutOfMemory,
         else => return TxSubmissionError.IntrinsicGasExceedsLimit,
     };
