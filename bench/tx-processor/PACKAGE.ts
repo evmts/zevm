@@ -5,6 +5,7 @@ const suite = benchSuite({
   summary: "EVM transaction execution (ETH transfer, storage+log contract, keccak loop, CREATE, SHA256 precompile)",
   srcs: [
     "src/blob_fee.zig",
+    "src/console_log.zig",
     "src/evm_overrides.zig",
     "src/hardfork_schedule.zig",
     "src/host_adapter.zig",

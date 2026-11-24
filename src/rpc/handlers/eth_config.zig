@@ -114,10 +114,10 @@ pub fn forkHash(
 
     // The merge was triggered by terminal total difficulty and is not part of the fork ID.
     const block_forks = [_]u64{
-        config.homestead_block,      config.dao_block,          config.tangerine_whistle_block,
-        config.spurious_dragon_block, config.byzantium_block,   config.constantinople_block,
-        config.petersburg_block,     config.istanbul_block,     config.muir_glacier_block,
-        config.berlin_block,         config.london_block,       config.arrow_glacier_block,
+        config.homestead_block,       config.dao_block,       config.tangerine_whistle_block,
+        config.spurious_dragon_block, config.byzantium_block, config.constantinople_block,
+        config.petersburg_block,      config.istanbul_block,  config.muir_glacier_block,
+        config.berlin_block,          config.london_block,    config.arrow_glacier_block,
         config.gray_glacier_block,
     };
     var previous: u64 = 0;
