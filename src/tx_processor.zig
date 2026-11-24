@@ -78,6 +78,7 @@ pub const TxError = error{
     BlockGasLimitExceeded,
     /// Declared gas exceeds EIP-7825's 2^24 limit on Osaka or later.
     TransactionGasLimitExceeded,
+    InitcodeTooLarge,
     IntrinsicGasExceedsLimit,
     GasPriceBelowBaseFee,
     TipExceedsFeeCap,
@@ -432,6 +433,9 @@ pub fn processTransactionWithOptions(
 
     if (!transactionTypeSupported(options.receipt_type, hardfork)) return TxError.UnsupportedTransactionType;
     if (tx.gas_limit > block_ctx.block_gas_limit) return TxError.BlockGasLimitExceeded;
+    if (hardfork.isAtLeast(.SHANGHAI) and tx.to == null and tx.data.len > primitives.GasConstants.MaxInitcodeSize) {
+        return TxError.InitcodeTooLarge;
+    }
 
     if (!options.skip_sender_eoa_check) {
         const sender_code = sm.getCode(caller) catch return TxError.StateError;

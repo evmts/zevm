@@ -318,6 +318,7 @@ pub fn buildBlockWithOptions(
             tx_processor.TxError.SenderNotEOA,
             tx_processor.TxError.UnsupportedTransactionType,
             tx_processor.TxError.IntrinsicGasExceedsLimit,
+            tx_processor.TxError.InitcodeTooLarge,
             tx_processor.TxError.TransactionGasLimitExceeded,
             tx_processor.TxError.InsufficientBalance,
             tx_processor.TxError.GasPriceBelowBaseFee,

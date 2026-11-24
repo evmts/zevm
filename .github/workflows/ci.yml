@@ -261,6 +261,10 @@ jobs:
           bash tools/fetch-early-state.sh
           zig build verify-early-state -Doptimize=ReleaseSafe
 
+      - name: Berlin and Shanghai state tests
+        working-directory: zevm
+        run: zig build verify-mid-forks
+
       - name: Verify release qualification coverage
         working-directory: zevm
         run: zig build qualification-check -- --require-covered

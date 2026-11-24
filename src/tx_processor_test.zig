@@ -69,6 +69,44 @@ test "contract creation intrinsic gas follows the Homestead boundary" {
     try std.testing.expectEqual(@as(u64, 53_068), tx_processor.intrinsicGasForFork(&.{0x01}, true, .HOMESTEAD));
 }
 
+test "EIP-3860 rejects oversized creation transactions from Shanghai" {
+    const max_size = primitives.GasConstants.MaxInitcodeSize;
+    const data = [_]u8{0} ** (max_size + 1);
+    const sender = primitives.Address.fromU256(0x100);
+    const recipient = primitives.Address.fromU256(0x200);
+    const cases = [_]struct { fork: guillotine_mini.Hardfork, len: usize, to: ?primitives.Address, valid: bool }{
+        .{ .fork = .BERLIN, .len = data.len, .to = null, .valid = true },
+        .{ .fork = .SHANGHAI, .len = max_size, .to = null, .valid = true },
+        .{ .fork = .SHANGHAI, .len = data.len, .to = null, .valid = false },
+        .{ .fork = .SHANGHAI, .len = data.len, .to = recipient, .valid = true },
+    };
+    for (cases) |case| {
+        var sm = try state_manager.StateManager.init(std.testing.allocator, null);
+        defer sm.deinit();
+        var adapter = host_adapter.HostAdapter{ .state = &sm };
+        try sm.setBalance(sender, 1_000_000);
+        const result = tx_processor.processTransactionWithOptions(
+            std.testing.allocator,
+            &sm,
+            adapter.hostInterface(),
+            sender,
+            makeLegacyTx(.{ .to = case.to, .value = 0, .data = data[0..case.len], .gas_limit = 500_000, .gas_price = 1, .nonce = 0 }),
+            defaultBlockContext(),
+            .{ .hardfork_override = case.fork },
+        );
+        if (result) |value| {
+            var receipt = value;
+            defer receipt.deinit(std.testing.allocator);
+            try std.testing.expect(case.valid and receipt.status.?.success);
+        } else |err| {
+            if (case.valid) return err;
+            try std.testing.expectEqual(@as(anyerror, error.InitcodeTooLarge), err);
+            try std.testing.expectEqual(@as(u64, 0), try sm.getNonce(sender));
+            try std.testing.expectEqual(@as(u256, 1_000_000), try sm.getBalance(sender));
+        }
+    }
+}
+
 test "resolveHardfork follows block number and timestamp schedule" {
     var ctx = defaultBlockContext();
 

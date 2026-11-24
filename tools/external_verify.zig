@@ -69,6 +69,19 @@ const legacy_state_fixture_dirs = [_][]const u8{
 
 const hive_rpc_head_forkchoice_path = "lib/execution-apis/tests/headfcu.json";
 
+const legacy_state_root = "lib/ethereum-tests/LegacyTests/Cancun/GeneralStateTests/";
+const mid_fork_state_dirs = [_][]const u8{
+    legacy_state_root ++ "stEIP150singleCodeGasPrices",
+    legacy_state_root ++ "stEIP2930",
+    legacy_state_root ++ "Shanghai/stEIP3651-warmcoinbase",
+    legacy_state_root ++ "Shanghai/stEIP3855-push0",
+    legacy_state_root ++ "Shanghai/stEIP3860-limitmeterinitcode",
+    legacy_state_root ++ "Pyspecs/berlin/eip2930_access_list",
+    legacy_state_root ++ "Pyspecs/shanghai/eip3651_warm_coinbase",
+    legacy_state_root ++ "Pyspecs/shanghai/eip3855_push0",
+    legacy_state_root ++ "Pyspecs/shanghai/eip3860_initcode",
+};
+
 // External fixture expansion remains tracked by release-readiness tickets:
 // state/block fixture discovery, broader legacy-state coverage, and the
 // non-rpc Hive simulator coverage are not complete yet.
@@ -133,6 +146,8 @@ const VerifyContext = struct {
     early_counts: ?*EarlyCounts = null,
     progress: *ProgressState,
     timer: *std.time.Timer,
+    mid_forks_only: bool,
+    state_counts: std.EnumArray(guillotine_mini.Hardfork, struct { passed: usize = 0, failed: usize = 0 }) = .initFill(.{}),
 
     fn claimTask(self: *VerifyContext, label: []const u8) ?usize {
         if (!self.matchesLabel(label)) return null;
@@ -370,6 +385,13 @@ pub fn main() !void {
         .options = options,
         .progress = &progress,
         .timer = &timer,
+        .mid_forks_only = std.mem.eql(u8, args[2], "--mid-forks"),
+    };
+    defer for (std.enums.values(guillotine_mini.Hardfork)) |fork| {
+        const counts = ctx.state_counts.get(fork);
+        if (counts.passed + counts.failed > 0 or (ctx.mid_forks_only and (fork == .BERLIN or fork == .SHANGHAI))) {
+            std.debug.print("external-verify: legacy-state fork={s} passed={d} failed={d}\n", .{ fork.toString(), counts.passed, counts.failed });
+        }
     };
 
     std.debug.print("external-verify: start shard={d}/{d} timeout_seconds={d} progress_every={d}\n", .{
@@ -395,6 +417,8 @@ pub fn main() !void {
 
     const verification = if (std.mem.eql(u8, args[2], "--early-state"))
         runEarlyStateFixtures(allocator, repo_root, &ctx)
+    else if (ctx.mid_forks_only)
+        runMidForkStateFixtures(allocator, repo_root, &ctx)
     else
         runExternalVerify(allocator, repo_root, args[2], &ctx);
     verification catch |err| {
@@ -427,7 +451,7 @@ pub fn main() !void {
 fn runExternalVerify(allocator: std.mem.Allocator, repo_root: []const u8, zevm_bin: []const u8, ctx: *VerifyContext) !void {
     try runExecutionSpecStateFixtures(allocator, repo_root, ctx);
     try runLegacyInvalidIntrinsicGasFixture(allocator, repo_root, ctx);
-    try runLegacyStateFixtures(allocator, repo_root, ctx);
+    try runLegacyStateFixtures(allocator, repo_root, &legacy_state_fixture_dirs, ctx);
     try runBlockchainFixtureSmoke(allocator, repo_root, ctx);
     try runExecutionSpecBlockchainStructuralFixtures(allocator, repo_root, ctx);
     try runHiveRpcCompatibilityFixtures(allocator, repo_root, zevm_bin, ctx);
@@ -603,8 +627,16 @@ fn runEarlyStateFixtures(allocator: std.mem.Allocator, repo_root: []const u8, ct
     if (ctx.progress.failed.load(.monotonic) != 0) return VerifyError.UnexpectedState;
 }
 
-fn runLegacyStateFixtures(allocator: std.mem.Allocator, repo_root: []const u8, ctx: *VerifyContext) !void {
-    for (legacy_state_fixture_dirs) |relative_path| {
+fn runMidForkStateFixtures(allocator: std.mem.Allocator, repo_root: []const u8, ctx: *VerifyContext) !void {
+    try runLegacyStateFixtures(allocator, repo_root, &mid_fork_state_dirs, ctx);
+    if (ctx.progress.failed.load(.monotonic) > 0) return VerifyError.UnexpectedState;
+    if (ctx.options.match == null and ctx.options.shard_total == 1) {
+        if (ctx.state_counts.get(.BERLIN).passed == 0 or ctx.state_counts.get(.SHANGHAI).passed == 0) return VerifyError.InvalidFixture;
+    }
+}
+
+fn runLegacyStateFixtures(allocator: std.mem.Allocator, repo_root: []const u8, dirs: []const []const u8, ctx: *VerifyContext) !void {
+    for (dirs) |relative_path| {
         const path = try std.fs.path.join(allocator, &.{ repo_root, relative_path });
         defer allocator.free(path);
         try runLegacyStateFixtureDir(allocator, path, relative_path, ctx);
@@ -694,6 +726,8 @@ fn runLegacyStateFixture(
         post_count += post_cases.array.items.len;
         if (count) |c| c.discovered += post_cases.array.items.len;
 
+        if (ctx.mid_forks_only and hardfork != .BERLIN and hardfork != .SHANGHAI) continue;
+
         for (post_cases.array.items, 0..) |post_case, post_index| {
             const task_label = try std.fmt.allocPrint(allocator, "{s} :: {s} :: {s} post={d}", .{
                 label_path,
@@ -705,14 +739,17 @@ fn runLegacyStateFixture(
             if (ctx.claimTask(task_label)) |task_id| {
                 const started_ns = ctx.startTask(task_id, suite, task_label);
                 runLegacyStatePostCase(allocator, fixture, post_case, hardfork, ctx.options.dump_state_on_mismatch) catch |err| {
+                    ctx.state_counts.getPtr(hardfork).failed += 1;
                     ctx.failTask(task_id, suite, task_label, started_ns, err);
                     if (count) |c| {
                         c.failed += 1;
                         continue;
                     }
+                    if (ctx.mid_forks_only) continue;
                     return err;
                 };
                 if (count) |c| c.passed += 1;
+                ctx.state_counts.getPtr(hardfork).passed += 1;
                 ctx.finishTask(task_id, suite, started_ns);
             }
         }
@@ -2068,7 +2105,10 @@ fn expectFixtureTxError(
 fn txErrorFromFixtureException(name: []const u8) ?zevm.tx_processor.TxError {
     if (std.ascii.eqlIgnoreCase(name, "SenderNotEOA")) return zevm.tx_processor.TxError.SenderNotEOA;
     if (std.ascii.eqlIgnoreCase(name, "TR_TypeNotSupported")) return zevm.tx_processor.TxError.UnsupportedTransactionType;
-    if (std.ascii.eqlIgnoreCase(name, "TR_IntrinsicGas")) return zevm.tx_processor.TxError.IntrinsicGasExceedsLimit;
+    if (std.ascii.eqlIgnoreCase(name, "TR_IntrinsicGas") or
+        std.mem.eql(u8, name, "TransactionException.INTRINSIC_GAS_TOO_LOW")) return zevm.tx_processor.TxError.IntrinsicGasExceedsLimit;
+    if (std.ascii.eqlIgnoreCase(name, "TR_InitCodeLimitExceeded") or
+        std.mem.eql(u8, name, "TransactionException.INITCODE_SIZE_EXCEEDED")) return zevm.tx_processor.TxError.InitcodeTooLarge;
     if (std.ascii.eqlIgnoreCase(name, "TR_FeeCapLessThanBlocks")) return zevm.tx_processor.TxError.GasPriceBelowBaseFee;
     if (std.ascii.eqlIgnoreCase(name, "TR_TipGtFeeCap")) return zevm.tx_processor.TxError.TipExceedsFeeCap;
     if (std.ascii.eqlIgnoreCase(name, "TR_NoFunds")) return zevm.tx_processor.TxError.InsufficientBalance;

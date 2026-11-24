@@ -382,6 +382,13 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run_early_state.addArgs(args);
     early_state_step.dependOn(&run_early_state.step);
 
+    const run_mid_forks = b.addRunArtifact(external_verify_exe);
+    run_mid_forks.step.dependOn(launch_policy_preflight_step);
+    run_mid_forks.addDirectoryArg(b.path("."));
+    run_mid_forks.addArg("--mid-forks");
+    if (b.args) |args| run_mid_forks.addArgs(args);
+    b.step("verify-mid-forks", "Verify Berlin and Shanghai external state tests").dependOn(&run_mid_forks.step);
+
     const verify_fast_step = b.step("verify-fast", "Run fast local verification");
     verify_fast_step.dependOn(test_step);
 
