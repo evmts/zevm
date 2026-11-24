@@ -148,6 +148,19 @@ const jsCheck = S.Shell.Test({
   timeout: "2m",
 })
 
+const docsMirror = S.Shell.Test({
+  summary: "Check that docs/src/content/docs mirrors the authored docs (node tools/docs_mirror.mjs)",
+  bin: node,
+  args: ["tools/docs_mirror.mjs"],
+  data: [
+    S.file("tools/docs_mirror.mjs"),
+    S.glob("docs/**/*.md", { exclude: ["docs/node_modules/**"] }),
+    S.glob("docs/**/*.mdx", { exclude: ["docs/node_modules/**"] }),
+  ],
+  sandbox: "none",
+  timeout: "2m",
+})
+
 export const Package = S.Package({
   targets: {
     "zig-sources": zigSources,
@@ -162,6 +175,7 @@ export const Package = S.Package({
     "qualification-check": qualificationCheck,
     fmt,
     "js-check": jsCheck,
+    "docs-mirror": docsMirror,
     bench: S.Alias(benchPkg.report),
     "bench-update-baseline": S.Alias(benchPkg["update-baseline"]),
   },

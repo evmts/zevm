@@ -41,18 +41,20 @@ Rules:
 
 ## Transaction Envelope Support
 
-- only legacy type `0x0` is supported in the current ZEVM contract
 - `eth_sendTransaction` produces legacy type `0x0`
-- `eth_sendRawTransaction` accepts only legacy raw transactions
-- typed EIP-2718 envelopes (`0x1`, `0x2`, `0x3`, or unknown type byte) return `-32602`
+- `eth_sendRawTransaction` accepts legacy plus EIP-2930 (`0x1`) from Berlin, EIP-1559 (`0x2`) from London, EIP-4844 (`0x3`) from Cancun, and EIP-7702 (`0x4`) from Prague
+- unknown or not-yet-active typed envelopes return `-32602`
+- from Osaka, a declared gas limit above 16,777,216 returns `-32000` (`transaction gas limit exceeds Osaka cap (16777216)`)
 - intrinsic gas and EIP-3860 initcode limits are evaluated against the trusted runtime's configured hardfork policy
 
 ## Submission Methods
 
 | Canonical method | Exact params | Exact result | Accepted aliases | Errors |
 | --- | --- | --- | --- | --- |
-| `eth_sendTransaction` | `[tx]` (`TransactionRequest`) | `Hash32` | none | `-32602` malformed request/unsupported fields; `-32603` runtime rejection |
-| `eth_sendRawTransaction` | `[rawTx]` | `Hash32` | none | `-32602` malformed hex/decode/unsupported tx type; `-32603` runtime rejection |
+| `eth_sendTransaction` | `[tx]` (`TransactionRequest`) | `Hash32` | none | `-32602` malformed request/unsupported fields; `-32000` Osaka transaction gas cap; `-32603` runtime rejection |
+| `eth_sendRawTransaction` | `[rawTx]` | `Hash32` | none | `-32602` malformed hex/decode/unsupported tx type; `-32000` Osaka transaction gas cap; `-32603` runtime rejection |
+| `eth_sign` | `[address, HexData]` | 65-byte EIP-191 signature hex | none | `-32602` malformed params or unmanaged signer |
+| `eth_signTransaction` | `[tx]` (`TransactionRequest`) | signed legacy transaction RLP hex | none | `-32602` malformed request, unsupported fields, or unmanaged signer; `-32000` Osaka transaction gas cap; `-32603` runtime signing failure |
 
 Submission signing and routing rules:
 
@@ -106,6 +108,7 @@ Trusted txpool introspection compatibility methods:
 | `zevm_setCoinbase` | `[address]` | `true` | `anvil_setCoinbase`, `hardhat_setCoinbase` |
 | `zevm_setBlockGasLimit` | `[gasLimit]` | `true` | `anvil_setBlockGasLimit`, `evm_setBlockGasLimit` |
 | `zevm_setNextBlockBaseFeePerGas` | `[baseFee]` | `true` | `anvil_setNextBlockBaseFeePerGas`, `hardhat_setNextBlockBaseFeePerGas` |
+| `zevm_setPrevRandao` | `[prevRandao]` | `true` | `anvil_setPrevRandao`, `hardhat_setPrevRandao` |
 | `zevm_setMinGasPrice` | `[gasPrice]` | `true` | `anvil_setMinGasPrice`, `hardhat_setMinGasPrice` |
 | `zevm_increaseTime` | `[seconds]` | `QuantityHex` accumulated offset | `anvil_increaseTime`, `evm_increaseTime` |
 | `zevm_setNextBlockTimestamp` | `[timestamp]` | `true` | `anvil_setNextBlockTimestamp`, `evm_setNextBlockTimestamp` |

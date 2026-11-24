@@ -5,7 +5,7 @@ description: Diagnose common ZEVM build, startup, configuration, and RPC errors.
 
 # Troubleshooting
 
-Before troubleshooting startup/runtime behavior, confirm [Installation](./installation) prerequisites are satisfied (Zig version, Rust/Cargo, package-manager dependency fetch, and successful source build output at `./zig-out/bin/zevm`).
+Before troubleshooting startup/runtime behavior, confirm [Installation](./installation) prerequisites are satisfied (Zig version, Rust/Cargo, pinned sibling checkouts of `voltaire` and `guillotine-mini`, and successful source build output at `./zig-out/bin/zevm`).
 
 ## Capture Startup Logs (Phase 1)
 
@@ -70,13 +70,13 @@ Logs intentionally omit raw JSON-RPC bodies, request params, private keys, raw t
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| `zig build` fails to resolve dependencies | Missing package fetch or stale manifest pin | Run `zig build --fetch`, then `zig build dependency-preflight -- --zig-version 0.15.2`; do not replace URL/hash pins with sibling paths |
+| `zig build` fails to resolve dependencies | Missing `../voltaire` or `../guillotine-mini` checkout, or missing package fetch | Run `bash tools/checkout-native.sh` and `zig build --fetch`, then `zig build dependency-preflight -- --zig-version 0.15.2` |
 | Startup fails with unknown flag | Unsupported CLI argument | Use only documented startup flags from configuration reference pages |
 | Startup fails loading `--config` | Missing file, unreadable file, or malformed JSON | Use the reported path/failure class to fix the config file; ZEVM exits non-zero and does not fall back to defaults |
 | Startup fails with `--mode` + `--config` mode mismatch | User-supplied `--mode` disagrees with the single selected config mode branch | Ensure exactly one mode branch is set in config and it matches `--mode` (`mode.trusted` with `--mode trusted`, `mode.light` with `--mode light`); see [Configuration Overview -> Mode-branch Rules](../reference/configuration/overview#mode-branch-rules) |
 | Startup fails with `--mining interval` | Missing `--block-time` | Add `--block-time <seconds>` |
 | Startup fails with `--block-time` | Mining mode is not `interval` | Use `--mining interval --block-time <seconds>` or remove `--block-time` |
-| Startup fails with `--fork-block-number` | Missing `--fork-url` | Provide `--fork-url` whenever `--fork-block-number` is set |
+| Startup fails with `--fork-block-number` | No fork URL from `--fork-url` or `mode.trusted.fork.url` | Provide `--fork-url`, or set `mode.trusted.fork.url` in `--config` |
 | Light-mode startup fails | Missing `--consensus-rpc-url` | Provide a valid consensus RPC URL |
 | Light-mode startup fails before RPC listener opens, and logs mention `/eth/v1/beacon/genesis` request/parse errors | Consensus endpoint is unreachable, non-Beacon, requires auth, returns non-`200`, or serves malformed genesis payload | Verify `consensusRpcUrl` reaches a Beacon API and that `GET /eth/v1/beacon/genesis` returns HTTP `200` with `data.genesis_validators_root`; see [Validation Rules](../reference/configuration/light-mode#validation-rules) and [Light-mode startup handshake checks](#light-mode-startup-handshake-checks) |
 | Light-mode startup fails with genesis/root mismatch (selected `network` disagrees with returned `genesis_validators_root`) | Beacon endpoint serves a different network than configured `network` | Point `--consensus-rpc-url` to Beacon API for the same network or switch `--network` to match endpoint root; verify against [Validation Rules](../reference/configuration/light-mode#validation-rules) |

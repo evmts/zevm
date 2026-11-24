@@ -6,20 +6,22 @@ ZEVM uses docs-first changes and the maintained sibling Zig sources.
 
 - Zig `0.15.2`
 - Rust/Cargo
-- Node `22` or newer for npm package checks
-- Bun for Hive and release audit tooling
+- `git` and `jq` for `tools/checkout-native.sh`
+- Node `22.12.0` or newer for npm package checks (`engines.node` in `npm/zevm/package.json`)
+- Bun for Hive and release audit tooling; Docker and Go for the Hive smoke
 - `jj` for local version-control work in this repository
 
 ## Setup
 
 ```bash
+bash tools/checkout-native.sh
 zig build --fetch
 zig build dependency-preflight -- --zig-version 0.15.2
 npm --prefix npm/zevm install --ignore-scripts
 zig build
 ```
 
-Keep `../voltaire` and `../guillotine-mini` beside this checkout. Native builds use those sources directly.
+`build.zig.zon` resolves `../voltaire` and `../guillotine-mini` by path, so native builds compile those sibling checkouts directly. `tools/checkout-native.sh` clones a missing sibling at the commit pinned in `native-dependencies.json`; it never resets an existing checkout and fails when one is at a different commit. To change a native dependency, fix it in the sibling, push it upstream, and bump `native-dependencies.json` to the pushed revision.
 
 ## Local Gates
 

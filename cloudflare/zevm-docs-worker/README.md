@@ -15,4 +15,4 @@ npm run deploy
 `npm run deploy` runs the Starlight build, copies `docs/dist` into the Worker
 asset bundle, and deploys with Alchemy.
 
-The Worker and `zevm.sh/*` route are declared in `alchemy.run.ts`.
+The Worker and `zevm.sh/*` route are declared in `alchemy.run.js`.

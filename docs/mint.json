@@ -48,6 +48,15 @@
       ]
     },
     {
+      "group": "Library Reference",
+      "pages": [
+        "reference/library/c-abi",
+        "reference/library/database",
+        "reference/library/execution-library",
+        "reference/library/genesis-and-chain-import"
+      ]
+    },
+    {
       "group": "JSON-RPC Reference",
       "pages": [
         "reference/json-rpc/overview",

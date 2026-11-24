@@ -16,7 +16,7 @@ Phase-1 operator-facing startup inputs are `network`, `consensusRpcUrl`, and `ex
 
 ## Networks And Chain IDs
 
-Supported light networks are a closed phase-1 set: `mainnet`, `sepolia`, and `holesky`.
+Supported light networks are a closed phase-1 set: `mainnet`, `sepolia`, `holesky`, and `hoodi`. `holesky` remains for backwards compatibility; `hoodi` is the maintained testnet replacement.
 Adding or removing a supported light network is a normative public-contract change and requires coordinated updates to both [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).
 Canonical constants for `eth_chainId` and startup genesis-root validation are defined in [Canonical Chain ID And Genesis Root Mapping](#canonical-chain-id-and-genesis-root-mapping).
 
@@ -29,12 +29,13 @@ Use this mapping for both light-mode `eth_chainId` and startup handshake root va
 | `mainnet` | `0x1` | `0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95` |
 | `sepolia` | `0xaa36a7` | `0xd8ea171f3c94aea21ebc42a1ed61052acf3f9209c00e4efbaaddac09ed9b8078` |
 | `holesky` | `0x4268` | `0x9143aa7c615a7f7115e2b6aac319c03529df8242ae705fba9df39b79c59fa8b1` |
+| `hoodi` | `0x88bb0` | `0x212f13fc4df078b6cb7db228f1c8307566dcecf900867401a92023d7ba99cb5f` |
 
 ## CLI And Config Field Map
 
 | CLI flag | Config field | Type | Default |
 | --- | --- | --- | --- |
-| `--network` | `mode.light.network` | `mainnet`, `sepolia`, `holesky` | `mainnet` |
+| `--network` | `mode.light.network` | `mainnet`, `sepolia`, `holesky`, `hoodi` | `mainnet` |
 | `--consensus-rpc-url` | `mode.light.consensusRpcUrl` | Beacon API URL | required |
 | `--execution-rpc-url` | `mode.light.executionRpcUrl` | Execution JSON-RPC URL with `eth_getProof`/`eth_getCode` | `consensusRpcUrl` |
 | `--checkpoint` | `mode.light.checkpoint` | `0x`-prefixed 32-byte hash | none |
@@ -185,7 +186,7 @@ Precedence interaction summary:
 - `consensusRpcUrl` must serve the same network selected by `network`
 - selected startup checkpoint must match `network`; mismatch is startup failure before opening the HTTP listener
 - light-only flags are invalid in trusted mode
-- `network` must be one of `mainnet`, `sepolia`, or `holesky`
+- `network` must be one of `mainnet`, `sepolia`, `holesky`, or `hoodi`
 - `--strict-checkpoint-age` is a presence flag: present means `true`, omitted means `false`, and assignment forms like `--strict-checkpoint-age=false` are invalid
 - `mode.light.checkpoint` may be omitted or set to `null`; in either case it is treated as absent for checkpoint precedence
 - `checkpoint`, when present as a non-null startup input, must be a `0x`-prefixed 32-byte hash

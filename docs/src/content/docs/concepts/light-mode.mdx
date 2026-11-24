@@ -13,7 +13,7 @@ Light mode provides proof-backed, consensus-anchored reads and readiness reporti
 
 Phase-1 operator-facing startup inputs are `network`, `consensusRpcUrl`, and `executionRpcUrl`, plus optional checkpoint controls (`checkpoint`, `checkpointDir`, `maxCheckpointAgeSeconds`, `strictCheckpointAge`).
 
-Supported light networks are a closed phase-1 set: `mainnet`, `sepolia`, and `holesky`.
+Supported light networks are a closed phase-1 set: `mainnet`, `sepolia`, `holesky`, and `hoodi`.
 Any other `network` value is invalid startup input.
 Selected `network` constrains both runtime `eth_chainId` and pre-listener startup handshake root validation (`GET /eth/v1/beacon/genesis`); mismatch is startup failure before the HTTP listener opens.
 

@@ -69,6 +69,7 @@ Validation:
 - runtime `zevm_reset` uses `QuantityHex` for `forkConfig.blockNumber`; example: startup decimal `1000000` corresponds to JSON-RPC `"blockNumber": "0xf4240"`
 - trusted hardfork activation values use decimal `u64` in config; omitted `hardfork` fields inherit from the resolved chain default
 - default hardfork policy is explicit: `chainId = 1` uses the mainnet activation schedule, while non-mainnet trusted defaults use a dev schedule with Cancun active from genesis and Prague/Osaka inactive until configured
+- the node-owned dev genesis (no `genesis` file, no fork) also installs the canonical EIP-4788, EIP-2935, EIP-7002, and EIP-7251 system contracts: mainnet runtime bytecode, nonce `1`, zero balance, empty storage. Prague and Osaka block processing calls them, and a block is invalid when the EIP-7002 or EIP-7251 contract has no code (`MissingSystemContractCode`). A `genesis` file must carry the contracts itself; a fork reads them from the remote chain
 - trusted `genesis` paths resolve by field precedence (`--genesis` over `mode.trusted.genesis`); when present, ZEVM imports account `balance`/`wei`, `nonce`, `code`, and `storage` from the file instead of pre-funding the deterministic dev accounts
 - trusted `chainRlp` paths resolve by field precedence (`--chain-rlp` over `mode.trusted.chainRlp`); when present, ZEVM imports the stream after genesis as query-only block history, sets the canonical head to the last imported block, and does not materialize imported state, receipts, or logs
 - trusted Engine API is disabled unless `--engine-host`, `--engine-port`, or top-level `engineRpc` is supplied; it is invalid in light mode
@@ -77,7 +78,7 @@ Validation:
 
 Light CLI flags:
 
-- `--network` (`mainnet`, `sepolia`, `holesky`)
+- `--network` (`mainnet`, `sepolia`, `holesky`, `hoodi`)
 - `--consensus-rpc-url`
 - `--execution-rpc-url`
 - `--checkpoint`
@@ -103,7 +104,7 @@ Naming/path bridge for light startup inputs:
 Validation:
 
 - `consensusRpcUrl` is required in light mode
-- `network` must be one of `mainnet`, `sepolia`, `holesky`
+- `network` must be one of `mainnet`, `sepolia`, `holesky`, `hoodi`
 - `consensusRpcUrl` must serve the same network selected by `network`
 - `executionRpcUrl` must serve execution JSON-RPC for the same network when proof-backed reads are used
 - `--strict-checkpoint-age` CLI semantics are presence-based: present means `true`, omitted means `false`, and explicit assignment forms (for example `--strict-checkpoint-age=false`) are invalid
@@ -120,6 +121,7 @@ Startup consensus-network handshake (before listener):
    - `mainnet` -> `0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95`
    - `sepolia` -> `0xd8ea171f3c94aea21ebc42a1ed61052acf3f9209c00e4efbaaddac09ed9b8078`
    - `holesky` -> `0x9143aa7c615a7f7115e2b6aac319c03529df8242ae705fba9df39b79c59fa8b1`
+   - `hoodi` -> `0x212f13fc4df078b6cb7db228f1c8307566dcecf900867401a92023d7ba99cb5f`
 5. if handshake fails (request failure, non-`200`, malformed payload, missing/invalid root, or root mismatch), ZEVM must fail before opening the HTTP listener
 
 ## 5. Config File Rules
@@ -159,7 +161,7 @@ Structured trusted-setting resolution:
 
 - `mining` resolves as one unit from CLI `--mining` and `--block-time`; if either flag is present, ZEVM builds `mining` from CLI and ignores `mode.trusted.mining`
 - `hardfork` has no phase-1 CLI flags; ZEVM starts from the default schedule for the resolved `chainId`, then applies any `mode.trusted.hardfork` field overrides
-- `fork` resolves as one unit from CLI `--fork-url` and `--fork-block-number`; if either flag is present, ZEVM builds `fork` from CLI and ignores `mode.trusted.fork`
+- `fork` resolves as one unit from CLI `--fork-url` and `--fork-block-number`; if either flag is present, ZEVM builds `fork` from CLI, taking the URL from `mode.trusted.fork.url` when only `--fork-block-number` is present, and ignores the rest of `mode.trusted.fork`
 - `genesis` resolves as one field from CLI `--genesis`, then config `mode.trusted.genesis`, then absent
 - `chainRlp` resolves as one field from CLI `--chain-rlp`, then config `mode.trusted.chainRlp`, then absent
 - when no related CLI flags are present for that unit, ZEVM uses config value for that unit, then mode default

@@ -105,11 +105,13 @@ ZEVM imports the stream after genesis initialization as query-only block history
 
 ## Engine API Listener
 
-Trusted mode can expose a second plain-HTTP Engine API listener with top-level `engineRpc` or CLI `--engine-host` / `--engine-port`:
+Trusted mode can expose a second HTTP Engine API listener with top-level `engineRpc` or CLI `--engine-host` / `--engine-port`:
 
 ```json
 { "engineRpc": { "host": "127.0.0.1", "port": 8551 } }
 ```
+
+On that listener, every request needs an `Authorization: Bearer` HS256 JWT whose `iat` is within 60 seconds of the node clock, signed with the fixed secret `secretsecretsecretsecretsecretse` (the Hive default; no flag or config key changes it); other requests get HTTP `401`.
 
 The implemented Engine surface covers capability exchange, transition configuration exchange, forkchoice updates that validate referenced hashes against ZEVM's local block history, payload attribute build jobs, strict local payload import for known canonical parents, getPayload lookup for known payload ids, payload body lookup against local blocks, and blob lookup nulls for unavailable sidecars. It does not make ZEVM a full consensus-client-facing execution engine yet; remote P2P sync and blob sidecar retention remain out of scope.
 
@@ -132,7 +134,7 @@ Implemented Engine listener methods:
 
 - `--block-time` is required when `--mining interval`
 - `--block-time` is invalid for `auto` and `manual`
-- `--fork-block-number` is invalid without `--fork-url`
+- `--fork-block-number` without `--fork-url` reuses `mode.trusted.fork.url` from the config file and fails when no URL is available
 - `--fork-url` without `--fork-block-number` is valid and follows upstream head
 - `--genesis` is trusted-mode only and must point to a readable genesis file
 - `--chain-rlp` is trusted-mode only, query-only in phase 1, and the stream must link to the configured genesis/imported parent chain

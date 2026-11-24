@@ -11,7 +11,7 @@ Light mode is ZEVM's read-only, proof-backed, consensus-anchored runtime.
 
 ## 1. Start Light Mode
 
-Before startup, re-check [Installation](./installation) prerequisites (Zig, Rust/Cargo, package-manager dependency pins, successful build).
+Before startup, re-check [Installation](./installation) prerequisites (Zig, Rust/Cargo, pinned native dependency checkouts, successful build).
 For release/build reproducibility and metadata audit workflow, use [Release Metadata Runbook](../reference/release-metadata-runbook).
 
 Minimal startup:
@@ -51,7 +51,7 @@ Security baseline:
 
 Operational startup notes:
 
-- supported light networks are `mainnet`, `sepolia`, `holesky`
+- supported light networks are `mainnet`, `sepolia`, `holesky`, `hoodi`
 - examples on this page use `sepolia`; keep `--network`, `--consensus-rpc-url`, `--execution-rpc-url`, and `checkpointDir` for the same network
 - `--consensus-rpc-url` must be a Beacon API for the same selected network
 - `--execution-rpc-url` must be an execution JSON-RPC endpoint that serves `eth_getProof` and `eth_getCode` for the same selected network
@@ -66,6 +66,7 @@ Canonical chain-id/genesis-root mapping for supported light networks:
 | `mainnet` | `0x1` | `0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95` |
 | `sepolia` | `0xaa36a7` | `0xd8ea171f3c94aea21ebc42a1ed61052acf3f9209c00e4efbaaddac09ed9b8078` |
 | `holesky` | `0x4268` | `0x9143aa7c615a7f7115e2b6aac319c03529df8242ae705fba9df39b79c59fa8b1` |
+| `hoodi` | `0x88bb0` | `0x212f13fc4df078b6cb7db228f1c8307566dcecf900867401a92023d7ba99cb5f` |
 
 Canonical startup/config contract:
 

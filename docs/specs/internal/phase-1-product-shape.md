@@ -29,10 +29,10 @@ Forking remains trusted-mode configuration, not a third runtime mode.
 
 Non-normative summary of `docs/specs/prd.md` section 3.3:
 
-- phase-1 installation contract is source-first with package-manager dependency pins
-- canonical build commands are `zig build --fetch` and `zig build`
+- phase-1 installation contract is source-first with pinned native dependency checkouts
+- canonical build commands are `bash tools/checkout-native.sh`, `zig build --fetch`, and `zig build`
 - minimum Zig version is `0.15.2`
-- required upstream dependencies are immutable `build.zig.zon` URL/hash pins for Voltaire and Guillotine Mini
+- required upstream dependencies are sibling checkouts of Voltaire and Guillotine Mini, which `build.zig.zon` resolves by path and `native-dependencies.json` pins to full commit IDs
 - reproducibility pin tuple is `(zevmGitRevision, voltaireGitRevision, guillotineMiniGitRevision, zigVersion)`
 - release metadata uses canonical `releaseIdentifier` naming: tag-based `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`; commit-based `^commit-[0-9a-f]{40}$`
 - each ZEVM `releaseIdentifier` publishes immutable tuple/checkpoint metadata assets at canonical URLs: `https://github.com/evmts/zevm/releases/download/<releaseIdentifier>/release-tuple.json` and `.../light-default-checkpoints.json`
@@ -50,7 +50,7 @@ Non-normative summary of `docs/specs/prd.md` section 3.3:
 
 ## 4. Release Qualification And Verification (PRD 3.5 Summary)
 
-- clean-checkout qualification requires `zig build --fetch`, `zig build`, and `zig build test` success for pinned ZEVM/package commits without manual sibling repair or ad-hoc dependency edits
+- clean-checkout qualification requires `bash tools/checkout-native.sh`, `zig build --fetch`, `zig build`, and `zig build test` success for pinned ZEVM/package commits without manual sibling repair or ad-hoc dependency edits
 - shipped phase-1 surface means any normative phase-1 behavior requirement in PRD sections 3.1, 3.3, 3.4, and 4 through 12, excluding section 3.2 out-of-scope items
 - assertion mapping records are structured qualification entries and include, at minimum: `surfaceId`, `surfaceSection`, `surfaceCategory` (`startup`, `configuration`, `runtime`, `transport`, `method`, `release-asset`), `assertionType`, `assertionIdentifier`, and expected contract outcome
 - default `zig build test` must cover shipped executable startup/configuration/runtime/transport/method behaviors in PRD sections 3.1 and 4 through 12; anything outside the default graph must be explicitly treated as non-shipping

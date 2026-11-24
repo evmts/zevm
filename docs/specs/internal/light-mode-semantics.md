@@ -38,12 +38,13 @@ Light mode supports exactly:
 - `mainnet` -> `0x1`
 - `sepolia` -> `0xaa36a7` (11155111)
 - `holesky` -> `0x4268` (17000)
+- `hoodi` -> `0x88bb0` (560048)
 
 `eth_chainId` must return the fixed mapping for the selected network.
 
 Network-set governance:
 
-- phase-1 light-network set is closed and exact: `mainnet`, `sepolia`, `holesky`
+- phase-1 light-network set is closed and exact: `mainnet`, `sepolia`, `holesky`, `hoodi`
 - adding, removing, or renaming a supported light network is a normative contract change and requires synchronized updates to `docs/specs/prd.md` and `docs/specs/json-rpc-contract.md`
 
 Startup input rule:
@@ -64,6 +65,7 @@ Startup consensus-network handshake (before listener):
    - `mainnet` -> `0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95`
    - `sepolia` -> `0xd8ea171f3c94aea21ebc42a1ed61052acf3f9209c00e4efbaaddac09ed9b8078`
    - `holesky` -> `0x9143aa7c615a7f7115e2b6aac319c03529df8242ae705fba9df39b79c59fa8b1`
+   - `hoodi` -> `0x212f13fc4df078b6cb7db228f1c8307566dcecf900867401a92023d7ba99cb5f`
 5. if handshake fails (request failure, non-`200`, malformed payload, missing/invalid root, or root mismatch), startup fails before opening the HTTP listener
 
 ## 3. Checkpoint Selection And Age
@@ -157,7 +159,7 @@ Age policy:
 
 - `ready`: read-availability gate
 - `status`: `syncing`, `synced`, or `error`
-- `network`: selected light network (`mainnet`, `sepolia`, or `holesky`)
+- `network`: selected light network (`mainnet`, `sepolia`, `holesky`, or `hoodi`)
 - `checkpointSource`: `explicit`, `persisted`, or `default`
 - `lastCheckpoint`: most recently accepted checkpoint root
 - `optimisticSlot`, `safeSlot`, `finalizedSlot`

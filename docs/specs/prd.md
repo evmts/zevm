@@ -47,21 +47,21 @@ In this PRD, phase-1 scope is declared in sections 3.1, 3.3, 3.4, and 3.5, with 
 
 ### 3.3 Phase-1 source and package installation contract
 
-Phase 1 installation scope is source-first with package-manager dependency pins and release artifact jobs.
+Phase 1 installation scope is source-first with pinned native dependency checkouts and release artifact jobs.
 
-- canonical build commands: `zig build --fetch` followed by `zig build`
+- canonical build commands: `bash tools/checkout-native.sh`, then `zig build --fetch` and `zig build`
 - minimum Zig version: `0.15.2`
-- required upstream dependencies are immutable `build.zig.zon` URL/hash pins for `voltaire` and `guillotine-mini`
-- phase-1 architecture/dependency boundary: ZEVM is built as one `zevm` binary from this repository plus those package-manager dependencies
+- required upstream dependencies are sibling checkouts of `voltaire` and `guillotine-mini` at `../voltaire` and `../guillotine-mini`, which `build.zig.zon` resolves by path; `native-dependencies.json` pins each to a full git commit ID, and `tools/checkout-native.sh` clones missing siblings at those commits
+- phase-1 architecture/dependency boundary: ZEVM is built as one `zevm` binary from this repository plus those pinned sibling checkouts
 - source-build reproducibility for this contract requires one explicit pin tuple: `(zevmGitRevision, voltaireGitRevision, guillotineMiniGitRevision, zigVersion)`
 - required pin format is full immutable git commit IDs for the three repositories plus one exact Zig toolchain version string
 - release metadata artifacts and operator provenance requirements for this pin tuple are defined in section 3.4
-- operators obtain/install the pinned Zig version from official Zig distributions and build from the ZEVM repository root after `zig build --fetch`
+- operators obtain/install the pinned Zig version from official Zig distributions and build from the ZEVM repository root after `bash tools/checkout-native.sh` and `zig build --fetch`
 - phase 1 defines reproducibility as reproducing ZEVM behavior from the same pin tuple; byte-identical binary hashes across hosts are out of scope
 - successful canonical build installs one artifact at `zig-out/bin/zevm`
 - `zig build release-binaries`, `zig build c-ffi`, and `zig build npm-platform-artifacts` produce release-style CLI, C ABI, and N-API artifacts for the selected target
 - multi-platform distribution is produced by running release artifact commands in an OS/architecture matrix; one-host cross-compilation guarantees remain out of scope
-- ZEVM guarantees this repository source-build path that produces one `zevm` binary from source and package pins
+- ZEVM guarantees this repository source-build path that produces one `zevm` binary from source and the pinned sibling checkouts
 - repository build instructions and declared build-toolchain requirements are part of this phase-1 contract
 - when source-build succeeds, the resulting `zevm` binary must satisfy this PRD and `docs/specs/json-rpc-contract.md`
 - out of scope for this contract: installer UX, signing/notarization, byte-identical reproducible-build hash guarantees, one-host cross-compilation guarantees, and host/toolchain provisioning automation
@@ -153,7 +153,7 @@ reason: Fixed release-tuple.json zevmGitRevision value mismatch.
 
 Phase-1 release qualification requires all criteria below to pass for the candidate source state and pinned package/toolchain tuple.
 
-- clean-checkout source-build verification: from a clean checkout of the pinned ZEVM commit and immutable package pins, `zig build --fetch`, `zig build`, and `zig build test` must succeed without manual sibling repair, ad-hoc path rewriting, or post-checkout dependency edits
+- clean-checkout source-build verification: from a clean checkout of the pinned ZEVM commit, `bash tools/checkout-native.sh`, `zig build --fetch`, `zig build`, and `zig build test` must succeed without manual sibling repair, ad-hoc path rewriting, or post-checkout dependency edits
 - shipped phase-1 surface definition: a shipped surface is any normative phase-1 behavior requirement in this PRD sections 3.1, 3.3, 3.4, and 4 through 12, excluding section 3.2 out-of-scope items
 - assertion mapping record definition: each record must identify exactly one shipped surface and include, at minimum, `surfaceId`, `surfaceSection`, `surfaceCategory` (`startup`, `configuration`, `runtime`, `transport`, `method`, or `release-asset`), `assertionType` (`default-graph-test` or `release-asset-validation`), `assertionIdentifier`, and expected contract outcome
 - default test-graph shipping coverage: the default `zig build test` graph means the tests executed by invoking `zig build test` from repository root with no additional target selection; that default graph must cover shipped executable startup/configuration/runtime/transport/method behaviors from sections 3.1 and 4 through 12
@@ -324,7 +324,7 @@ Trusted-mode validation:
 
 - `--block-time` is required when `--mining interval`
 - `--block-time` is invalid for `auto` and `manual`
-- `--fork-block-number` is invalid without `--fork-url`
+- `--fork-block-number` without `--fork-url` takes the URL from `mode.trusted.fork.url`; with no URL from either source it is invalid
 - when `--fork-url` is provided and `--fork-block-number` is omitted, startup forking uses unpinned upstream-head (`latest`) semantics
 - `--genesis`, `--chain-rlp`, `--engine-host`, and `--engine-port` are trusted-mode only
 - RLP chain import preserves header and ommer `extraData` bytes. Imported bodies own the decoded ommer data and release it during body cleanup.
@@ -472,7 +472,7 @@ Structured trusted-setting resolution:
 
 - `mining` resolves as one unit from CLI `--mining` and `--block-time`; if either flag is present, ZEVM builds `mining` from CLI and ignores `mode.trusted.mining`
 - `hardfork` has no phase-1 CLI flags; ZEVM starts from the default schedule for the resolved `chainId`, then applies any `mode.trusted.hardfork` field overrides
-- `fork` resolves as one unit from CLI `--fork-url` and `--fork-block-number`; if either flag is present, ZEVM builds `fork` from CLI and ignores `mode.trusted.fork`
+- `fork` resolves as one unit from CLI `--fork-url` and `--fork-block-number`; if either flag is present, ZEVM builds `fork` from CLI, taking the URL from `mode.trusted.fork.url` when only `--fork-block-number` is present, and ignores the rest of `mode.trusted.fork`
 - when no related CLI flags are present for that unit, ZEVM uses config value for that unit, then mode default
 - resolved trusted `fork` with `url` and no `blockNumber` uses unpinned upstream-head (`latest`) semantics; resolved trusted `fork` with `blockNumber` is pinned to that block
 

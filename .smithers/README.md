@@ -38,6 +38,7 @@ in the local and GitHub Actions caches.
 | `//:qualification-check` | test | `zig build qualification-check` |
 | `//:fmt` | test | `zig fmt --check` |
 | `//:js-check` | test | `node --check` on npm and tool scripts |
+| `//:docs-mirror` | test | `node tools/docs_mirror.mjs` (Starlight mirror drift check) |
 | `//bench/<suite>:bench`, `:test` | build, test | ReleaseFast suite, report vs `bench/baseline.json` |
 | `//bench:deps-check` | test | bench PACKAGE.ts source closure check |
 | `//.smithers:factory-check` | build, lint | factory projection drift check |

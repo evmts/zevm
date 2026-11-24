@@ -74,7 +74,7 @@ Validation:
 
 Light CLI flags:
 
-- `--network` (`mainnet`, `sepolia`, `holesky`)
+- `--network` (`mainnet`, `sepolia`, `holesky`, `hoodi`)
 - `--consensus-rpc-url`
 - `--execution-rpc-url`
 - `--checkpoint`
@@ -100,7 +100,7 @@ Naming/path bridge for light startup inputs:
 Validation:
 
 - `consensusRpcUrl` is required in light mode
-- `network` must be one of `mainnet`, `sepolia`, `holesky`
+- `network` must be one of `mainnet`, `sepolia`, `holesky`, `hoodi`
 - `consensusRpcUrl` must serve the same network selected by `network`
 - `executionRpcUrl` must serve execution JSON-RPC for the same network when proof-backed reads are used
 - `--strict-checkpoint-age` CLI semantics are presence-based: present means `true`, omitted means `false`, and explicit assignment forms (for example `--strict-checkpoint-age=false`) are invalid
@@ -117,6 +117,7 @@ Startup consensus-network handshake (before listener):
    - `mainnet` -> `0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95`
    - `sepolia` -> `0xd8ea171f3c94aea21ebc42a1ed61052acf3f9209c00e4efbaaddac09ed9b8078`
    - `holesky` -> `0x9143aa7c615a7f7115e2b6aac319c03529df8242ae705fba9df39b79c59fa8b1`
+   - `hoodi` -> `0x212f13fc4df078b6cb7db228f1c8307566dcecf900867401a92023d7ba99cb5f`
 5. if handshake fails (request failure, non-`200`, malformed payload, missing/invalid root, or root mismatch), ZEVM must fail before opening the HTTP listener
 
 ## 5. Config File Rules
@@ -156,7 +157,7 @@ Structured trusted-setting resolution:
 
 - `mining` resolves as one unit from CLI `--mining` and `--block-time`; if either flag is present, ZEVM builds `mining` from CLI and ignores `mode.trusted.mining`
 - `hardfork` has no phase-1 CLI flags; ZEVM starts from the default schedule for the resolved `chainId`, then applies any `mode.trusted.hardfork` field overrides
-- `fork` resolves as one unit from CLI `--fork-url` and `--fork-block-number`; if either flag is present, ZEVM builds `fork` from CLI and ignores `mode.trusted.fork`
+- `fork` resolves as one unit from CLI `--fork-url` and `--fork-block-number`; if either flag is present, ZEVM builds `fork` from CLI, taking the URL from `mode.trusted.fork.url` when only `--fork-block-number` is present, and ignores the rest of `mode.trusted.fork`
 - `genesis` resolves as one field from CLI `--genesis`, then config `mode.trusted.genesis`, then absent
 - `chainRlp` resolves as one field from CLI `--chain-rlp`, then config `mode.trusted.chainRlp`, then absent
 - when no related CLI flags are present for that unit, ZEVM uses config value for that unit, then mode default

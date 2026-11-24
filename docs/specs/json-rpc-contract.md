@@ -307,9 +307,9 @@ Field rules:
 
 Rules:
 
-- `type` is always `0x0` in phase 1
+- `type` is the envelope type: `0x0` legacy, `0x1` EIP-2930, `0x2` EIP-1559, `0x3` EIP-4844, or `0x4` EIP-7702
 - `to` may be `null` for create
-- for current phase-1 trusted query methods, `blockHash`, `blockNumber`, and `transactionIndex` are non-null because txpool-only pending entries are not surfaced by `eth_getTransactionByHash`
+- `blockHash`, `blockNumber`, and `transactionIndex` are non-null for mined transactions; `eth_getTransactionByHash` also returns txpool entries, with those three fields `null`
 - transaction objects in this contract must not include a nonstandard `blockTimestamp` field
 
 ### 7.6 Block object
@@ -396,11 +396,8 @@ Field contract:
   "logs": [],
   "logsBloom": "0x...",
   "status": "0x1",
-  "root": null,
   "effectiveGasPrice": "0x0",
-  "type": "0x0",
-  "blobGasUsed": null,
-  "blobGasPrice": null
+  "type": "0x0"
 }
 ```
 
@@ -419,12 +416,12 @@ Field contract:
 | `contractAddress` | yes | `Address` or `null` | non-null only for create transactions |
 | `logs` | yes | array of log objects | non-null (empty array allowed) |
 | `logsBloom` | yes | `HexData` | non-null bloom bytes |
-| `status` | yes | `QuantityHex` | must be `0x0` or `0x1` in phase 1 |
-| `root` | yes | `Hash32` or `null` | `null` in phase 1 |
+| `status` | yes, except pre-Byzantium | `QuantityHex` | `0x0` or `0x1`; pre-Byzantium receipts carry `root` instead |
+| `root` | no | `Hash32` | present only on pre-Byzantium receipts, which carry no `status` |
 | `effectiveGasPrice` | yes | `QuantityHex` | non-null |
-| `type` | yes | `QuantityHex` | always `0x0` in phase 1 |
-| `blobGasUsed` | yes | `QuantityHex` or `null` | `null` in phase 1 |
-| `blobGasPrice` | yes | `QuantityHex` or `null` | `null` in phase 1 |
+| `type` | yes | `QuantityHex` | envelope type, `0x0` through `0x4` |
+| `blobGasUsed` | no | `QuantityHex` | present only on EIP-4844 receipts |
+| `blobGasPrice` | no | `QuantityHex` | present only on EIP-4844 receipts |
 
 Rules:
 
@@ -595,7 +592,7 @@ Simulation semantics:
   - `eth_estimateGas` returns `QuantityHex`
   - `eth_createAccessList` returns a generated access-list envelope; the current trusted implementation returns an empty list when no local tracer-derived entries are available
   - `eth_simulateV1` returns block-scoped call result objects using checkpointed execution and reverts all canonical state changes at the end of the request
-- runtime execution failure path (for example revert/out-of-gas/invalid execution in simulation context): JSON-RPC error `-32603` with message `Internal error`, no `result`, and no revert-data result payload
+- runtime execution failure path: a revert returns JSON-RPC error code `3` with message `execution reverted` and the revert output as `data`; out of gas returns `-32000` with message `out of gas`; validation failures keep their execution-apis codes (for example `-32000` `header not found`, `-38013` `intrinsic gas too low`, `-38014` `insufficient funds`); no `result`
 - omitted transaction field defaults:
   - `from`: trusted runtime coinbase
   - `gas`: selected simulation block gas limit
@@ -659,9 +656,9 @@ Submission outcome semantics:
 | `eth_newBlockFilter` | `[]` or omitted | `QuantityHex` filter id | `-32602` for non-empty params |
 | `eth_newPendingTransactionFilter` | `[]` or omitted | `QuantityHex` filter id | `-32602` for non-empty params |
 | `eth_newFilter` | `[filter]` | `QuantityHex` filter id | `-32602` malformed filter |
-| `eth_getFilterChanges` | `[filterId]` | array of filter delta items; current trusted implementation returns empty deltas | `-32602` malformed filter id |
-| `eth_getFilterLogs` | `[filterId]` | log array; current trusted implementation returns an empty array | `-32602` malformed filter id |
-| `eth_uninstallFilter` | `[filterId]` | boolean; current trusted implementation returns `true` for well-formed ids | `-32602` malformed filter id |
+| `eth_getFilterChanges` | `[filterId]` | array of items since the previous poll: block hashes for block filters, transaction hashes for pending-transaction filters, log objects for log filters; `[]` for an unknown id | `-32602` malformed filter id |
+| `eth_getFilterLogs` | `[filterId]` | log array matching a log filter's criteria | `-32602` malformed filter id |
+| `eth_uninstallFilter` | `[filterId]` | `true` when the filter existed and was removed; `false` for an unknown id | `-32602` malformed filter id |
 
 Query selector behavior:
 
@@ -670,7 +667,7 @@ Query selector behavior:
 - `eth_getBlockTransactionCountByHash`, `eth_getBlockTransactionCountByNumber`, `eth_getTransactionByBlockHashAndIndex`, and `eth_getTransactionByBlockNumberAndIndex` return `null` when the referenced canonical block is not found
 - `eth_getUncleCountByBlockHash` and `eth_getUncleCountByBlockNumber` return `0x0` for unknown blocks and for all ZEVM-produced post-Merge blocks
 - `eth_getTransactionByBlockHashAndIndex` and `eth_getTransactionByBlockNumberAndIndex` return `null` when `index` is out of range for a found block
-- `eth_getTransactionByHash` is canonical-mined only and returns `null` for txpool-only pending entries
+- `eth_getTransactionByHash` returns a mined transaction, else a txpool entry with `null` `blockHash`, `blockNumber`, and `transactionIndex`, else `null`
 - `eth_getTransactionReceipt` is mined-only and returns `null` until inclusion
 - `eth_getBlockAccessList` accepts block number/tag/hash selectors and returns `null` for unknown blocks or retained-history blocks without Amsterdam block access list data
 
@@ -710,7 +707,7 @@ Trace options are boolean `disableStack`, `enableMemory`, `enableReturnData`, an
 
 ### 8.7 Engine API listener methods
 
-The Engine API listener is trusted-mode only and disabled unless startup config enables `engineRpc` or CLI `--engine-host` / `--engine-port`.
+The Engine API listener is trusted-mode only and disabled unless startup config enables `engineRpc` or CLI `--engine-host` / `--engine-port`. Every request needs an `Authorization: Bearer` HS256 JWT whose `iat` is within 60 seconds of the node clock, signed with the fixed 32-byte secret `secretsecretsecretsecretsecretse` (the Hive default); other requests get HTTP `401`.
 
 | Method | Exact params | Exact result | Errors |
 | --- | --- | --- | --- |
@@ -1149,7 +1146,7 @@ Rules:
 - in phase 1, `${resolvedCheckpointDir}/checkpoint` is startup input only; `lastCheckpoint` runtime progression is not persisted to this file
 - phase-1 operator-facing light-mode startup inputs are `network`, `consensusRpcUrl`, `executionRpcUrl`, `checkpoint`, `checkpointDir`, `maxCheckpointAgeSeconds`, and `strictCheckpointAge`
 - `executionRpcUrl` is the execution JSON-RPC source used for proof-backed execution reads
-- deferred/out-of-contract method families (for example subscriptions and debug tracing) are listed in section 14
+- deferred/out-of-contract method families (for example subscriptions and debug tracing other than `debug_traceCall`) are listed in section 14
 - deferred/out-of-contract method names return JSON-RPC `-32601` (method not found), not `-32010`
 - WebSocket transport is unsupported at transport layer (section 3) and is not a JSON-RPC method mapping
 
@@ -1157,7 +1154,7 @@ Rules:
 
 Not part of the current contract:
 
-- debug tracing methods
+- debug tracing methods other than trusted-mode `debug_traceCall` (section 8)
 - subscriptions
 - WebSocket transport
 

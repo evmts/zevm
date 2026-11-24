@@ -16,8 +16,8 @@ These methods execute on a checkpoint-and-revert path and do not mutate canonica
 
 | Method | Exact params | Exact result | Errors |
 | --- | --- | --- | --- |
-| `eth_call` | `[tx, block]` or `[tx, block, stateOverrides]` | `HexData` | `-32602` malformed tx, selector, or overrides; `-32603` runtime execution failure; `-32010` in light mode |
-| `eth_estimateGas` | `[tx]`, `[tx, block]`, or `[tx, block, stateOverrides]` | `QuantityHex` | `-32602` malformed tx, selector, or overrides; `-32603` runtime execution failure; `-32010` in light mode |
+| `eth_call` | `[tx, block]` or `[tx, block, stateOverrides]` | `HexData` | `-32602` malformed tx, selector, or overrides; `3` revert with revert data; `-32000` out of gas; `-32010` in light mode |
+| `eth_estimateGas` | `[tx]`, `[tx, block]`, or `[tx, block, stateOverrides]` | `QuantityHex` | `-32602` malformed tx, selector, or overrides; `3` revert with revert data; `-32000` out of gas; `-32010` in light mode |
 | `eth_createAccessList` | `[tx]` or `[tx, block]` | object with `accessList` and `gasUsed` | `-32602` malformed tx or selector; `-32603` unrecoverable execution failure; `-32010` in light mode |
 | `eth_simulateV1` | `[payload]` or `[payload, block]` | array of simulated block result objects | `-32602` malformed payload or selector; per-call execution failures are returned inside call results; `-32010` in light mode |
 | `testing_buildBlockV1` | `[parentHash, payloadAttributes, transactions|null, extraData]` | engine API builder payload envelope | `-32602` malformed params; `-32000` when supplied transactions cannot be applied; `-32010` in light mode |
@@ -32,7 +32,7 @@ Execution outcome semantics:
   - `eth_createAccessList` returns a generated access-list envelope; the current implementation returns an empty access list when no tracer-derived entries are available
   - `eth_simulateV1` returns block-scoped call result objects and reverts all canonical state changes before responding
   - `testing_buildBlockV1` builds a payload envelope without changing the canonical chain or head
-- runtime execution failure path (for example revert, out-of-gas, invalid execution in simulation context): JSON-RPC `-32603` with message `Internal error`, no `result`, and no revert-data result payload
+- runtime execution failure path: a revert returns error code `3` with message `execution reverted` and the revert output as `data`; out of gas returns `-32000` (`out of gas`); validation failures keep their execution-apis codes, for example `-38013` (`intrinsic gas too low`) and `-38014` (`insufficient funds`)
 - omitted transaction field defaults:
   - `from`: trusted runtime coinbase
   - `gas`: selected simulation block gas limit
@@ -182,6 +182,19 @@ Response:
   "result": "0x5208"
 }
 ```
+
+## `debug_traceCall`
+
+Trusted mode traces one call with Guillotine Mini's tracer on the same checkpoint-and-revert path. Light mode returns `-32010`.
+
+| Method | Exact params | Exact result | Errors |
+| --- | --- | --- | --- |
+| `debug_traceCall` | `[transaction, blockSelector, options?]` | `{gas, failed, returnValue, structLogs, truncated}` | `-32602` malformed or unsupported options |
+
+- options are boolean `disableStack`, `enableMemory`, `enableReturnData`, and `disableStorage: true`; custom tracer programs and storage capture return `-32602`
+- each `structLogs` entry records the opcode name, gas, depth, and the stack before the opcode, plus memory and return data when enabled
+- capture stops at 100,000 entries and sets `truncated`; execution still completes
+- only the current local state is traceable, and a trace never commits state
 
 ## Related Pages
 

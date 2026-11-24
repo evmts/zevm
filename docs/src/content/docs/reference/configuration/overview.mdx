@@ -40,11 +40,11 @@ The current contract remains source-first; release artifact jobs may publish CLI
 
 ## RPC Exposure And Hardening
 
-ZEVM phase 1 serves JSON-RPC over plain HTTP only. ZEVM does not provide built-in TLS, JWT, or JSON-RPC authentication.
+ZEVM phase 1 serves JSON-RPC over plain HTTP only. ZEVM does not provide built-in TLS or authentication on the main JSON-RPC listener; only the optional Engine API listener checks a JWT.
 `--host 127.0.0.1` keeps the listener local to the machine.
 Binding `--host` to a non-loopback interface (for example, `0.0.0.0`) exposes RPC to any network path that can reach that interface.
 
-The optional Engine API listener is trusted-mode only and is disabled by default. Enable it with CLI `--engine-host` / `--engine-port` or a top-level config `engineRpc` object. Exposing the Engine API on a reachable interface is unsafe without an external authenticated proxy or isolated network.
+The optional Engine API listener is trusted-mode only and is disabled by default. Enable it with CLI `--engine-host` / `--engine-port` or a top-level config `engineRpc` object. Its JWT secret is the fixed, public Hive default, so exposing the Engine API on a reachable interface is unsafe without an external authenticated proxy or isolated network.
 
 Recommended phase-1 operator pattern:
 
@@ -132,7 +132,7 @@ For concrete capture examples and failure triage flow, see [Troubleshooting -> C
 }
 ```
 
-Trusted hardfork policy is explicit and owned by the runtime. `chainId = 1` defaults to the mainnet activation schedule; any other trusted chain defaults to a dev schedule with Cancun active from genesis and Prague/Osaka inactive. `mode.trusted.hardfork` can override any activation field with decimal `u64` values: `homesteadBlock`, `daoBlock`, `tangerineWhistleBlock`, `spuriousDragonBlock`, `byzantiumBlock`, `petersburgBlock`, `istanbulBlock`, `muirGlacierBlock`, `berlinBlock`, `londonBlock`, `arrowGlacierBlock`, `grayGlacierBlock`, `mergeBlock`, `shanghaiTimestamp`, `cancunTimestamp`, `pragueTimestamp`, `osakaTimestamp`, and `secondsPerSlot`.
+Trusted hardfork policy is explicit and owned by the runtime. `chainId = 1` defaults to the mainnet activation schedule; any other trusted chain defaults to a dev schedule with Cancun active from genesis and Prague/Osaka inactive. `mode.trusted.hardfork` can override any activation field with decimal `u64` values: `homesteadBlock`, `daoBlock`, `tangerineWhistleBlock`, `spuriousDragonBlock`, `byzantiumBlock`, `constantinopleBlock`, `petersburgBlock`, `istanbulBlock`, `muirGlacierBlock`, `berlinBlock`, `londonBlock`, `arrowGlacierBlock`, `grayGlacierBlock`, `mergeBlock`, `shanghaiTimestamp`, `cancunTimestamp`, `pragueTimestamp`, `osakaTimestamp`, and `secondsPerSlot`.
 
 `mode.trusted.hardfork.blobSchedule` declares EIP-7892 blob-parameter-only (BPO) forks. It is an array of objects with four required decimal `u64` fields: `timestamp`, `target`, `max`, and `baseFeeUpdateFraction`. Entries must have strictly increasing timestamps at or after `osakaTimestamp`, `max` greater than zero, `target` at most `max`, and a non-zero `baseFeeUpdateFraction`; the array holds at most 32 entries. From its timestamp on, an entry replaces the blob target, the blob limit, and the blob base fee update fraction of the active hardfork. BPO forks apply only once Osaka is active. When `blobSchedule` is absent, `chainId = 1` defaults to the Ethereum mainnet schedule (BPO1 at `1765290071` with target 10 and max 15, BPO2 at `1767747671` with target 14 and max 21) and dev chains default to no BPO forks; an empty array `[]` explicitly disables BPO forks.
 
@@ -203,7 +203,7 @@ Structured trusted-setting resolution:
 
 - `mining` resolves as one unit from CLI `--mining` and `--block-time`; if either flag is explicitly supplied, ZEVM builds `mining` from CLI and ignores `mode.trusted.mining`
 - `hardfork` has no phase-1 CLI flags; ZEVM starts from the default schedule for the resolved `chainId`, then applies any `mode.trusted.hardfork` field overrides
-- `fork` resolves as one unit from CLI `--fork-url` and `--fork-block-number`; if either flag is explicitly supplied, ZEVM builds `fork` from CLI and ignores `mode.trusted.fork`
+- `fork` resolves as one unit from CLI `--fork-url` and `--fork-block-number`; if either flag is explicitly supplied, ZEVM builds `fork` from CLI, taking the URL from `mode.trusted.fork.url` when only `--fork-block-number` is given, and ignores the rest of `mode.trusted.fork`
 - `genesis` resolves by normal field precedence from CLI `--genesis`, then `mode.trusted.genesis`, then absent
 - `chainRlp` resolves by normal field precedence from CLI `--chain-rlp`, then `mode.trusted.chainRlp`, then absent
 - when no related CLI flags are present for that unit, ZEVM uses config value for that unit, then mode default

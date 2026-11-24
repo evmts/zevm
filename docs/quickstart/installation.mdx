@@ -5,18 +5,18 @@ description: Build ZEVM from source and run it locally.
 
 # Installation
 
-ZEVM can be built from source or from release artifact jobs. Source builds use Zig package-manager pins in `build.zig.zon`.
+ZEVM can be built from source or from release artifact jobs. Source builds compile sibling checkouts of Voltaire and Guillotine Mini: `build.zig.zon` resolves `../voltaire` and `../guillotine-mini` by path, and `native-dependencies.json` pins each to a commit.
 
 ## Prerequisites
 
-- Zig `0.15.2` or newer (`minimum_zig_version` in `build.zig.zon`)
+- Zig `0.15.2` (`minimum_zig_version` in `build.zig.zon` and the version CI pins)
 - Rust/Cargo for Voltaire's Rust crypto archive
-- Git
-- Node `22` or newer for TypeScript/N-API package checks
+- Git and `jq` for `tools/checkout-native.sh`
+- Node `22.12.0` or newer for N-API package checks
 
 ## Clone And Fetch Dependencies
 
-Clone ZEVM and let Zig fetch pinned package dependencies:
+Clone ZEVM, check out the pinned native dependencies beside it, and let Zig fetch the remaining package dependencies:
 
 ```bash
 mkdir -p ~/code/zevm-workspace
@@ -24,10 +24,13 @@ cd ~/code/zevm-workspace
 
 git clone git@github.com:evmts/zevm.git zevm
 cd zevm
+bash tools/checkout-native.sh
 zig build --fetch
 ```
 
-If you use HTTPS, replace the clone URLs accordingly.
+`tools/checkout-native.sh` clones `~/code/zevm-workspace/voltaire` and `~/code/zevm-workspace/guillotine-mini` at the commits in `native-dependencies.json`. It never resets an existing checkout and fails when one is at a different commit.
+
+If you use HTTPS, replace the clone URL accordingly.
 
 For canonical release-metadata reproducibility, use [Release Metadata Runbook](../reference/release-metadata-runbook).
 That runbook is the authoritative phase-1 flow for selecting `releaseIdentifier`, validating `release-tuple.json` and `light-default-checkpoints.json`, handling metadata-invalid identifiers, and recording operator provenance.
@@ -38,7 +41,7 @@ Its default artifact output path (`.ops/release-metadata/$RELEASE_IDENTIFIER/`) 
 If you want a pinned source build without running the full runbook automation:
 
 1. Open the selected release on [ZEVM release metadata](https://github.com/evmts/zevm/releases) and fetch both `release-tuple.json` and `light-default-checkpoints.json` for the same `releaseIdentifier`.
-2. Check out `zevm` to the pinned `zevmGitRevision`; `voltaireGitRevision` and `guillotineMiniGitRevision` are materialized through `build.zig.zon` URL pins.
+2. Check out `zevm` to the pinned `zevmGitRevision`, then run `bash tools/checkout-native.sh`. At that revision, `native-dependencies.json` pins `voltaireGitRevision` and `guillotineMiniGitRevision`; check out existing sibling checkouts at those commits first.
 3. Confirm local Zig matches tuple `zigVersion` with `zig version`.
 4. Run `zig build dependency-preflight -- --voltaire-revision "$VOLTAIRE_REVISION" --guillotine-mini-revision "$GUILLOTINE_MINI_REVISION" --zig-version "$PINNED_ZIG_VERSION"`.
 5. Keep `light-default-checkpoints.json` available for [Run Light Mode](./run-light-mode#2-choose-startup-checkpoint-input) checkpoint selection.
@@ -109,7 +112,7 @@ Multi-platform releases should run those commands in an OS/architecture matrix. 
 ## Setup Notes
 
 - In this docs site, **phase 1** means the current public ZEVM contract: two runtime modes (`trusted`, `light`) and HTTP JSON-RPC only (no built-in TLS/auth).
-- `build.zig.zon` must use immutable URL/hash dependency pins, not sibling path dependencies.
+- `build.zig.zon` resolves `voltaire` and `guillotine-mini` from sibling checkouts; `native-dependencies.json` holds the pinned commits that CI and `release-tuple.json` use.
 - Align `zevm`, `voltaire`, and `guillotine-mini` revisions through release tuple metadata before making reproducibility claims.
 - For canonical release-metadata reproducibility, follow [Release Metadata Runbook](../reference/release-metadata-runbook) end-to-end.
 - If the selected `releaseIdentifier` does not publish valid `release-tuple.json` and `light-default-checkpoints.json`, treat it as an unpublished source-build boundary in this workflow.

@@ -180,6 +180,10 @@ Field contract:
 | `zevm_setErc20Allowance` | `[token, owner, spender, value]` | `true` | `anvil_setErc20Allowance` |
 | `zevm_metadata` | `[]` or omitted | `NodeMetadata` | `anvil_metadata`, `hardhat_metadata` |
 | `zevm_nodeInfo` | `[]` or omitted | `NodeInfo` | `anvil_nodeInfo` |
+| `zevm_enableTraces` | `[]` or omitted | `true`; compatibility no-op | `anvil_enableTraces` |
+| `zevm_addCompilationResult` | `[compilerVersion, compilerInput, compilerOutput]` | `true`; validates params, stores nothing | `hardhat_addCompilationResult` |
+| `hardhat_setLoggingEnabled` | `[enabled]` | `true`; compatibility no-op | none |
+| `tevm_drainConsoleLogs` | `[]` or omitted | `DataHex[]`: raw calldata of each Hardhat `console.log` call since the last drain, in FIFO order; clears the buffer; `[]` in light mode | none |
 
 ## Method Rules
 

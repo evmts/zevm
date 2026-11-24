@@ -59,7 +59,7 @@ Release identifier contract:
 `RELEASE_IDENTIFIER` must exactly match the GitHub release entry that publishes both files.
 Inside those files, `.releaseIdentifier` must exactly equal `RELEASE_IDENTIFIER`.
 Do not mix tuple/checkpoint files from different release identifiers.
-Run the checkout steps below from the parent workspace that contains the `zevm/` checkout. Voltaire and Guillotine Mini are materialized from `build.zig.zon` package URL pins.
+Run the checkout steps below from the parent workspace that contains the `zevm/` checkout. Voltaire and Guillotine Mini are sibling checkouts in the same workspace (`voltaire/`, `guillotine-mini/`), which `build.zig.zon` resolves by path.
 
 ### Deterministic Publication And Supersession Policy
 
@@ -253,11 +253,14 @@ GUILLOTINE_MINI_REVISION="$(jq -r '.guillotineMiniGitRevision' "$ARTIFACT_DIR/re
 PINNED_ZIG_VERSION="$(jq -r '.zigVersion' "$ARTIFACT_DIR/release-tuple.json")"
 ```
 
-Materialize the ZEVM checkout and verify package pins:
+Materialize the ZEVM checkout and its pinned native dependencies:
 
 ```bash
 git -C zevm checkout "$ZEVM_REVISION"
+bash zevm/tools/checkout-native.sh
 ```
+
+`tools/checkout-native.sh` clones missing `voltaire/` and `guillotine-mini/` checkouts at the commits in `native-dependencies.json`, which `release-tuple.json` records as `voltaireGitRevision` and `guillotineMiniGitRevision`. It never resets an existing checkout and fails when one is at a different commit, so check existing checkouts out at the tuple revisions first.
 
 Verify local state matches tuple pins:
 

@@ -17,5 +17,6 @@ If wording differs, `json-rpc-contract.md` is authoritative for API-level tuples
 ## Supporting docs
 
 - `docs/specs/internal/*`: non-normative summaries that explain the normative contract
+- `docs/specs/embedded-node.md`: embedded execution node semantics behind the `zevm_node_*` C ABI and the npm bindings
 - `docs/specs/docs-first-process.md`: process and review gate for keeping docs coherent
 - `docs/specs/maintainer-decisions.md`: historical decision log (non-normative)

@@ -9,17 +9,20 @@ Forking is trusted-mode configuration, not a separate runtime mode.
 
 ## Installation
 
-ZEVM builds from pinned Zig package-manager dependencies. Requires Zig `0.15.2` or newer plus Rust/Cargo for Voltaire's Rust crypto archive.
+ZEVM builds against sibling checkouts of Voltaire and Guillotine Mini at `../voltaire` and `../guillotine-mini`; `build.zig.zon` resolves both by path, and `native-dependencies.json` pins each to a commit. Requires Zig `0.15.2`, Rust/Cargo for Voltaire's Rust crypto archive, and `git` plus `jq` for the checkout script.
 
 ### Build From Source
 
 ```bash
 git clone git@github.com:evmts/zevm.git
 cd zevm
+bash tools/checkout-native.sh
 zig build --fetch
 zig build dependency-preflight -- --zig-version 0.15.2
 zig build
 ```
+
+`tools/checkout-native.sh` clones each missing sibling at its pinned commit. It never resets an existing checkout, and it fails if an existing sibling's `HEAD` differs from the pin. CI runs the same script.
 
 The binary is installed to `./zig-out/bin/zevm`.
 
@@ -27,7 +30,7 @@ Release-style artifacts for the selected target:
 
 ```bash
 zig build release-binaries -Doptimize=ReleaseSafe
-zig build c-ffi
+zig build c-ffi -Doptimize=ReleaseSafe
 zig build npm-platform-artifacts -Doptimize=ReleaseSafe
 ```
 
@@ -37,7 +40,7 @@ For pinned release tuples, mode-specific startup, and runtime configuration, sta
 
 ## Documentation
 
-The public docs are authored under [docs/](./docs/), with Astro/Starlight site sources mirrored under [docs/src/content/docs/](./docs/src/content/docs/).
+The public docs are authored under [docs/](./docs/), with Astro/Starlight site sources mirrored under [docs/src/content/docs/](./docs/src/content/docs/). After editing `docs/`, run `node tools/docs_mirror.mjs --write` to refresh the mirror; `node tools/docs_mirror.mjs` fails on drift.
 To build the site locally, use Node.js 22.23.4 or later and run `npm ci` followed by `npm run build` from `docs/`.
 
 Canonical contract sources:
@@ -88,6 +91,3 @@ all platform addons advertised in `npm/zevm/package.json`, then run
 `--dry-run`. Publication fails before uploading anything if a platform is missing.
 `zig build npm-platform-artifacts -Doptimize=ReleaseSafe -Dtarget=<zig-triple>`
 builds one selected platform; it is not a cross-platform release matrix.
-
-CI obtains the native sibling sources from `native-dependencies.json` using
-`bash tools/checkout-native.sh`. Existing local checkouts are never reset.

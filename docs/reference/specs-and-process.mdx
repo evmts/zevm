@@ -95,7 +95,7 @@ Field constraints:
 Coverage intent for phase-1 qualification is explicit startup/configuration/runtime/transport/method coverage from docs, not ad hoc spot checks.
 Before shipping, confirm all PRD criteria:
 
-- clean-checkout source build verification passes: `zig build --fetch`, `zig build`, and `zig build test` succeed on pinned package dependencies/toolchain without local patching
+- clean-checkout source build verification passes: `zig build --fetch`, `zig build`, and `zig build test` succeed after `bash tools/checkout-native.sh` on the pinned native dependencies and toolchain without local patching
 - CI runs the root release gates documented in [CI And Release Gates](./ci-and-release-gates), including package dependency preflight, strict qualification coverage, generated-metadata smoke validation, dirty-worktree preflight, and scheduled/manual external verification
 - default `zig build test` graph covers all shipped executable startup/configuration/runtime/transport/method/semantic behaviors from PRD sections `3.1` and `4` through `12`
 - qualification evidence maps each shipped phase-1 surface in PRD sections `3.1`, `3.3`, `3.4`, and `4` through `12` to at least one qualification assertion

@@ -11,7 +11,7 @@ This page lists surfaces intentionally outside the current public ZEVM contract.
 
 Not part of the current contract:
 
-- debug tracing methods
+- debug tracing methods other than `debug_traceCall`, which trusted mode serves (see [Simulation](./simulation))
 - subscriptions
 - WebSocket transport (`ws://` / `wss://`) is outside the current public contract scope (ZEVM JSON-RPC is HTTP-only)
 
@@ -23,7 +23,6 @@ Not part of the current contract:
 
 ### Deferred tracing/subscription inventory
 
-- `debug_traceCall`
 - `debug_traceTransaction`
 - `eth_subscribe`
 - `eth_unsubscribe`
@@ -54,7 +53,7 @@ Not part of the current contract:
 
 ### Optional Engine API listener
 
-- Engine API methods are trusted-only and are available only on the optional trusted-mode Engine API listener
+- Engine API methods are trusted-only and belong to the optional trusted-mode Engine API listener, which requires an HS256 JWT bearer token
 - get-payload methods report unknown payload ids with `-38001`; new-payload methods validate request shape, import locally valid payloads, and return spec payload status values
 
 ### Error-mapping summary
@@ -79,7 +78,7 @@ No trusted helper methods are deferred in the current trusted-mode contract. Deb
 - Canonical deferred-surface promotion criteria and phase-1 boundary/graduation criteria: [Specs And Process](../specs-and-process#deferred-surface-promotion-and-phase-1-boundary-and-graduation-criteria)
 - Process gate for promotions/contract changes: [`docs/specs/docs-first-process.md` (Change Rules, Review Gate)](https://github.com/evmts/zevm/blob/main/docs/specs/docs-first-process.md#change-rules)
 - Canonical promotion targets (normative contract docs): [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md), [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md)
-- Deferred-promotion rationale/history is recorded in [`docs/specs/maintainer-decisions.md`](https://github.com/evmts/zevm/blob/main/docs/specs/maintainer-decisions.md), while page-level source/anchor tracking for this surface is maintained in [`docs/specs/page-ownership.md`](https://github.com/evmts/zevm/blob/main/docs/specs/page-ownership.md#active-page-map)
+- Deferred-promotion rationale/history is recorded in [`docs/specs/maintainer-decisions.md`](https://github.com/evmts/zevm/blob/main/docs/specs/maintainer-decisions.md), while page-level source/anchor tracking for this surface is maintained in [`docs/specs/page-ownership.md`](https://github.com/evmts/zevm/blob/main/docs/specs/page-ownership.md#page-map)
 
 ## Related Pages
 

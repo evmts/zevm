@@ -855,7 +855,7 @@ fn runLegacyStatePostCase(
 // and per category (the directory below `GeneralStateTests/`). Failures do
 // not stop the run. A full run then compares the tallies against the
 // committed floor in `latest_fork_state_baseline_path`. See
-// docs/specs/latest-fork-state-tests.md for the fixture source strategy.
+// docs/reference/latest-fork-state-tests.md for the fixture source strategy.
 // ---------------------------------------------------------------------------
 
 const latest_fork_state_archive_path = "lib/ethereum-tests/fixtures_general_state_tests.tgz";

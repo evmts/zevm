@@ -45,7 +45,7 @@ Proof/readiness boundary clarification:
 
 ## 3. Dependency Convention
 
-When ownership docs reference upstream implementation, name the package (`voltaire` or `guillotine-mini`) instead of assuming a sibling checkout path. The build uses immutable Zig package-manager URL/hash pins from `build.zig.zon`.
+When ownership docs reference upstream implementation, name the package (`voltaire` or `guillotine-mini`). The build resolves both by path from sibling checkouts at `../voltaire` and `../guillotine-mini`, pinned to commits in `native-dependencies.json`.
 
 ## 4. Contract Precedence
 

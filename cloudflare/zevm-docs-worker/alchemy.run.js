@@ -17,7 +17,7 @@ export const assets = await Assets({
 });
 export const worker = await Worker("docs-router", {
     name: "zevm-docs",
-    entrypoint: "./src/index.ts",
+    entrypoint: "./src/index.js",
     compatibilityDate: "2026-05-04",
     bindings: {
         ASSETS: assets,
