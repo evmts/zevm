@@ -135,7 +135,7 @@ fn runVector(
         // A byte in a PUSH immediate or in data is never a NOP. Retry only
         // when the decoder actually encounters this opcode as an instruction.
         var rejection = api;
-        if (api == error.LegacyJumpdest) {
+        if (api != null and api.? == error.LegacyJumpdest) {
             rejection = try validationResult(eof.validateWithEip4750Nop(allocator, bytes, kind));
             if (rejection == null) {
                 counts.opcode_conflicts += 1;

@@ -300,6 +300,7 @@ Field rules:
   "nonce": "0x0",
   "blockHash": "0x...",
   "blockNumber": "0x0",
+  "blockTimestamp": "0x0",
   "transactionIndex": "0x0",
   "from": "0x...",
   "to": "0x...",
@@ -807,7 +808,8 @@ Field contract:
   "chainId": "0x7a69",
   "forking": false,
   "forkUrl": null,
-  "forkBlockNumber": null
+  "forkBlockNumber": null,
+  "forkFollow": false
 }
 ```
 
@@ -819,7 +821,21 @@ Field contract:
 | `chainId` | yes | `QuantityHex` | non-null |
 | `forking` | yes | boolean | non-null |
 | `forkUrl` | yes | string or `null` | must be `null` when `forking=false` |
-| `forkBlockNumber` | yes | `QuantityHex` or `null` | must be `null` when `forking=false` |
+| `forkBlockNumber` | yes | `QuantityHex` or `null` | must be `null` when `forking=false`; the configured initial fork block, not the current rebase base |
+| `forkFollow` | yes | boolean | `true` only while rebase fork mode is active (`--fork-follow`, `mode.trusted.fork.follow`, or `zevm_reset` with `follow: true`); must be `false` when `forking=false` |
+
+Forked rebase example (`anvil_metadata` and `hardhat_metadata` return the same shape):
+
+```json
+{
+  "mode": "trusted",
+  "chainId": "0x7a69",
+  "forking": true,
+  "forkUrl": "https://rpc.example",
+  "forkBlockNumber": null,
+  "forkFollow": true
+}
+```
 
 `NodeInfo`:
 
@@ -838,7 +854,8 @@ Field contract:
   "fork": {
     "enabled": false,
     "url": null,
-    "blockNumber": null
+    "blockNumber": null,
+    "follow": false
   }
 }
 ```
@@ -867,7 +884,19 @@ Field contract:
 | --- | --- | --- | --- |
 | `enabled` | yes | boolean | non-null |
 | `url` | yes | string or `null` | non-null only when `enabled = true` |
-| `blockNumber` | yes | `QuantityHex` or `null` | `null` means fork head; may be non-null only when `enabled = true` |
+| `blockNumber` | yes | `QuantityHex` or `null` | `null` means fork head; may be non-null only when `enabled = true`; with `follow = true` it is the configured initial fork block, not the current rebase base |
+| `follow` | yes | boolean | `true` only while rebase fork mode is active; must be `false` when `enabled = false` |
+
+`anvil_nodeInfo` returns the same shape. Forked rebase example of the nested object:
+
+```json
+{
+  "enabled": true,
+  "url": "https://rpc.example",
+  "blockNumber": null,
+  "follow": true
+}
+```
 
 ### 9.3 Canonical methods and accepted aliases
 
@@ -902,7 +931,7 @@ Field contract:
 | `zevm_setTime` | `[timestamp]` | `QuantityHex` effective current timestamp | `anvil_setTime` |
 | `zevm_setBlockTimestampInterval` | `[seconds]` | `true` | `anvil_setBlockTimestampInterval` |
 | `zevm_removeBlockTimestampInterval` | `[]` or omitted | `true` | `anvil_removeBlockTimestampInterval` |
-| `zevm_reset` | `[]` or omitted, or `[forkConfig]` where `forkConfig` is `null`, `{ "url": "https://..." }`, or `{ "url": "https://...", "blockNumber": "0x..." }` | `true` | `anvil_reset`, `hardhat_reset` |
+| `zevm_reset` | `[]` or omitted, or `[forkConfig]` where `forkConfig` is `null` or an object with required `url`, optional `blockNumber`, and optional `follow` (section 9.4) | `true` | `anvil_reset`, `hardhat_reset` |
 | `zevm_setRpcUrl` | `[url]` | `true` | `anvil_setRpcUrl` |
 | `zevm_setCoinbase` | `[address]` | `true` | `anvil_setCoinbase`, `hardhat_setCoinbase` |
 | `zevm_setBlockGasLimit` | `[gasLimit]` | `true` | `anvil_setBlockGasLimit`, `evm_setBlockGasLimit` |
@@ -936,7 +965,7 @@ Parameter token typing contract (applies to the `Exact params` column above):
 | `compilerInput`, `compilerOutput` | JSON object | accepted as compatibility input |
 | `seconds`, `count`, `intervalSeconds`, `chainId`, `balance`, `delta`, `nonce`, `snapshotId`, `timestamp`, `gasLimit`, `baseFee`, `gasPrice`, `value` | `QuantityHex` | section 1 `QuantityHex` |
 | `url` | string | non-empty `http://` or `https://` URL string |
-| `forkConfig` | `null` or object | exact forms: `null`, `{ "url": "https://..." }`, or `{ "url": "https://...", "blockNumber": "0x..." }`; when present, `blockNumber` is `QuantityHex` |
+| `forkConfig` | `null` or object | exact forms: `null`, `{ "url": "https://..." }`, `{ "url": "https://...", "blockNumber": "0x..." }`, `{ "url": "https://...", "follow": true }`, or `{ "url": "https://...", "blockNumber": "0x...", "follow": true }`; when present, `blockNumber` is `QuantityHex` and `follow` is a JSON boolean; `"follow": false` is equivalent to omitting `follow`; any other field, or `follow` without `url`, -> `-32602` |
 
 Rules:
 
@@ -954,9 +983,9 @@ Rules:
 ### 9.4 `zevm_reset` semantics
 
 - call forms:
-  - `[]` or omitted: reset trusted runtime state while keeping current fork configuration unchanged
-  - `[null]`: reset trusted runtime state and disable fork backing
-  - `[forkConfig]` object: reset trusted runtime state and replace fork backing with the provided URL and optional pinned block
+  - `[]` or omitted: reset trusted runtime state while keeping current fork configuration, including `follow`, unchanged
+  - `[null]`: reset trusted runtime state, disable fork backing, and stop any active rebase task
+  - `[forkConfig]` object: reset trusted runtime state and replace fork backing with the provided URL, optional pinned block, and optional `follow`
 - successful reset always:
   - sets canonical local chain back to trusted genesis (`0x0`)
   - clears pending transaction pool
@@ -967,6 +996,10 @@ Rules:
 - fork config object semantics:
   - `{ "url": "https://..." }`: enable fork backing at upstream head
   - `{ "url": "https://...", "blockNumber": "0x..." }`: enable fork backing pinned to that block
+  - `{ "url": "https://...", "follow": true }`: enable rebase fork backing that starts at upstream head and follows it (PRD section 4.1)
+  - `{ "url": "https://...", "blockNumber": "0x...", "follow": true }`: enable rebase fork backing that starts at that block, then follows upstream head
+  - `"follow": false` or omitted `follow`: static fork backing; a successful reset stops any active rebase task
+  - a successful reset with `follow: true` starts the rebase task after the new fork base is established; `zevm_metadata.forkFollow` and `zevm_nodeInfo.fork.follow` report `true` from then on
 - if fork initialization fails (for example unreachable upstream or invalid fork block), call fails with `-32603`
 
 ### 9.5 `zevm_setRpcUrl` semantics
@@ -975,9 +1008,11 @@ Rules:
 - precondition: fork backing is currently enabled; otherwise call fails with `-32603`
 - effect: updates the active fork upstream URL in place
 - non-effects: does not reset local chain state, does not clear pending pool, and does not invalidate snapshots
+- rebase fork behavior: when `follow = true`, the URL update preserves `follow = true`; the rebase task keeps running and polls the new URL for subsequent upstream heads
 - current fork block pin behavior:
   - if current fork config has `blockNumber = null`, backing remains at upstream head semantics
-  - if current fork config has a pinned `blockNumber`, that same pin remains active after URL update
+  - if current fork config has a pinned `blockNumber` and `follow = false`, that same pin remains active after URL update
+  - if current fork config has `follow = true`, `blockNumber` remains the configured initial fork block; the active base keeps tracking upstream head
 
 ### 9.6 Impersonation semantics
 

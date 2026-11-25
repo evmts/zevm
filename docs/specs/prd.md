@@ -20,7 +20,7 @@ If wording differs, `docs/specs/json-rpc-contract.md` is authoritative for API-l
 
 ## 3. Product Scope
 
-In this PRD, phase-1 scope is declared in sections 3.1, 3.3, 3.4, and 3.5, with detailed normative runtime/transport/method/ownership semantics for those in-scope surfaces defined in sections 4 through 12; section 3.2 remains out of scope for phase 1.
+In this PRD, phase-1 scope is declared in sections 3.1, 3.3, 3.4, and 3.5, with detailed normative runtime/transport/method/ownership semantics for those in-scope surfaces defined in sections 4 through 12; section 3.2 remains out of scope for phase 1. Section 13 defines the in-process Execution Extensions surface; it is not a phase-1 shipped surface under section 3.5.
 
 ### 3.1 In scope
 
@@ -222,6 +222,22 @@ Trusted runtime fork-source controls are part of product scope:
 - `zevm_reset`: resets trusted local runtime state and can keep, disable, or replace fork backing depending on params
 - `zevm_setRpcUrl`: updates the active fork URL in place when forking is enabled, without resetting local chain state
 
+Rebase fork (`follow`):
+
+- a rebase fork is a forked trusted node with `follow = true` (`--fork-follow`, `mode.trusted.fork.follow`, or `zevm_reset` with `forkConfig.follow = true`); `follow` requires fork backing with a `url`
+- the rebase mechanism is additive: between rebases the node behaves as a normal forked trusted node, and mining, submission, snapshots, and every trusted control operate unchanged
+- an asynchronous rebase task polls the upstream URL for its head block; it never blocks the JSON-RPC event loop or the mining loop
+- when upstream advances, ZEVM fetches the new upstream head, establishes it as the new fork base, and replays the local transactions mined since the previous base on top of it
+- replay preserves local transaction order
+- replay uses each transaction's recorded read/write set (storage slots read and written, account balances and nonces read) from its prior execution: when that set does not overlap the state changed between the old and new upstream bases, ZEVM carries the prior execution result forward without re-executing it; otherwise ZEVM re-executes the transaction on the new base
+- a transaction that fails replay (for example conflicting upstream state, insufficient balance, or a nonce collision) returns to the pending pool; ZEVM never silently discards it
+- a rebase is atomic: either every replayable transaction commits on the new base, or the node keeps its previous base and retries on the next upstream advance
+- a completed rebase invalidates every snapshot taken before it; `zevm_revert` returns `false` for those snapshot ids
+- `zevm_metadata.forkFollow` and `zevm_nodeInfo.fork.follow` are `true` while the rebase task is active; the reported fork block number stays the configured initial fork block (`null` when started at upstream head)
+- `zevm_setRpcUrl` keeps `follow = true` and the rebase task polls the new URL from then on; `zevm_reset` with `[null]` or a `forkConfig` without `follow: true` stops the rebase task; `zevm_reset` with `[]` keeps it
+- graceful shutdown stops the rebase task before the node exits
+- rebase lifecycle is observable through Execution Extensions events (section 13.3)
+
 Trusted snapshot/revert boundary:
 
 - `zevm_snapshot`/`zevm_revert` capture and restore trusted local runtime state (local chain/state/journal, receipt/log indexes, tx pool, mining/block-environment overrides, impersonation, and time controls)
@@ -316,6 +332,7 @@ Implementation support context (non-normative): `docs/specs/internal/startup-and
 | `--block-time` | seconds (`u64`) | none |
 | `--fork-url` | execution RPC URL | none |
 | `--fork-block-number` | `u64` | none |
+| `--fork-follow` | presence flag | `false` |
 | `--genesis` | genesis JSON path | none |
 | `--chain-rlp` | concatenated RLP block stream path | none |
 | `--engine-host` | Engine API bind host | disabled unless Engine API is enabled |
@@ -327,6 +344,10 @@ Trusted-mode validation:
 - `--block-time` is invalid for `auto` and `manual`
 - `--fork-block-number` without `--fork-url` takes the URL from `mode.trusted.fork.url`; with no URL from either source it is invalid
 - when `--fork-url` is provided and `--fork-block-number` is omitted, startup forking uses unpinned upstream-head (`latest`) semantics
+- `--fork-follow` enables rebase fork mode (section 4.1); it requires `--fork-url` on the command line, and `--fork-follow` without `--fork-url` is startup failure before opening the HTTP listener
+- `--fork-follow` with `--fork-block-number` is valid: the fork starts at that block, then follows upstream head
+- `--fork-follow` CLI semantics are presence-based: present means `true`, omitted means `false`, and explicit assignment forms (for example `--fork-follow=false`) are invalid
+- `--fork-follow` is trusted-mode only; in light mode it is startup failure before opening the HTTP listener
 - `--genesis`, `--chain-rlp`, `--engine-host`, and `--engine-port` are trusted-mode only
 - RLP chain import preserves header and ommer `extraData` bytes. Imported bodies own the decoded ommer data and release it during body cleanup.
 - Engine API is disabled unless `--engine-host`, `--engine-port`, or top-level config `engineRpc` is supplied
@@ -443,8 +464,9 @@ Trusted config object sub-shapes (exact):
 - for `mode.trusted.mining`, `blockTime` is required only for `type = "interval"` and invalid for `type = "auto"` and `type = "manual"`
 - `mode.trusted.hardfork` is an optional object of decimal `u64` activation overrides; allowed keys are `homesteadBlock`, `daoBlock`, `tangerineWhistleBlock`, `spuriousDragonBlock`, `byzantiumBlock`, `petersburgBlock`, `istanbulBlock`, `muirGlacierBlock`, `berlinBlock`, `londonBlock`, `arrowGlacierBlock`, `grayGlacierBlock`, `mergeBlock`, `shanghaiTimestamp`, `cancunTimestamp`, `pragueTimestamp`, `osakaTimestamp`, and `secondsPerSlot`
 - default hardfork policy is explicit: `chainId = 1` uses the mainnet activation schedule, while non-mainnet trusted defaults use a dev schedule with Cancun active from genesis and Prague/Osaka inactive until configured
-- `mode.trusted.fork` must be exactly one of `null`, `{ "url": "<execution-rpc-url>" }`, or `{ "url": "<execution-rpc-url>", "blockNumber": <u64> }`
+- `mode.trusted.fork` must be exactly one of `null`, `{ "url": "<execution-rpc-url>" }`, `{ "url": "<execution-rpc-url>", "blockNumber": <u64> }`, `{ "url": "<execution-rpc-url>", "follow": <boolean> }`, or `{ "url": "<execution-rpc-url>", "blockNumber": <u64>, "follow": <boolean> }`
 - for `mode.trusted.fork`, `blockNumber` is invalid without `url`
+- for `mode.trusted.fork`, `follow` is a JSON boolean and is invalid without `url`; `"follow": true` enables rebase fork mode (section 4.1) and `"follow": false` is equivalent to omitting `follow`
 - for `mode.trusted.fork`, `{ "url": "<execution-rpc-url>" }` uses unpinned upstream-head (`latest`) semantics; adding `blockNumber` pins fork reads to that block
 
 ### 5.5 Precedence
@@ -473,9 +495,11 @@ Structured trusted-setting resolution:
 
 - `mining` resolves as one unit from CLI `--mining` and `--block-time`; if either flag is present, ZEVM builds `mining` from CLI and ignores `mode.trusted.mining`
 - `hardfork` has no phase-1 CLI flags; ZEVM starts from the default schedule for the resolved `chainId`, then applies any `mode.trusted.hardfork` field overrides
-- `fork` resolves as one unit from CLI `--fork-url` and `--fork-block-number`; if either flag is present, ZEVM builds `fork` from CLI, taking the URL from `mode.trusted.fork.url` when only `--fork-block-number` is present, and ignores the rest of `mode.trusted.fork`
+- `fork` resolves as one unit from CLI `--fork-url`, `--fork-block-number`, and `--fork-follow`; if any of them is present, ZEVM builds `fork` from CLI, taking the URL from `mode.trusted.fork.url` when only `--fork-block-number` is present, and ignores the rest of `mode.trusted.fork`, including `follow`
+- the CLI-built `fork` has `follow = true` only when `--fork-follow` is present; `mode.trusted.fork.follow` never combines with CLI fork flags
 - when no related CLI flags are present for that unit, ZEVM uses config value for that unit, then mode default
 - resolved trusted `fork` with `url` and no `blockNumber` uses unpinned upstream-head (`latest`) semantics; resolved trusted `fork` with `blockNumber` is pinned to that block
+- resolved trusted `fork` with `follow = true` starts at its `blockNumber` (or upstream head when `blockNumber` is absent) and then follows upstream head as a rebase fork (section 4.1)
 
 Checkpoint selection precedence in light mode:
 
@@ -729,3 +753,94 @@ Runtime composition boundary:
 - light mode: read-only consensus-anchored runtime serving proof-backed read methods with readiness gating
 
 ZEVM does not redefine upstream execution internals in this contract; ZEVM defines how those upstream components are composed into one product surface.
+
+## 13. Execution Extensions (ExEx)
+
+Execution Extensions let Zig code compiled into a ZEVM binary observe node lifecycle events in process. ExEx is a library-embedding surface, not a JSON-RPC surface: it adds no methods, flags, or config keys, and the stock `zevm` executable registers no extensions.
+
+### 13.1 Comptime extension parameterization
+
+- the node type is comptime-parameterized by a tuple of extension types: `Node(.{ ExtA, ExtB })`
+- `Node(.{})` is the node with no extensions and is what the stock `zevm` executable builds
+- extension registration is fixed at compile time; there is no runtime registration, discovery, or plugin loading
+- each extension type declares `pub fn run(node: *NodeRuntime, events: *EventIterator) !void`
+- a type in the tuple without that exact `run` signature is a compile error
+
+### 13.2 Extension lifecycle and `EventIterator`
+
+- the node starts each extension's `run` once, after startup succeeds and before it emits `node_started`; each `run` executes concurrently with the node's main loop and never blocks it
+- each extension receives its own `EventIterator`; every extension receives every emitted event independently of the others
+- `EventIterator.next()` waits for and returns the next event in emission order (section 13.4), or `null` after the node has emitted `node_stopping` and the extension has consumed it
+- each `EventIterator` reads from a per-extension buffer with a fixed capacity; the node never waits for a slow extension, so an event emitted while that extension's buffer is full is not delivered to it, and a slow consumer may miss events
+- an extension detaches when `run` returns or returns an error; the node stops delivering events to that extension, and keeps operating; a detached extension never restarts during the process lifetime
+- an extension may call `NodeRuntime` methods; those calls follow the same semantics as the equivalent JSON-RPC methods and emit the same events
+
+### 13.3 `Event` tagged union
+
+`Event` is a tagged union. Mode-specific variants are emitted only in that mode.
+
+Shared events (both modes):
+
+| Variant | Payload | Emitted |
+| --- | --- | --- |
+| `node_started` | none | after the HTTP JSON-RPC listener is accepting connections |
+| `node_stopping` | none | when graceful shutdown begins; it is the last event an extension receives |
+
+Trusted-mode block and pool events:
+
+| Variant | Payload | Emitted |
+| --- | --- | --- |
+| `block_committed` | block header, transactions, receipts, and state diff | after a new local block is sealed and becomes the canonical head |
+| `block_reverted` | reverted block number and new head | after a snapshot revert or reset removes blocks from the canonical chain |
+| `tx_pool_add` | transaction | after a transaction is accepted into the pending pool |
+| `tx_pool_drop` | transaction hash and reason: `mined`, `dropped`, or `replaced` | after a transaction leaves the pending pool |
+| `state_change` | address, field (`balance`, `nonce`, `code`, or `storage` with slot), old value, new value | after an account state mutation is committed |
+
+Trusted-mode control-surface events:
+
+| Variant | Emitted after |
+| --- | --- |
+| `snapshot_created` | `zevm_snapshot` and aliases |
+| `snapshot_reverted` | a successful `zevm_revert` and aliases |
+| `fork_changed` | `zevm_reset` or `zevm_setRpcUrl` changes fork configuration |
+| `mining_mode_changed` | a mining-mode control changes the mining mode |
+| `chain_id_changed` | `zevm_setChainId` |
+| `impersonation_changed` | a manual or auto impersonation control changes impersonation state |
+| `time_adjusted` | a time control changes the next-block timestamp or time offset |
+| `coinbase_changed` | `zevm_setCoinbase` |
+| `block_gas_limit_changed` | `zevm_setBlockGasLimit` |
+
+Light-mode events:
+
+| Variant | Payload | Emitted |
+| --- | --- | --- |
+| `sync_status_changed` | old status, new status, `ready` | after a `zevm_lightSyncStatus.status` transition (section 4.2) |
+| `readiness_changed` | `ready` | after `ready` changes |
+| `checkpoint_accepted` | checkpoint hash | after sync accepts a new checkpoint |
+| `head_updated` | optimistic, safe, and finalized slots | after verified light heads change |
+
+Rebase fork events (trusted mode with `follow = true`, section 4.1):
+
+| Variant | Payload | Emitted |
+| --- | --- | --- |
+| `rebase_started` | old fork block and new upstream head | when a rebase begins |
+| `rebase_tx_replayed` | transaction hash and new block number | after a local transaction commits on the new base, whether re-executed or carried forward |
+| `rebase_tx_dropped` | transaction hash and reason | after a local transaction fails replay and returns to the pending pool |
+| `rebase_completed` | new fork block, replayed count, dropped count | when a rebase commits |
+
+### 13.4 Causal ordering
+
+Every extension observes delivered events in emission order, and emission order follows these rules:
+
+- within one block commit, every `state_change` for that block and every `tx_pool_drop` with reason `mined` for its transactions precede that block's `block_committed`
+- `node_started` precedes every other event; `node_stopping` follows every other event
+- a rebase emits `rebase_started`, then one `rebase_tx_replayed` or `rebase_tx_dropped` per local transaction in local transaction order, interleaved as replay proceeds, then `rebase_completed`
+- an atomic rebase that does not commit (section 4.1) emits no `rebase_completed`; the retry emits a new `rebase_started`
+- a control-surface event follows the state change it reports and precedes the JSON-RPC response for the call that caused it
+
+### 13.5 Zero-cost elimination and isolation
+
+- with `Node(.{})`, every event construction and emission site is eliminated at compile time; the node allocates no event buffers and runs no extension tasks, so the stock executable has no ExEx runtime overhead
+- the event payload types, `EventIterator`, and the extension tuple add no fields to JSON-RPC responses, CLI flags, or config keys
+- an extension error return, detach, or slow consumption never changes JSON-RPC results, mining, or sync behavior
+- ExEx events are an in-process observation surface; they do not replace JSON-RPC as the product contract, and extensions are outside the section 3.5 qualification surface until this PRD lists them in section 3.1

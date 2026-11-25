@@ -50,6 +50,7 @@ pub const usage =
     \\  --block-time <seconds>             Interval mining period (non-zero)
     \\  --fork-url <url>                   Upstream RPC to fork
     \\  --fork-block-number <u64>          Fork pin block
+    \\  --fork-follow                      Follow the upstream head and rebase local txs (needs --fork-url)
     \\  --genesis <path>                   Genesis alloc JSON
     \\  --chain-rlp <path>                 Chain RLP to import
     \\  --execution-fixture-rpc-dir <dir>  Serve recorded .io fixtures (opt-in)
@@ -97,6 +98,8 @@ pub const Options = struct {
     block_time: ?u64 = null,
     fork_url: ?[]const u8 = null,
     fork_block_number: ?u64 = null,
+    /// `--fork-follow` presence flag. Fork flags resolve as one unit.
+    fork_follow: bool = false,
     genesis_alloc_path: ?[]const u8 = null,
     chain_rlp_path: ?[]const u8 = null,
     execution_fixture_rpc_dir: ?[]const u8 = null,
@@ -123,6 +126,7 @@ pub const Options = struct {
             self.block_time != null or
             self.fork_url != null or
             self.fork_block_number != null or
+            self.fork_follow or
             self.genesis_alloc_path != null or
             self.chain_rlp_path != null or
             self.execution_fixture_rpc_dir != null;
@@ -147,7 +151,7 @@ pub const Options = struct {
     }
 
     pub fn hasForkUnit(self: Options) bool {
-        return self.fork_url != null or self.fork_block_number != null;
+        return self.fork_url != null or self.fork_block_number != null or self.fork_follow;
     }
 };
 
@@ -199,6 +203,10 @@ pub fn parse(args: []const []const u8) ParseError!Options {
             options.fork_url = try nextValue(args, &index);
         } else if (std.mem.eql(u8, arg, "--fork-block-number")) {
             options.fork_block_number = try parseIntValue(u64, try nextValue(args, &index));
+        } else if (std.mem.eql(u8, arg, "--fork-follow")) {
+            options.fork_follow = true;
+        } else if (std.mem.startsWith(u8, arg, "--fork-follow=")) {
+            return error.InvalidFlagValue;
         } else if (std.mem.eql(u8, arg, "--genesis")) {
             options.genesis_alloc_path = try nextValue(args, &index);
         } else if (std.mem.eql(u8, arg, "--chain-rlp")) {

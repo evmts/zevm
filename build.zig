@@ -404,6 +404,69 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run_transaction_tests.addArgs(args);
     b.step("transaction-tests", "Run the ethereum-tests TransactionTests fixtures").dependOn(&run_transaction_tests.step);
 
+    const difficulty_tests = b.addExecutable(.{
+        .name = "difficulty-tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/difficulty_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zevm", .module = mod },
+            },
+        }),
+    });
+    linkRustSupport(difficulty_tests, target, rust_crypto);
+    const run_difficulty_tests = b.addRunArtifact(difficulty_tests);
+    run_difficulty_tests.step.dependOn(launch_policy_preflight_step);
+    if (b.args) |args| run_difficulty_tests.addArgs(args);
+    b.step("difficulty-tests", "Run the ethereum-tests DifficultyTests fixtures").dependOn(&run_difficulty_tests.step);
+
+    const eof_tests = b.addExecutable(.{
+        .name = "eof-tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/eof_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zevm", .module = mod },
+            },
+        }),
+    });
+    linkRustSupport(eof_tests, target, rust_crypto);
+    const run_eof_tests = b.addRunArtifact(eof_tests);
+    run_eof_tests.step.dependOn(launch_policy_preflight_step);
+    if (b.args) |args| run_eof_tests.addArgs(args);
+    b.step("eof-tests", "Run the ethereum-tests EOFTests static validation fixtures").dependOn(&run_eof_tests.step);
+
+    const blockchain_tests_module = b.createModule(.{
+        .root_source_file = b.path("tools/blockchain_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "zevm", .module = mod },
+            .{ .name = "primitives", .module = modules.primitives_mod },
+            .{ .name = "guillotine_mini", .module = modules.guillotine_mini_mod },
+            .{ .name = "state-manager", .module = modules.state_manager_mod },
+        },
+    });
+    const blockchain_tests = b.addExecutable(.{
+        .name = "blockchain-tests",
+        .root_module = blockchain_tests_module,
+    });
+    linkRustSupport(blockchain_tests, target, rust_crypto);
+    const run_blockchain_tests = b.addRunArtifact(blockchain_tests);
+    run_blockchain_tests.step.dependOn(launch_policy_preflight_step);
+    if (b.args) |args| run_blockchain_tests.addArgs(args);
+    const blockchain_tests_step = b.step("blockchain-tests", "Run the ethereum-tests BlockchainTests fixtures");
+    blockchain_tests_step.dependOn(&run_blockchain_tests.step);
+
+    const blockchain_tests_unit = b.addTest(.{ .root_module = blockchain_tests_module });
+    linkRustSupport(blockchain_tests_unit, target, rust_crypto);
+    const run_blockchain_tests_unit = b.addRunArtifact(blockchain_tests_unit);
+    run_blockchain_tests_unit.step.dependOn(launch_policy_preflight_step);
+    test_step.dependOn(&run_blockchain_tests_unit.step);
+    blockchain_tests_step.dependOn(&run_blockchain_tests_unit.step);
+
     const early_state_step = b.step("verify-early-state", "Verify Frontier through Istanbul state fixtures and report each fork");
     const run_early_state = b.addRunArtifact(external_verify_exe);
     run_early_state.step.dependOn(launch_policy_preflight_step);

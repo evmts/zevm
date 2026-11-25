@@ -106,6 +106,40 @@ CI runs this same command in the `Hive RPC Compat Smoke` job for tag pushes, man
 
 The RPC compatibility run exercises every `ethereum/rpc-compat` transcript selected by the pinned execution-apis revision. This is narrower than full Hive release readiness: GraphQL, Engine API conformance, sync, devp2p discovery edge cases, and the larger execution-spec consensus fixtures are separate simulators and must be reported independently. Phase-1 `chain.rlp` handling remains query-oriented for imported history, while the Engine listener covers local payload build jobs, strict `newPayload` import for known local parents, `getPayload` by payload id, payload-body lookup, and null blob sidecar lookup for unavailable blobs.
 
+## External Suite Coverage Status
+
+`zig build verify` and the release jobs above cover these `ethereum-tests` suites only as stated. A suite not listed as a full runner has no pass/fail claim.
+
+| Suite | Issue | Current gate |
+| --- | --- | --- |
+| `BlockchainTests` | #6 | `zig build blockchain-tests` (and CI step) replays `lib/ethereum-tests/BlockchainTests/` (`ValidBlocks` + `InvalidBlocks`, `NoProof` seal semantics, per-category tracking for any unsupported legacy/transition categories) |
+| `DifficultyTests` | #7 | `zig build difficulty-tests` (and CI step) verifies all 17 files / 18,598 vectors across `Frontier` through `GrayGlacier` via `src/difficulty.zig` |
+| `EOFTests` | #9 | `zig build eof-tests` (and CI step) validates all 7 files / 343 vectors against `src/eof.zig` static EOF1 container/stack validation with explicit reporting |
+
+## npm Release Workflow
+
+`.github/workflows/release.yml` publishes `@evmts/zevm` and its native platform packages. Only a pushed `v*` tag starts it, and its first job fails unless the tagged commit is an ancestor of `origin/main`.
+
+```text
+tag v<version> ─▶ verify ─▶ native (9-target matrix) ─▶ publish (npm) ─▶ github-release
+```
+
+- `verify` runs `npm --prefix npm/zevm run verify:release -- "$GITHUB_REF_NAME"`, `zig build dependency-preflight`, `zig build`, `zig build verify`, `zig build qualification-check -- --require-covered`, `zig build c-smoke`, `zig build npm-smoke`, and the JavaScript package checks, then fails on a dirty worktree
+- `native` builds `zig build npm-platform-artifacts -Dtarget=<triple> -Doptimize=ReleaseSafe` on each platform's runner and runs `npm/zevm/scripts/smoke.cjs` wherever the runner can load the addon (every target except the two musl targets and `win32-ia32-msvc`)
+- `publish` requires exactly 9 addons, re-runs `verify:release`, and runs `npm --prefix npm/zevm run publish:all` in the `npm` environment with npm provenance; it authenticates with npm trusted publishing (OIDC) or the `NPM_TOKEN` secret
+- `github-release` generates `release-tuple.json` and `light-default-checkpoints.json` with `zig build release-metadata` and attaches them to a draft GitHub release for the tag
+
+The release platform set is `optionalDependencies` in `npm/zevm/package.json`: `darwin-arm64`, `darwin-x64`, `linux-arm64-gnu`, `linux-arm64-musl`, `linux-x64-gnu`, `linux-x64-musl`, `win32-arm64-msvc`, `win32-ia32-msvc`, and `win32-x64-msvc`. `verify-release.cjs`, `stage-artifacts.cjs`, and `publish-all.cjs` read that list, so a package directory under `npm/platforms/` that is not listed is never verified, staged, or published. FreeBSD is excluded because the pinned Voltaire Rust crypto archive does not build for FreeBSD.
+
+`verify:release` fails unless the tag equals `v<version>` and that version matches `npm/zevm/package.json`, every listed platform package, the main package's `optionalDependencies` pins, `build.zig.zon`, and `ZEVM_VERSION` in `src/c_bindings.zig`. To cut a release:
+
+```bash
+npm --prefix npm/zevm run verify:release -- v0.1.0
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+Publish the draft release from a maintainer account to run the Published Release Asset Gate below. The workflow leaves it as a draft because a release published by `GITHUB_TOKEN` does not fire the `release: published` event that the gate listens for.
+
 ## Published Release Asset Gate
 
 When a GitHub release is published, CI validates the release metadata publication contract:

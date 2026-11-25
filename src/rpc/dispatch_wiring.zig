@@ -4477,6 +4477,7 @@ fn metadataValue(allocator: std.mem.Allocator, rt: *const runtime_mod.NodeRuntim
     try putOwnedJson(&obj, allocator, "mode", .{ .string = try allocator.dupe(u8, "trusted") });
     try putOwnedJson(&obj, allocator, "chainId", try hexQuantity(allocator, rt.chain_id));
     try putOwnedJson(&obj, allocator, "forking", .{ .bool = rt.fork_config != null });
+    try putOwnedJson(&obj, allocator, "forkFollow", .{ .bool = if (rt.fork_config) |fork| fork.follow else false });
     if (rt.fork_config) |fork| {
         try putOwnedJson(&obj, allocator, "forkUrl", .{ .string = try redactUrlAlloc(allocator, fork.url) });
         try putOwnedJson(&obj, allocator, "forkBlockNumber", if (fork.block_number) |number| try hexQuantity(allocator, number) else .null);
@@ -4561,6 +4562,7 @@ fn forkInfoValue(allocator: std.mem.Allocator, rt: *const runtime_mod.NodeRuntim
     }
 
     try putOwnedJson(&obj, allocator, "enabled", .{ .bool = rt.fork_config != null });
+    try putOwnedJson(&obj, allocator, "follow", .{ .bool = if (rt.fork_config) |fork| fork.follow else false });
     if (rt.fork_config) |fork| {
         try putOwnedJson(&obj, allocator, "url", .{ .string = try redactUrlAlloc(allocator, fork.url) });
         try putOwnedJson(&obj, allocator, "blockNumber", if (fork.block_number) |number| try hexQuantity(allocator, number) else .null);

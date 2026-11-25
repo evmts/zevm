@@ -92,7 +92,8 @@ Rules:
   "chainId": "0x7a69",
   "forking": false,
   "forkUrl": null,
-  "forkBlockNumber": null
+  "forkBlockNumber": null,
+  "forkFollow": false
 }
 ```
 
@@ -104,7 +105,8 @@ Field contract:
 | `chainId` | yes | `QuantityHex` | non-null |
 | `forking` | yes | boolean | non-null |
 | `forkUrl` | yes | string or `null` | must be `null` when `forking=false` |
-| `forkBlockNumber` | yes | `QuantityHex` or `null` | must be `null` when `forking=false` |
+| `forkBlockNumber` | yes | `QuantityHex` or `null` | must be `null` when `forking=false`; the configured initial fork block, not the current rebase base |
+| `forkFollow` | yes | boolean | `true` only while rebase fork mode is active; must be `false` when `forking=false` |
 
 ### `NodeInfo`
 
@@ -123,7 +125,8 @@ Field contract:
   "fork": {
     "enabled": false,
     "url": null,
-    "blockNumber": null
+    "blockNumber": null,
+    "follow": false
   }
 }
 ```
@@ -154,7 +157,42 @@ Field contract:
 | --- | --- | --- | --- |
 | `enabled` | yes | boolean | non-null |
 | `url` | yes | string or `null` | non-null only when `enabled = true` |
-| `blockNumber` | yes | `QuantityHex` or `null` | `null` means fork head; may be non-null only when `enabled = true` |
+| `blockNumber` | yes | `QuantityHex` or `null` | `null` means fork head; may be non-null only when `enabled = true`; with `follow = true` it is the configured initial fork block |
+| `follow` | yes | boolean | `true` only while rebase fork mode is active; must be `false` when `enabled = false` |
+
+## Rebase Fork Controls
+
+A rebase fork is a forked trusted node that follows the upstream chain head. Each time upstream advances, ZEVM moves the fork base to the new upstream head and replays local transactions on top of it (PRD section 4.1). Start one with `--fork-url <url> --fork-follow`, with `mode.trusted.fork.follow: true` in the config file, or at runtime with `zevm_reset`:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "zevm_reset",
+  "params": [{ "url": "https://rpc.example", "follow": true }]
+}
+```
+
+- `{ "url": "https://...", "follow": true }` starts at upstream head; adding `"blockNumber": "0x..."` starts at that block, then follows upstream head
+- `"follow": false` equals omitting `follow` and gives a static fork; a successful reset with it, or with `[null]`, stops any active rebase task
+- `zevm_reset` with `[]` keeps the current fork configuration, including `follow`
+- `zevm_setRpcUrl([url])` keeps `follow = true`; the rebase task polls the new URL from then on, without resetting the chain, clearing the pool, or invalidating snapshots
+- a rebase invalidates snapshots taken before it: `zevm_revert` returns `false` for those ids
+- transactions that fail replay on the new base return to the pending pool
+- `zevm_metadata.forkFollow` and `zevm_nodeInfo.fork.follow` report `true` while the rebase task is active
+
+Forked rebase `NodeMetadata` example:
+
+```json
+{
+  "mode": "trusted",
+  "chainId": "0x7a69",
+  "forking": true,
+  "forkUrl": "https://rpc.example",
+  "forkBlockNumber": null,
+  "forkFollow": true
+}
+```
 
 ## Methods
 

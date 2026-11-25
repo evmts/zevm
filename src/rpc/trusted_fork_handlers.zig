@@ -39,7 +39,7 @@ pub fn parseResetMode(params: ?std.json.Value) ?runtime.ResetForkMode {
         .null => .disable,
         .object => |obj| blk: {
             // Anvil/viem reset wraps the upstream in `forking` and uses numeric
-            // block heights. Preserve ZEVM's direct {url, blockNumber} form too.
+            // block heights. Preserve ZEVM's direct {url, blockNumber, follow} form too.
             if (obj.get("forking")) |forking| {
                 if (obj.count() != 1 or forking != .object) return null;
                 const config = forking.object;
@@ -52,11 +52,15 @@ pub fn parseResetMode(params: ?std.json.Value) ?runtime.ResetForkMode {
                         else => parseQuantityHexU64(value) orelse return null,
                     };
                 }
+                const follow = parseFollow(config) orelse return null;
                 var keys = config.iterator();
                 while (keys.next()) |entry| {
-                    if (!std.mem.eql(u8, entry.key_ptr.*, "jsonRpcUrl") and !std.mem.eql(u8, entry.key_ptr.*, "blockNumber")) return null;
+                    const key = entry.key_ptr.*;
+                    if (!std.mem.eql(u8, key, "jsonRpcUrl") and
+                        !std.mem.eql(u8, key, "blockNumber") and
+                        !std.mem.eql(u8, key, "follow")) return null;
                 }
-                break :blk .{ .replace = .{ .url = url_value.string, .block_number = block_number } };
+                break :blk .{ .replace = .{ .url = url_value.string, .block_number = block_number, .follow = follow } };
             }
             const url = switch (obj.get("url") orelse return null) {
                 .string => |value| value,
@@ -68,19 +72,31 @@ pub fn parseResetMode(params: ?std.json.Value) ?runtime.ResetForkMode {
                 block_number = parseQuantityHexU64(block_value) orelse return null;
             }
 
+            const follow = parseFollow(obj) orelse return null;
+
             // Enforce exact object forms from contract.
             var it = obj.iterator();
             while (it.next()) |entry| {
-                if (!std.mem.eql(u8, entry.key_ptr.*, "url") and !std.mem.eql(u8, entry.key_ptr.*, "blockNumber")) {
-                    return null;
-                }
+                const key = entry.key_ptr.*;
+                if (!std.mem.eql(u8, key, "url") and
+                    !std.mem.eql(u8, key, "blockNumber") and
+                    !std.mem.eql(u8, key, "follow")) return null;
             }
 
             break :blk .{ .replace = .{
                 .url = url,
                 .block_number = block_number,
+                .follow = follow,
             } };
         },
+        else => null,
+    };
+}
+
+fn parseFollow(obj: std.json.ObjectMap) ?bool {
+    const value = obj.get("follow") orelse return false;
+    return switch (value) {
+        .bool => |follow| follow,
         else => null,
     };
 }
@@ -125,11 +141,14 @@ test "handleZevmReset with omitted params keeps fork configuration and invalidat
     try std.testing.expect(!reverted);
 }
 
-test "handleZevmReset with [null] disables fork backing" {
+test "handleZevmReset with [null] clears a following fork" {
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, .{
         .fork_url = "https://rpc-a.example",
+        .fork_follow = true,
     });
     defer rt.deinit();
+
+    try std.testing.expect(rt.fork_config.?.follow);
 
     var args = std.json.Array.init(std.testing.allocator);
     defer args.deinit();
@@ -179,10 +198,11 @@ test "handleZevmReset rejects non-minimal fork block number" {
     try std.testing.expectError(error.InvalidParams, handleZevmReset(&rt, .{ .array = args }));
 }
 
-test "handleZevmSetRpcUrl updates active fork URL" {
+test "handleZevmSetRpcUrl updates active fork URL and preserves follow" {
     var rt = try runtime.NodeRuntime.init(std.testing.allocator, .{
         .fork_url = "https://rpc-a.example",
         .fork_block_number = 99,
+        .fork_follow = true,
     });
     defer rt.deinit();
 
@@ -194,6 +214,7 @@ test "handleZevmSetRpcUrl updates active fork URL" {
     try std.testing.expect(result.bool);
     try std.testing.expectEqualStrings("https://rpc-b.example", rt.fork_config.?.url);
     try std.testing.expectEqual(@as(?u64, 99), rt.fork_config.?.block_number);
+    try std.testing.expect(rt.fork_config.?.follow);
 }
 
 test "handleZevmSetRpcUrl rejects malformed URL as invalid params" {
@@ -236,4 +257,45 @@ test "reset accepts Anvil fork config with numeric or quantity heights" {
     const invalid = try std.json.parseFromSlice(std.json.Value, allocator, "[{\"forking\":{\"jsonRpcUrl\":\"http://localhost:8545\",\"blockNumber\":-1}}]", .{});
     defer invalid.deinit();
     try std.testing.expect(parseResetMode(invalid.value) == null);
+}
+
+test "handleZevmReset applies follow settings in direct and Anvil fork objects" {
+    const allocator = std.testing.allocator;
+    var rt = try runtime.NodeRuntime.init(allocator, null);
+    defer rt.deinit();
+
+    const cases = [_]struct { params: []const u8, block_number: ?u64, follow: bool }{
+        .{ .params = "[{\"url\":\"https://rpc.example\",\"follow\":true}]", .block_number = null, .follow = true },
+        .{ .params = "[{\"url\":\"https://rpc.example\",\"blockNumber\":\"0x2a\",\"follow\":true}]", .block_number = 42, .follow = true },
+        .{ .params = "[{\"url\":\"https://rpc.example\",\"follow\":false}]", .block_number = null, .follow = false },
+        .{ .params = "[{\"forking\":{\"jsonRpcUrl\":\"https://rpc.example\",\"blockNumber\":42,\"follow\":true}}]", .block_number = 42, .follow = true },
+        .{ .params = "[{\"forking\":{\"jsonRpcUrl\":\"https://rpc.example\",\"follow\":false}}]", .block_number = null, .follow = false },
+        .{ .params = "[{\"url\":\"https://rpc.example\"}]", .block_number = null, .follow = false },
+        .{ .params = "[{\"forking\":{\"jsonRpcUrl\":\"https://rpc.example\"}}]", .block_number = null, .follow = false },
+    };
+    for (cases) |case| {
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, case.params, .{});
+        defer parsed.deinit();
+        const result = try handleZevmReset(&rt, parsed.value);
+        try std.testing.expect(result.bool);
+        const fork = rt.fork_config.?;
+        try std.testing.expectEqual(case.block_number, fork.block_number);
+        try std.testing.expectEqual(case.follow, fork.follow);
+    }
+}
+
+test "handleZevmReset rejects non-boolean follow in either fork object" {
+    const allocator = std.testing.allocator;
+    var rt = try runtime.NodeRuntime.init(allocator, null);
+    defer rt.deinit();
+
+    for ([_][]const u8{
+        "[{\"url\":\"https://rpc.example\",\"follow\":\"true\"}]",
+        "[{\"forking\":{\"jsonRpcUrl\":\"https://rpc.example\",\"follow\":1}}]",
+    }) |params| {
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, params, .{});
+        defer parsed.deinit();
+        try std.testing.expectError(error.InvalidParams, handleZevmReset(&rt, parsed.value));
+        try std.testing.expect(!rt.isForkingEnabled());
+    }
 }

@@ -40,7 +40,15 @@ pub const system_contracts = @import("system_contracts.zig");
 pub const node_runtime = @import("node/runtime.zig");
 pub const rpc = @import("rpc/root.zig");
 pub const release_metadata = @import("release_metadata.zig");
+pub const difficulty = @import("difficulty.zig");
+pub const eof = @import("eof.zig");
+pub const exex = @import("exex.zig");
+pub const rebase_fork = @import("rebase_fork.zig");
 pub const log = log_mod;
+
+pub fn Node(comptime Extensions: anytype) type {
+    return exex.NodeWith(node_runtime.NodeRuntime, Extensions);
+}
 
 test {
     _ = @import("log.zig");
@@ -77,5 +85,10 @@ test {
     _ = @import("txpool.zig");
     _ = @import("rpc/root.zig");
     _ = @import("release_metadata.zig");
+    _ = @import("difficulty.zig");
+    _ = @import("eof.zig");
+    _ = @import("exex.zig");
+    _ = @import("rebase_fork.zig");
+    _ = @import("exex_rebase_integration_test.zig");
     _ = @import("fuzz/root.zig");
 }

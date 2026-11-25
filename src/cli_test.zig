@@ -11,6 +11,8 @@ test "parse returns only user supplied values" {
     try std.testing.expect(options.engine_port == null);
     try std.testing.expect(!options.strict_checkpoint_age);
     try std.testing.expect(!options.strict_checkpoint_age_present);
+    try std.testing.expect(!options.fork_follow);
+    try std.testing.expect(!options.hasForkUnit());
 }
 
 test "parse reads shared and trusted flags" {
@@ -113,4 +115,32 @@ test "parse rejects unknown and malformed flags" {
     try std.testing.expectError(error.MissingFlagValue, cli.parse(&[_][]const u8{"--host"}));
     try std.testing.expectError(error.InvalidFlagValue, cli.parse(&[_][]const u8{ "--mode", "archive" }));
     try std.testing.expectError(error.InvalidFlagValue, cli.parse(&[_][]const u8{"--strict-checkpoint-age=false"}));
+}
+
+test "parse reads --fork-follow as a presence flag" {
+    const options = try cli.parse(&[_][]const u8{ "--fork-follow", "--fork-url", "https://rpc.example" });
+    try std.testing.expect(options.fork_follow);
+    try std.testing.expectEqualStrings("https://rpc.example", options.fork_url.?);
+    try std.testing.expect(options.fork_block_number == null);
+}
+
+test "parse --fork-follow consumes no value" {
+    // A following flag must not be swallowed as a value of --fork-follow.
+    const options = try cli.parse(&[_][]const u8{ "--fork-follow", "--fork-block-number", "9" });
+    try std.testing.expect(options.fork_follow);
+    try std.testing.expectEqual(@as(u64, 9), options.fork_block_number.?);
+
+    try std.testing.expectError(error.UnknownArgument, cli.parse(&[_][]const u8{ "--fork-follow", "true" }));
+    try std.testing.expectError(error.InvalidFlagValue, cli.parse(&[_][]const u8{"--fork-follow=true"}));
+}
+
+test "--fork-follow counts as a trusted-only flag and part of the fork unit" {
+    const options = try cli.parse(&[_][]const u8{"--fork-follow"});
+    try std.testing.expect(options.hasTrustedOnly());
+    try std.testing.expect(options.hasForkUnit());
+    try std.testing.expect(!options.hasLightOnly());
+}
+
+test "usage documents --fork-follow" {
+    try std.testing.expect(std.mem.indexOf(u8, cli.usage, "--fork-follow") != null);
 }

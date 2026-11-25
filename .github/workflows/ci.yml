@@ -81,6 +81,18 @@ jobs:
         working-directory: zevm
         run: zig build transaction-tests
 
+      - name: Ethereum DifficultyTests
+        working-directory: zevm
+        run: zig build difficulty-tests
+
+      - name: Ethereum EOFTests
+        working-directory: zevm
+        run: zig build eof-tests
+
+      - name: Ethereum BlockchainTests
+        working-directory: zevm
+        run: zig build blockchain-tests -- --summary-only
+
       - name: Build the pinned Lean 4 reference spec
         uses: leanprover/lean-action@v1
         with:

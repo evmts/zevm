@@ -96,6 +96,8 @@ pub fn loadJwtSecretFile(allocator: std.mem.Allocator, path: []const u8) ![ENGIN
 pub const ForkConfig = struct {
     url: []const u8,
     block_number: ?u64 = null,
+    /// Follow the upstream head and rebase local transactions onto it.
+    follow: bool = false,
 };
 
 pub const TrustedConfig = struct {
@@ -131,6 +133,7 @@ pub const TrustedConfig = struct {
             .hardfork_config = self.hardfork_config,
             .fork_url = if (self.fork) |fork| fork.url else null,
             .fork_block_number = if (self.fork) |fork| fork.block_number else null,
+            .fork_follow = if (self.fork) |fork| fork.follow else false,
             .engine_sync_fallback_url = self.engine_sync_fallback_url,
             .genesis_alloc_path = self.genesis_alloc_path,
             .chain_rlp_path = self.chain_rlp_path,
@@ -214,6 +217,7 @@ const FileRpc = struct {
 const FileFork = struct {
     url: []const u8,
     block_number: ?u64 = null,
+    follow: bool = false,
 };
 
 const FileTrusted = struct {
@@ -556,23 +560,22 @@ fn resolveFork(
     file_fork: ?FileFork,
 ) LoadError!?ForkConfig {
     if (options.hasForkUnit()) {
-        // The CLI fork URL takes precedence; otherwise fall back to the file URL so
-        // that `--fork-block-number N` alone can re-pin a fork whose URL comes from
-        // the config file. Only error when no URL is available from either source.
-        const url = options.fork_url orelse if (file_fork) |fork| fork.url else null;
-        if (url) |fork_url| {
-            return .{
-                .url = try allocator.dupe(u8, fork_url),
-                .block_number = options.fork_block_number,
-            };
-        }
-        return error.InvalidConfig;
+        // `--fork-url`, `--fork-block-number`, and `--fork-follow` resolve as one
+        // unit: any CLI fork flag replaces the config file fork entirely, so the
+        // CLI must name the URL itself.
+        const fork_url = options.fork_url orelse return error.InvalidConfig;
+        return .{
+            .url = try allocator.dupe(u8, fork_url),
+            .block_number = options.fork_block_number,
+            .follow = options.fork_follow,
+        };
     }
 
     if (file_fork) |fork| {
         return .{
             .url = try allocator.dupe(u8, fork.url),
             .block_number = fork.block_number,
+            .follow = fork.follow,
         };
     }
 
@@ -991,6 +994,7 @@ fn parseFork(value: std.json.Value) LoadError!?FileFork {
 
     var url: ?[]const u8 = null;
     var block_number: ?u64 = null;
+    var follow = false;
 
     var iterator = object.iterator();
     while (iterator.next()) |entry| {
@@ -999,6 +1003,8 @@ fn parseFork(value: std.json.Value) LoadError!?FileFork {
             url = try parseString(entry.value_ptr.*);
         } else if (std.mem.eql(u8, key, "blockNumber")) {
             block_number = try parseU64(entry.value_ptr.*);
+        } else if (std.mem.eql(u8, key, "follow")) {
+            follow = try parseBool(entry.value_ptr.*);
         } else {
             return error.InvalidConfig;
         }
@@ -1007,6 +1013,7 @@ fn parseFork(value: std.json.Value) LoadError!?FileFork {
     return .{
         .url = url orelse return error.InvalidConfig,
         .block_number = block_number,
+        .follow = follow,
     };
 }
 

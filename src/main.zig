@@ -70,15 +70,18 @@ pub fn main() !void {
             }
 
             // Runtime initialization validates startup config before the listener opens.
-            var runtime = zevm.node_runtime.NodeRuntime.init(
+            var node: zevm.exex.NodeWith(zevm.node_runtime.NodeRuntime, .{}) = undefined;
+            node.init(
                 allocator,
                 trusted_config.toNodeConfig(),
             ) catch |err| exitStartupError("startup failed phase=runtime_init mode=trusted error={s}", .{@errorName(err)});
-            defer runtime.deinit();
-            runtime.startBackgroundServices() catch |err| exitStartupError("startup failed phase=background_services mode=trusted error={s}", .{@errorName(err)});
-
+            defer node.deinit();
+            const runtime = &node.runtime;
+            try node.startExtensions();
             var handlers = zevm.rpc.dispatcher.HandlerRegistry{};
-            zevm.rpc.dispatch_wiring.install(&handlers, &runtime);
+            zevm.rpc.dispatch_wiring.install(&handlers, runtime);
+            runtime.startBackgroundServices() catch |err| exitStartupError("startup failed phase=background_services mode=trusted error={s}", .{@errorName(err)});
+            defer runtime.stopBackgroundServices();
 
             var fixture_cache_ptr: ?*zevm.rpc.dispatch_wiring.FixtureCache = null;
             defer if (fixture_cache_ptr) |ptr| {
@@ -127,22 +130,25 @@ pub fn main() !void {
                     @errorName(err),
                 });
             }
-            servePublicRpc(allocator, app_config.rpc, &handlers, "trusted", allow_dev_methods);
+            servePublicRpc(allocator, app_config.rpc, runtime, &handlers, "trusted", allow_dev_methods);
         },
         .light => |light_config| {
             zevm.log.info(.startup, "mode selected mode=light", .{});
             zevm.log.info(.startup, "light network network={s}", .{zevm.cli.networkName(light_config.network)});
 
-            var runtime = zevm.node_runtime.NodeRuntime.init(
+            var node: zevm.exex.NodeWith(zevm.node_runtime.NodeRuntime, .{}) = undefined;
+            node.init(
                 allocator,
                 light_config.toNodeConfig(),
             ) catch |err| exitStartupError("startup failed phase=runtime_init mode=light error={s}", .{@errorName(err)});
-            defer runtime.deinit();
-            runtime.startBackgroundServices() catch |err| exitStartupError("startup failed phase=background_services mode=light error={s}", .{@errorName(err)});
-
+            defer node.deinit();
+            const runtime = &node.runtime;
+            try node.startExtensions();
             var handlers = zevm.rpc.dispatcher.HandlerRegistry{};
-            zevm.rpc.dispatch_wiring.install(&handlers, &runtime);
-            servePublicRpc(allocator, app_config.rpc, &handlers, "light", allow_dev_methods);
+            zevm.rpc.dispatch_wiring.install(&handlers, runtime);
+            runtime.startBackgroundServices() catch |err| exitStartupError("startup failed phase=background_services mode=light error={s}", .{@errorName(err)});
+            defer runtime.stopBackgroundServices();
+            servePublicRpc(allocator, app_config.rpc, runtime, &handlers, "light", allow_dev_methods);
         },
     }
     zevm.log.info(.startup, "shutdown complete", .{});
@@ -153,6 +159,7 @@ pub fn main() !void {
 fn servePublicRpc(
     allocator: std.mem.Allocator,
     rpc_config: zevm.config.RpcConfig,
+    runtime: *zevm.node_runtime.NodeRuntime,
     handlers: *const zevm.rpc.dispatcher.HandlerRegistry,
     comptime mode_name: []const u8,
     allow_dev_methods: bool,
@@ -166,6 +173,9 @@ fn servePublicRpc(
         @errorName(err),
     });
     defer listener.deinit();
+    var host_buffer: [64]u8 = undefined;
+    if (runtime.event_hub != null) runtime.notifyNodeStarted(listener.boundHost(&host_buffer), listener.address().getPort());
+    defer runtime.notifyNodeStopping();
 
     const watcher = std.Thread.spawn(.{}, shutdownWatcher, .{&listener}) catch |err| exitStartupError("startup failed phase=shutdown_watcher mode=" ++ mode_name ++ " error={s}", .{@errorName(err)});
     defer watcher.join();

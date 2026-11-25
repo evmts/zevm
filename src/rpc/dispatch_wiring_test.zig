@@ -1746,23 +1746,118 @@ test "engine_getBlobsV2 and V3 return 128 PeerDAS cell proofs and follow all-or-
     }
 }
 
-test "eth_getTransactionByHash returns null for a pool-only transaction" {
-    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+test "transaction queries enforce canonical-mined-only and omit nonstandard blockTimestamp" {
+    const allocator = std.testing.allocator;
+    var rt = try runtime_mod.NodeRuntime.init(allocator, null);
     defer rt.deinit();
+    try rt.setAutomine(false);
+
+    const target_text = "0x00000000000000000000000000000000000000aa";
+    const target = try parseTestAddress(target_text);
+    try rt.setCode(target, &.{ 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xa0, 0x00 });
 
     var handlers = dispatcher.HandlerRegistry{};
     dispatch_wiring.install(&handlers, &rt);
 
-    const hash = [_]u8{0xaa} ** 32;
-    const hash_hex = try primitives.Hex.bytesToHex(std.testing.allocator, &hash);
-    defer std.testing.allocator.free(hash_hex);
-    try addPooledTransaction(&rt, runtime_mod.DEFAULT_DEV_ACCOUNTS[0], hash);
+    {
+        const unknown_hash = "0x" ++ "00" ** 32;
+        var response = try dispatchOneStringParam(&handlers, "eth_getTransactionByHash", unknown_hash);
+        defer response.deinit(allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expect(response.result.? == .null);
+    }
 
-    var response = try dispatchOneStringParam(&handlers, "eth_getTransactionByHash", hash_hex);
-    defer response.deinit(std.testing.allocator);
+    var tx = std.json.ObjectMap.init(allocator);
+    defer tx.deinit();
+    try tx.put("from", .{ .string = managedAddressText() });
+    try tx.put("to", .{ .string = target_text });
+    try tx.put("gas", .{ .string = "0x100000" });
+    var send_params = std.json.Array.init(allocator);
+    defer send_params.deinit();
+    try send_params.append(.{ .object = tx });
 
-    try std.testing.expect(response.error_value == null);
-    try std.testing.expect(response.result.? == .null);
+    var send_response = try dispatchForTest(&rt, "eth_sendTransaction", .{ .array = send_params });
+    defer send_response.deinit(allocator);
+    try std.testing.expect(send_response.error_value == null);
+    const tx_hash = send_response.result.?.string;
+
+    // Issue #32: eth_getTransactionByHash returns null for txpool-only pending transactions.
+    {
+        var response = try dispatchOneStringParam(&handlers, "eth_getTransactionByHash", tx_hash);
+        defer response.deinit(allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expect(response.result.? == .null);
+    }
+
+    rt.setNextBlockTimestamp(rt.head_block_timestamp + 42);
+    try expectBoolRpc(&handlers, "evm_mine", null);
+    const block = (try rt.blockchain.getBlockByNumber(1)).?;
+    const block_hash = try primitives.Hex.bytesToHex(allocator, &block.hash);
+    defer allocator.free(block_hash);
+    const timestamp = try std.fmt.allocPrint(allocator, "0x{x}", .{block.header.timestamp});
+    defer allocator.free(timestamp);
+
+    // Issue #32 & #38: mined transaction object is returned without nonstandard blockTimestamp.
+    {
+        var response = try dispatchOneStringParam(&handlers, "eth_getTransactionByHash", tx_hash);
+        defer response.deinit(allocator);
+        try std.testing.expect(response.error_value == null);
+        const mined = response.result.?;
+        try std.testing.expectEqualStrings(tx_hash, (try getObjectField(mined, "hash")).string);
+        try std.testing.expectEqualStrings(block_hash, (try getObjectField(mined, "blockHash")).string);
+        try std.testing.expectEqualStrings("0x1", (try getObjectField(mined, "blockNumber")).string);
+        try std.testing.expectEqualStrings("0x0", (try getObjectField(mined, "transactionIndex")).string);
+        try std.testing.expect(mined.object.get("blockTimestamp") == null);
+    }
+
+    const queries = [_]struct { method: []const u8, selector: []const u8 }{
+        .{ .method = "eth_getBlockByNumber", .selector = "0x1" },
+        .{ .method = "eth_getBlockByHash", .selector = block_hash },
+    };
+    for (queries) |query| {
+        var params = std.json.Array.init(allocator);
+        defer params.deinit();
+        try params.append(.{ .string = query.selector });
+        try params.append(.{ .bool = true });
+
+        var response = try dispatchForTest(&rt, query.method, .{ .array = params });
+        defer response.deinit(allocator);
+        try std.testing.expect(response.error_value == null);
+        const result = response.result.?;
+        try std.testing.expectEqualStrings(timestamp, (try getObjectField(result, "timestamp")).string);
+        const transactions = (try getObjectField(result, "transactions")).array.items;
+        try std.testing.expectEqual(@as(usize, 1), transactions.len);
+        try std.testing.expectEqualStrings(tx_hash, (try getObjectField(transactions[0], "hash")).string);
+        try std.testing.expect(transactions[0].object.get("blockTimestamp") == null);
+    }
+
+    {
+        var response = try dispatchOneStringParam(&handlers, "eth_getTransactionReceipt", tx_hash);
+        defer response.deinit(allocator);
+        try std.testing.expect(response.error_value == null);
+        const receipt = response.result.?;
+        try std.testing.expect(receipt.object.get("blockTimestamp") == null);
+        const logs = (try getObjectField(receipt, "logs")).array.items;
+        try std.testing.expectEqual(@as(usize, 1), logs.len);
+        try std.testing.expect(logs[0].object.get("blockTimestamp") == null);
+    }
+
+    {
+        var filter = std.json.ObjectMap.init(allocator);
+        defer filter.deinit();
+        try filter.put("blockHash", .{ .string = block_hash });
+        var params = std.json.Array.init(allocator);
+        defer params.deinit();
+        try params.append(.{ .object = filter });
+
+        var response = try dispatchForTest(&rt, "eth_getLogs", .{ .array = params });
+        defer response.deinit(allocator);
+        try std.testing.expect(response.error_value == null);
+        const logs = response.result.?.array.items;
+        try std.testing.expectEqual(@as(usize, 1), logs.len);
+        try std.testing.expectEqualStrings(tx_hash, (try getObjectField(logs[0], "transactionHash")).string);
+        try std.testing.expect(logs[0].object.get("blockTimestamp") == null);
+    }
 }
 
 test "installed dispatch wiring returns detailed mining summaries" {
@@ -2105,6 +2200,24 @@ test "light mode unknown prefixed methods return method not found" {
 
     for (methods) |method| {
         try expectErrorCode(&rt, method, null, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND);
+    }
+}
+
+test "deferred tracing and subscription methods return method not found in both modes" {
+    var trusted = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer trusted.deinit();
+    var light = try initLightRuntime(null);
+    defer light.deinit();
+
+    for ([_][]const u8{
+        "debug_traceTransaction",
+        "debug_traceBlockByNumber",
+        "debug_traceBlockByHash",
+        "eth_subscribe",
+        "eth_unsubscribe",
+    }) |method| {
+        try expectErrorCode(&trusted, method, null, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND);
+        try expectErrorCode(&light, method, null, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND);
     }
 }
 
@@ -2493,6 +2606,35 @@ test "installed dispatch wiring handles state and metadata helper aliases" {
         try std.testing.expectEqualStrings("auto", (try objectField(&mining_object, "type")).string);
         const fork_object = (try objectField(&object, "fork")).object;
         try std.testing.expect(!(try objectField(&fork_object, "enabled")).bool);
+    }
+}
+
+test "metadata and node info aliases report fork follow settings" {
+    const configs = [_]runtime_mod.NodeConfig{
+        .{},
+        .{ .fork_url = "https://rpc.example", .fork_follow = false },
+        .{ .fork_url = "https://rpc.example", .fork_follow = true },
+    };
+    for (configs) |config| {
+        var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, config);
+        defer rt.deinit();
+
+        for ([_][]const u8{ "zevm_metadata", "anvil_metadata", "hardhat_metadata" }) |method| {
+            var response = try dispatchForTest(&rt, method, null);
+            defer response.deinit(std.testing.allocator);
+            try std.testing.expect(response.error_value == null);
+            const follow = try getObjectField(response.result.?, "forkFollow");
+            try std.testing.expectEqual(config.fork_follow, follow.bool);
+        }
+
+        for ([_][]const u8{ "zevm_nodeInfo", "anvil_nodeInfo" }) |method| {
+            var response = try dispatchForTest(&rt, method, null);
+            defer response.deinit(std.testing.allocator);
+            try std.testing.expect(response.error_value == null);
+            const fork = try getObjectField(response.result.?, "fork");
+            const follow = try getObjectField(fork, "follow");
+            try std.testing.expectEqual(config.fork_follow, follow.bool);
+        }
     }
 }
 

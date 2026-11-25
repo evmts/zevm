@@ -224,6 +224,12 @@ pub const RpcServer = struct {
         self.tcp_server.deinit();
     }
 
+    pub fn boundHost(self: *const RpcServer, buffer: *[64]u8) []const u8 {
+        const endpoint = std.fmt.bufPrint(buffer, "{f}", .{self.address()}) catch unreachable;
+        const port_separator = std.mem.lastIndexOfScalar(u8, endpoint, ':').?;
+        return std.mem.trim(u8, endpoint[0..port_separator], "[]");
+    }
+
     pub fn address(self: *const RpcServer) std.net.Address {
         return self.tcp_server.listen_address;
     }

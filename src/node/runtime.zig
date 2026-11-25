@@ -1,4 +1,7 @@
 const browser = @import("builtin").os.tag == .wasi;
+const exex = @import("../exex.zig");
+const evm_backend = @import("../evm_backend.zig");
+const rebase_fork = @import("../rebase_fork.zig");
 const std = @import("std");
 const state_manager = @import("state-manager");
 const primitives = @import("primitives");
@@ -153,6 +156,7 @@ pub const LightConfig = struct {
 };
 
 pub const ForkConfig = struct {
+    follow: bool = false,
     url: []const u8,
     block_number: ?u64 = null,
 };
@@ -179,6 +183,7 @@ pub const ResetForkMode = union(enum) {
 };
 
 pub const NodeConfig = struct {
+    fork_follow: bool = false,
     mode: Mode = .trusted,
     chain_id: u64 = DEFAULT_CHAIN_ID,
     coinbase_index: u8 = 0,
@@ -550,6 +555,7 @@ const CanonicalMaterialization = struct {
 };
 
 const SnapshotEntry = struct {
+    local_tx_count: usize = 0,
     state_snapshot_id: u64,
     head_block_number: u64,
     canonical_head_hash: ?[32]u8,
@@ -603,7 +609,160 @@ pub const LogFilterState = struct {
     block_hash_polled: bool = false,
 };
 
+pub const RebaseSummary = struct {
+    old_fork_block: u64,
+    new_fork_block: u64,
+    replayed_count: usize = 0,
+    skipped_reexecution_count: usize = 0,
+    dropped_count: usize = 0,
+};
+
+// Collect dynamic dependencies at the EVM host boundary. The transaction
+// processor still receives its normal HostAdapter for error propagation.
+const RebaseAccessObserver = struct {
+    allocator: std.mem.Allocator,
+    access: *rebase_fork.TxAccessSet,
+    host: guillotine_mini.HostInterface = undefined,
+    failed: bool = false,
+    fn execute(context: ?*anyopaque, a: std.mem.Allocator, request: evm_backend.ExecutionRequest) evm_backend.ExecuteError!evm_backend.ExecutionResult {
+        const self: *RebaseAccessObserver = @ptrCast(@alignCast(context.?));
+        self.host = request.host;
+        var traced = request;
+        traced.host = .{ .ptr = self, .vtable = &vtable };
+        for (request.warm_addresses) |address| try self.access.recordAccountRead(self.allocator, address.bytes);
+        var result = try evm_backend.default_backend.execute(a, traced);
+        if (self.failed) {
+            result.deinit(a);
+            return error.OutOfMemory;
+        }
+        return result;
+    }
+    fn account(self: *RebaseAccessObserver, address: primitives.Address) void {
+        self.access.recordAccountRead(self.allocator, address.bytes) catch {
+            self.failed = true;
+        };
+    }
+    const vtable = guillotine_mini.HostInterface.VTable{
+        .getBalance = getBalance,
+        .setBalance = setBalance,
+        .getCode = getCode,
+        .setCode = setCode,
+        .getNonce = getNonce,
+        .setNonce = setNonce,
+        .getStorage = getStorage,
+        .setStorage = setStorage,
+        .accountExists = accountExists,
+        .deleteAccount = deleteAccount,
+    };
+    fn getBalance(ptr: *anyopaque, address: primitives.Address) u256 {
+        const self: *RebaseAccessObserver = @ptrCast(@alignCast(ptr));
+        self.account(address);
+        return self.host.getBalance(address);
+    }
+    fn setBalance(ptr: *anyopaque, address: primitives.Address, balance: u256) void {
+        const self: *RebaseAccessObserver = @ptrCast(@alignCast(ptr));
+        self.account(address);
+        return self.host.setBalance(address, balance);
+    }
+    fn getCode(ptr: *anyopaque, address: primitives.Address) []const u8 {
+        const self: *RebaseAccessObserver = @ptrCast(@alignCast(ptr));
+        self.account(address);
+        return self.host.getCode(address);
+    }
+    fn setCode(ptr: *anyopaque, address: primitives.Address, code: []const u8) void {
+        const self: *RebaseAccessObserver = @ptrCast(@alignCast(ptr));
+        self.account(address);
+        return self.host.setCode(address, code);
+    }
+    fn getNonce(ptr: *anyopaque, address: primitives.Address) u64 {
+        const self: *RebaseAccessObserver = @ptrCast(@alignCast(ptr));
+        self.account(address);
+        return self.host.getNonce(address);
+    }
+    fn setNonce(ptr: *anyopaque, address: primitives.Address, nonce: u64) void {
+        const self: *RebaseAccessObserver = @ptrCast(@alignCast(ptr));
+        self.account(address);
+        return self.host.setNonce(address, nonce);
+    }
+    fn getStorage(ptr: *anyopaque, address: primitives.Address, slot: u256) u256 {
+        const self: *RebaseAccessObserver = @ptrCast(@alignCast(ptr));
+        self.access.recordStorageRead(self.allocator, address.bytes, slot) catch {
+            self.failed = true;
+        };
+        return self.host.getStorage(address, slot);
+    }
+    fn setStorage(ptr: *anyopaque, address: primitives.Address, slot: u256, value: u256) void {
+        const self: *RebaseAccessObserver = @ptrCast(@alignCast(ptr));
+        self.access.recordStorageRead(self.allocator, address.bytes, slot) catch {
+            self.failed = true;
+        };
+        return self.host.setStorage(address, slot, value);
+    }
+    fn accountExists(ptr: *anyopaque, address: primitives.Address) bool {
+        const self: *RebaseAccessObserver = @ptrCast(@alignCast(ptr));
+        self.account(address);
+        return self.host.accountExists(address);
+    }
+    fn deleteAccount(ptr: *anyopaque, address: primitives.Address) void {
+        const self: *RebaseAccessObserver = @ptrCast(@alignCast(ptr));
+        self.account(address);
+        return self.host.deleteAccount(address);
+    }
+};
+
+// RPC handlers hold this lock for a complete dispatch, including handlers
+// that modify public runtime fields directly. Observe those changes before
+// another request can see them. Nested runtime operations share the snapshot.
+const RuntimeMutex = struct {
+    const SenderNonce = struct { sender: [20]u8, nonce: u64 };
+    inner: std.Thread.Mutex.Recursive = .init,
+    observing: bool = false,
+    chain_id: u64 = 0,
+    coinbase: [20]u8 = undefined,
+    gas_limit: u64 = 0,
+    pool_before: std.AutoHashMapUnmanaged(SenderNonce, [32]u8) = .empty,
+    pub fn lock(self: *RuntimeMutex) void {
+        self.inner.lock();
+        self.begin();
+    }
+    pub fn tryLock(self: *RuntimeMutex) bool {
+        if (!self.inner.tryLock()) return false;
+        self.begin();
+        return true;
+    }
+    fn begin(self: *RuntimeMutex) void {
+        const rt: *NodeRuntime = @alignCast(@fieldParentPtr("runtime_mutex", self));
+        if (rt.event_hub == null or self.inner.lock_count != 1) return;
+        self.observing = true;
+        self.chain_id = rt.chain_id;
+        self.coinbase = rt.coinbase.bytes;
+        self.gas_limit = rt.dev_runtime.config.block_gas_limit;
+        for (rt.pool.items()) |tx| self.pool_before.put(rt.allocator, .{ .sender = tx.sender.bytes, .nonce = tx.nonce }, tx.hash) catch break;
+    }
+    pub fn unlock(self: *RuntimeMutex) void {
+        defer self.inner.unlock();
+        if (!self.observing or self.inner.lock_count != 1) return;
+        const rt: *NodeRuntime = @alignCast(@fieldParentPtr("runtime_mutex", self));
+        self.observing = false;
+        if (self.chain_id != rt.chain_id) rt.emitExEx(.{ .chain_id_changed = .{ .old_chain_id = self.chain_id, .new_chain_id = rt.chain_id } });
+        if (!std.mem.eql(u8, &self.coinbase, &rt.coinbase.bytes)) rt.emitExEx(.{ .coinbase_changed = .{ .old_coinbase = self.coinbase, .new_coinbase = rt.coinbase.bytes } });
+        if (self.gas_limit != rt.dev_runtime.config.block_gas_limit) rt.emitExEx(.{ .block_gas_limit_changed = .{ .old_gas_limit = self.gas_limit, .new_gas_limit = rt.dev_runtime.config.block_gas_limit } });
+        var it = self.pool_before.valueIterator();
+        while (it.next()) |hash| {
+            if (!rt.pool.hash_index.contains(hash.*)) rt.emitExEx(.{ .tx_pool_drop = .{ .tx_hash = hash.*, .reason = .dropped } });
+        }
+        self.pool_before.clearRetainingCapacity();
+    }
+};
 pub const NodeRuntime = struct {
+    event_hub: ?*exex.EventHub = null,
+    rebase_tracker: ?*rebase_fork.RebaseTracker = null,
+    background_started: bool = false,
+    rebase_mutex: std.Thread.Mutex = .{},
+    light_last_status: ?consensus_sync.SyncStatus = null,
+    light_last_ready: ?bool = null,
+    light_last_checkpoint: ?[32]u8 = null,
+    light_last_head_slots: ?[3]u64 = null,
     allocator: std.mem.Allocator,
     mode: Mode,
     light: ?LightModeState,
@@ -671,7 +830,7 @@ pub const NodeRuntime = struct {
     pending_transaction_filter_events: std.ArrayList([32]u8),
     impersonated_accounts: std.AutoHashMap(primitives.Address, bool),
     auto_impersonate_account: bool,
-    runtime_mutex: std.Thread.Mutex,
+    runtime_mutex: RuntimeMutex,
     interval_thread: ?std.Thread,
     interval_stop_requested: std.atomic.Value(bool),
     light_sync_thread: ?std.Thread,
@@ -709,6 +868,7 @@ pub const NodeRuntime = struct {
         const initial_fork_config = try allocForkConfig(allocator, if (config.mode == .trusted and config.fork_url != null) .{
             .url = config.fork_url.?,
             .block_number = config.fork_block_number,
+            .follow = config.fork_follow,
         } else null);
         errdefer freeForkConfig(allocator, initial_fork_config);
 
@@ -963,6 +1123,7 @@ pub const NodeRuntime = struct {
             .receipt_index = receipt_index,
             .log_index = log_index,
             .fork_config = initial_fork_config,
+            .rebase_tracker = try createTracker(allocator, initial_fork_config),
             .fork_backend = fork_backend,
             .fork_rpc_resolver = resolver,
             .engine_sync_fallback_url = owned_engine_sync_fallback_url,
@@ -991,7 +1152,95 @@ pub const NodeRuntime = struct {
         };
     }
 
+    fn createTracker(allocator: std.mem.Allocator, fork: ?ForkConfig) !?*rebase_fork.RebaseTracker {
+        const cfg = fork orelse return null;
+        if (!cfg.follow) return null;
+        const tracker = try allocator.create(rebase_fork.RebaseTracker);
+        errdefer allocator.destroy(tracker);
+        tracker.* = try rebase_fork.RebaseTracker.init(allocator, cfg.url, cfg.block_number orelse 0, true);
+        return tracker;
+    }
+    fn destroyTracker(self: *NodeRuntime) void {
+        if (self.rebase_tracker) |t| {
+            t.deinit();
+            self.allocator.destroy(t);
+            self.rebase_tracker = null;
+        }
+    }
+    fn emitForkChanged(self: *NodeRuntime) void {
+        const cfg = self.fork_config;
+        self.emitExEx(.{ .fork_changed = .{ .enabled = cfg != null, .url = if (cfg) |v| @constCast(v.url) else null, .block_number = if (cfg) |v| v.block_number else null, .follow = if (cfg) |v| v.follow else false } });
+    }
+    pub fn setChainId(self: *NodeRuntime, id: u64) void {
+        const old = self.chain_id;
+        self.chain_id = id;
+        if (self.runtime_mutex.observing) self.runtime_mutex.chain_id = id;
+        self.emitExEx(.{ .chain_id_changed = .{ .old_chain_id = old, .new_chain_id = id } });
+    }
+    pub fn setCoinbase(self: *NodeRuntime, address: primitives.Address) void {
+        const old = self.coinbase;
+        self.coinbase = address;
+        self.dev_runtime.config.coinbase = address;
+        if (self.runtime_mutex.observing) self.runtime_mutex.coinbase = address.bytes;
+        self.emitExEx(.{ .coinbase_changed = .{ .old_coinbase = old.bytes, .new_coinbase = address.bytes } });
+    }
+    pub fn setBlockGasLimit(self: *NodeRuntime, limit: u64) void {
+        const old = self.dev_runtime.config.block_gas_limit;
+        self.dev_runtime.config.block_gas_limit = limit;
+        if (self.runtime_mutex.observing) self.runtime_mutex.gas_limit = limit;
+        self.emitExEx(.{ .block_gas_limit_changed = .{ .old_gas_limit = old, .new_gas_limit = limit } });
+    }
+    pub fn dropTransaction(self: *NodeRuntime, hash: [32]u8) bool {
+        if (self.runtime_mutex.observing) {
+            if (self.pool.hash_index.get(hash)) |index| {
+                const tx = self.pool.items()[index];
+                _ = self.runtime_mutex.pool_before.remove(.{ .sender = tx.sender.bytes, .nonce = tx.nonce });
+            }
+        }
+        if (!self.pool.removeByHash(hash)) return false;
+        self.emitExEx(.{ .tx_pool_drop = .{ .tx_hash = hash, .reason = .dropped } });
+        return true;
+    }
+    pub fn dropAllTransactions(self: *NodeRuntime) void {
+        self.runtime_mutex.pool_before.clearRetainingCapacity();
+        if (self.event_hub != null) for (self.pool.items()) |tx| self.emitExEx(.{ .tx_pool_drop = .{ .tx_hash = tx.hash, .reason = .dropped } });
+        self.pool.clear();
+    }
+    pub fn emitExEx(self: *NodeRuntime, event: exex.Event) void {
+        if (self.event_hub) |hub| hub.emit(event);
+    }
+    pub fn notifyNodeStarted(self: *NodeRuntime, host: []const u8, port: u16) void {
+        self.emitExEx(.{ .node_started = .{ .mode = exex.ModeTag.from(self.mode), .chain_id = self.chain_id, .host = host, .port = port } });
+    }
+    pub fn notifyNodeStopping(self: *NodeRuntime) void {
+        self.emitExEx(.{ .node_stopping = .{ .mode = exex.ModeTag.from(self.mode) } });
+    }
+    fn emitLightModeTransitions(self: *NodeRuntime) void {
+        if (self.mode != .light or self.event_hub == null) return;
+        const light = if (self.light) |*light| light else return;
+        const status = light.effectiveStatus();
+        const ready = light.ready();
+        const previous = self.light_last_status orelse .syncing;
+        if (previous != status) self.emitExEx(.{ .sync_status_changed = .{ .old_status = exex.SyncStatusTag.from(previous), .new_status = exex.SyncStatusTag.from(status), .ready = ready } });
+        if (self.light_last_ready != ready) self.emitExEx(.{ .readiness_changed = .{ .ready = ready } });
+        const accepted_checkpoint = if (light.engine.has_verified_store or ready) light.engine.lastCheckpoint() else null;
+        if (accepted_checkpoint) |hash| {
+            if (self.light_last_checkpoint == null or !std.mem.eql(u8, &self.light_last_checkpoint.?, &hash)) self.emitExEx(.{ .checkpoint_accepted = .{ .checkpoint = hash } });
+        }
+        const slots = [3]u64{ light.optimisticSlot(), light.safe_slot, light.finalizedSlot() };
+        if (self.light_last_head_slots == null or !std.mem.eql(u64, &slots, &self.light_last_head_slots.?)) self.emitExEx(.{ .head_updated = .{ .optimistic_slot = slots[0], .safe_slot = slots[1], .finalized_slot = slots[2] } });
+        self.light_last_head_slots = slots;
+        self.light_last_checkpoint = accepted_checkpoint;
+        self.light_last_ready = ready;
+        self.light_last_status = status;
+    }
+
     pub fn startBackgroundServices(self: *NodeRuntime) !void {
+        self.background_started = true;
+        if (self.rebase_tracker) |tracker| {
+            if (tracker.follow and tracker.worker_thread == null) try tracker.startPolling(self, pollRebaseCallback);
+        }
+        self.emitLightModeTransitions();
         switch (self.mode) {
             .trusted => {
                 if (self.interval_thread != null) return;
@@ -1005,6 +1254,11 @@ pub const NodeRuntime = struct {
     }
 
     pub fn setMiningConfig(self: *NodeRuntime, config: mining.MiningConfig) !void {
+        const previous = self.mining_config;
+        defer if (!std.meta.eql(previous, self.mining_config)) self.emitExEx(.{ .mining_mode_changed = .{ .mode = exex.MiningModeTag.from(self.mining_config), .interval_seconds = switch (self.mining_config) {
+            .interval => |v| v.block_time,
+            else => 0,
+        } } });
         switch (config) {
             .interval => |interval| {
                 if (interval.block_time == 0) {
@@ -1129,6 +1383,7 @@ pub const NodeRuntime = struct {
             self.runtime_mutex.lock();
             if (self.light) |*light| {
                 light.engine.status = .err;
+                self.emitLightModeTransitions();
             }
             self.runtime_mutex.unlock();
             log.err(.consensus_sync, "light_sync_background_failed error={s}", .{@errorName(err)});
@@ -1185,6 +1440,7 @@ pub const NodeRuntime = struct {
         defer self.runtime_mutex.unlock();
 
         const light = if (self.light) |*state| state else return error.NotLightMode;
+        defer self.emitLightModeTransitions();
         light.engine = engine;
         light.safe_slot = safe_slot;
         self.head_block_number = head_block_number;
@@ -1250,6 +1506,7 @@ pub const NodeRuntime = struct {
     }
 
     pub fn startLightSync(self: *NodeRuntime) !void {
+        defer self.emitLightModeTransitions();
         const light = if (self.light) |*state| state else return error.NotLightMode;
         try light.engine.sync(self.allocator, light.startup_checkpoint, .{
             .source = light.checkpoint_source.name(),
@@ -1261,6 +1518,7 @@ pub const NodeRuntime = struct {
     }
 
     pub fn advanceLightSync(self: *NodeRuntime) !void {
+        defer self.emitLightModeTransitions();
         const light = if (self.light) |*state| state else return error.NotLightMode;
         try light.engine.advance(self.allocator);
         light.safe_slot = light.engine.safeSlot();
@@ -1270,6 +1528,7 @@ pub const NodeRuntime = struct {
     }
 
     pub fn refreshLightSyncForRequest(self: *NodeRuntime) !void {
+        defer self.emitLightModeTransitions();
         const light = if (self.light) |*state| state else return error.NotLightMode;
         if (!light.advance_on_request or !light.ready()) return;
         // A verified store already exists: a failed advance (beacon API
@@ -1282,6 +1541,7 @@ pub const NodeRuntime = struct {
     }
 
     pub fn refreshLightSyncForStatus(self: *NodeRuntime) void {
+        defer self.emitLightModeTransitions();
         const light = if (self.light) |*state| state else return;
         if (!light.advance_on_request or !light.ready()) return;
         self.advanceLightSync() catch {};
@@ -1350,6 +1610,7 @@ pub const NodeRuntime = struct {
         finalized_slot: u64,
         latest_block_number: u64,
     ) !void {
+        defer self.emitLightModeTransitions();
         const light = if (self.light) |*state| state else return error.NotLightMode;
         light.engine.status = status;
         light.engine.store.optimistic_header.beacon.slot = optimistic_slot;
@@ -1366,6 +1627,7 @@ pub const NodeRuntime = struct {
     }
 
     pub fn setLightSafeReadHead(self: *NodeRuntime, head: LightReadHead) !void {
+        defer self.emitLightModeTransitions();
         const light = if (self.light) |*state| state else return error.NotLightMode;
         light.safe_head = head;
         try light.recordRetainedHead(self.allocator, head, self.head_block_number);
@@ -1407,28 +1669,37 @@ pub const NodeRuntime = struct {
         const next_offset = std.math.add(i128, self.time_offset, @as(i128, seconds)) catch return error.InvalidParams;
         if (next_offset > std.math.maxInt(u64)) return error.InvalidParams;
         self.time_offset = next_offset;
+        self.emitTimeAdjusted(std.math.cast(i64, seconds));
         if (next_offset < 0) return 0;
         return @intCast(next_offset);
     }
 
     pub fn setTime(self: *NodeRuntime, timestamp: u64) !u64 {
+        const old_offset = self.time_offset;
         self.time_offset = @as(i128, timestamp) - @as(i128, currentUnixSeconds());
+        self.emitTimeAdjusted(std.math.cast(i64, self.time_offset - old_offset));
         return timestamp;
     }
 
     pub fn setNextBlockTimestamp(self: *NodeRuntime, timestamp: u64) void {
         self.next_block_timestamp = timestamp;
         self.dev_runtime.config.next_block_timestamp = timestamp;
+        self.emitTimeAdjusted(null);
     }
 
     pub fn setBlockTimestampInterval(self: *NodeRuntime, seconds: u64) void {
         self.block_timestamp_interval = seconds;
+        self.emitTimeAdjusted(null);
     }
 
     pub fn removeBlockTimestampInterval(self: *NodeRuntime) void {
         self.block_timestamp_interval = null;
+        self.emitTimeAdjusted(null);
     }
 
+    fn emitTimeAdjusted(self: *NodeRuntime, delta: ?i64) void {
+        self.emitExEx(.{ .time_adjusted = .{ .next_timestamp = self.next_block_timestamp, .interval_seconds = self.block_timestamp_interval, .delta_seconds = delta } });
+    }
     pub fn nextBlockTimestamp(self: *NodeRuntime, parent_timestamp: u64) !u64 {
         const minimum = std.math.add(u64, parent_timestamp, 1) catch return error.InvalidParams;
         if (self.next_block_timestamp) |timestamp| {
@@ -1452,7 +1723,145 @@ pub const NodeRuntime = struct {
         try self.setMiningConfig(miningConfigFromCoordinator(coordinator));
     }
 
+    // Keep independent bytecode and storage maps. Fork misses in either view
+    // resolve through the same pinned backend as the original block.
+    fn copyOverlay(allocator: std.mem.Allocator, state: *state_manager.StateManager) !state_manager.StateManager {
+        const journal = &state.journaled_state;
+        var copy = try state_manager.StateManager.init(allocator, journal.fork_backend);
+        errdefer copy.deinit();
+        var accounts = state.accountIterator();
+        while (accounts.next()) |account| try copy.journaled_state.putAccount(account.key_ptr.*, account.value_ptr.*);
+        var code = journal.contract_cache.cache.iterator();
+        while (code.next()) |item| try copy.setCode(item.key_ptr.*, item.value_ptr.*);
+        var storage = journal.storage_cache.cache.iterator();
+        while (storage.next()) |item| {
+            var slots = item.value_ptr.iterator();
+            while (slots.next()) |slot| try copy.setStorage(item.key_ptr.*, slot.key_ptr.*, slot.value_ptr.*);
+        }
+        return copy;
+    }
+    fn collectChanges(allocator: std.mem.Allocator, before: *state_manager.StateManager, after: *state_manager.StateManager) ![]exex.StateChangeEvent {
+        var addresses = std.AutoHashMap(primitives.Address, void).init(allocator);
+        defer addresses.deinit();
+        var slots = std.AutoHashMap(rebase_fork.StorageSlotKey, void).init(allocator);
+        defer slots.deinit();
+        for ([_]*state_manager.StateManager{ before, after }) |state| {
+            const journal = &state.journaled_state;
+            var accounts = journal.account_cache.cache.keyIterator();
+            while (accounts.next()) |addr| try addresses.put(addr.*, {});
+            var codes = journal.contract_cache.cache.keyIterator();
+            while (codes.next()) |addr| try addresses.put(addr.*, {});
+            var storage = journal.storage_cache.cache.iterator();
+            while (storage.next()) |item| {
+                var keys = item.value_ptr.keyIterator();
+                while (keys.next()) |key| try slots.put(.{ .address = item.key_ptr.bytes, .slot = key.* }, {});
+            }
+        }
+        var changes: std.ArrayList(exex.StateChangeEvent) = .empty;
+        var it = addresses.keyIterator();
+        while (it.next()) |addr| {
+            const old = try before.journaled_state.getAccount(addr.*);
+            const new = try after.journaled_state.getAccount(addr.*);
+            if (old.balance != new.balance) try changes.append(allocator, .{ .address = addr.bytes, .field = .balance, .old_u256 = old.balance, .new_u256 = new.balance });
+            if (old.nonce != new.nonce) try changes.append(allocator, .{ .address = addr.bytes, .field = .nonce, .old_u256 = old.nonce, .new_u256 = new.nonce });
+            if (before.journaled_state.contract_cache.get(addr.*) != null or after.journaled_state.contract_cache.get(addr.*) != null) {
+                const old_code = try before.getCode(addr.*);
+                const new_code = try after.getCode(addr.*);
+                if (!std.mem.eql(u8, old_code, new_code)) try changes.append(allocator, .{ .address = addr.bytes, .field = .code, .old_bytes = @constCast(old_code), .new_bytes = @constCast(new_code) });
+            }
+        }
+        var keys = slots.keyIterator();
+        while (keys.next()) |key| {
+            const address = primitives.Address{ .bytes = key.address };
+            const old = try before.getStorage(address, key.slot);
+            const new = try after.getStorage(address, key.slot);
+            if (old != new) try changes.append(allocator, .{ .address = key.address, .field = .storage, .storage_slot = key.slot, .old_u256 = old, .new_u256 = new });
+        }
+        return changes.items;
+    }
+
+    fn executeRecordedTx(
+        self: *NodeRuntime,
+        arena: std.mem.Allocator,
+        state: *state_manager.StateManager,
+        pooled: txpool.PooledTransaction,
+        ctx: guillotine_mini.BlockContext,
+        access: *rebase_fork.TxAccessSet,
+    ) !primitives.Receipt.Receipt {
+        const tx = try executionTransactionFromPooled(arena, pooled);
+        var logs = console_log.ConsoleLogBuffer.init(arena);
+        defer logs.deinit();
+        var adapter = host_adapter.HostAdapter{ .state = state, .console_logs = &logs };
+        var observer = RebaseAccessObserver{ .access = access, .allocator = arena };
+        for (tx.access_list orelse &.{}) |item| {
+            try access.recordAccountRead(arena, item.address.bytes);
+            for (item.storage_keys) |key| try access.recordStorageRead(arena, item.address.bytes, std.mem.readInt(u256, &key, .big));
+        }
+        return tx_processor.processTransactionWithOptions(self.allocator, state, adapter.hostInterface(), tx.caller, tx.tx, ctx, .{
+            .backend = .{ .external = .{ .context = &observer, .execute = RebaseAccessObserver.execute } },
+            .access_list = tx.access_list,
+            .authorization_list = tx.authorization_list,
+            .receipt_type = tx.receipt_type,
+            .max_fee_per_gas = tx.max_fee_per_gas,
+            .max_priority_fee_per_gas = tx.max_priority_fee_per_gas,
+            .blob_gas_used = tx.blob_gas_used,
+            .blob_gas_price = if (tx.blob_gas_used != null) ctx.blob_base_fee else null,
+            .max_fee_per_blob_gas = tx.max_fee_per_blob_gas,
+            .blob_versioned_hashes = tx.blob_versioned_hashes,
+            .hardfork_override = self.hardforkForBlockContext(ctx),
+            .canonical_tx_hash = pooled.hash,
+        });
+    }
+    fn captureEntry(
+        self: *NodeRuntime,
+        arena: std.mem.Allocator,
+        before: *state_manager.StateManager,
+        after: *state_manager.StateManager,
+        pooled: txpool.PooledTransaction,
+        receipt: primitives.Receipt.Receipt,
+        ctx: guillotine_mini.BlockContext,
+        access: *const rebase_fork.TxAccessSet,
+    ) !rebase_fork.LocalTxEntry {
+        const a = self.allocator;
+        var entry = rebase_fork.LocalTxEntry{
+            .tx_hash = pooled.hash,
+            .caller = pooled.sender,
+            .raw_tx = if (pooled.raw.len != 0) try a.dupe(u8, pooled.raw) else try tx_encoding.encodeLegacyTransactionEnvelope(a, executionTransactionBaseFromPooled(pooled).tx),
+            .access_set = .{},
+            .cached_gas_used = @intCast(receipt.gas_used),
+            .cached_status = if (receipt.status) |status| status.success else true,
+            .original_block_number = ctx.block_number,
+        };
+        errdefer entry.deinit(a);
+        entry.access_set = try access.clone(a);
+        const set = &entry.access_set;
+        try set.recordAccountRead(a, pooled.sender.bytes);
+        try set.recordAccountWrite(a, pooled.sender.bytes);
+        if (pooled.to orelse receipt.contract_address) |to| {
+            try set.recordAccountRead(a, to.bytes);
+            try set.recordAccountWrite(a, to.bytes);
+        }
+        try set.recordAccountWrite(a, ctx.block_coinbase.bytes);
+        const changes = try collectChanges(arena, before, after);
+        for (changes) |change| {
+            try set.recordAccountWrite(a, change.address);
+            if (change.storage_slot) |slot| {
+                try set.recordStorageWrite(a, change.address, slot);
+                try entry.cached_storage_deltas.append(a, .{ .address = change.address, .slot = slot, .value = change.new_u256.? });
+            }
+        }
+        for (set.accounts_written.items) |bytes| {
+            const addr = primitives.Address{ .bytes = bytes };
+            const account = try after.journaled_state.getAccount(addr);
+            try entry.cached_account_deltas.ensureUnusedCapacity(a, 1);
+            entry.cached_account_deltas.appendAssumeCapacity(.{ .address = bytes, .balance = account.balance, .nonce = account.nonce, .code = try a.dupe(u8, try after.getCode(addr)) });
+        }
+        return entry;
+    }
+
     pub fn mineBlocks(self: *NodeRuntime, count: u64, interval: u64) !void {
+        self.runtime_mutex.lock();
+        defer self.runtime_mutex.unlock();
         if (count == 0) return;
 
         const had_next_block_timestamp = self.next_block_timestamp != null;
@@ -1536,6 +1945,13 @@ pub const NodeRuntime = struct {
                 }
             }
 
+            const arena = tx_arena.allocator();
+            if (self.event_hub != null or self.rebase_tracker != null) self.enableSynchronousForkReads();
+            var before = if (self.event_hub != null or self.rebase_tracker != null) try copyOverlay(arena, &self.state) else null;
+            defer if (before) |*state| state.deinit();
+            var pending_checkpoint = before != null;
+            if (pending_checkpoint) try self.state.checkpoint();
+            errdefer if (pending_checkpoint) self.state.revert();
             var result = try coordinator.mineBlockWithOptions(
                 self.allocator,
                 &self.state,
@@ -1548,11 +1964,56 @@ pub const NodeRuntime = struct {
             // the returned value and must free it to avoid leaking its receipts/logs.
             defer result.deinit(self.allocator);
 
-            const block_hash = try self.persistMinedBlock(block_ctx, block_excess_blob_gas, &result, ready);
+            const changes = if (self.event_hub != null) try collectChanges(arena, &before.?, &self.state) else &.{};
+            var entries: std.ArrayList(rebase_fork.LocalTxEntry) = .empty;
+            defer for (entries.items) |*entry| entry.deinit(self.allocator);
+            if (self.rebase_tracker != null) {
+                try entries.ensureUnusedCapacity(arena, result.receipts.len);
 
+                if (result.receipts.len > 0) {
+                    // The builder returns a whole block. Reconstruct intermediate
+                    // poststates on a private overlay for same-block dependencies.
+                    var shadow = try copyOverlay(arena, &before.?);
+                    defer shadow.deinit();
+                    var observer = host_adapter.HostAdapter{ .state = &shadow };
+                    const fork = self.hardforkForBlockContext(block_ctx);
+                    if (fork.isAtLeast(.CANCUN)) try block_builder.applyBeaconRootsSystemCallWithContext(arena, &shadow, observer.hostInterface(), block_ctx, fork, primitives.Hash.ZERO);
+                    if (fork.isAtLeast(.PRAGUE)) try block_builder.applyHistoricalBlockHashSystemCallWithContext(arena, &shadow, observer.hostInterface(), block_ctx, fork, parent_hash);
+                    for (result.receipts, result.included_tx_indexes) |receipt, index| {
+                        var observation_arena = std.heap.ArenaAllocator.init(self.allocator);
+                        defer observation_arena.deinit();
+                        const observation = observation_arena.allocator();
+                        var prior = try copyOverlay(observation, &shadow);
+                        defer prior.deinit();
+                        var access = rebase_fork.TxAccessSet{};
+                        const observed = try self.executeRecordedTx(observation, &shadow, ready[index], block_ctx, &access);
+                        defer observed.deinit(self.allocator);
+                        entries.appendAssumeCapacity(try self.captureEntry(observation, &prior, &shadow, ready[index], receipt, block_ctx, &access));
+                    }
+                }
+            }
             const mined_hashes = try self.minedHashesFromResult(result, ready);
             defer self.allocator.free(mined_hashes);
+            const block_hash = blk: {
+                if (self.rebase_tracker) |tracker| tracker.mutex.lock();
+                defer if (self.rebase_tracker) |tracker| tracker.mutex.unlock();
+                if (self.rebase_tracker) |tracker| try tracker.local_txs.ensureUnusedCapacity(self.allocator, entries.items.len);
+                const hash = try self.persistMinedBlock(block_ctx, block_excess_blob_gas, &result, ready);
+                if (self.rebase_tracker) |tracker| {
+                    tracker.local_txs.appendSliceAssumeCapacity(entries.items);
+                    entries.clearRetainingCapacity();
+                }
+                break :blk hash;
+            };
+            if (pending_checkpoint) {
+                self.state.commit();
+                pending_checkpoint = false;
+            }
             const included_tx_count = mined_hashes.len;
+            if (self.runtime_mutex.observing) for (result.included_tx_indexes) |index| {
+                const tx = ready[index];
+                _ = self.runtime_mutex.pool_before.remove(.{ .sender = tx.sender.bytes, .nonce = tx.nonce });
+            };
             self.pool.removeMined(mined_hashes);
             self.revalidatePoolNonces();
 
@@ -1562,6 +2023,21 @@ pub const NodeRuntime = struct {
             self.blob_base_fee = block_ctx.blob_base_fee;
             if (coordinator.current_base_fee_per_gas) |base_fee| {
                 self.base_fee = base_fee;
+            }
+            if (self.event_hub != null) {
+                for (changes) |change| self.emitExEx(.{ .state_change = change });
+                for (mined_hashes) |hash| self.emitExEx(.{ .tx_pool_drop = .{ .tx_hash = hash, .reason = .mined } });
+                self.emitExEx(.{ .block_committed = .{
+                    .block_number = block.header.number,
+                    .block_hash = block.hash,
+                    .parent_hash = parent_hash,
+                    .timestamp = block.header.timestamp,
+                    .gas_used = block.header.gas_used,
+                    .tx_count = mined_hashes.len,
+                    .tx_hashes = mined_hashes,
+                    .receipt_count = result.receipts.len,
+                    .state_diff_count = changes.len,
+                } });
             }
             const block_hash_hex = std.fmt.bytesToHex(block.hash, .lower);
             log.info(
@@ -1662,14 +2138,17 @@ pub const NodeRuntime = struct {
 
     pub fn impersonateAccount(self: *NodeRuntime, address: primitives.Address) !void {
         try self.impersonated_accounts.put(address, true);
+        self.emitExEx(.{ .impersonation_changed = .{ .address = address.bytes, .impersonating = true, .auto_impersonate = self.auto_impersonate_account } });
     }
 
     pub fn stopImpersonatingAccount(self: *NodeRuntime, address: primitives.Address) void {
         _ = self.impersonated_accounts.remove(address);
+        self.emitExEx(.{ .impersonation_changed = .{ .address = address.bytes, .impersonating = false, .auto_impersonate = self.auto_impersonate_account } });
     }
 
     pub fn setAutoImpersonateAccount(self: *NodeRuntime, enabled: bool) void {
         self.auto_impersonate_account = enabled;
+        self.emitExEx(.{ .impersonation_changed = .{ .address = null, .impersonating = enabled, .auto_impersonate = self.auto_impersonate_account } });
     }
 
     pub fn createBlockFilter(self: *NodeRuntime) !u64 {
@@ -1720,6 +2199,18 @@ pub const NodeRuntime = struct {
     }
 
     pub fn recordPendingTransactionFilterEvent(self: *NodeRuntime, hash: [32]u8) !void {
+        try self.appendPendingFilterHash(hash);
+        if (self.event_hub == null) return;
+        const index = self.pool.hash_index.get(hash) orelse return;
+        const tx = self.pool.items()[index];
+        if (self.runtime_mutex.pool_before.fetchRemove(.{ .sender = tx.sender.bytes, .nonce = tx.nonce })) |old| {
+            if (std.mem.eql(u8, &old.value, &hash)) return;
+            self.emitExEx(.{ .tx_pool_drop = .{ .tx_hash = old.value, .reason = .replaced } });
+        }
+        self.emitExEx(.{ .tx_pool_add = .{ .tx_hash = hash, .sender = tx.sender.bytes, .nonce = tx.nonce } });
+    }
+
+    fn appendPendingFilterHash(self: *NodeRuntime, hash: [32]u8) !void {
         // Events exist only for pending-transaction filters to poll.
         var min_next_index: ?usize = null;
         var filter_it = self.rpc_filters.valueIterator();
@@ -2064,6 +2555,7 @@ pub const NodeRuntime = struct {
     }
 
     pub fn setBalance(self: *NodeRuntime, address: primitives.Address, balance: u256) !void {
+        const old = if (self.event_hub != null) try self.getBalance(address) else null;
         while (true) {
             self.state.setBalance(address, balance) catch |err| switch (err) {
                 error.RpcPending => {
@@ -2072,11 +2564,15 @@ pub const NodeRuntime = struct {
                 },
                 else => return err,
             };
+            if (old) |before| {
+                if (before != balance) self.emitExEx(.{ .state_change = .{ .address = address.bytes, .field = .balance, .old_u256 = before, .new_u256 = balance } });
+            }
             return;
         }
     }
 
     pub fn setNonce(self: *NodeRuntime, address: primitives.Address, nonce: u64) !void {
+        const old = if (self.event_hub != null) try self.getNonce(address) else null;
         while (true) {
             self.state.setNonce(address, nonce) catch |err| switch (err) {
                 error.RpcPending => {
@@ -2085,19 +2581,34 @@ pub const NodeRuntime = struct {
                 },
                 else => return err,
             };
+            if (old) |before| {
+                if (before != nonce) self.emitExEx(.{ .state_change = .{ .address = address.bytes, .field = .nonce, .old_u256 = before, .new_u256 = nonce } });
+            }
             return;
         }
     }
 
     pub fn setCode(self: *NodeRuntime, address: primitives.Address, code: []const u8) !void {
+        const old = if (self.event_hub != null) try self.allocator.dupe(u8, try self.getCode(address)) else null;
+        defer if (old) |before| self.allocator.free(before);
         try self.state.setCode(address, code);
+        if (old) |before| {
+            const current = try self.getCode(address);
+            if (!std.mem.eql(u8, before, current)) self.emitExEx(.{ .state_change = .{ .address = address.bytes, .field = .code, .old_bytes = before, .new_bytes = @constCast(current) } });
+        }
     }
 
     pub fn setStorage(self: *NodeRuntime, address: primitives.Address, slot: u256, value: u256) !void {
+        const old = if (self.event_hub != null) try self.getStorage(address, slot) else null;
         try self.state.setStorage(address, slot, value);
+        if (old) |before| {
+            if (before != value) self.emitExEx(.{ .state_change = .{ .address = address.bytes, .field = .storage, .old_u256 = before, .new_u256 = value, .storage_slot = slot } });
+        }
     }
 
     pub fn snapshot(self: *NodeRuntime) !u64 {
+        self.runtime_mutex.lock();
+        defer self.runtime_mutex.unlock();
         const state_snapshot_id = try self.state.snapshot();
         // Reverting to a snapshot taken just now only pops its checkpoint.
         errdefer self.state.revertToSnapshot(state_snapshot_id) catch {};
@@ -2125,6 +2636,7 @@ pub const NodeRuntime = struct {
         self.next_snapshot_id += 1;
 
         self.snapshots.putAssumeCapacityNoClobber(snapshot_id, .{
+            .local_tx_count = if (self.rebase_tracker) |tracker| tracker.local_txs.items.len else 0,
             .state_snapshot_id = state_snapshot_id,
             .head_block_number = self.head_block_number,
             .canonical_head_hash = self.blockchain.getCanonicalHash(self.head_block_number),
@@ -2148,10 +2660,16 @@ pub const NodeRuntime = struct {
             .auto_impersonate_account = self.auto_impersonate_account,
         });
 
+        self.emitExEx(.{ .snapshot_created = .{ .snapshot_id = snapshot_id, .block_number = self.head_block_number } });
         return snapshot_id;
     }
 
     pub fn revertToSnapshot(self: *NodeRuntime, snapshot_id: u64) !bool {
+        self.runtime_mutex.lock();
+        defer self.runtime_mutex.unlock();
+        const previous_head = self.head_block_number;
+        var restored = false;
+        defer self.emitExEx(.{ .snapshot_reverted = .{ .snapshot_id = snapshot_id, .success = restored, .new_head_number = self.head_block_number } });
         if (!self.snapshots.contains(snapshot_id)) return false;
 
         // Fetch-remove and transfer ownership directly from the snapshot entry instead
@@ -2219,12 +2737,327 @@ pub const NodeRuntime = struct {
             log.err(.startup, "snapshot_fork_restore_failed error={s}", .{@errorName(err)});
         };
 
-        try self.startBackgroundServices();
+        if (self.rebase_tracker) |tracker| {
+            tracker.mutex.lock();
+            defer tracker.mutex.unlock();
+            while (tracker.local_txs.items.len > removed_entry.local_tx_count) {
+                var entry = tracker.local_txs.pop().?;
+                entry.deinit(self.allocator);
+            }
+        }
+        restored = true;
+        if (self.event_hub != null and previous_head > self.head_block_number) {
+            const hash = self.blockchain.getCanonicalHash(self.head_block_number) orelse return error.MissingParentBlock;
+            var number = previous_head;
+            while (number > self.head_block_number) : (number -= 1) self.emitExEx(.{ .block_reverted = .{ .reverted_block_number = number, .new_head_number = self.head_block_number, .new_head_hash = hash } });
+        }
+        if (self.background_started or self.mining_config == .interval) try self.startBackgroundServices();
         return true;
+    }
+
+    fn rpcResolver(ctx: ?*anyopaque) ForkRpcResolver {
+        const rt: *NodeRuntime = @ptrCast(@alignCast(ctx.?));
+        return rt.fork_rpc_resolver.?;
+    }
+    fn fetchRebaseHead(ctx: ?*anyopaque, a: std.mem.Allocator, url: []const u8) !u64 {
+        return forkScalarQuantity(u64, a, rpcResolver(ctx), url, "eth_blockNumber", "[]");
+    }
+    fn fetchAccountChanged(ctx: ?*anyopaque, a: std.mem.Allocator, url: []const u8, addr: [20]u8, old: u64, new: u64) !bool {
+        const resolver = rpcResolver(ctx);
+        const hex = std.fmt.bytesToHex(addr, .lower);
+        var params: [2][96]u8 = undefined;
+        const lhs = try std.fmt.bufPrint(&params[0], "[\"0x{s}\",\"0x{x}\"]", .{ &hex, old });
+        const rhs = try std.fmt.bufPrint(&params[1], "[\"0x{s}\",\"0x{x}\"]", .{ &hex, new });
+        for ([_][]const u8{ "eth_getBalance", "eth_getTransactionCount" }) |method| {
+            if (try forkScalarQuantity(u256, a, resolver, url, method, lhs) != try forkScalarQuantity(u256, a, resolver, url, method, rhs)) return true;
+        }
+        const left = try resolver.resolve(resolver.context, a, .{ .url = url, .method = "eth_getCode", .params_json = lhs });
+        defer a.free(left);
+        const right = try resolver.resolve(resolver.context, a, .{ .url = url, .method = "eth_getCode", .params_json = rhs });
+        defer a.free(right);
+        return !std.ascii.eqlIgnoreCase(try forkScalarString(left), try forkScalarString(right));
+    }
+    fn fetchStorageChanged(ctx: ?*anyopaque, a: std.mem.Allocator, url: []const u8, addr: [20]u8, slot: u256, old: u64, new: u64) !bool {
+        const resolver = rpcResolver(ctx);
+        const hex = std.fmt.bytesToHex(addr, .lower);
+        var values: [2]u256 = undefined;
+        for ([_]u64{ old, new }, &values) |block, *value| {
+            var buf: [160]u8 = undefined;
+            const params = try std.fmt.bufPrint(&buf, "[\"0x{s}\",\"0x{x}\",\"0x{x}\"]", .{ &hex, slot, block });
+            value.* = try forkScalarQuantity(u256, a, resolver, url, "eth_getStorageAt", params);
+        }
+        return values[0] != values[1];
+    }
+    fn pooledFromEntry(a: std.mem.Allocator, entry: rebase_fork.LocalTxEntry) !txpool.PooledTransaction {
+        const decoded = tx_encoding.decodeEnvelope(a, entry.raw_tx) catch |err| switch (err) {
+            error.InvalidSignatureV => tx_encoding.DecodedEnvelope{ .legacy = try tx_encoding.decodeLegacyEnvelopeAllowInvalidSignature(entry.raw_tx) },
+            else => return err,
+        };
+        const tx = tx_encoding.envelopeToLegacyLikeTx(decoded);
+        return .{
+            .sender = entry.caller,
+            .hash = entry.tx_hash,
+            .nonce = tx.nonce,
+            .to = tx.to,
+            .value = tx.value,
+            .raw = entry.raw_tx,
+            .input = tx.data,
+            .gas_limit = tx.gas_limit,
+            .max_fee_per_gas = tx_encoding.envelopeMaxFeePerGas(decoded) orelse tx.gas_price,
+            .max_priority_fee_per_gas = tx_encoding.envelopeMaxPriorityFeePerGas(decoded) orelse tx.gas_price,
+            .receipt_type = tx_encoding.envelopeReceiptType(decoded),
+            .max_fee_per_blob_gas = tx_encoding.envelopeMaxFeePerBlobGas(decoded),
+            .blob_versioned_hashes = (try tx_encoding.envelopeBlobVersionedHashBytes(a, decoded)) orelse &.{},
+            .r = tx.r,
+            .s = tx.s,
+            .v = tx.v,
+        };
+    }
+    fn pollRebaseCallback(ctx: ?*anyopaque) void {
+        const self: *NodeRuntime = @ptrCast(@alignCast(ctx.?));
+        // Reset joins this worker while holding the RPC lock. Never wait on it.
+        if (!self.runtime_mutex.tryLock()) return;
+        const tracker = self.rebase_tracker orelse {
+            self.runtime_mutex.unlock();
+            return;
+        };
+        const resolver = self.fork_rpc_resolver.?;
+        const url = tracker.getUrlAlloc(self.allocator) catch {
+            self.runtime_mutex.unlock();
+            return;
+        };
+        self.runtime_mutex.unlock();
+        defer self.allocator.free(url);
+        const head = forkScalarQuantity(u64, self.allocator, resolver, url, "eth_blockNumber", "[]") catch return;
+        if (!self.runtime_mutex.tryLock()) return;
+        defer self.runtime_mutex.unlock();
+        if (tracker.stop_flag.load(.acquire) or !std.mem.eql(u8, self.fork_config.?.url, url)) return;
+        _ = self.rebaseToUpstreamBlock(head) catch |err| {
+            log.warn(.fork, "rebase failed head={} error={s}", .{ head, @errorName(err) });
+            return;
+        };
+    }
+    pub fn pollUpstreamAndRebase(self: *NodeRuntime) !?RebaseSummary {
+        self.runtime_mutex.lock();
+        defer self.runtime_mutex.unlock();
+        const tracker = self.rebase_tracker orelse return error.ForkFollowDisabled;
+        const url = try tracker.getUrlAlloc(self.allocator);
+        defer self.allocator.free(url);
+        const head = try fetchRebaseHead(self, self.allocator, url);
+        if (head <= tracker.current_fork_block) return null;
+        return try self.rebaseToUpstreamBlock(head);
+    }
+
+    pub fn rebaseToUpstreamBlock(self: *NodeRuntime, new_upstream_head: u64) !RebaseSummary {
+        self.runtime_mutex.lock();
+        defer self.runtime_mutex.unlock();
+        self.rebase_mutex.lock();
+        defer self.rebase_mutex.unlock();
+        const cfg = self.fork_config orelse return error.ForkNotEnabled;
+        const tracker = self.rebase_tracker orelse return error.ForkFollowDisabled;
+        const old = tracker.current_fork_block;
+        var summary = RebaseSummary{ .old_fork_block = old, .new_fork_block = old };
+        if (new_upstream_head <= old) return summary;
+        self.emitExEx(.{ .rebase_started = .{ .old_fork_block = old, .new_upstream_head = new_upstream_head } });
+        const a = self.allocator;
+        var diff = try tracker.computeUpstreamDiff(a, .{ .context = self, .fetch_block_number = fetchRebaseHead, .fetch_account_changed = fetchAccountChanged, .fetch_storage_changed = fetchStorageChanged }, old, new_upstream_head);
+        defer diff.deinit(a);
+        const plan = try tracker.planReplay(a, &diff);
+        defer a.free(plan);
+
+        // Build and index a private chain. Allocation, upstream and pool errors
+        // can abandon the candidate without invalidating the live snapshots.
+        var coinbase_index: u8 = 0;
+        for (self.managed_accounts, 0..) |account, index| {
+            if (std.mem.eql(u8, &account.address.bytes, &self.default_coinbase.bytes)) {
+                coinbase_index = @intCast(index);
+                break;
+            }
+        }
+        var stage = try NodeRuntime.init(a, .{
+            .coinbase_index = coinbase_index,
+            .fork_url = cfg.url,
+            .fork_block_number = new_upstream_head,
+            .fork_rpc_resolver = self.fork_rpc_resolver,
+            .chain_id = self.chain_id,
+            .initial_balance = self.initial_balance,
+            .hardfork_config = self.hardfork_config,
+            .genesis_alloc_path = self.genesis_alloc_path,
+            .block_gas_limit = self.dev_runtime.default_block_gas_limit,
+            .base_fee = self.default_base_fee,
+            .blob_base_fee = self.default_blob_base_fee,
+        });
+        defer stage.deinit();
+        stage.enableSynchronousForkReads();
+        stage.coinbase = self.coinbase;
+        stage.dev_runtime.config = self.dev_runtime.config;
+        var pending = try self.pool.clone(a);
+        defer pending.deinit();
+        var scratch = std.heap.ArenaAllocator.init(a);
+        defer scratch.deinit();
+        const arena = scratch.allocator();
+        const outcomes = try arena.alloc(exex.Event, plan.len);
+        const replacements = try arena.alloc(?rebase_fork.LocalTxEntry, plan.len);
+        @memset(replacements, null);
+        defer for (replacements) |*replacement| {
+            if (replacement.*) |*entry| entry.deinit(a);
+        };
+        for (tracker.local_txs.items, plan, 0..) |entry, disposition, index| {
+            var replay_arena = std.heap.ArenaAllocator.init(a);
+            defer replay_arena.deinit();
+            const temporary = replay_arena.allocator();
+            const pooled = try pooledFromEntry(temporary, entry);
+            var coordinator = miningCoordinatorFromRuntime(&stage);
+            defer coordinator.deinit(a);
+            const parent_hash = stage.blockchain.getCanonicalHash(stage.head_block_number) orelse return error.MissingParentBlock;
+            const parent = stage.blockchain.getBlockLocal(parent_hash) orelse return error.MissingParentBlock;
+            coordinator.parent_blob_fees = .{
+                .excess = parent.header.excess_blob_gas orelse 0,
+                .used = parent.header.blob_gas_used orelse 0,
+                .base_fee = parent.header.base_fee_per_gas orelse 0,
+            };
+            var ctx = block_builder.blockContextWithEnvironmentOverrides(&stage.dev_runtime, coordinator.blockContext(.{}));
+            var hashes: [256][32]u8 = undefined;
+            ctx.block_hashes = try stage.recentBlockHashesForExecution(ctx.block_number, &hashes);
+            const fork = stage.hardforkForBlockContext(ctx);
+            try stage.state.checkpoint();
+            var block_adapter = host_adapter.HostAdapter{ .state = &stage.state };
+            var preserved_empty = if (fork.isAtLeast(.SPURIOUS_DRAGON)) try block_builder.collectEmptyAccounts(temporary, &stage.state) else null;
+            if (fork.isAtLeast(.CANCUN)) try block_builder.applyBeaconRootsSystemCallWithContext(temporary, &stage.state, block_adapter.hostInterface(), ctx, fork, primitives.Hash.ZERO);
+            if (fork.isAtLeast(.PRAGUE)) try block_builder.applyHistoricalBlockHashSystemCallWithContext(temporary, &stage.state, block_adapter.hostInterface(), ctx, fork, parent_hash);
+            var receipt: primitives.Receipt.Receipt = undefined;
+            var owns_receipt = false;
+            defer if (owns_receipt) receipt.deinit(a);
+            if (disposition == .carry_forward) {
+                receipt = self.receipt_index.getByTxHash(entry.tx_hash) orelse return error.MissingReplayReceipt;
+                // Finalization rewrites log indexes in place.
+                receipt.logs = try temporary.dupe(@TypeOf(receipt.logs[0]), receipt.logs);
+                for (entry.cached_account_deltas.items) |delta| {
+                    const addr = primitives.Address{ .bytes = delta.address };
+                    try stage.state.setBalance(addr, delta.balance);
+                    try stage.state.setNonce(addr, delta.nonce);
+                    if (delta.code) |code| try stage.state.setCode(addr, code);
+                }
+                for (entry.cached_storage_deltas.items) |delta| try stage.state.setStorage(.{ .bytes = delta.address }, delta.slot, delta.value);
+                summary.skipped_reexecution_count += 1;
+            } else {
+                var prior = try copyOverlay(temporary, &stage.state);
+                defer prior.deinit();
+                var access = rebase_fork.TxAccessSet{};
+                receipt = stage.executeRecordedTx(temporary, &stage.state, pooled, ctx, &access) catch |err| {
+                    stage.state.revert();
+                    switch (err) {
+                        error.OutOfMemory, error.StateError, error.EvmInitError => return err,
+                        else => {},
+                    }
+                    try pending.addWithBaseNonce(pooled, pooled.nonce);
+                    outcomes[index] = .{ .rebase_tx_dropped = .{ .tx_hash = entry.tx_hash, .reason = @constCast(@errorName(err)) } };
+                    summary.dropped_count += 1;
+                    continue;
+                };
+                owns_receipt = true;
+                replacements[index] = try stage.captureEntry(temporary, &prior, &stage.state, pooled, receipt, ctx, &access);
+            }
+            receipt.cumulative_gas_used = receipt.gas_used;
+            var receipts = [_]primitives.Receipt.Receipt{receipt};
+            var indexes = [_]usize{0};
+            const builder_fork = block_builder.hardforkFromEvm(fork);
+            const requests_hash = if (fork.isAtLeast(.PRAGUE)) blk: {
+                const requests = try block_builder.collectBlockExecutionRequestsWithOptions(temporary, &stage.state, &receipts, builder_fork, ctx, .{
+                    .deposit_contract_address = stage.hardfork_config.deposit_contract_address orelse block_builder.DEPOSIT_CONTRACT_ADDRESS,
+                    .require_system_contracts = stage.genesis_alloc_path != null,
+                });
+                break :blk try block_builder.computeRequestsHashFromRawRequests(temporary, requests);
+            } else null;
+            if (preserved_empty) |*preserved| {
+                var touched = std.AutoHashMap(primitives.Address, void).init(temporary);
+                const access = if (replacements[index]) |new_entry| new_entry.access_set else entry.access_set;
+                for (access.accounts_written.items) |address| try touched.put(.{ .bytes = address }, {});
+                try block_builder.pruneEmptyAccounts(temporary, &stage.state, preserved, &touched);
+            }
+            if (!fork.isAtLeast(.BYZANTIUM)) {
+                receipts[0].status = null;
+                receipts[0].root = try block_builder.computeStateRootForFork(temporary, &stage.state, builder_fork);
+            }
+            if (!fork.isAtLeast(.MERGE)) try block_builder.applyMinerReward(&stage.state, ctx.block_coinbase, builder_fork);
+            var result = block_builder.BlockResult{
+                .receipts = &receipts,
+                .included_tx_indexes = &indexes,
+                .total_gas_used = @intCast(receipt.gas_used),
+                .block_number = ctx.block_number,
+                .transactions_root = undefined,
+                .receipts_root = undefined,
+                .state_root = try block_builder.computeStateRootForFork(a, &stage.state, block_builder.hardforkFromEvm(fork)),
+                .logs_bloom = receipt.logs_bloom,
+                .withdrawals_root = null,
+                .blob_gas_used = @intCast(receipt.blob_gas_used orelse 0),
+                .requests_hash = requests_hash,
+            };
+
+            result.receipts_root = try block_builder.computeReceiptsRoot(a, result.receipts);
+            _ = try stage.persistMinedBlock(ctx, coordinator.excessAt(ctx.block_number, ctx.block_timestamp), &result, &.{pooled});
+            stage.state.commit();
+            stage.blob_base_fee = ctx.blob_base_fee;
+            if (fork.isAtLeast(.LONDON)) stage.base_fee = mining_coordinator.calculateNextBaseFee(ctx.block_base_fee, result.total_gas_used, ctx.block_gas_limit);
+            stage.dev_runtime.config.next_block_timestamp = null;
+            stage.head_block_number = ctx.block_number;
+            stage.head_block_timestamp = ctx.block_timestamp;
+            outcomes[index] = .{ .rebase_tx_replayed = .{ .tx_hash = entry.tx_hash, .new_block_number = ctx.block_number, .skipped_execution = disposition == .carry_forward } };
+            summary.replayed_count += 1;
+        }
+        const next_snapshot = self.next_snapshot_id;
+        self.clearSnapshots();
+        self.next_snapshot_id = next_snapshot;
+        self.clearReplayStateCache();
+        self.clearEngineImportState();
+        self.clearEnginePayloadJobs();
+        self.clearEngineInvalidPayloads();
+        self.engine_safe_hash = null;
+        self.engine_finalized_hash = null;
+        inline for (.{ "state", "fork_backend", "blockchain", "owned_block_bodies", "receipt_index", "log_index", "head_block_number", "head_block_timestamp", "genesis_header", "genesis_extra_data", "fork_proof_unavailable", "base_fee", "blob_base_fee" }) |field|
+            std.mem.swap(@FieldType(NodeRuntime, field), &@field(self, field), &@field(stage, field));
+        self.fork_backend.?.sync_resolver = null;
+        self.enableSynchronousForkReads();
+        std.mem.swap(txpool.TransactionPool, &self.pool, &pending);
+        tracker.mutex.lock();
+        var retained: usize = 0;
+        for (outcomes, replacements, 0..) |outcome, *replacement, index| {
+            var entry = &tracker.local_txs.items[index];
+            if (outcome == .rebase_tx_dropped) {
+                entry.deinit(a);
+                continue;
+            }
+            if (replacement.*) |fresh| {
+                entry.deinit(a);
+                entry.* = fresh;
+                replacement.* = null;
+            }
+            entry.original_block_number = outcome.rebase_tx_replayed.new_block_number;
+            tracker.local_txs.items[retained] = entry.*;
+            retained += 1;
+        }
+        tracker.local_txs.shrinkRetainingCapacity(retained);
+        tracker.current_fork_block = new_upstream_head;
+        tracker.mutex.unlock();
+        for (outcomes) |event| {
+            if (self.event_hub != null and event == .rebase_tx_dropped) {
+                const hash = event.rebase_tx_dropped.tx_hash;
+                if (self.pool.hash_index.get(hash)) |index| {
+                    const tx = self.pool.items()[index];
+                    self.emitExEx(.{ .tx_pool_add = .{ .tx_hash = hash, .sender = tx.sender.bytes, .nonce = tx.nonce } });
+                }
+            }
+            self.emitExEx(event);
+        }
+        summary.new_fork_block = new_upstream_head;
+        self.emitExEx(.{ .rebase_completed = .{ .new_fork_block = new_upstream_head, .replayed_count = summary.replayed_count, .dropped_count = summary.dropped_count } });
+        return summary;
     }
 
     pub fn reset(self: *NodeRuntime, mode: ResetForkMode) !void {
         if (browser and mode == .replace) return error.ModeUnsupported;
+        self.runtime_mutex.lock();
+        defer self.runtime_mutex.unlock();
         const restart_interval_on_error = self.interval_thread != null;
         self.stopIntervalMiningTimer();
         errdefer if (restart_interval_on_error) {
@@ -2243,7 +3076,16 @@ pub const NodeRuntime = struct {
             try validateForkUrl(fork.url);
         }
 
-        try self.rebuildState(target_fork);
+        const replacement = try createTracker(self.allocator, target_fork);
+        self.rebuildState(target_fork) catch |err| {
+            if (replacement) |t| {
+                t.deinit();
+                self.allocator.destroy(t);
+            }
+            return err;
+        };
+        self.destroyTracker();
+        self.rebase_tracker = replacement;
         self.coinbase = self.default_coinbase;
         self.head_block_number = 0;
         self.head_block_timestamp = self.genesis_header.timestamp;
@@ -2268,15 +3110,20 @@ pub const NodeRuntime = struct {
         self.auto_impersonate_account = false;
         try self.resetQueryIndexes();
         self.clearSnapshots();
-        try self.startBackgroundServices();
+        self.emitForkChanged();
+        if (self.background_started or self.mining_config == .interval) try self.startBackgroundServices();
     }
 
     pub fn setRpcUrl(self: *NodeRuntime, new_url: []const u8) !void {
+        self.runtime_mutex.lock();
+        defer self.runtime_mutex.unlock();
         try validateForkUrl(new_url);
         if (browser) return error.ModeUnsupported;
 
         var fork_cfg = self.fork_config orelse return error.ForkNotEnabled;
         const new_url_owned = try self.allocator.dupe(u8, new_url);
+        errdefer self.allocator.free(new_url_owned);
+        if (self.rebase_tracker) |tracker| try tracker.setRpcUrl(new_url);
         self.allocator.free(fork_cfg.url);
         fork_cfg.url = new_url_owned;
         self.fork_config = fork_cfg;
@@ -2284,11 +3131,20 @@ pub const NodeRuntime = struct {
         // Upstream changed; clear only remote cache while preserving local overlays.
         self.fork_proof_unavailable = false;
         self.state.clearForkCache();
+        self.emitForkChanged();
+    }
+
+    pub fn stopBackgroundServices(self: *NodeRuntime) void {
+        self.stopLightSyncThread();
+        self.stopIntervalMiningTimer();
+        if (self.rebase_tracker) |tracker| tracker.stopPolling();
+        self.background_started = false;
     }
 
     pub fn deinit(self: *NodeRuntime) void {
-        self.stopLightSyncThread();
-        self.stopIntervalMiningTimer();
+        self.stopBackgroundServices();
+        self.destroyTracker();
+        self.runtime_mutex.pool_before.deinit(self.allocator);
         self.blob_verifier.deinit();
         if (self.light) |*light| {
             light.deinit(self.allocator);
@@ -2938,7 +3794,7 @@ pub const NodeRuntime = struct {
             // The backend pins reads to its own block tag copy; keep it in
             // step with the restored fork block.
             const block_tag: ?[]u8 = if (self.fork_backend) |backend|
-                if (target.block_number) |block_number|
+                if (if (self.rebase_tracker) |tracker| @as(?u64, tracker.current_fork_block) else target.block_number) |block_number|
                     try std.fmt.allocPrint(backend.allocator, "0x{x}", .{block_number})
                 else
                     try backend.allocator.dupe(u8, "latest")
@@ -2946,6 +3802,8 @@ pub const NodeRuntime = struct {
                 null;
             errdefer if (block_tag) |tag| self.fork_backend.?.allocator.free(tag);
             const updated_url = try self.allocator.dupe(u8, target.url);
+            errdefer self.allocator.free(updated_url);
+            if (self.rebase_tracker) |tracker| try tracker.setRpcUrl(target.url);
             self.allocator.free(current.url);
             current.url = updated_url;
             current.block_number = target.block_number;
@@ -4157,6 +5015,7 @@ fn allocForkConfig(allocator: std.mem.Allocator, fork: ?ForkConfig) !?ForkConfig
         return .{
             .url = try allocator.dupe(u8, value.url),
             .block_number = value.block_number,
+            .follow = value.follow,
         };
     }
     return null;

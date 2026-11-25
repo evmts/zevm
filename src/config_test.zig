@@ -125,7 +125,7 @@ test "load merges trusted config file with CLI precedence" {
     try std.testing.expectEqual(@as(u64, 9_000_000), rt.dev_runtime.config.block_gas_limit);
 }
 
-test "load applies CLI fork block number override on top of config file fork url" {
+test "load rejects CLI fork block number without CLI fork url even when config has a fork" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
@@ -140,18 +140,178 @@ test "load applies CLI fork block number override on top of config file fork url
     );
     defer std.testing.allocator.free(config_path);
 
-    var app_config = try config.load(std.testing.allocator, &[_][]const u8{
+    // Fork flags resolve as one unit: any CLI fork flag ignores the config fork.
+    try std.testing.expectError(error.InvalidConfig, config.load(std.testing.allocator, &[_][]const u8{
         "--config",
         config_path,
         "--fork-block-number",
         "123",
+    }));
+    try std.testing.expectError(error.InvalidConfig, config.load(std.testing.allocator, &[_][]const u8{
+        "--config",
+        config_path,
+        "--fork-follow",
+    }));
+}
+
+test "load builds fork strictly from CLI and ignores config fork block number and follow" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const config_path = try writeTmpFile(std.testing.allocator, &tmp_dir, "fork_follow.json",
+        \\{
+        \\  "mode": {
+        \\    "trusted": {
+        \\      "fork": { "url": "https://config-rpc.example", "blockNumber": 7, "follow": true }
+        \\    }
+        \\  }
+        \\}
+    );
+    defer std.testing.allocator.free(config_path);
+
+    var app_config = try config.load(std.testing.allocator, &[_][]const u8{
+        "--config",
+        config_path,
+        "--fork-url",
+        "https://cli-rpc.example",
     });
     defer app_config.deinit(std.testing.allocator);
 
     const trusted = try expectTrusted(app_config);
-    // The fork URL falls back to the config file while the CLI block number wins.
-    try std.testing.expectEqualStrings("https://config-rpc.example", trusted.fork.?.url);
-    try std.testing.expectEqual(@as(u64, 123), trusted.fork.?.block_number.?);
+    try std.testing.expectEqualStrings("https://cli-rpc.example", trusted.fork.?.url);
+    try std.testing.expect(trusted.fork.?.block_number == null);
+    try std.testing.expect(!trusted.fork.?.follow);
+}
+
+test "load accepts --fork-follow with --fork-url" {
+    var app_config = try config.load(std.testing.allocator, &[_][]const u8{
+        "--fork-url",
+        "https://rpc.example",
+        "--fork-follow",
+    });
+    defer app_config.deinit(std.testing.allocator);
+
+    const trusted = try expectTrusted(app_config);
+    try std.testing.expectEqualStrings("https://rpc.example", trusted.fork.?.url);
+    try std.testing.expect(trusted.fork.?.block_number == null);
+    try std.testing.expect(trusted.fork.?.follow);
+}
+
+test "load accepts --fork-follow with --fork-block-number" {
+    var app_config = try config.load(std.testing.allocator, &[_][]const u8{
+        "--fork-url",
+        "https://rpc.example",
+        "--fork-block-number",
+        "42",
+        "--fork-follow",
+    });
+    defer app_config.deinit(std.testing.allocator);
+
+    const trusted = try expectTrusted(app_config);
+    try std.testing.expectEqual(@as(u64, 42), trusted.fork.?.block_number.?);
+    try std.testing.expect(trusted.fork.?.follow);
+}
+
+test "load defaults fork follow to false" {
+    var app_config = try config.load(std.testing.allocator, &[_][]const u8{
+        "--fork-url",
+        "https://rpc.example",
+    });
+    defer app_config.deinit(std.testing.allocator);
+
+    try std.testing.expect(!(try expectTrusted(app_config)).fork.?.follow);
+}
+
+test "load rejects --fork-follow without --fork-url" {
+    try std.testing.expectError(error.InvalidConfig, config.load(std.testing.allocator, &[_][]const u8{"--fork-follow"}));
+    try std.testing.expectError(error.InvalidConfig, config.load(std.testing.allocator, &[_][]const u8{
+        "--fork-follow",
+        "--fork-block-number",
+        "1",
+    }));
+}
+
+test "load rejects --fork-follow in light mode" {
+    try std.testing.expectError(error.InvalidConfig, config.load(std.testing.allocator, &[_][]const u8{
+        "--mode",
+        "light",
+        "--fork-follow",
+        "--consensus-rpc-url",
+        "https://beacon.example",
+    }));
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const light_path = try writeTmpFile(std.testing.allocator, &tmp_dir, "light.json",
+        \\{ "mode": { "light": { "consensusRpcUrl": "https://beacon.example" } } }
+    );
+    defer std.testing.allocator.free(light_path);
+
+    var diagnostics = config.LoadDiagnostics{};
+    try std.testing.expectError(error.InvalidConfig, config.loadWithDiagnostics(
+        std.testing.allocator,
+        &[_][]const u8{ "--config", light_path, "--fork-follow" },
+        &diagnostics,
+    ));
+    try std.testing.expectEqual(config.LoadFailureClass.validation, diagnostics.failure_class);
+}
+
+test "load parses fork follow from config file" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const follow_path = try writeTmpFile(std.testing.allocator, &tmp_dir, "follow_true.json",
+        \\{ "mode": { "trusted": { "fork": { "url": "https://rpc.example", "blockNumber": 5, "follow": true } } } }
+    );
+    defer std.testing.allocator.free(follow_path);
+    {
+        var app_config = try config.load(std.testing.allocator, &[_][]const u8{ "--config", follow_path });
+        defer app_config.deinit(std.testing.allocator);
+        const trusted = try expectTrusted(app_config);
+        try std.testing.expectEqualStrings("https://rpc.example", trusted.fork.?.url);
+        try std.testing.expectEqual(@as(u64, 5), trusted.fork.?.block_number.?);
+        try std.testing.expect(trusted.fork.?.follow);
+    }
+
+    // `follow: false` is equivalent to omitting `follow`.
+    const no_follow_path = try writeTmpFile(std.testing.allocator, &tmp_dir, "follow_false.json",
+        \\{ "mode": { "trusted": { "fork": { "url": "https://rpc.example", "follow": false } } } }
+    );
+    defer std.testing.allocator.free(no_follow_path);
+    const omitted_path = try writeTmpFile(std.testing.allocator, &tmp_dir, "follow_omitted.json",
+        \\{ "mode": { "trusted": { "fork": { "url": "https://rpc.example" } } } }
+    );
+    defer std.testing.allocator.free(omitted_path);
+    for ([_][]const u8{ no_follow_path, omitted_path }) |path| {
+        var app_config = try config.load(std.testing.allocator, &[_][]const u8{ "--config", path });
+        defer app_config.deinit(std.testing.allocator);
+        const trusted = try expectTrusted(app_config);
+        try std.testing.expectEqualStrings("https://rpc.example", trusted.fork.?.url);
+        try std.testing.expect(!trusted.fork.?.follow);
+    }
+}
+
+test "load rejects config fork follow without url and non-boolean follow" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const cases = [_][]const u8{
+        \\{ "mode": { "trusted": { "fork": { "follow": true } } } }
+        ,
+        \\{ "mode": { "trusted": { "fork": { "blockNumber": 3, "follow": true } } } }
+        ,
+        \\{ "mode": { "trusted": { "fork": { "url": "https://rpc.example", "follow": "yes" } } } }
+        ,
+        \\{ "mode": { "trusted": { "fork": { "url": "https://rpc.example", "follow": 1 } } } }
+        ,
+    };
+    for (cases, 0..) |body, i| {
+        var name_buf: [32]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buf, "bad_follow_{d}.json", .{i});
+        const path = try writeTmpFile(std.testing.allocator, &tmp_dir, name, body);
+        defer std.testing.allocator.free(path);
+        try std.testing.expectError(error.InvalidConfig, config.load(std.testing.allocator, &[_][]const u8{ "--config", path }));
+    }
 }
 
 test "load rejects engine RPC in light mode" {
