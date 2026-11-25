@@ -992,6 +992,9 @@ fn linkRustSupport(compile: *std.Build.Step.Compile, target: std.Build.ResolvedT
     if (target.result.os.tag == .linux) {
         compile.linkSystemLibrary(if (target.result.abi == .musl) "unwind" else "gcc_s");
     } else if (target.result.os.tag == .windows and target.result.abi == .msvc) {
+        // Rust's staticlib already supplies compiler_builtins. On COFF the
+        // weak aliases in Zig's second runtime collide at final link.
+        compile.bundle_compiler_rt = false;
         // Native imports reported by rustc --print native-static-libs for MSVC.
         for ([_][]const u8{ "kernel32", "ntdll", "userenv", "ws2_32", "dbghelp" }) |lib|
             compile.linkSystemLibrary(lib);
