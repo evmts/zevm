@@ -714,7 +714,25 @@ fn voltaireDependency(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
 ) *std.Build.Dependency {
-    return b.dependency("voltaire", .{ .target = target, .optimize = optimize });
+    const dependency = b.dependency("voltaire", .{ .target = target, .optimize = optimize });
+    if (target.result.os.tag == .windows) {
+        // The pinned Voltaire passes the ELF -fPIC flag to its C archives.
+        // COFF uses relocations directly, and Clang rejects the flag on MSVC.
+        for ([_][]const u8{ "blst", "c-kzg-4844" }) |name| {
+            const module = dependency.artifact(name).root_module;
+            for (module.link_objects.items) |object| {
+                if (object != .c_source_files) continue;
+                const sources = object.c_source_files;
+                for (sources.flags, 0..) |flag, i| {
+                    if (std.mem.eql(u8, flag, "-fPIC")) {
+                        sources.flags = std.mem.concat(b.allocator, []const u8, &.{ sources.flags[0..i], sources.flags[i + 1 ..] }) catch @panic("OOM");
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    return dependency;
 }
 
 fn configureRustCrypto(
