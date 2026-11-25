@@ -716,6 +716,21 @@ fn voltaireDependency(
 ) *std.Build.Dependency {
     const dependency = b.dependency("voltaire", .{ .target = target, .optimize = optimize });
     if (target.result.os.tag == .windows) {
+        // MSVC translates the C KeccakResult enum as signed. Keep the upstream
+        // wrapper and select its actual ABI type in the generated crypto module.
+        const crypto_dir = dependency.path("packages/voltaire-zig/src/crypto");
+        const wrapper = crypto_dir.path(b, "keccak_asm.zig");
+        const source = std.fs.cwd().readFileAlloc(b.allocator, wrapper.getPath(b), 1024 * 1024) catch |err|
+            std.debug.panic("cannot read Voltaire Keccak wrapper: {s}", .{@errorName(err)});
+        const old_signature = "fn keccakResultToError(result: c_uint)";
+        if (std.mem.indexOf(u8, source, old_signature) != null) {
+            const files = b.addWriteFiles();
+            const dir = files.addCopyDirectory(crypto_dir, "crypto", .{ .exclude_extensions = &.{"keccak_asm.zig"} });
+            const patched = std.mem.replaceOwned(u8, b.allocator, source, old_signature, "fn keccakResultToError(result: c.KeccakResult)") catch @panic("OOM");
+            _ = files.add("crypto/keccak_asm.zig", patched);
+            dependency.module("crypto").root_source_file = dir.path(b, "root.zig");
+        }
+
         // The pinned Voltaire passes the ELF -fPIC flag to its C archives.
         // COFF uses relocations directly, and Clang rejects the flag on MSVC.
         for ([_][]const u8{ "blst", "c-kzg-4844" }) |name| {
@@ -976,6 +991,10 @@ fn linkRustSupport(compile: *std.Build.Step.Compile, target: std.Build.ResolvedT
     if (target.result.cpu.arch != .wasm32) compile.root_module.addObjectFile(rust_crypto.archive);
     if (target.result.os.tag == .linux) {
         compile.linkSystemLibrary(if (target.result.abi == .musl) "unwind" else "gcc_s");
+    } else if (target.result.os.tag == .windows and target.result.abi == .msvc) {
+        // Native imports reported by rustc --print native-static-libs for MSVC.
+        for ([_][]const u8{ "kernel32", "ntdll", "userenv", "ws2_32", "dbghelp" }) |lib|
+            compile.linkSystemLibrary(lib);
     } else if (target.result.os.tag == .windows and target.result.abi == .gnu) {
         compile.linkSystemLibrary("gcc_eh");
     }

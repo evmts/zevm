@@ -1384,36 +1384,44 @@ fn runHiveRpcCompatibilityFixtures(allocator: std.mem.Allocator, repo_root: []co
     const ports = try reserveDistinctLoopbackPorts();
     const port = ports.rpc;
     const engine_port = ports.engine;
-    const config_path = try writeHiveRpcCompatibilityConfig(allocator, repo_root, forkenv.value, port, engine_port, genesis_path, chain_rlp_path);
+    const config_path = try writeHiveRpcCompatibilityConfig(allocator, repo_root, forkenv.value, port, genesis_path, chain_rlp_path);
     defer {
         std.fs.cwd().deleteFile(config_path) catch {};
         allocator.free(config_path);
     }
 
-    var args = std.ArrayList([]const u8).empty;
-    defer args.deinit(allocator);
-    try args.append(allocator, zevm_bin);
-    try args.append(allocator, "--config");
-    try args.append(allocator, config_path);
+    const secret_path = try std.mem.concat(allocator, u8, &.{ config_path, ".jwt" });
+    defer allocator.free(secret_path);
+    var secret: [32]u8 = undefined;
+    std.crypto.random.bytes(&secret);
+    const secret_file = try std.fs.cwd().createFile(secret_path, .{ .exclusive = true, .mode = 0o600 });
+    defer std.fs.cwd().deleteFile(secret_path) catch {};
+    {
+        defer secret_file.close();
+        try secret_file.writeAll(&std.fmt.bytesToHex(secret, .lower));
+    }
 
-    var child = std.process.Child.init(args.items, allocator);
-    child.cwd = repo_root;
-    child.stdin_behavior = .Close;
-    child.stdout_behavior = .Close;
-    child.stderr_behavior = .Close;
-    try child.spawn();
-    defer _ = child.kill() catch {};
+    var port_buf: [5]u8 = undefined;
+    const port_arg = try std.fmt.bufPrint(&port_buf, "{d}", .{engine_port});
+    var engine_child = try spawnFixtureNode(allocator, repo_root, &.{ zevm_bin, "--config", config_path, "--engine-port", port_arg, "--authrpc.jwtsecret", secret_path });
+    defer _ = engine_child.kill() catch {};
 
     if (ctx.claimTask(hive_rpc_head_forkchoice_path)) |task_id| {
         const started_ns = ctx.startTask(task_id, "hive-rpc-compat", hive_rpc_head_forkchoice_path);
         const path = try std.fs.path.join(allocator, &.{ repo_root, hive_rpc_head_forkchoice_path });
         defer allocator.free(path);
-        runHiveHeadForkchoice(allocator, engine_port, path) catch |err| {
+        runHiveHeadForkchoice(allocator, engine_port, path, &secret) catch |err| {
             ctx.failTask(task_id, "hive-rpc-compat", hive_rpc_head_forkchoice_path, started_ns, err);
             return err;
         };
         ctx.finishTask(task_id, "hive-rpc-compat", started_ns);
     }
+
+    // Dev RPC methods are available on the loopback-only node with Engine RPC disabled.
+    var dev_port_buf: [5]u8 = undefined;
+    const dev_port_arg = try std.fmt.bufPrint(&dev_port_buf, "{d}", .{ports.dev});
+    var dev_child = try spawnFixtureNode(allocator, repo_root, &.{ zevm_bin, "--config", config_path, "--port", dev_port_arg });
+    defer _ = dev_child.kill() catch {};
 
     const hive_rpc_fixture_paths = try discoverHiveRpcFixturePaths(allocator, repo_root);
     defer freeStringList(allocator, hive_rpc_fixture_paths);
@@ -1428,12 +1436,23 @@ fn runHiveRpcCompatibilityFixtures(allocator: std.mem.Allocator, repo_root: []co
             return err;
         };
         defer test_case.deinit(allocator);
-        runRpcIoTest(allocator, port, test_case) catch |err| {
+        const fixture_port = if (std.mem.startsWith(u8, relative_path, "lib/execution-apis/tests/testing_")) ports.dev else port;
+        runRpcIoTest(allocator, fixture_port, test_case, std.fs.path.basename(std.fs.path.dirname(relative_path).?)) catch |err| {
             ctx.failTask(task_id, "hive-rpc-compat", relative_path, started_ns, err);
             return err;
         };
         ctx.finishTask(task_id, "hive-rpc-compat", started_ns);
     }
+}
+
+fn spawnFixtureNode(allocator: std.mem.Allocator, repo_root: []const u8, args: []const []const u8) !std.process.Child {
+    var child = std.process.Child.init(args, allocator);
+    child.cwd = repo_root;
+    child.stdin_behavior = .Close;
+    child.stdout_behavior = .Close;
+    child.stderr_behavior = .Close;
+    try child.spawn();
+    return child;
 }
 
 fn discoverHiveRpcFixturePaths(allocator: std.mem.Allocator, repo_root: []const u8) ![][]const u8 {
@@ -1498,6 +1517,7 @@ fn freeStringList(allocator: std.mem.Allocator, strings: []const []const u8) voi
 }
 
 const ReservedPorts = struct {
+    dev: u16,
     rpc: u16,
     engine: u16,
 };
@@ -1507,7 +1527,6 @@ fn writeHiveRpcCompatibilityConfig(
     repo_root: []const u8,
     forkenv: std.json.Value,
     rpc_port: u16,
-    engine_port: u16,
     genesis_path: []const u8,
     chain_rlp_path: []const u8,
 ) ![]u8 {
@@ -1531,14 +1550,13 @@ fn writeHiveRpcCompatibilityConfig(
     try writer.print(
         \\{{
         \\  "rpc": {{ "host": "127.0.0.1", "port": {d} }},
-        \\  "engineRpc": {{ "host": "127.0.0.1", "port": {d} }},
         \\  "mode": {{
         \\    "trusted": {{
         \\      "chainId": {d},
         \\      "blobBaseFee": "1",
         \\      "mining": {{ "type": "manual" }},
         \\      "genesis":
-    , .{ rpc_port, engine_port, chain_id });
+    , .{ rpc_port, chain_id });
     try std.json.Stringify.value(genesis_path, .{}, writer);
     try writer.writeAll(
         \\
@@ -1629,7 +1647,7 @@ fn parseDecimalU64Json(value: std.json.Value) !u64 {
     };
 }
 
-fn runHiveHeadForkchoice(allocator: std.mem.Allocator, engine_port: u16, path: []const u8) !void {
+fn runHiveHeadForkchoice(allocator: std.mem.Allocator, engine_port: u16, path: []const u8, secret: *const [32]u8) !void {
     const body = try std.fs.cwd().readFileAlloc(allocator, path, 64 * 1024);
     defer allocator.free(body);
 
@@ -1641,8 +1659,7 @@ fn runHiveHeadForkchoice(allocator: std.mem.Allocator, engine_port: u16, path: [
     if (params != .array or params.array.items.len < 1) return VerifyError.InvalidFixture;
     const head_hash = try stringField(params.array.items[0], "headBlockHash");
 
-    // The Engine listener enforces JWT auth; Hive signs with the same default secret.
-    const authorization = try zevm.rpc.server.engineJwtAuthorization(allocator, zevm.rpc.server.DEFAULT_ENGINE_JWT_SECRET, std.time.timestamp());
+    const authorization = try zevm.rpc.server.engineJwtAuthorization(allocator, secret, std.time.timestamp());
     defer allocator.free(authorization);
     const response_text = try waitForRpc(allocator, engine_port, body, authorization);
     defer allocator.free(response_text);
@@ -1724,7 +1741,7 @@ fn readRpcIoTest(allocator: std.mem.Allocator, path: []const u8) !RpcIoTest {
     };
 }
 
-fn runRpcIoTest(allocator: std.mem.Allocator, port: u16, test_case: RpcIoTest) !void {
+fn runRpcIoTest(allocator: std.mem.Allocator, port: u16, test_case: RpcIoTest, method: []const u8) !void {
     var response: ?[]u8 = null;
     defer if (response) |body| allocator.free(body);
 
@@ -1738,7 +1755,7 @@ fn runRpcIoTest(allocator: std.mem.Allocator, port: u16, test_case: RpcIoTest) !
         } else {
             const body = response orelse return VerifyError.InvalidFixture;
             if (test_case.speconly and !try jsonTextHasError(allocator, body)) {
-                try expectJsonStructure(allocator, message.data, body);
+                try expectJsonStructure(allocator, message.data, body, method);
             } else {
                 try expectJsonEqual(allocator, message.data, body);
             }
@@ -1756,16 +1773,36 @@ fn reserveDistinctLoopbackPorts() !ReservedPorts {
     defer rpc_server.deinit();
     var engine_server = try address.listen(.{});
     defer engine_server.deinit();
+    var dev_server = try address.listen(.{});
+    defer dev_server.deinit();
 
     return .{
+        .dev = dev_server.listen_address.getPort(),
         .rpc = rpc_server.listen_address.getPort(),
         .engine = engine_server.listen_address.getPort(),
     };
 }
 
+// The pinned execution-apis fixtures include blockTimestamp on transactions and
+// logs. ZEVM's phase-1 contract omits it (#38). Adapt the expected shape only,
+// so an actual response that leaks the field still fails exact comparison.
+fn applyTransactionAndLogContract(value: *std.json.Value) void {
+    switch (value.*) {
+        .object => |*object| {
+            const tx = object.contains("hash") and object.contains("nonce") and object.contains("transactionIndex");
+            const log = object.contains("transactionHash") and object.contains("logIndex") and object.contains("topics");
+            if (tx or log) _ = object.swapRemove("blockTimestamp");
+            for (object.values()) |*child| applyTransactionAndLogContract(child);
+        },
+        .array => |array| for (array.items) |*child| applyTransactionAndLogContract(child),
+        else => {},
+    }
+}
+
 fn expectJsonEqual(allocator: std.mem.Allocator, expected_text: []const u8, actual_text: []const u8) !void {
     var expected = std.json.parseFromSlice(std.json.Value, allocator, expected_text, .{ .allocate = .alloc_always }) catch return VerifyError.UnexpectedRpcResponse;
     defer expected.deinit();
+    applyTransactionAndLogContract(&expected.value);
     var actual = std.json.parseFromSlice(std.json.Value, allocator, actual_text, .{ .allocate = .alloc_always }) catch return VerifyError.UnexpectedRpcResponse;
     defer actual.deinit();
 
@@ -1784,13 +1821,62 @@ fn jsonTextHasError(allocator: std.mem.Allocator, text: []const u8) !bool {
     };
 }
 
-fn expectJsonStructure(allocator: std.mem.Allocator, expected_text: []const u8, actual_text: []const u8) !void {
+fn expectJsonStructure(allocator: std.mem.Allocator, expected_text: []const u8, actual_text: []const u8, method: []const u8) !void {
     var expected = std.json.parseFromSlice(std.json.Value, allocator, expected_text, .{ .allocate = .alloc_always }) catch return VerifyError.UnexpectedRpcResponse;
     defer expected.deinit();
+    applyTransactionAndLogContract(&expected.value);
     var actual = std.json.parseFromSlice(std.json.Value, allocator, actual_text, .{ .allocate = .alloc_always }) catch return VerifyError.UnexpectedRpcResponse;
     defer actual.deinit();
 
-    if (!jsonStructureMatches(expected.value, actual.value)) return VerifyError.UnexpectedRpcResponse;
+    // Sender addresses and nonces in the spec-only example are dynamic map keys.
+    // Validate the envelope and the contents of each actual map.
+    if (std.mem.eql(u8, method, "txpool_content") or std.mem.eql(u8, method, "txpool_contentFrom")) {
+        const result = try field(actual.value, "result");
+        if (result != .object or result.object.count() != 2 or actual.value.object.count() != 3) return VerifyError.UnexpectedRpcResponse;
+        if (!std.mem.eql(u8, try stringField(actual.value, "jsonrpc"), "2.0") or
+            !jsonValuesEqual(try field(expected.value, "id"), try field(actual.value, "id"), false)) return VerifyError.UnexpectedRpcResponse;
+        for ([_][]const u8{ "pending", "queued" }) |section_name| {
+            const section = try field(result, section_name);
+            if (section != .object) return VerifyError.UnexpectedRpcResponse;
+            if (std.mem.eql(u8, method, "txpool_contentFrom")) {
+                try checkPendingTransactions(section, null);
+            } else {
+                var senders = section.object.iterator();
+                while (senders.next()) |sender| {
+                    const address = try parseAddressText(sender.key_ptr.*);
+                    try checkPendingTransactions(sender.value_ptr.*, address);
+                }
+            }
+        }
+        return;
+    }
+    if (!jsonStructureMatches(expected.value, actual.value)) {
+        std.debug.print("external-verify: expected response {s}\nexternal-verify: actual response {s}\n", .{ expected_text, actual_text });
+        return VerifyError.UnexpectedRpcResponse;
+    }
+}
+
+fn checkPendingTransactions(entries: std.json.Value, sender: ?primitives.Address) !void {
+    if (entries != .object) return VerifyError.UnexpectedRpcResponse;
+    var nonces = entries.object.iterator();
+    while (nonces.next()) |entry| {
+        const tx = entry.value_ptr.*;
+        const nonce = try std.fmt.parseInt(u64, entry.key_ptr.*, 10);
+        if (try parseQuantity(try field(tx, "nonce")) != nonce) return VerifyError.UnexpectedRpcResponse;
+        const from = try parseAddressValue(try field(tx, "from"));
+        if (sender) |address| if (!std.mem.eql(u8, &address.bytes, &from.bytes)) return VerifyError.UnexpectedRpcResponse;
+        _ = try parseHashValue(try field(tx, "hash"));
+        _ = try stringField(tx, "input");
+        for ([_][]const u8{ "type", "gas", "value", "r", "s", "v" }) |key| {
+            _ = try parseQuantity(try field(tx, key));
+        }
+        const to = try field(tx, "to");
+        if (to != .null) _ = try parseAddressValue(to);
+        for ([_][]const u8{ "blockHash", "blockNumber", "transactionIndex" }) |key| {
+            if (try field(tx, key) != .null) return VerifyError.UnexpectedRpcResponse;
+        }
+        if (tx.object.contains("blockTimestamp")) return VerifyError.UnexpectedRpcResponse;
+    }
 }
 
 fn jsonStructureMatches(expected: std.json.Value, actual: std.json.Value) bool {

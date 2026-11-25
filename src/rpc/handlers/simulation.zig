@@ -2568,6 +2568,9 @@ fn simulateLogsValue(
     }
 
     next_log_index.* = first_log_index + @as(u32, @intCast(array.items.len));
+    // The simulation tracer numbers the top-level value transfer on call entry.
+    // A revert discards the event, but its index has already been consumed.
+    if (options.trace_transfers and !success and tx.value > 0) next_log_index.* += 1;
     return .{ .array = array };
 }
 
