@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: zevm-npm-release
+  group: zevm-npm-${{ (github.ref_type == 'tag' || inputs.publish) && 'publish' || github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -66,15 +66,19 @@ jobs:
         working-directory: zevm
     steps:
       - uses: actions/checkout@v7
+        if: runner.os != 'Windows'
         with:
           path: zevm
           persist-credentials: false
-          # Deployment state outside the native build contains Windows-invalid names.
-          sparse-checkout: |
-            include
-            npm
-            src
-            tools
+      - name: Extract Windows-compatible build sources at the release SHA
+        if: runner.os == 'Windows'
+        working-directory: .
+        run: |
+          # Git for Windows rejects the deployment state's names even with a sparse checkout.
+          mkdir zevm
+          curl --retry 3 -fsSL "https://codeload.github.com/$GITHUB_REPOSITORY/tar.gz/$GITHUB_SHA" -o zevm-source.tgz
+          tar -xzf zevm-source.tgz -C zevm --strip-components=1 --exclude='*/cloudflare' --exclude='*/cloudflare/*'
+          test -f zevm/build.zig
       - uses: actions/checkout@v7
         with:
           repository: evmts/voltaire
