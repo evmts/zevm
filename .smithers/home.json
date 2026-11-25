@@ -6,6 +6,10 @@
       "text": "Embeddable Zig Ethereum node: execution on guillotine-mini, primitives from Voltaire, JSON-RPC, a beacon light client, and C and Node-API bindings. Every Zig target keys on the pinned sibling sources, so `smthrs ci //...` replays unchanged checks locally and from the Smithers remote cache."
     },
     {
+      "type": "view",
+      "flow": "playground/exec"
+    },
+    {
       "type": "prompt",
       "title": "Ask about ZEVM",
       "placeholder": "Describe an execution, JSON-RPC, light-client, or binding issue…"

@@ -1,0 +1,16 @@
+---
+description: Inspect ZEVM bytecode and local JSON-RPC results
+flows: [playground/native]
+disable-model-invocation: true
+placement: sandbox
+capabilities:
+  - "fs:read:**"
+  - "proc:spawn:node .smithers/playground/run.mjs *"
+effects:
+  reads: [".smithers/playground/**", "npm/zevm/**"]
+  writes: []
+budget:
+  milliseconds: 10000
+---
+Run one bounded request against a fresh in-memory devnet and return its JSON result.
+Use the native playground delegate with the request JSON in the args field.

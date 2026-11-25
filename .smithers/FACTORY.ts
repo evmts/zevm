@@ -36,9 +36,15 @@ export const conformanceReview = S.Flow({
   summary: "Audit spec conformance, native pin drift, qualification coverage, and benchmark deltas."
 })
 
+export const playground = S.Flow({
+  flow: "playground/exec",
+  featured: true,
+  summary: "Inspect ZEVM bytecode and local JSON-RPC results."
+})
+
 export const factory = S.Factory({
   summary: "ZEVM: incremental Zig/C/N-API CI, Ethereum spec conformance, native pin hygiene, and maintainer triage.",
-  flows: [review, issueRepro, issuePoc, prTriage, conformanceReview],
+  flows: [review, issueRepro, issuePoc, prTriage, conformanceReview, playground],
   on: {
     "schedule:17 9 * * 1": {
       flow: "conformance-review",
@@ -71,6 +77,7 @@ export const home = S.Factory.Home({
       title: "ZEVM factory",
       text: "Embeddable Zig Ethereum node: execution on guillotine-mini, primitives from Voltaire, JSON-RPC, a beacon light client, and C and Node-API bindings. Every Zig target keys on the pinned sibling sources, so `smthrs ci //...` replays unchanged checks locally and from the Smithers remote cache."
     },
+    { type: "view", flow: "playground/exec" },
     {
       type: "prompt",
       title: "Ask about ZEVM",
