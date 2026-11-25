@@ -366,6 +366,14 @@ jobs:
           printf '\n!native-dependencies.json\n' >> "$source_ignore"
           bun tools/hive_rpc_compat_smoke.js
 
+      - name: Preserve failed Hive transcripts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hive-rpc-compat-failure
+          path: zevm/zig-out/hive/logs
+          retention-days: 7
+
       - name: Dirty worktree preflight
         working-directory: zevm
         run: git diff --exit-code -- .

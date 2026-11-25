@@ -45,7 +45,7 @@ RUN git clone --depth 1 --branch "${GETH_VERSION}" https://github.com/ethereum/g
     go build -trimpath -ldflags="-s -w" -o /usr/local/bin/geth ./cmd/geth
 
 FROM alpine:3.23
-RUN apk add --no-cache bash ca-certificates curl jq python3 socat
+RUN apk add --no-cache bash ca-certificates curl haproxy jq python3
 COPY --from=builder /src/zevm/zig-out/bin/zevm /usr/local/bin/zevm
 COPY --from=geth-sidecar /usr/local/bin/geth /usr/local/bin/geth
 COPY tools/hive/zevm-client/zevm-hive.sh /zevm-hive.sh

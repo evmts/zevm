@@ -8,7 +8,8 @@ geth_p2p_pid=""
 geth_graphql_pid=""
 graphql_proxy_pid=""
 engine_mirror_pid=""
-proxy_pids=()
+proxy_pid=""
+proxy_config="$(mktemp)"
 config_path="$(mktemp)"
 geth_p2p_datadir=""
 geth_graphql_datadir=""
@@ -67,9 +68,10 @@ cleanup() {
     done
   fi
 
-  for proxy_pid in "${proxy_pids[@]}"; do
+  if [ -n "$proxy_pid" ]; then
     kill "$proxy_pid" >/dev/null 2>&1 || true
-  done
+  fi
+  rm -f "$proxy_config"
   if [ -n "$zevm_pid" ]; then
     kill "$zevm_pid" >/dev/null 2>&1 || true
   fi
@@ -150,11 +152,27 @@ seed_rpc_compat_txpool() {
   done
 }
 
-start_proxy() {
-  local public_port="$1"
-  local internal_port="$2"
-  socat "TCP-LISTEN:${public_port},fork,reuseaddr,bind=0.0.0.0" "TCP:127.0.0.1:${internal_port}" &
-  proxy_pids+=("$!")
+start_proxies() {
+  # The simulator addresses the container by IP. Forward requests to the
+  # configured loopback authority while preserving their Engine credentials.
+  cat > "$proxy_config" <<EOF
+defaults
+  mode http
+  timeout connect 5s
+  timeout client 60s
+  timeout server 60s
+listen public-rpc
+  bind *:8545
+  http-request set-header Host 127.0.0.1:$public_rpc_target_port
+  server zevm 127.0.0.1:$public_rpc_target_port
+listen engine-rpc
+  bind *:8551
+  http-request set-header Host 127.0.0.1:$public_engine_target_port
+  server engine 127.0.0.1:$public_engine_target_port
+EOF
+  haproxy -c -f "$proxy_config"
+  haproxy -db -f "$proxy_config" &
+  proxy_pid="$!"
 }
 
 geth_genesis() {
@@ -617,7 +635,6 @@ if [ "$seed_txpool" = "true" ]; then
   seed_rpc_compat_txpool
 fi
 
-start_proxy 8545 "$public_rpc_target_port"
-start_proxy 8551 "$public_engine_target_port"
+start_proxies
 
 wait "$zevm_pid"

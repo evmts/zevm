@@ -995,8 +995,25 @@ fn linkRustSupport(compile: *std.Build.Step.Compile, target: std.Build.ResolvedT
         // Rust's staticlib already supplies compiler_builtins. On COFF the
         // weak aliases in Zig's second runtime collide at final link.
         compile.bundle_compiler_rt = false;
-        // Native imports reported by rustc --print native-static-libs for MSVC.
-        for ([_][]const u8{ "kernel32", "ntdll", "userenv", "ws2_32", "dbghelp" }) |lib|
+        // std.json uses roundq for checked integer conversion. Rust lacks this
+        // quad-precision math routine and the two f80 conversions it uses.
+        const b = compile.step.owner;
+        for ([_][]const u8{ "round.zig", "extendxftf2.zig", "trunctfxf2.zig" }) |file| {
+            const source = b.graph.zig_lib_directory.join(b.allocator, &.{ "compiler_rt", file }) catch @panic("OOM");
+            const obj = b.addObject(.{
+                .name = std.fs.path.stem(file),
+                .root_module = b.createModule(.{
+                    .root_source_file = .{ .cwd_relative = source },
+                    .target = target,
+                    .optimize = .ReleaseFast,
+                    .link_libc = true,
+                }),
+            });
+            obj.bundle_compiler_rt = false;
+            compile.addObject(obj);
+        }
+        // Synchronization.lib supplies the Win32 address waits used by std.
+        for ([_][]const u8{ "kernel32", "ntdll", "userenv", "ws2_32", "dbghelp", "synchronization" }) |lib|
             compile.linkSystemLibrary(lib);
     } else if (target.result.os.tag == .windows and target.result.abi == .gnu) {
         compile.linkSystemLibrary("gcc_eh");
