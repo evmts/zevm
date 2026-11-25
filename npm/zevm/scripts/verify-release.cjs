@@ -51,7 +51,7 @@ for (const entry of fs.readdirSync(platformsRoot, { withFileTypes: true })) {
     `${mainPackage.name} optionalDependencies must pin ${manifest.name}@${version}`,
   );
 }
-invariant(platformNames.size > 0, "no platform packages under npm/platforms");
+invariant(platformNames.size === 11, "expected 11 platform packages under npm/platforms");
 
 for (const name of Object.keys(mainPackage.optionalDependencies ?? {})) {
   invariant(platformNames.has(name), `optionalDependency ${name} has no npm/platforms package`);

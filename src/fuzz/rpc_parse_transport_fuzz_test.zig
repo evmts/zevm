@@ -125,7 +125,7 @@ test "property: HexData, Address and Bytes32 preserve bytes and enforce widths" 
 // Allocate a fresh result so notification suppression and batch serialization
 // also exercise the dispatcher's result ownership.
 fn mockHandler(allocator: std.mem.Allocator, method: []const u8, _: ?std.json.Value) anyerror!std.json.Value {
-    if (std.mem.eql(u8, method, "debug_traceCall")) return error.ModeUnsupported;
+    if (std.mem.eql(u8, method, "debug_getRawBlock")) return error.ModeUnsupported;
     return .{ .string = try allocator.dupe(u8, "0x2a") };
 }
 
@@ -197,7 +197,7 @@ fn writeRequest(writer: *std.Io.Writer, random: std.Random, notifications_only: 
         .{ .fields = "\"method\":\"net_version\",\"params\":[]" },
         .{ .fields = "\"method\":\"zevm_reset\",\"params\":[null]" },
         .{ .fields = try std.fmt.bufPrint(&unknown, "\"method\":\"unknown_{x}\"", .{random.int(u64)}), .code = -32601 },
-        .{ .fields = "\"method\":\"debug_traceCall\"", .code = -32010 },
+        .{ .fields = "\"method\":\"debug_getRawBlock\"", .code = -32010 },
         .{ .fields = "\"method\":\"eth_getBalance\",\"params\":[]", .code = -32602 },
         .{ .fields = "\"method\":\"anvil_setRpcUrl\",\"params\":[17]", .code = -32602 },
         .{ .fields = "\"method\":\"eth_getBalance\",\"params\":{}", .code = -32602 },
@@ -549,6 +549,6 @@ test "fuzz: dispatcher and serialized JSON-RPC responses agree" {
         "{\"jsonrpc\":\"2.0\",\"id\":\"line\\n\\\"\",\"method\":\"eth_getBalance\",\"params\":[]}",
         "{\"jsonrpc\":\"2.0\",\"id\":-9223372036854775808,\"method\":\"anvil_reset\",\"params\":[{\"forking\":{\"jsonRpcUrl\":\"test\",\"blockNumber\":\"0x1\"}}]}",
         "{\"jsonrpc\":\"1.0\",\"id\":{},\"method\":false,\"params\":5}",
-        "{\"jsonrpc\":\"2.0\",\"id\":\"\",\"method\":\"debug_traceCall\",\"params\":{}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":\"\",\"method\":\"debug_getRawBlock\",\"params\":{}}",
     } });
 }

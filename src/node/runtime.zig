@@ -1,3 +1,4 @@
+const browser = @import("builtin").os.tag == .wasi;
 const std = @import("std");
 const state_manager = @import("state-manager");
 const primitives = @import("primitives");
@@ -679,6 +680,7 @@ pub const NodeRuntime = struct {
     pub fn init(allocator: std.mem.Allocator, config_opt: ?NodeConfig) !NodeRuntime {
         const config = config_opt orelse NodeConfig{};
 
+        if (browser and (config.mode == .light or config.fork_url != null)) return error.ModeUnsupported;
         if (config.fork_block_number != null and config.fork_url == null) {
             return error.InvalidForkConfig;
         }
@@ -692,7 +694,7 @@ pub const NodeRuntime = struct {
             null;
         errdefer if (owned_genesis_alloc_path) |path| allocator.free(path);
 
-        var light_state: ?LightModeState = if (config.mode == .light)
+        var light_state: ?LightModeState = if (!browser and config.mode == .light)
             try initLightModeState(allocator, config.light)
         else
             null;
@@ -1010,6 +1012,7 @@ pub const NodeRuntime = struct {
                     self.mining_config = .manual;
                     return;
                 }
+                if (browser) return error.ModeUnsupported;
                 self.stopIntervalMiningTimer();
                 self.mining_config = config;
                 if (self.mode == .trusted) try self.startIntervalMiningTimer(interval.block_time);
@@ -1022,6 +1025,7 @@ pub const NodeRuntime = struct {
     }
 
     fn startIntervalMiningTimer(self: *NodeRuntime, block_time: u64) !void {
+        if (browser) return error.ModeUnsupported;
         if (block_time == 0 or self.interval_thread != null) return;
         self.interval_stop_requested.store(false, .seq_cst);
         self.interval_thread = try std.Thread.spawn(.{}, intervalMiningLoop, .{ self, block_time });
@@ -1029,6 +1033,7 @@ pub const NodeRuntime = struct {
     }
 
     fn stopIntervalMiningTimer(self: *NodeRuntime) void {
+        if (browser) return;
         const thread = self.interval_thread orelse return;
         self.interval_stop_requested.store(true, .seq_cst);
         thread.join();
@@ -1098,6 +1103,7 @@ pub const NodeRuntime = struct {
     }
 
     fn startLightSyncThread(self: *NodeRuntime) !void {
+        if (browser) return error.ModeUnsupported;
         if (self.mode != .light) return error.NotLightMode;
         if (self.light_sync_thread != null) return;
 
@@ -1107,6 +1113,7 @@ pub const NodeRuntime = struct {
     }
 
     fn stopLightSyncThread(self: *NodeRuntime) void {
+        if (browser) return;
         const thread = self.light_sync_thread orelse return;
         // Request cancellation before joining so the background startup-sync loop
         // short-circuits at the next step boundary instead of starting further
@@ -2217,6 +2224,7 @@ pub const NodeRuntime = struct {
     }
 
     pub fn reset(self: *NodeRuntime, mode: ResetForkMode) !void {
+        if (browser and mode == .replace) return error.ModeUnsupported;
         const restart_interval_on_error = self.interval_thread != null;
         self.stopIntervalMiningTimer();
         errdefer if (restart_interval_on_error) {
@@ -2265,6 +2273,7 @@ pub const NodeRuntime = struct {
 
     pub fn setRpcUrl(self: *NodeRuntime, new_url: []const u8) !void {
         try validateForkUrl(new_url);
+        if (browser) return error.ModeUnsupported;
 
         var fork_cfg = self.fork_config orelse return error.ForkNotEnabled;
         const new_url_owned = try self.allocator.dupe(u8, new_url);
@@ -4293,6 +4302,7 @@ fn resolveForkRpcViaHttp(
     allocator: std.mem.Allocator,
     request: ForkRpcRequest,
 ) ![]u8 {
+    if (browser) return error.ModeUnsupported;
     _ = context;
 
     const request_body = try std.fmt.allocPrint(

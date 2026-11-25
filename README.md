@@ -83,11 +83,8 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the local workflow, release gates, 
 
 See the [submodule update policy](./docs/reference/submodule-update-policy.md) for the fixture inputs required by `zig build verify` and the status of the archived Execution Spec Tests repository.
 
-## Native package release
+## npm release
 
-The next execution-node package version is `0.1.0`. Release builders must stage
-all platform addons advertised in `npm/zevm/package.json`, then run
-`node npm/zevm/scripts/publish-all.cjs --dry-run` before the same command without
-`--dry-run`. Publication fails before uploading anything if a platform is missing.
-`zig build npm-platform-artifacts -Doptimize=ReleaseSafe -Dtarget=<zig-triple>`
-builds one selected platform; it is not a cross-platform release matrix.
+Run `gh workflow run release.yml --ref main` to build all 11 platform addons and the browser WASM, validate their tarballs, and test installation. The workflow retains the 12 tarballs as the `npm-tarballs` artifact. To publish, dispatch with `-f publish=true` or push the matching version tag (for this release, `v0.1.0`) at the tip of main. Publication requires successful CI on that commit and uploads the platform packages first.
+
+Configure the npm trusted publisher on each package for `evmts/zevm`, workflow `release.yml`, environment `npm`. For bootstrap, the environment can supply an npm granular publish token as `NPM_TOKEN`. The publisher checks registry integrity before resuming a partial publication.

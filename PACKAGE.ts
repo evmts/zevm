@@ -136,7 +136,7 @@ const jsCheck = S.Shell.Test({
   args: [
     "-eu",
     "-c",
-    "for f in npm/zevm/src/index.js npm/zevm/scripts/*.cjs tools/*.mjs tools/*.js; do node --check \"$f\"; done",
+    "for f in npm/zevm/src/*.js npm/zevm/scripts/*.cjs npm/zevm/scripts/*.mjs tools/*.mjs tools/*.js; do node --check \"$f\"; done",
   ],
   data: [
     S.glob("npm/zevm/src/**"),

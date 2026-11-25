@@ -202,7 +202,6 @@ fn fuzzSimulationRpcPayloads(_: void, input: []const u8) anyerror!void {
         "eth_estimateGas",
         "eth_createAccessList",
         "eth_simulateV1",
-        "debug_traceCall",
     };
     const method = methods[input[0] % methods.len];
     const params_raw = input[1..];
@@ -228,7 +227,7 @@ fn fuzzSimulationRpcPayloads(_: void, input: []const u8) anyerror!void {
     try std.testing.expectEqual(before_slot, try rt.getStorage(target, 0));
 }
 
-test "fuzz: simulation RPC methods (eth_call, estimateGas, createAccessList, simulateV1, traceCall) never mutate state or leak" {
+test "fuzz: simulation RPC methods (eth_call, estimateGas, createAccessList, simulateV1) never mutate state or leak" {
     try std.testing.fuzz({}, fuzzSimulationRpcPayloads, .{ .corpus = &.{
         "\x00[{\"to\":\"0x0000000000000000000000000000000000001000\"},\"latest\"]",
         "\x00[{\"to\":\"0x0000000000000000000000000000000000001000\"},\"latest\",{\"0x0000000000000000000000000000000000001000\":{\"stateDiff\":{\"0x0000000000000000000000000000000000000000000000000000000000000000\":\"0x0000000000000000000000000000000000000000000000000000000000000029\"}}}]",

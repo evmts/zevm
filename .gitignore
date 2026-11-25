@@ -257,3 +257,5 @@ npm/platforms/*/LICENSE
 # Local Smithers runtime database
 .smithers/pg/
 .smithers/migrated.json
+
+/npm/zevm/src/zevm.wasm

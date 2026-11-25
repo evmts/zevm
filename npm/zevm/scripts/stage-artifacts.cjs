@@ -63,3 +63,8 @@ for (const [platformName, packageName] of platformPackages) {
     console.warn(`skipping ${packageName}; missing ${path.relative(repoRoot, source)}`);
   }
 }
+
+const wasmDestination = path.join(packageRoot, "src/zevm.wasm");
+if (!copyIfPresent(path.join(zigOutNpm, "browser/zevm.wasm"), wasmDestination)) {
+  fs.rmSync(wasmDestination, { force: true });
+}

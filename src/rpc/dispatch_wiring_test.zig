@@ -200,7 +200,7 @@ fn collectTopLevelYamlMethods(methods: *ContractMethodInventory, contents: []con
         if (!std.mem.startsWith(u8, line, prefix)) continue;
 
         const method = std.mem.trim(u8, line[prefix.len..], " \t\r'\"");
-        if (!isConcreteMethodName(method)) continue;
+        if (!isConcreteMethodName(method) or dispatcher.isDeferredMethod(method)) continue;
         if (!methods.contains(method)) try methods.put(method, {});
     }
 }
@@ -221,7 +221,7 @@ fn collectQuotedMethodTokens(methods: *ContractMethodInventory, source: []const 
     while (std.mem.indexOfScalarPos(u8, source, cursor, '"')) |start| {
         const end = std.mem.indexOfScalarPos(u8, source, start + 1, '"') orelse return error.MalformedStringLiteral;
         const text = source[start + 1 .. end];
-        if (isConcreteMethodName(text) and !methods.contains(text)) try methods.put(text, {});
+        if (isConcreteMethodName(text) and !dispatcher.isDeferredMethod(text) and !methods.contains(text)) try methods.put(text, {});
         cursor = end + 1;
     }
 }
@@ -996,189 +996,29 @@ test "installed dispatch wiring reaches runtime-backed eth_feeHistory" {
     try std.testing.expectEqual(@as(usize, 2), reward[0].array.items.len);
 }
 
-test "installed dispatch wiring tracks eth_newBlockFilter changes" {
-    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
-    defer rt.deinit();
-
-    var create_response = try dispatchForTest(&rt, "eth_newBlockFilter", null);
-    defer create_response.deinit(std.testing.allocator);
-    try std.testing.expect(create_response.error_value == null);
-    const filter_id = create_response.result.?.string;
-
-    try rt.mineBlocks(1, 0);
-    const block = (try rt.blockchain.getBlockByNumber(1)).?;
-    const block_hash = try primitives.Hex.bytesToHex(std.testing.allocator, &block.hash);
-    defer std.testing.allocator.free(block_hash);
-
-    {
-        var params = std.json.Array.init(std.testing.allocator);
-        defer params.deinit();
-        try params.append(.{ .string = filter_id });
-
-        var response = try dispatchForTest(&rt, "eth_getFilterChanges", .{ .array = params });
-        defer response.deinit(std.testing.allocator);
-        try std.testing.expect(response.error_value == null);
-        const changes = response.result.?.array.items;
-        try std.testing.expectEqual(@as(usize, 1), changes.len);
-        try std.testing.expectEqualStrings(block_hash, changes[0].string);
-    }
-
-    {
-        var params = std.json.Array.init(std.testing.allocator);
-        defer params.deinit();
-        try params.append(.{ .string = filter_id });
-
-        var response = try dispatchForTest(&rt, "eth_getFilterChanges", .{ .array = params });
-        defer response.deinit(std.testing.allocator);
-        try std.testing.expect(response.error_value == null);
-        try std.testing.expectEqual(@as(usize, 0), response.result.?.array.items.len);
-    }
-
-    {
-        var params = std.json.Array.init(std.testing.allocator);
-        defer params.deinit();
-        try params.append(.{ .string = filter_id });
-
-        var response = try dispatchForTest(&rt, "eth_uninstallFilter", .{ .array = params });
-        defer response.deinit(std.testing.allocator);
-        try std.testing.expect(response.error_value == null);
-        try std.testing.expect(response.result.?.bool);
-    }
-
-    {
-        var params = std.json.Array.init(std.testing.allocator);
-        defer params.deinit();
-        try params.append(.{ .string = filter_id });
-
-        var response = try dispatchForTest(&rt, "eth_uninstallFilter", .{ .array = params });
-        defer response.deinit(std.testing.allocator);
-        try std.testing.expect(response.error_value == null);
-        try std.testing.expect(!response.result.?.bool);
-    }
-}
-
-test "installed dispatch wiring tracks eth_newPendingTransactionFilter changes" {
-    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
-    defer rt.deinit();
-    try rt.setAutomine(false);
-
-    var create_response = try dispatchForTest(&rt, "eth_newPendingTransactionFilter", null);
-    defer create_response.deinit(std.testing.allocator);
-    try std.testing.expect(create_response.error_value == null);
-    const filter_id = create_response.result.?.string;
-
-    var tx = std.json.ObjectMap.init(std.testing.allocator);
-    defer tx.deinit();
-    try tx.put("from", .{ .string = managedAddressText() });
-    try tx.put("to", validAddress());
-    try tx.put("gas", .{ .string = "0x5208" });
-    try tx.put("value", .{ .string = "0x1" });
-
-    var send_params = std.json.Array.init(std.testing.allocator);
-    defer send_params.deinit();
-    try send_params.append(.{ .object = tx });
-
-    var send_response = try dispatchForTest(&rt, "eth_sendTransaction", .{ .array = send_params });
-    defer send_response.deinit(std.testing.allocator);
-    try std.testing.expect(send_response.error_value == null);
-    const tx_hash = send_response.result.?.string;
-
-    {
-        var params = std.json.Array.init(std.testing.allocator);
-        defer params.deinit();
-        try params.append(.{ .string = filter_id });
-
-        var response = try dispatchForTest(&rt, "eth_getFilterChanges", .{ .array = params });
-        defer response.deinit(std.testing.allocator);
-        try std.testing.expect(response.error_value == null);
-        const changes = response.result.?.array.items;
-        try std.testing.expectEqual(@as(usize, 1), changes.len);
-        try std.testing.expectEqualStrings(tx_hash, changes[0].string);
-    }
-
-    {
-        var params = std.json.Array.init(std.testing.allocator);
-        defer params.deinit();
-        try params.append(.{ .string = filter_id });
-
-        var response = try dispatchForTest(&rt, "eth_getFilterChanges", .{ .array = params });
-        defer response.deinit(std.testing.allocator);
-        try std.testing.expect(response.error_value == null);
-        try std.testing.expectEqual(@as(usize, 0), response.result.?.array.items.len);
-    }
-}
-
-test "installed dispatch wiring tracks eth_newFilter log changes" {
-    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
-    defer rt.deinit();
-
-    const target_text = "0x00000000000000000000000000000000000000aa";
-    const target = try parseTestAddress(target_text);
-    try rt.setCode(target, &[_]u8{ 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xa0, 0x00 });
-
-    var filter = std.json.ObjectMap.init(std.testing.allocator);
-    defer filter.deinit();
-    try filter.put("address", .{ .string = target_text });
-
-    var filter_params = std.json.Array.init(std.testing.allocator);
-    defer filter_params.deinit();
-    try filter_params.append(.{ .object = filter });
-
-    var create_response = try dispatchForTest(&rt, "eth_newFilter", .{ .array = filter_params });
-    defer create_response.deinit(std.testing.allocator);
-    try std.testing.expect(create_response.error_value == null);
-    const filter_id = create_response.result.?.string;
-
-    var tx = std.json.ObjectMap.init(std.testing.allocator);
-    defer tx.deinit();
-    try tx.put("from", .{ .string = managedAddressText() });
-    try tx.put("to", .{ .string = target_text });
-    try tx.put("gas", .{ .string = "0x100000" });
-    try tx.put("value", .{ .string = "0x0" });
-
-    var send_params = std.json.Array.init(std.testing.allocator);
-    defer send_params.deinit();
-    try send_params.append(.{ .object = tx });
-
-    var send_response = try dispatchForTest(&rt, "eth_sendTransaction", .{ .array = send_params });
-    defer send_response.deinit(std.testing.allocator);
-    try std.testing.expect(send_response.error_value == null);
-
-    {
-        var params = std.json.Array.init(std.testing.allocator);
-        defer params.deinit();
-        try params.append(.{ .string = filter_id });
-
-        var response = try dispatchForTest(&rt, "eth_getFilterChanges", .{ .array = params });
-        defer response.deinit(std.testing.allocator);
-        try std.testing.expect(response.error_value == null);
-        const changes = response.result.?.array.items;
-        try std.testing.expectEqual(@as(usize, 1), changes.len);
-        try std.testing.expectEqualStrings(target_text, (try getObjectField(changes[0], "address")).string);
-        try std.testing.expectEqualStrings("0x000000000000000000000000000000000000000000000000000000000000002a", (try getObjectField(changes[0], "data")).string);
-        try std.testing.expectEqual(@as(usize, 0), (try getObjectField(changes[0], "topics")).array.items.len);
-    }
-
-    {
-        var params = std.json.Array.init(std.testing.allocator);
-        defer params.deinit();
-        try params.append(.{ .string = filter_id });
-
-        var response = try dispatchForTest(&rt, "eth_getFilterChanges", .{ .array = params });
-        defer response.deinit(std.testing.allocator);
-        try std.testing.expect(response.error_value == null);
-        try std.testing.expectEqual(@as(usize, 0), response.result.?.array.items.len);
-    }
-
-    {
-        var params = std.json.Array.init(std.testing.allocator);
-        defer params.deinit();
-        try params.append(.{ .string = filter_id });
-
-        var response = try dispatchForTest(&rt, "eth_getFilterLogs", .{ .array = params });
-        defer response.deinit(std.testing.allocator);
-        try std.testing.expect(response.error_value == null);
-        try std.testing.expectEqual(@as(usize, 1), response.result.?.array.items.len);
+test "deferred RPC families return method not found in both modes before validating params" {
+    for ([_]bool{ false, true }) |light| {
+        var rt = if (light) try initLightRuntime(null) else try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+        defer rt.deinit();
+        for ([_][]const u8{
+            "eth_newBlockFilter",
+            "eth_newPendingTransactionFilter",
+            "eth_newFilter",
+            "eth_getFilterChanges",
+            "eth_getFilterLogs",
+            "eth_uninstallFilter",
+            "debug_traceCall",
+            "debug_traceTransaction",
+            "debug_traceBlockByHash",
+            "eth_subscribe",
+            "eth_unsubscribe",
+        }) |method| {
+            for ([_]?std.json.Value{ null, .{ .integer = 1 } }) |params| {
+                var response = try dispatchForTest(&rt, method, params);
+                defer response.deinit(std.testing.allocator);
+                try std.testing.expectEqual(@as(i32, -32601), response.error_value.?.code);
+            }
+        }
     }
 }
 
@@ -1906,7 +1746,7 @@ test "engine_getBlobsV2 and V3 return 128 PeerDAS cell proofs and follow all-or-
     }
 }
 
-test "eth_getTransactionByHash returns pending txpool transaction" {
+test "eth_getTransactionByHash returns null for a pool-only transaction" {
     var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
     defer rt.deinit();
 
@@ -1922,11 +1762,7 @@ test "eth_getTransactionByHash returns pending txpool transaction" {
     defer response.deinit(std.testing.allocator);
 
     try std.testing.expect(response.error_value == null);
-    const tx = response.result.?.object;
-    try std.testing.expectEqualStrings(hash_hex, tx.get("hash").?.string);
-    try std.testing.expect(tx.get("blockHash").? == .null);
-    try std.testing.expect(tx.get("blockNumber").? == .null);
-    try std.testing.expect(tx.get("transactionIndex").? == .null);
+    try std.testing.expect(response.result.? == .null);
 }
 
 test "installed dispatch wiring returns detailed mining summaries" {

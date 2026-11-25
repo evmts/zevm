@@ -46,7 +46,6 @@ pub const TxResponse = struct {
     hash: [32]u8,
     blockHash: ?[32]u8,
     blockNumber: ?u64,
-    blockTimestamp: ?u64,
     transactionIndex: ?u32,
     from: primitives.Address.Address,
     to: ?primitives.Address.Address,
@@ -96,7 +95,7 @@ pub const LogResponse = struct {
     data: []const u8,
     blockNumber: ?u64,
     blockHash: [32]u8,
-    blockTimestamp: ?u64,
+
     transactionHash: ?[32]u8,
     transactionIndex: ?u32,
     logIndex: ?u32,
@@ -241,7 +240,7 @@ pub fn getTransactionReceipt(
     tx_hash: [32]u8,
 ) !?ReceiptResponse {
     const receipt = ri.getByTxHash(tx_hash) orelse return null;
-    return try receiptToResponse(allocator, receipt, null);
+    return try receiptToResponse(allocator, receipt);
 }
 
 pub fn getTransactionReceiptWithBlock(
@@ -250,8 +249,8 @@ pub fn getTransactionReceiptWithBlock(
     ri: *const receipt_index_mod.ReceiptIndex,
     tx_hash: [32]u8,
 ) !?ReceiptResponse {
-    const receipt = ri.getByTxHash(tx_hash) orelse return null;
-    return try receiptToResponse(allocator, receipt, try timestampForReceipt(bc, receipt));
+    _ = bc;
+    return getTransactionReceipt(allocator, ri, tx_hash);
 }
 
 pub fn getBlockReceipts(
@@ -262,7 +261,7 @@ pub fn getBlockReceipts(
 ) !?[]ReceiptResponse {
     const number = resolveBlockTag(bc, tag) orelse return null;
     const block = (try bc.getBlockByNumber(number)) orelse return null;
-    return try receiptsForBlockHash(allocator, ri, block.hash, block.header.timestamp);
+    return try receiptsForBlockHash(allocator, ri, block.hash);
 }
 
 pub fn getBlockReceiptsByHash(
@@ -272,14 +271,13 @@ pub fn getBlockReceiptsByHash(
     hash: [32]u8,
 ) !?[]ReceiptResponse {
     const block = (try bc.getBlockByHash(hash)) orelse return null;
-    return try receiptsForBlockHash(allocator, ri, block.hash, block.header.timestamp);
+    return try receiptsForBlockHash(allocator, ri, block.hash);
 }
 
 fn receiptsForBlockHash(
     allocator: std.mem.Allocator,
     ri: *const receipt_index_mod.ReceiptIndex,
     block_hash: [32]u8,
-    block_timestamp: ?u64,
 ) !?[]ReceiptResponse {
     const receipts = ri.getByBlockHash(block_hash) orelse {
         return try allocator.alloc(ReceiptResponse, 0);
@@ -289,7 +287,7 @@ fn receiptsForBlockHash(
     errdefer allocator.free(responses);
 
     for (receipts, 0..) |receipt, i| {
-        responses[i] = try receiptToResponse(allocator, receipt, block_timestamp);
+        responses[i] = try receiptToResponse(allocator, receipt);
     }
 
     return responses;
@@ -309,12 +307,15 @@ pub fn getTransactionByHash(
     ri: *const receipt_index_mod.ReceiptIndex,
     tx_hash: [32]u8,
 ) !?TxResponse {
-    const receipt = ri.getByTxHash(tx_hash) orelse return try findTransactionByHashInBlocks(allocator, bc, tx_hash);
-    const block = (try bc.getBlockByHash(receipt.block_hash)) orelse {
-        // Receipt without block — degrade gracefully.
-        return @as(?TxResponse, try txResponseFromReceipt(allocator, receipt, null));
-    };
-    return @as(?TxResponse, try txResponseFromReceipt(allocator, receipt, block));
+    if (ri.getByTxHash(tx_hash)) |receipt| {
+        if (bc.getCanonicalHash(receipt.block_number)) |canonical| {
+            if (std.mem.eql(u8, &canonical, &receipt.block_hash)) {
+                if (try bc.getBlockByHash(canonical)) |block| return try txResponseFromReceipt(allocator, receipt, block);
+            }
+        }
+    }
+    // Imported canonical blocks can lack receipts even after a later block was indexed.
+    return try findTransactionByHashInBlocks(allocator, bc, tx_hash);
 }
 
 fn findTransactionByHashInBlocks(
@@ -334,7 +335,6 @@ fn findTransactionByHashInBlocks(
                 tx_data.raw,
                 block.hash,
                 block.header.number,
-                block.header.timestamp,
                 @intCast(index),
                 null,
                 null,
@@ -359,7 +359,6 @@ pub fn getTransactionByBlockHashAndIndex(
         block.body.transactions[tx_index].raw,
         block.hash,
         block.header.number,
-        block.header.timestamp,
         @intCast(index),
         null,
         null,
@@ -383,7 +382,6 @@ pub fn getTransactionByBlockHashAndIndexWithReceipts(
         block.body.transactions[tx_index].raw,
         block.hash,
         block.header.number,
-        block.header.timestamp,
         @intCast(index),
         if (receipt) |r| r.sender else null,
         receipt,
@@ -406,7 +404,6 @@ pub fn getTransactionByBlockNumberAndIndex(
         block.body.transactions[tx_index].raw,
         block.hash,
         block.header.number,
-        block.header.timestamp,
         @intCast(index),
         null,
         null,
@@ -431,7 +428,6 @@ pub fn getTransactionByBlockNumberAndIndexWithReceipts(
         block.body.transactions[tx_index].raw,
         block.hash,
         block.header.number,
-        block.header.timestamp,
         @intCast(index),
         if (receipt) |r| r.sender else null,
         receipt,
@@ -454,17 +450,12 @@ pub fn getLogs(
 
     const responses = try allocator.alloc(LogResponse, indexed_logs.len);
     for (indexed_logs, 0..) |entry, i| {
-        const block_timestamp = if (entry.log.block_number) |number| blk: {
-            const block = (try bc.getBlockByNumber(number)) orelse break :blk null;
-            break :blk block.header.timestamp;
-        } else null;
         responses[i] = .{
             .address = entry.log.address,
             .topics = entry.log.topics,
             .data = entry.log.data,
             .blockNumber = entry.log.block_number,
             .blockHash = entry.block_hash,
-            .blockTimestamp = block_timestamp,
             .transactionHash = if (entry.log.transaction_hash) |h| h else null,
             .transactionIndex = entry.log.transaction_index,
             .logIndex = entry.log.log_index,
@@ -509,7 +500,6 @@ fn blockToResponseWithReceipts(
                 tx_data.raw,
                 block.hash,
                 block.header.number,
-                block.header.timestamp,
                 @intCast(i),
                 fallback_sender,
                 receipt,
@@ -588,7 +578,6 @@ fn txResponseFromRaw(
     raw: []const u8,
     block_hash: [32]u8,
     block_number: u64,
-    block_timestamp: u64,
     index: u32,
     fallback_sender: ?primitives.Address.Address,
     receipt: ?primitives.Receipt.Receipt,
@@ -599,7 +588,7 @@ fn txResponseFromRaw(
                 break :blk tx_encoding.DecodedEnvelope{ .legacy = tx };
             } else |_| {}
         }
-        return fallbackTxResponse(raw, block_hash, block_number, block_timestamp, index);
+        return fallbackTxResponse(raw, block_hash, block_number, index);
     };
     defer decoded.deinit(allocator);
 
@@ -609,14 +598,13 @@ fn txResponseFromRaw(
         decoded,
         block_hash,
         block_number,
-        block_timestamp,
         index,
         fallback_sender,
         receipt,
     )) |tx| {
         return tx;
     } else |_| {
-        return fallbackTxResponse(raw, block_hash, block_number, block_timestamp, index);
+        return fallbackTxResponse(raw, block_hash, block_number, index);
     }
 }
 
@@ -624,14 +612,12 @@ fn fallbackTxResponse(
     raw: []const u8,
     block_hash: [32]u8,
     block_number: u64,
-    block_timestamp: u64,
     index: u32,
 ) TxResponse {
     return .{
         .hash = computeTxHash(raw),
         .blockHash = block_hash,
         .blockNumber = block_number,
-        .blockTimestamp = block_timestamp,
         .transactionIndex = index,
         .from = primitives.Address.ZERO_ADDRESS,
         .to = null,
@@ -661,18 +647,16 @@ fn txResponseFromDecoded(
     decoded: tx_encoding.DecodedEnvelope,
     block_hash: [32]u8,
     block_number: u64,
-    block_timestamp: u64,
     index: u32,
     fallback_sender: ?primitives.Address.Address,
     receipt: ?primitives.Receipt.Receipt,
 ) !TxResponse {
     return switch (decoded) {
-        .legacy => |tx| txResponseFromLegacy(allocator, raw, tx, block_hash, block_number, block_timestamp, index, fallback_sender),
+        .legacy => |tx| txResponseFromLegacy(allocator, raw, tx, block_hash, block_number, index, fallback_sender),
         .eip2930 => |tx| .{
             .hash = computeTxHash(raw),
             .blockHash = block_hash,
             .blockNumber = block_number,
-            .blockTimestamp = block_timestamp,
             .transactionIndex = index,
             .from = tx_encoding.recoverEnvelopeSender(allocator, decoded) catch (fallback_sender orelse primitives.Address.ZERO_ADDRESS),
             .to = tx.to,
@@ -698,7 +682,6 @@ fn txResponseFromDecoded(
             .hash = computeTxHash(raw),
             .blockHash = block_hash,
             .blockNumber = block_number,
-            .blockTimestamp = block_timestamp,
             .transactionIndex = index,
             .from = tx_encoding.recoverEnvelopeSender(allocator, decoded) catch (fallback_sender orelse primitives.Address.ZERO_ADDRESS),
             .to = tx.to,
@@ -724,7 +707,6 @@ fn txResponseFromDecoded(
             .hash = computeTxHash(raw),
             .blockHash = block_hash,
             .blockNumber = block_number,
-            .blockTimestamp = block_timestamp,
             .transactionIndex = index,
             .from = tx_encoding.recoverEnvelopeSender(allocator, decoded) catch (fallback_sender orelse primitives.Address.ZERO_ADDRESS),
             .to = tx.to,
@@ -750,7 +732,6 @@ fn txResponseFromDecoded(
             .hash = computeTxHash(raw),
             .blockHash = block_hash,
             .blockNumber = block_number,
-            .blockTimestamp = block_timestamp,
             .transactionIndex = index,
             .from = tx_encoding.recoverEnvelopeSender(allocator, decoded) catch (fallback_sender orelse primitives.Address.ZERO_ADDRESS),
             .to = tx.to,
@@ -868,7 +849,6 @@ fn txResponseFromReceipt(
                 raw,
                 receipt.block_hash,
                 receipt.block_number,
-                b.header.timestamp,
                 receipt.transaction_index,
                 receipt.sender,
                 receipt,
@@ -881,7 +861,6 @@ fn txResponseFromReceipt(
         .hash = receipt.transaction_hash,
         .blockHash = receipt.block_hash,
         .blockNumber = receipt.block_number,
-        .blockTimestamp = if (block) |b| b.header.timestamp else null,
         .transactionIndex = receipt.transaction_index,
         .from = receipt.sender,
         .to = receipt.to,
@@ -912,7 +891,6 @@ fn txResponseFromLegacy(
     tx: primitives.Transaction.LegacyTransaction,
     block_hash: [32]u8,
     block_number: u64,
-    block_timestamp: u64,
     index: u32,
     fallback_sender: ?primitives.Address.Address,
 ) !TxResponse {
@@ -926,7 +904,6 @@ fn txResponseFromLegacy(
         .hash = computeTxHash(raw),
         .blockHash = block_hash,
         .blockNumber = block_number,
-        .blockTimestamp = block_timestamp,
         .transactionIndex = index,
         .from = sender,
         .to = tx.to,
@@ -987,7 +964,6 @@ fn txTypeToU8(t: primitives.Receipt.TransactionType) u8 {
 fn receiptToResponse(
     allocator: std.mem.Allocator,
     receipt: primitives.Receipt.Receipt,
-    block_timestamp: ?u64,
 ) !ReceiptResponse {
     const log_responses = try allocator.alloc(LogResponse, receipt.logs.len);
     for (receipt.logs, 0..) |log, i| {
@@ -997,7 +973,6 @@ fn receiptToResponse(
             .data = log.data,
             .blockNumber = log.block_number,
             .blockHash = receipt.block_hash,
-            .blockTimestamp = block_timestamp,
             .transactionHash = if (log.transaction_hash) |h| h else null,
             .transactionIndex = log.transaction_index,
             .logIndex = log.log_index,
@@ -1024,12 +999,4 @@ fn receiptToResponse(
         .blobGasUsed = receipt.blob_gas_used,
         .blobGasPrice = receipt.blob_gas_price,
     };
-}
-
-fn timestampForReceipt(
-    bc: *blockchain_mod.Blockchain,
-    receipt: primitives.Receipt.Receipt,
-) !?u64 {
-    const block = (try bc.getBlockByHash(receipt.block_hash)) orelse return null;
-    return block.header.timestamp;
 }

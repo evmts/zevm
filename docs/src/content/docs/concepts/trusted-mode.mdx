@@ -22,7 +22,7 @@ Trusted mode is the mode for local execution and local writes:
 - snapshots, revert, impersonation, state mutation, and time controls
 - optional fork-backed reads with a local writable overlay
 
-Trusted mode also serves the filter lifecycle (`eth_newFilter`, `eth_newBlockFilter`, `eth_newPendingTransactionFilter`, `eth_getFilterChanges`, `eth_getFilterLogs`, `eth_uninstallFilter`).
+Both modes return `-32601` for filter lifecycle methods (`eth_newFilter`, `eth_newBlockFilter`, `eth_newPendingTransactionFilter`, `eth_getFilterChanges`, `eth_getFilterLogs`, `eth_uninstallFilter`).
 
 Trusted mode also ships one exact deterministic managed dev-wallet contract. For mnemonic, derivation root, full address/key set, and signing behavior, see [Managed Dev Wallet (Trusted Mode)](../reference/json-rpc/managed-dev-wallet).
 

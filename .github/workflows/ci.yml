@@ -135,6 +135,14 @@ jobs:
         working-directory: zevm
         run: zig build npm-platform-artifacts -Doptimize=ReleaseSafe
 
+      - name: Browser WASM execution
+        working-directory: zevm
+        run: |
+          rustup target add wasm32-unknown-unknown
+          zig build wasm
+          node npm/zevm/scripts/browser-smoke.mjs
+          node npm/zevm/scripts/chromium-smoke.mjs
+
       - name: JavaScript package checks
         working-directory: zevm
         run: |

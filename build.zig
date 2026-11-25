@@ -120,6 +120,18 @@ pub fn build(b: *std.Build) void {
 
     const release_binaries_step = b.step("release-binaries", "Build the selected target's ReleaseSafe ZEVM CLI under zig-out/dist/<target>/bin");
     const npm_platform_step = b.step("npm-platform-artifacts", "Build the selected target's ReleaseSafe Node-API addon under zig-out/npm/prebuilds");
+    const wasm_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .wasi });
+    const wasm_deps = voltaireDependency(b, wasm_target, .ReleaseSmall);
+    const wasm_modules = createModuleSet(b, wasm_target, .ReleaseSmall, "zevm_browser", wasm_deps, configureRustCrypto(b, wasm_target, "wasm32-unknown-unknown", wasm_deps, true));
+    const wasm_root = createCBindingsModule(b, wasm_target, .ReleaseSmall, wasm_modules);
+    wasm_root.root_source_file = b.path("src/browser.zig");
+    wasm_root.export_symbol_names = &.{ "zevm_alloc", "zevm_free", "zevm_node_create", "zevm_node_destroy", "zevm_node_rpc", "zevm_node_free_response" };
+    const reactor = b.addExecutable(.{ .name = "zevm", .root_module = wasm_root });
+    reactor.entry = .disabled;
+    reactor.wasi_exec_model = .reactor;
+    reactor.linkLibC();
+    const wasm_install = b.addInstallFile(reactor.getEmittedBin(), "npm/browser/zevm.wasm");
+    b.step("wasm", "Build the browser execution reactor").dependOn(&wasm_install.step);
     const rust_target = rustTargetTriple(target) orelse {
         const failure = b.addFail(if (target.result.cpu.arch == .wasm64)
             "ZEVM does not support wasm64"
@@ -536,6 +548,7 @@ pub fn build(b: *std.Build) void {
         }
         if (npm_platform_name) |name| {
             const npm_platform_c_mod = createCBindingsModule(b, target, .ReleaseSafe, release_modules);
+            npm_platform_c_mod.strip = true;
             const npm_platform_addon = addNapiAddon(
                 b,
                 target,
@@ -923,7 +936,15 @@ fn addNapiAddon(
     napi_lib.addIncludePath(b.path("include"));
     napi_lib.addIncludePath(b.path("npm/zevm/native"));
     napi_lib.linkLibC();
-    napi_lib.linker_allow_shlib_undefined = true;
+    if (target.result.os.tag == .windows) {
+        if (b.graph.env_map.get("ZEVM_NODE_IMPORT_LIB")) |lib| {
+            napi_lib.root_module.addObjectFile(.{ .cwd_relative = lib });
+        } else {
+            napi_lib.linkSystemLibrary("node");
+        }
+    } else {
+        napi_lib.linker_allow_shlib_undefined = true;
+    }
     linkRustSupport(napi_lib, target, modules.rust_crypto);
 
     return b.addInstallArtifact(napi_lib, .{
@@ -936,7 +957,7 @@ fn linkRustSupport(compile: *std.Build.Step.Compile, target: std.Build.ResolvedT
     if (rust_crypto.build_step) |step| compile.step.dependOn(step);
     if (target.result.cpu.arch != .wasm32) compile.root_module.addObjectFile(rust_crypto.archive);
     if (target.result.os.tag == .linux) {
-        compile.linkSystemLibrary("gcc_s");
+        compile.linkSystemLibrary(if (target.result.abi == .musl) "unwind" else "gcc_s");
     } else if (target.result.os.tag == .windows and target.result.abi == .gnu) {
         compile.linkSystemLibrary("gcc_eh");
     }

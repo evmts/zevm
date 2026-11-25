@@ -313,7 +313,7 @@ Rules:
 
 - `type` is the envelope type: `0x0` legacy, `0x1` EIP-2930, `0x2` EIP-1559, `0x3` EIP-4844, or `0x4` EIP-7702
 - `to` may be `null` for create
-- `blockHash`, `blockNumber`, and `transactionIndex` are non-null for mined transactions; `eth_getTransactionByHash` also returns txpool entries, with those three fields `null`
+- `blockHash`, `blockNumber`, and `transactionIndex` are non-null for mined transactions; `eth_getTransactionByHash` returns `null` until canonical inclusion
 - transaction objects in this contract must not include a nonstandard `blockTimestamp` field
 
 ### 7.6 Block object
@@ -657,12 +657,6 @@ Submission outcome semantics:
 | `eth_getBlockReceipts` | `[block]` (`ReceiptSelector`) | receipt array or `null` | `-32602` malformed selector |
 | `eth_getBlockAccessList` | `[block]` (`BlockNumberOrTagOrHash`) | block access list or `null`; current trusted implementation returns `null` when Amsterdam access-list data is not retained | `-32602` malformed selector |
 | `eth_getLogs` | `[filter]` | log array | `-32602` malformed filter |
-| `eth_newBlockFilter` | `[]` or omitted | `QuantityHex` filter id | `-32602` for non-empty params |
-| `eth_newPendingTransactionFilter` | `[]` or omitted | `QuantityHex` filter id | `-32602` for non-empty params |
-| `eth_newFilter` | `[filter]` | `QuantityHex` filter id | `-32602` malformed filter |
-| `eth_getFilterChanges` | `[filterId]` | array of items since the previous poll: block hashes for block filters, transaction hashes for pending-transaction filters, log objects for log filters; `[]` for an unknown id | `-32602` malformed filter id |
-| `eth_getFilterLogs` | `[filterId]` | log array matching a log filter's criteria | `-32602` malformed filter id |
-| `eth_uninstallFilter` | `[filterId]` | `true` when the filter existed and was removed; `false` for an unknown id | `-32602` malformed filter id |
 
 Query selector behavior:
 
@@ -671,7 +665,7 @@ Query selector behavior:
 - `eth_getBlockTransactionCountByHash`, `eth_getBlockTransactionCountByNumber`, `eth_getTransactionByBlockHashAndIndex`, and `eth_getTransactionByBlockNumberAndIndex` return `null` when the referenced canonical block is not found
 - `eth_getUncleCountByBlockHash` and `eth_getUncleCountByBlockNumber` return `0x0` for unknown blocks and for all ZEVM-produced post-Merge blocks
 - `eth_getTransactionByBlockHashAndIndex` and `eth_getTransactionByBlockNumberAndIndex` return `null` when `index` is out of range for a found block
-- `eth_getTransactionByHash` returns a mined transaction, else a txpool entry with `null` `blockHash`, `blockNumber`, and `transactionIndex`, else `null`
+- `eth_getTransactionByHash` returns the canonical mined transaction or `null`
 - `eth_getTransactionReceipt` is mined-only and returns `null` until inclusion
 - `eth_getBlockAccessList` accepts block number/tag/hash selectors and returns `null` for unknown blocks or retained-history blocks without Amsterdam block access list data
 
@@ -700,14 +694,11 @@ These methods are trusted-mode only. In light mode, well-formed requests return 
 
 | Method | Exact params | Exact result | Errors |
 | --- | --- | --- | --- |
-| `debug_traceCall` | `[transaction, blockSelector, options?]` | `{gas, failed, returnValue, structLogs, truncated}` with native pre-op stack and optional memory/return data | `-32602` for malformed or unsupported options |
 | `debug_getBadBlocks` | `[]` or omitted | bad-block array; phase-1 trusted mode returns `[]` | `-32602` for non-empty params |
 | `debug_getRawBlock` | `[blockNumber]` | raw RLP block `HexData` or `null` | `-32602` for malformed block number |
 | `debug_getRawHeader` | `[blockNumber]` | raw RLP header `HexData` or `null` | `-32602` for malformed block number |
 | `debug_getRawReceipts` | `[blockNumber]` | array of raw receipt `HexData` values or `null` when block is unknown | `-32602` for malformed block number |
 | `debug_getRawTransaction` | `[transactionHash]` | raw transaction `HexData` or `null` | `-32602` for malformed transaction hash |
-
-Trace options are boolean `disableStack`, `enableMemory`, `enableReturnData`, and `disableStorage: true`. Custom tracer programs and storage capture are unsupported. Capture stops at 100,000 entries and sets `truncated`; execution still completes. Only the current local state is traceable. Trace failures preserve EVM return data and never commit state.
 
 ### 8.7 Engine API listener methods
 
@@ -1150,7 +1141,7 @@ Rules:
 - in phase 1, `${resolvedCheckpointDir}/checkpoint` is startup input only; `lastCheckpoint` runtime progression is not persisted to this file
 - phase-1 operator-facing light-mode startup inputs are `network`, `consensusRpcUrl`, `executionRpcUrl`, `checkpoint`, `checkpointDir`, `maxCheckpointAgeSeconds`, and `strictCheckpointAge`
 - `executionRpcUrl` is the execution JSON-RPC source used for proof-backed execution reads
-- deferred/out-of-contract method families (for example subscriptions and debug tracing other than `debug_traceCall`) are listed in section 14
+- deferred/out-of-contract method families (for example subscriptions, filter lifecycle, and debug tracing) are listed in section 14
 - deferred/out-of-contract method names return JSON-RPC `-32601` (method not found), not `-32010`
 - WebSocket transport is unsupported at transport layer (section 3) and is not a JSON-RPC method mapping
 
@@ -1158,7 +1149,8 @@ Rules:
 
 Not part of the current contract:
 
-- debug tracing methods other than trusted-mode `debug_traceCall` (section 8)
+- debug tracing methods
+- filter lifecycle methods beyond `eth_getLogs`
 - subscriptions
 - WebSocket transport
 

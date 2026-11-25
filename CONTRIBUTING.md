@@ -103,7 +103,7 @@ zig build c-ffi -Doptimize=ReleaseSafe
 zig build npm-platform-artifacts -Doptimize=ReleaseSafe
 ```
 
-The C ABI contract lives in `include/zevm.h`. The JavaScript loader in `npm/zevm` must call ZEVM through that header and the N-API addon in `npm/zevm/native`.
+The C ABI contract lives in `include/zevm.h`. Node.js calls the C ABI through the N-API addon in `npm/zevm/native`. The browser loader uses the same embedded node entry points through WebAssembly. Install `rustup target add wasm32-unknown-unknown`, run `zig build wasm npm-native`, and run `npm --prefix npm/zevm test` to exercise both backends.
 
 ## Docs-First Rule
 

@@ -22,7 +22,7 @@ Use JSON-RPC reference pages for exact method signatures, params, payloads, and 
 | ZEVM light namespace (`zevm_lightSyncStatus`) | no | yes | [Verified Light-Mode Reads](../reference/json-rpc/verified-light-mode-reads) |
 | Trusted compatibility aliases (`anvil_*`, selected `hardhat_*`, selected `evm_*`) | yes | no | [ZEVM Controls](../reference/json-rpc/dev-controls), [Transactions And Mining](../reference/json-rpc/transactions-and-mining) |
 | Optional Engine API listener (`engine_*`) | yes, only when enabled at trusted startup | no (`-32010`) | [Trusted-Mode Configuration](../reference/configuration/trusted-mode#engine-api-listener) |
-| Filter lifecycle (`eth_newFilter`, `eth_newBlockFilter`, `eth_newPendingTransactionFilter`, `eth_getFilterChanges`, `eth_getFilterLogs`, `eth_uninstallFilter`) | yes | no (`-32010`) | [Blocks, Receipts, And Logs](../reference/json-rpc/blocks-receipts-and-logs) |
+| Filter lifecycle (`eth_newFilter`, `eth_newBlockFilter`, `eth_newPendingTransactionFilter`, `eth_getFilterChanges`, `eth_getFilterLogs`, `eth_uninstallFilter`) | `-32601` | `-32601` | [Blocks, Receipts, And Logs](../reference/json-rpc/blocks-receipts-and-logs) |
 | Subscriptions (`eth_subscribe`, `eth_unsubscribe`) | not part of current contract (deferred method surface) | not part of current contract (deferred method surface) | [Unsupported And Deferred](../reference/json-rpc/unsupported-and-deferred) |
 | WebSocket transport | transport-level unsupported (HTTP JSON-RPC only; outside JSON-RPC method dispatch, not a method-level deferred mapping) | transport-level unsupported (HTTP JSON-RPC only; outside JSON-RPC method dispatch, not a method-level deferred mapping) | [Unsupported And Deferred](../reference/json-rpc/unsupported-and-deferred) |
 

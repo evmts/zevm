@@ -41,7 +41,7 @@ In this PRD, phase-1 scope is declared in sections 3.1, 3.3, 3.4, and 3.5, with 
 ### 3.2 Out of scope
 
 - WebSocket transport and subscriptions
-- filter lifecycle APIs beyond `eth_getLogs`
+- filter lifecycle APIs beyond `eth_getLogs` (RPC error `-32601`)
 - debug tracing APIs
 - proof-backed `eth_call` in light mode
 - `eth_estimateGas` in light mode
@@ -63,6 +63,7 @@ Phase 1 installation scope is source-first with pinned native dependency checkou
 - operators obtain/install the pinned Zig version from official Zig distributions and build from the ZEVM repository root after `bash tools/checkout-native.sh` and `zig build --fetch`
 - phase 1 defines reproducibility as reproducing ZEVM behavior from the same pin tuple; byte-identical binary hashes across hosts are out of scope
 - successful canonical build installs one artifact at `zig-out/bin/zevm`
+- `zig build wasm` produces the local trusted execution reactor for the npm browser loader
 - `zig build release-binaries`, `zig build c-ffi`, and `zig build npm-platform-artifacts` produce release-style CLI, C ABI, and N-API artifacts for the selected target
 - multi-platform distribution is produced by running release artifact commands in an OS/architecture matrix; one-host cross-compilation guarantees remain out of scope
 - ZEVM guarantees this repository source-build path that produces one `zevm` binary from source and the pinned sibling checkouts

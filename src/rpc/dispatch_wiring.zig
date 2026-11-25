@@ -10,7 +10,7 @@ const rpc_parse = @import("parse.zig");
 const block_builder = @import("../block_builder.zig");
 const blob_fee = @import("../blob_fee.zig");
 const dispatcher_mod = @import("dispatcher.zig");
-const log_index_mod = @import("../log_index.zig");
+
 const block_query_handlers = @import("handlers/block_query_handlers.zig");
 const debug_raw_handlers = @import("handlers/debug_raw.zig");
 const eth_read = @import("handlers/eth_read.zig");
@@ -107,6 +107,7 @@ fn dispatchMethod(
     }
 
     if (rt.mode == .light) {
+        if (@import("builtin").os.tag == .wasi) return error.ModeUnsupported;
         return dispatchLightMethod(allocator, rt, method_name, params);
     }
     if (std.mem.eql(u8, method_name, "zevm_lightSyncStatus")) {
@@ -114,6 +115,7 @@ fn dispatchMethod(
         return error.ModeUnsupported;
     }
     if (isEngineNamespaceMethod(method_name)) {
+        if (@import("builtin").os.tag == .wasi) return error.ModeUnsupported;
         return dispatchEngineMethod(allocator, rt, method_name, params);
     }
 
@@ -311,26 +313,6 @@ fn dispatchMethod(
         };
         return typedResultToJsonValue(allocator, result);
     }
-    if (std.mem.eql(u8, method_name, "eth_newBlockFilter")) {
-        try validateNoParams(params);
-        return hexQuantity(allocator, try rt.createBlockFilter());
-    }
-    if (std.mem.eql(u8, method_name, "eth_newPendingTransactionFilter")) {
-        try validateNoParams(params);
-        return hexQuantity(allocator, try rt.createPendingTransactionFilter());
-    }
-    if (std.mem.eql(u8, method_name, "eth_newFilter")) {
-        return try createLogFilterValue(allocator, rt, params);
-    }
-    if (std.mem.eql(u8, method_name, "eth_getFilterChanges")) {
-        return try getFilterChangesValue(allocator, rt, params);
-    }
-    if (std.mem.eql(u8, method_name, "eth_getFilterLogs")) {
-        return try getFilterLogsValue(allocator, rt, params);
-    }
-    if (std.mem.eql(u8, method_name, "eth_uninstallFilter")) {
-        return .{ .bool = rt.removeRpcFilter(try parseFilterId(params)) };
-    }
     if (std.mem.eql(u8, method_name, "eth_getBlockByNumber")) {
         var ctx = blockQueryContext(rt);
         return try block_query_handlers.handleGetBlockByNumberValue(
@@ -449,9 +431,6 @@ fn dispatchMethod(
             &ctx,
             try parseGetLogsParams(params),
         );
-    }
-    if (std.mem.eql(u8, method_name, "debug_traceCall")) {
-        return simulation.handleDebugTraceCall(allocator, rt, params);
     }
     if (std.mem.eql(u8, method_name, "debug_getRawBlock")) {
         return debug_raw_handlers.handleGetRawBlock(allocator, rt, params);
@@ -858,7 +837,6 @@ fn isKnownEngineMethod(method_name: []const u8) bool {
 }
 
 fn isKnownDebugMethod(method_name: []const u8) bool {
-    if (std.mem.eql(u8, method_name, "debug_traceCall")) return true;
     _ = jsonrpc.debug.DebugMethod.fromMethodName(method_name) catch return false;
     return true;
 }
@@ -1181,11 +1159,6 @@ fn validateEngineMethodParams(method_name: []const u8, params: ?std.json.Value) 
 }
 
 fn validateDebugMethodParams(method_name: []const u8, params: ?std.json.Value) !void {
-    if (std.mem.eql(u8, method_name, "debug_traceCall")) {
-        const items = try paramsArrayItems(params);
-        if (items.len < 2 or items.len > 3 or items[0] != .object) return error.InvalidParams;
-        return;
-    }
     if (std.mem.eql(u8, method_name, "debug_getBadBlocks")) {
         try validateNoParams(params);
         return;
@@ -2427,186 +2400,6 @@ fn signatureValue(allocator: std.mem.Allocator, signature: crypto.Crypto.Signatu
     return hexBytes(allocator, &bytes);
 }
 
-fn parseFilterId(params: ?std.json.Value) !u64 {
-    const items = try paramsArrayItems(params);
-    if (items.len != 1) return error.InvalidParams;
-    return parseQuantityU64Json(items[0]);
-}
-
-fn createLogFilterValue(
-    allocator: std.mem.Allocator,
-    rt: *runtime_mod.NodeRuntime,
-    params: ?std.json.Value,
-) !std.json.Value {
-    const parsed = try parseGetLogsParams(params);
-    const filter_value = parsed.filter.value;
-    const from_block_omitted = logFilterObjectField(filter_value, "fromBlock") == null;
-    const to_block_omitted = logFilterObjectField(filter_value, "toBlock") == null;
-
-    var filter = try validatedLogFilter(rt.allocator, rt, filter_value);
-    var filter_owned = true;
-    errdefer if (filter_owned) log_index_mod.deinitLogFilter(rt.allocator, &filter);
-
-    const next_block_number = if (filter.block_hash != null)
-        0
-    else if (from_block_omitted)
-        rt.head_block_number +| 1
-    else
-        filter.from_block orelse 0;
-
-    const id = try rt.createLogFilterOwned(filter, next_block_number, to_block_omitted);
-    filter_owned = false;
-    return hexQuantity(allocator, id) catch |err| {
-        _ = rt.removeRpcFilter(id);
-        return err;
-    };
-}
-
-fn getFilterChangesValue(
-    allocator: std.mem.Allocator,
-    rt: *runtime_mod.NodeRuntime,
-    params: ?std.json.Value,
-) !std.json.Value {
-    const filter_id = try parseFilterId(params);
-    const filter = rt.rpcFilter(filter_id) orelse {
-        simulation.setSimulationRpcErrorStatic(-32000, "filter not found");
-        return error.SimulationRpcError;
-    };
-    switch (filter.*) {
-        .block => |*state| {
-            const from = state.last_block_number +| 1;
-            const to = rt.head_block_number;
-            const result = try blockHashRangeValue(allocator, rt, from, to);
-            state.last_block_number = to;
-            return result;
-        },
-        .pending_transaction => |*state| {
-            const events = rt.pendingTransactionFilterEventsSince(state.next_event_index);
-            const result = try hashArrayFromBytesValue(allocator, events);
-            state.next_event_index = rt.pending_transaction_filter_events.items.len;
-            return result;
-        },
-        .log => |*state| {
-            if (state.filter.block_hash != null) {
-                if (state.block_hash_polled) return emptyArrayValue(allocator);
-                var scratch = std.heap.ArenaAllocator.init(allocator);
-                defer scratch.deinit();
-                var ctx = blockQueryContext(rt);
-                const result = try block_query_handlers.handleGetLogsFilterValue(
-                    allocator,
-                    scratch.allocator(),
-                    &ctx,
-                    state.filter,
-                );
-                state.block_hash_polled = true;
-                return result;
-            }
-
-            const from = state.next_block_number;
-            const to = if (state.to_block_omitted)
-                rt.head_block_number
-            else if (state.filter.to_block) |explicit_to|
-                @min(explicit_to, rt.head_block_number)
-            else
-                rt.head_block_number;
-            if (from > to) return emptyArrayValue(allocator);
-
-            var filter_state = state.filter;
-            filter_state.from_block = from;
-            filter_state.to_block = to;
-
-            var scratch = std.heap.ArenaAllocator.init(allocator);
-            defer scratch.deinit();
-            var ctx = blockQueryContext(rt);
-            const result = try block_query_handlers.handleGetLogsFilterValue(
-                allocator,
-                scratch.allocator(),
-                &ctx,
-                filter_state,
-            );
-            state.next_block_number = to +| 1;
-            return result;
-        },
-    }
-}
-
-fn getFilterLogsValue(
-    allocator: std.mem.Allocator,
-    rt: *runtime_mod.NodeRuntime,
-    params: ?std.json.Value,
-) !std.json.Value {
-    const filter_id = try parseFilterId(params);
-    const filter = rt.rpcFilter(filter_id) orelse return emptyArrayValue(allocator);
-    switch (filter.*) {
-        .block, .pending_transaction => return emptyArrayValue(allocator),
-        .log => |*state| {
-            var filter_state = state.filter;
-            if (filter_state.block_hash == null and state.to_block_omitted) {
-                filter_state.to_block = rt.head_block_number;
-            }
-            var scratch = std.heap.ArenaAllocator.init(allocator);
-            defer scratch.deinit();
-            var ctx = blockQueryContext(rt);
-            return block_query_handlers.handleGetLogsFilterValue(
-                allocator,
-                scratch.allocator(),
-                &ctx,
-                filter_state,
-            );
-        },
-    }
-}
-
-fn validatedLogFilter(
-    allocator: std.mem.Allocator,
-    rt: *runtime_mod.NodeRuntime,
-    filter_value: std.json.Value,
-) !log_index_mod.LogFilter {
-    var ctx = blockQueryContext(rt);
-    return block_query_handlers.rpcFilterToInternal(
-        allocator,
-        &ctx,
-        .{ .value = filter_value },
-    ) catch |err| switch (err) {
-        error.OutOfMemory => error.OutOfMemory,
-        else => error.InvalidParams,
-    };
-}
-
-fn logFilterObjectField(filter_value: std.json.Value, field_name: []const u8) ?std.json.Value {
-    const object = switch (filter_value) {
-        .object => |object| object,
-        else => return null,
-    };
-    return object.get(field_name);
-}
-
-fn blockHashRangeValue(
-    allocator: std.mem.Allocator,
-    rt: *runtime_mod.NodeRuntime,
-    from: u64,
-    to: u64,
-) !std.json.Value {
-    var array = std.json.Array.init(allocator);
-    if (from > to) return .{ .array = array };
-
-    var number = from;
-    while (number <= to) : (number += 1) {
-        const hash = rt.blockchain.getCanonicalHash(number) orelse continue;
-        try array.append(try hexHash32(allocator, hash));
-    }
-    return .{ .array = array };
-}
-
-fn hashArrayFromBytesValue(
-    allocator: std.mem.Allocator,
-    hashes: []const [32]u8,
-) !std.json.Value {
-    var array = std.json.Array.init(allocator);
-    for (hashes) |hash| try array.append(try hexHash32(allocator, hash));
-    return .{ .array = array };
-}
-
 fn runtimeLightSelector(selector: LightBlockSelector) runtime_mod.LightReadSelector {
     return switch (selector) {
         .latest => .latest,
@@ -2743,12 +2536,6 @@ fn isLightModeUnsupportedMethod(method_name: []const u8) bool {
         "eth_sendRawTransaction",
         "eth_sign",
         "eth_signTransaction",
-        "eth_newBlockFilter",
-        "eth_newFilter",
-        "eth_newPendingTransactionFilter",
-        "eth_getFilterChanges",
-        "eth_getFilterLogs",
-        "eth_uninstallFilter",
         "eth_getBlockByNumber",
         "eth_getBlockByHash",
         "eth_getBlockTransactionCountByHash",
@@ -2902,8 +2689,6 @@ fn validateLightUnsupportedParams(
         "eth_getWork",
         "eth_syncing",
         "eth_protocolVersion",
-        "eth_newBlockFilter",
-        "eth_newPendingTransactionFilter",
         "txpool_content",
         "txpool_status",
         "txpool_inspect",
@@ -3085,15 +2870,6 @@ fn validateLightUnsupportedParams(
         const items = try paramsArrayItems(params);
         if (items.len != 1) return error.InvalidParams;
         try validateTransactionRequestJson(items[0]);
-        return;
-    }
-    if (std.mem.eql(u8, method_name, "eth_newFilter")) {
-        const items = try paramsArrayItems(params);
-        if (items.len != 1 or items[0] != .object) return error.InvalidParams;
-        return;
-    }
-    if (methodIs(method_name, &.{ "eth_getFilterChanges", "eth_getFilterLogs", "eth_uninstallFilter" })) {
-        _ = try parseFilterId(params);
         return;
     }
     if (std.mem.eql(u8, method_name, "eth_getBlockByNumber")) {

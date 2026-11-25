@@ -1,7 +1,7 @@
 {
   "name": "@evmts/zevm",
   "version": "0.1.0",
-  "description": "Native ZEVM execution and light-client bindings",
+  "description": "ZEVM execution bindings for Node.js and browsers",
   "license": "MIT",
   "author": "evmts",
   "homepage": "https://zevm.sh/docs",
@@ -29,11 +29,18 @@
   "main": "./src/index.js",
   "module": "./src/index.js",
   "exports": {
-    ".": "./src/index.js",
-    "./package.json": "./package.json"
+    ".": {
+      "browser": "./src/browser.js",
+      "default": "./src/index.js"
+    },
+    "./package.json": "./package.json",
+    "./browser": "./src/browser.js",
+    "./zevm.wasm": "./src/zevm.wasm"
   },
   "files": [
     "src/index.js",
+    "src/browser.js",
+    "src/zevm.wasm",
     "LICENSE",
     "README.md"
   ],
@@ -42,12 +49,13 @@
     "registry": "https://registry.npmjs.org"
   },
   "scripts": {
-    "build": "node --check src/index.js",
+    "build": "node --check src/index.js && node --check src/browser.js",
     "publish:all": "node scripts/publish-all.cjs",
     "publish:all:dry": "node scripts/publish-all.cjs --dry-run",
     "stage:artifacts": "node scripts/stage-artifacts.cjs",
     "smoke:native": "node scripts/smoke.cjs ../../zig-out/npm/native/zevm.node",
-    "verify:release": "node scripts/verify-release.cjs"
+    "verify:release": "node scripts/verify-release.cjs",
+    "test": "npm run smoke:native && node scripts/execution-smoke.cjs ../../zig-out/npm/native/zevm.node && node scripts/browser-smoke.mjs"
   },
   "dependencies": {},
   "optionalDependencies": {

@@ -133,8 +133,24 @@ fn isTestBuild() bool {
     return if (@hasDecl(root, "is_test")) root.is_test else false;
 }
 
+/// Tracing, filter lifecycle and subscriptions are outside the public RPC contract.
+pub fn isDeferredMethod(method: []const u8) bool {
+    const names = std.StaticStringMap(void).initComptime(.{
+        .{ "eth_newBlockFilter", {} },
+        .{ "eth_newPendingTransactionFilter", {} },
+        .{ "eth_newFilter", {} },
+        .{ "eth_getFilterChanges", {} },
+        .{ "eth_getFilterLogs", {} },
+        .{ "eth_uninstallFilter", {} },
+        .{ "eth_subscribe", {} },
+        .{ "eth_unsubscribe", {} },
+    });
+    return names.has(method) or std.mem.startsWith(u8, method, "debug_trace");
+}
+
 fn validateParamsForMethod(allocator: std.mem.Allocator, method_name: []const u8, params: ?std.json.Value) !void {
     _ = allocator;
+    if (isDeferredMethod(method_name)) return error.UnknownMethod;
 
     if (jsonrpc.eth.EthMethod.fromMethodName(method_name)) |_| {
         if (std.mem.eql(u8, method_name, "eth_getBalance")) {
@@ -155,7 +171,6 @@ fn validateParamsForMethod(allocator: std.mem.Allocator, method_name: []const u8
         return;
     } else |_| {}
 
-    if (std.mem.eql(u8, method_name, "debug_traceCall")) return;
     if (isEngineNamespaceMethod(method_name)) {
         return;
     }

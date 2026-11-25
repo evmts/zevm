@@ -221,7 +221,6 @@ fn putCommonTransactionFields(
 ) !void {
     try putOwnedJson(obj, allocator, "blockHash", .null);
     try putOwnedJson(obj, allocator, "blockNumber", .null);
-    try putOwnedJson(obj, allocator, "blockTimestamp", .null);
     try putOwnedJson(obj, allocator, "from", .{ .string = try addressString(allocator, pooled.sender) });
     try putOwnedJson(obj, allocator, "gas", .{ .string = try quantityHex(allocator, gas_limit) });
     try putOwnedJson(obj, allocator, "hash", .{ .string = try hashString(allocator, pooled.hash) });

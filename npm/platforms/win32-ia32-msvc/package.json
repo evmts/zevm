@@ -16,5 +16,10 @@
   ],
   "publishConfig": {
     "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/evmts/zevm.git",
+    "directory": "npm/platforms/win32-ia32-msvc"
   }
 }

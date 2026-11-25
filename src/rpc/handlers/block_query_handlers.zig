@@ -7,7 +7,6 @@ const log_index_mod = @import("../../log_index.zig");
 const receipt_index_mod = @import("../../receipt_index.zig");
 const runtime = @import("../../node/runtime.zig");
 const rpc_parse = @import("../parse.zig");
-const txpool_handlers = @import("txpool.zig");
 
 /// Context needed by block query handlers beyond NodeRuntime.
 pub const BlockQueryContext = struct {
@@ -411,44 +410,8 @@ pub fn handleGetTransactionByHashValue(
     var scratch = std.heap.ArenaAllocator.init(allocator);
     defer scratch.deinit();
 
-    // Fast path 1: O(1) mined receipt lookup.
-    if (ctx.receipt_index.getByTxHash(params.transaction_hash.bytes) != null) {
-        const internal = try block_queries.getTransactionByHash(
-            scratch.allocator(),
-            ctx.blockchain,
-            ctx.receipt_index,
-            params.transaction_hash.bytes,
-        );
-        if (internal) |tx| return try transactionResponseValue(allocator, tx);
-    }
-    // Fast path 2: pending transaction pool lookup (avoids O(chain) keccak scan
-    // on every wallet poll for an unmined transaction).
-    for (ctx.rt.pool.items()) |pooled| {
-        if (std.mem.eql(u8, &pooled.hash, &params.transaction_hash.bytes)) {
-            return txpool_handlers.transactionObject(allocator, pooled);
-        }
-    }
-    // Fallback: imported blocks whose transactions were not receipt-indexed.
-    // Skip the O(chain) Keccak scan when the receipt index already covers the
-    // head block — every canonical transaction is indexed, so a miss above is
-    // authoritative.
-    const head_indexed = if (ctx.blockchain.getHeadBlockNumber()) |head_num|
-        if (ctx.blockchain.getCanonicalHash(head_num)) |head_hash|
-            ctx.receipt_index.getByBlockHash(head_hash) != null
-        else
-            false
-    else
-        true;
-    if (!head_indexed) {
-        const internal = try block_queries.getTransactionByHash(
-            scratch.allocator(),
-            ctx.blockchain,
-            ctx.receipt_index,
-            params.transaction_hash.bytes,
-        );
-        if (internal) |tx| return try transactionResponseValue(allocator, tx);
-    }
-    return .null;
+    const tx = try block_queries.getTransactionByHash(scratch.allocator(), ctx.blockchain, ctx.receipt_index, params.transaction_hash.bytes);
+    return if (tx) |mined| try transactionResponseValue(allocator, mined) else .null;
 }
 
 // ============================================================================
@@ -705,7 +668,6 @@ fn transactionResponseValue(
     try putJson(&obj, allocator, "nonce", try quantityValue(allocator, tx.nonce));
     try putJson(&obj, allocator, "blockHash", if (tx.blockHash) |hash| try hashValue(allocator, hash) else .null);
     try putJson(&obj, allocator, "blockNumber", if (tx.blockNumber) |n| try quantityValue(allocator, n) else .null);
-    if (tx.blockTimestamp) |timestamp| try putJson(&obj, allocator, "blockTimestamp", try quantityValue(allocator, timestamp));
     try putJson(&obj, allocator, "transactionIndex", if (tx.transactionIndex) |i| try quantityValue(allocator, i) else .null);
     try putJson(&obj, allocator, "from", try addressValue(allocator, tx.from));
     try putJson(&obj, allocator, "to", if (tx.to) |to| try addressValue(allocator, to) else .null);
@@ -828,7 +790,6 @@ fn logResponseValue(
     try putJson(&obj, allocator, "transactionHash", if (resp.transactionHash) |hash| try hashValue(allocator, hash) else .null);
     try putJson(&obj, allocator, "blockHash", try hashValue(allocator, resp.blockHash));
     try putJson(&obj, allocator, "blockNumber", if (resp.blockNumber) |n| try quantityValue(allocator, n) else .null);
-    if (resp.blockTimestamp) |timestamp| try putJson(&obj, allocator, "blockTimestamp", try quantityValue(allocator, timestamp));
     try putJson(&obj, allocator, "address", try addressValue(allocator, resp.address));
     try putJson(&obj, allocator, "data", try bytesValue(allocator, resp.data));
     try putJson(&obj, allocator, "topics", try hashArrayValue(allocator, resp.topics));

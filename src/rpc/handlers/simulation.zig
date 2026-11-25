@@ -1596,7 +1596,7 @@ fn simulateBlock(
     var next_log_index: u32 = 0;
     for (receipts.items, outputs.items, transactions.items, transfer_sets.items) |receipt, output, tx, transfers| {
         try call_results.ensureUnusedCapacity(1);
-        call_results.appendAssumeCapacity(try simulateCallValueFromReceipt(allocator, receipt, output, tx, transfers, options, block_ctx.block_timestamp, &next_log_index));
+        call_results.appendAssumeCapacity(try simulateCallValueFromReceipt(allocator, receipt, output, tx, transfers, options, &next_log_index));
     }
 
     const size = try simulatedBlockSize(allocator, header, requests_hash, raw_txs.items, fork);
@@ -2379,7 +2379,6 @@ fn simulateCallValueFromReceipt(
     tx: SimulatedTransaction,
     transfers: []const SimulatedTransfer,
     options: SimulateOptions,
-    block_timestamp: u64,
     next_log_index: *u32,
 ) !std.json.Value {
     var obj = std.json.ObjectMap.init(allocator);
@@ -2389,7 +2388,7 @@ fn simulateCallValueFromReceipt(
     }
     const success = if (receipt.status) |status| status.success else true;
     try putOwnedJsonValue(&obj, allocator, "returnData", try hexBytes(allocator, if (success) output else &.{}));
-    try putOwnedJsonValue(&obj, allocator, "logs", try simulateLogsValue(allocator, receipt, tx, transfers, options, block_timestamp, next_log_index));
+    try putOwnedJsonValue(&obj, allocator, "logs", try simulateLogsValue(allocator, receipt, tx, transfers, options, next_log_index));
     try putOwnedJsonValue(&obj, allocator, "gasUsed", try hexQuantityU256(allocator, receipt.gas_used));
     try putOwnedJsonValue(&obj, allocator, "maxUsedGas", try hexQuantityU256(allocator, receipt.gas_used));
     try putOwnedJsonValue(&obj, allocator, "status", .{ .string = try allocator.dupe(u8, if (success) "0x1" else "0x0") });
@@ -2521,11 +2520,10 @@ fn simulateLogsValue(
     tx: SimulatedTransaction,
     transfers: []const SimulatedTransfer,
     options: SimulateOptions,
-    block_timestamp: u64,
     next_log_index: *u32,
 ) !std.json.Value {
     const first_log_index = next_log_index.*;
-    var array = switch (try logsValue(allocator, receipt.logs, receipt.block_hash, block_timestamp, first_log_index)) {
+    var array = switch (try logsValue(allocator, receipt.logs, receipt.block_hash, first_log_index)) {
         .array => |array| array,
         else => unreachable,
     };
@@ -2546,7 +2544,6 @@ fn simulateLogsValue(
                 transfer.value,
                 receipt.block_hash,
                 receipt.block_number,
-                block_timestamp,
                 receipt.transaction_hash,
                 receipt.transaction_index,
                 synthetic_log_index,
@@ -2563,7 +2560,6 @@ fn simulateLogsValue(
                 tx.value,
                 receipt.block_hash,
                 receipt.block_number,
-                block_timestamp,
                 receipt.transaction_hash,
                 receipt.transaction_index,
                 synthetic_log_index,
@@ -2582,7 +2578,6 @@ fn traceTransferLogValue(
     value: u256,
     block_hash: [32]u8,
     block_number: u64,
-    block_timestamp: u64,
     transaction_hash: [32]u8,
     transaction_index: u32,
     log_index: u32,
@@ -2605,7 +2600,6 @@ fn traceTransferLogValue(
     try putOwnedJsonValue(&obj, allocator, "address", try addressValue(allocator, eth_transfer_address));
     try putOwnedJsonValue(&obj, allocator, "blockHash", try hashValue(allocator, block_hash));
     try putOwnedJsonValue(&obj, allocator, "blockNumber", try hexQuantity(allocator, block_number));
-    try putOwnedJsonValue(&obj, allocator, "blockTimestamp", try hexQuantity(allocator, block_timestamp));
     try putOwnedJsonValue(&obj, allocator, "data", try fixedBytesValue(allocator, &data));
     try putOwnedJsonValue(&obj, allocator, "logIndex", try hexQuantity(allocator, log_index));
     try putOwnedJsonValue(&obj, allocator, "removed", .{ .bool = false });
@@ -2713,7 +2707,6 @@ fn simulatedTransactionValue(
     }
     try putOwnedJsonValue(&obj, allocator, "blockHash", try hashValue(allocator, block.block_hash));
     try putOwnedJsonValue(&obj, allocator, "blockNumber", try hexQuantity(allocator, block.block_ctx.block_number));
-    try putOwnedJsonValue(&obj, allocator, "blockTimestamp", try hexQuantity(allocator, block.block_ctx.block_timestamp));
     try putOwnedJsonValue(&obj, allocator, "from", try addressValue(allocator, tx.from));
     try putOwnedJsonValue(&obj, allocator, "gas", try hexQuantity(allocator, tx.gas));
     if (tx.gas_price) |gas_price| try putOwnedJsonValue(&obj, allocator, "gasPrice", try hexQuantityU256(allocator, gas_price));
@@ -2741,7 +2734,6 @@ fn logsValue(
     allocator: std.mem.Allocator,
     logs: []const primitives.EventLog.EventLog,
     block_hash: [32]u8,
-    block_timestamp: u64,
     first_log_index: u32,
 ) !std.json.Value {
     var array = std.json.Array.init(allocator);
@@ -2762,7 +2754,6 @@ fn logsValue(
         try putOwnedJsonValue(&obj, allocator, "transactionHash", try hashValue(allocator, event_log.transaction_hash orelse primitives.Hash.ZERO));
         try putOwnedJsonValue(&obj, allocator, "transactionIndex", try hexQuantity(allocator, event_log.transaction_index orelse 0));
         try putOwnedJsonValue(&obj, allocator, "blockHash", try hashValue(allocator, block_hash));
-        try putOwnedJsonValue(&obj, allocator, "blockTimestamp", try hexQuantity(allocator, block_timestamp));
         try putOwnedJsonValue(&obj, allocator, "logIndex", try hexQuantity(allocator, first_log_index + @as(u32, @intCast(log_offset))));
         try putOwnedJsonValue(&obj, allocator, "removed", .{ .bool = event_log.removed });
         try array.append(.{ .object = obj });
