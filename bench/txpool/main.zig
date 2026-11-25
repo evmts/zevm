@@ -92,11 +92,11 @@ pub fn main() !void {
         }.f, .{});
     }
 
-    // 3. getReady on 250 consecutive txs from a SINGLE sender (stress test for O(N^3)!)
+    // 3. getReady at the maximum permitted single-sender depth.
     {
         var pool = zevm.txpool.TransactionPool.init(allocator);
         defer pool.deinit();
-        for (0..250) |n| {
+        for (0..zevm.txpool.MAX_PER_SENDER) |n| {
             try pool.add(allocator, makeTx(1, n, 25_000_000_000));
         }
 
@@ -106,7 +106,7 @@ pub fn main() !void {
         };
         var ctx = Ctx{ .pool = &pool, .allocator = allocator };
 
-        try runner.run("txpool/get_ready_250_single_sender", &ctx, struct {
+        try runner.run("txpool/get_ready_max_single_sender", &ctx, struct {
             fn f(c: *Ctx) !void {
                 const ready = try c.pool.getReady(c.allocator);
                 defer c.allocator.free(ready);
@@ -164,7 +164,7 @@ pub fn main() !void {
 
         try runner.run("txpool/replace_under_250_pool", &ctx, struct {
             fn f(c: *Ctx) !void {
-                c.price += 100;
+                c.price += c.price / 8;
                 if (c.price > 1_000_000_000_000_000) {
                     _ = c.pool.removeByHash(c.last_hash);
                     c.price = 25_000_000_000;

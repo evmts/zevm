@@ -69,6 +69,12 @@ jobs:
         with:
           path: zevm
           persist-credentials: false
+          # Deployment state outside the native build contains Windows-invalid names.
+          sparse-checkout: |
+            include
+            npm
+            src
+            tools
       - uses: actions/checkout@v7
         with:
           repository: evmts/voltaire

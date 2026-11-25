@@ -259,3 +259,4 @@ npm/platforms/*/LICENSE
 .smithers/migrated.json
 
 /npm/zevm/src/zevm.wasm
+/spec/lean/.lake/

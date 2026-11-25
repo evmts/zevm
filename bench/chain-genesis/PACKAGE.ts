@@ -12,6 +12,7 @@ const suite = benchSuite({
     "src/database/contracts.zig",
     "src/database/database.zig",
     "src/database/root.zig",
+    "src/evm_backend.zig",
     "src/evm_overrides.zig",
     "src/genesis.zig",
     "src/hardfork_schedule.zig",

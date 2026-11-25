@@ -7,6 +7,7 @@ const suite = benchSuite({
     "src/blob_fee.zig",
     "src/block_builder.zig",
     "src/console_log.zig",
+    "src/evm_backend.zig",
     "src/evm_overrides.zig",
     "src/hardfork_schedule.zig",
     "src/host_adapter.zig",
