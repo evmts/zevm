@@ -15,6 +15,8 @@ geth_graphql_datadir=""
 geth_genesis_path=""
 generated_chain_rlp_path=""
 jwt_secret_path="$(mktemp)"
+# Shared fixture key specified by Hive for authenticated Engine API calls.
+printf '%s' '7365637265747365637265747365637265747365637265747365637265747365' > "$jwt_secret_path"
 internal_rpc_port="${ZEVM_HIVE_INTERNAL_RPC_PORT:-18545}"
 internal_engine_port="${ZEVM_HIVE_INTERNAL_ENGINE_PORT:-18551}"
 engine_mirror_port="${ZEVM_HIVE_ENGINE_MIRROR_PORT:-18552}"
@@ -273,7 +275,6 @@ start_geth_p2p_sidecar() {
     }
   fi
 
-  printf '%s' '7365637265747365637265747365637265747365637265747365637265747365' > "$jwt_secret_path"
   if [ "$engine_api_mode" != "true" ]; then
     public_engine_target_port="18553"
   fi
@@ -591,7 +592,7 @@ jq -n \
     }
   }' > "$config_path"
 
-/usr/local/bin/zevm --config "$config_path" &
+/usr/local/bin/zevm --config "$config_path" --authrpc.jwtsecret "$jwt_secret_path" &
 zevm_pid="$!"
 
 wait_for_rpc
