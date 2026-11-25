@@ -115,6 +115,7 @@ pub const TrustedConfig = struct {
     engine_sync_fallback_url: ?[]const u8,
     genesis_alloc_path: ?[]const u8,
     chain_rlp_path: ?[]const u8,
+    execution_apis: bool = false,
     /// Explicit opt-in directory of recorded `.io` JSON-RPC fixtures
     /// (`--execution-fixture-rpc-dir`). Never inferred from other paths.
     execution_fixture_rpc_dir: ?[]const u8 = null,
@@ -363,6 +364,7 @@ fn resolve(
 
     const rpc = try resolveRpc(allocator, options, file_config);
     errdefer allocator.free(rpc.host);
+    if (options.execution_apis and !@import("rpc/server.zig").isLoopbackHost(rpc.host)) return error.InvalidConfig;
     const engine_rpc = try resolveEngineRpc(allocator, options, file_config, resolved_mode, rpc.host);
     errdefer if (engine_rpc) |value| freeEngineRpc(allocator, value);
 
@@ -501,6 +503,7 @@ fn resolveTrusted(
         .engine_sync_fallback_url = engine_sync_fallback_url,
         .genesis_alloc_path = genesis_alloc_path,
         .chain_rlp_path = chain_rlp_path,
+        .execution_apis = options.execution_apis,
         .execution_fixture_rpc_dir = execution_fixture_rpc_dir,
     };
 }

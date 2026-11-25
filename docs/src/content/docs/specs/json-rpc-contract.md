@@ -316,6 +316,7 @@ Rules:
 - `to` may be `null` for create
 - `blockHash`, `blockNumber`, and `transactionIndex` are non-null for mined transactions; `eth_getTransactionByHash` returns `null` until canonical inclusion
 - transaction objects in this contract must not include a nonstandard `blockTimestamp` field
+- the explicit trusted loopback CLI profile `--execution-apis` uses the upstream execution-apis wire format outside this contract. It includes `blockTimestamp` on transactions and logs and exposes the read-only `testing_buildBlockV1` method on the public listener
 
 ### 7.6 Block object
 

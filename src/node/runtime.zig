@@ -755,6 +755,7 @@ const RuntimeMutex = struct {
     }
 };
 pub const NodeRuntime = struct {
+    execution_api_timestamps: bool = false,
     event_hub: ?*exex.EventHub = null,
     rebase_tracker: ?*rebase_fork.RebaseTracker = null,
     background_started: bool = false,

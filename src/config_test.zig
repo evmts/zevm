@@ -49,6 +49,16 @@ test "load defaults to trusted mode with shared defaults" {
     try std.testing.expectEqual(node_runtime.DEFAULT_DEV_HARDFORK_CONFIG.prague_timestamp, trusted.hardfork_config.prague_timestamp);
     try std.testing.expectEqual(mining.MiningConfigType.auto, std.meta.activeTag(trusted.mining_config));
     try std.testing.expect(trusted.fork == null);
+    try std.testing.expect(!trusted.execution_apis);
+}
+
+test "execution-apis compatibility requires a trusted loopback listener" {
+    const allocator = std.testing.allocator;
+    var local = try config.load(allocator, &.{ "--execution-apis", "--engine-port", "8551" });
+    defer local.deinit(allocator);
+    try std.testing.expect((try expectTrusted(local)).execution_apis);
+    try std.testing.expectError(error.InvalidConfig, config.load(allocator, &.{ "--execution-apis", "--host", "0.0.0.0" }));
+    try std.testing.expectError(error.InvalidConfig, config.load(allocator, &.{ "--execution-apis", "--mode", "light" }));
 }
 
 test "load merges trusted config file with CLI precedence" {

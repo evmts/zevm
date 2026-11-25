@@ -5,8 +5,7 @@ import { fileURLToPath } from "node:url";
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const image = process.env.ZEVM_HIVE_IMAGE ?? "zevm/hive-client:local";
 const zigVersion = process.env.ZIG_VERSION ?? "0.15.2";
-const defaultPattern = "rpc-compat/.*";
-const testPattern = process.env.ZEVM_HIVE_RPC_COMPAT_PATTERN ?? defaultPattern;
+
 const clientTemplate = join(root, "tools/hive/zevm-client");
 const clientDir = join(root, "lib/hive/clients/zevm");
 const hiveBin = join(root, "zig-out/hive/hive");
@@ -119,7 +118,8 @@ async function main() {
     }
     rmSync(clientDir, { recursive: true, force: true });
     mkdirSync(clientDir, { recursive: true });
-    copyFileSync(join(clientTemplate, "Dockerfile"), join(clientDir, "Dockerfile"));
+    const clientImage = readFileSync(join(clientTemplate, "Dockerfile"), "utf8");
+    writeFileSync(join(clientDir, "Dockerfile"), clientImage + "\nENV ZEVM_HIVE_EXECUTION_APIS=1\n");
     copyFileSync(join(clientTemplate, "hive.yaml"), join(clientDir, "hive.yaml"));
     writeFileSync(join(clientDir, ".zevm-generated"), "");
     await run([
@@ -136,12 +136,47 @@ async function main() {
     mkdirSync(dirname(hiveBin), { recursive: true });
     mkdirSync(hiveResultsRoot, { recursive: true });
     await run(["go", "build", "-o", hiveBin, "."], { cwd: join(root, "lib/hive") });
+    const logs = [];
+    for (const { pattern, expected } of await transcriptGroups()) {
+        logs.push(await runTranscripts(executionApisRef, pattern, expected));
+    }
+    writeFileSync(hiveOutput, logs.join("\n"));
+}
+
+// The upstream simulator shares one client across transcripts. Its spec-only
+// txpool check expects the seeded pool, before send-blob-tx adds another sender.
+async function transcriptGroups() {
+    const override = process.env.ZEVM_HIVE_RPC_COMPAT_PATTERN;
+    if (override) return [{ pattern: override, expected: null }];
+    const cwd = join(root, "lib/execution-apis/tests");
+    let files;
+    const ref = process.env.ZEVM_HIVE_EXECUTION_APIS_REF;
+    if (ref) {
+        const res = await fetch(`https://api.github.com/repos/ethereum/execution-apis/git/trees/${encodeURIComponent(ref)}?recursive=1`);
+        if (!res.ok) throw new Error(`execution-apis tree lookup returned ${res.status}`);
+        const tree = await res.json();
+        if (tree.truncated) throw new Error("incomplete execution-apis file list");
+        files = tree.tree.filter(e => e.type === "blob" && e.path.startsWith("tests/") && e.path.endsWith(".io")).map(e => e.path.slice(6));
+    } else {
+        files = [...new Bun.Glob("**/*.io").scanSync({ cwd })];
+    }
+    const names = files.map(file => file.slice(0, -3));
+    const pools = names.filter(name => name.startsWith("txpool_content/"));
+    const others = names.filter(name => !name.startsWith("txpool_content/"));
+    return [pools, others].map(group => {
+        if (!group.length) throw new Error("missing pinned Hive transcripts");
+        const alternatives = group.sort().map(name => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+        return { pattern: "rpc-compat/^(" + alternatives.join("|") + ")($| )", expected: group.length };
+    });
+}
+
+async function runTranscripts(executionApisRef, pattern, expected) {
     const hiveLog = await run([
         hiveBin,
         "--sim",
         "ethereum/rpc-compat",
         "--sim.limit",
-        testPattern,
+        pattern,
         "--sim.buildarg",
         `branch=${executionApisRef}`,
         "--sim.parallelism",
@@ -153,17 +188,17 @@ async function main() {
         "--client",
         "zevm",
     ], { cwd: join(root, "lib/hive"), capture: true });
-    writeFileSync(hiveOutput, hiveLog);
     const cleanLog = stripAnsi(hiveLog);
     const summary = cleanLog.match(/simulation ethereum\/rpc-compat finished\s+suites=(\d+)\s+tests=(\d+)\s+failed=(\d+)/);
     if (!summary)
         throw new Error("Hive rpc-compat smoke did not print a parseable summary");
     const tests = Number(summary[2]);
     const failed = Number(summary[3]);
-    if (tests === 0)
-        throw new Error("Hive rpc-compat smoke did not execute any tests");
+    if (tests < 2 || (expected !== null && tests !== expected + 1))
+        throw new Error(`Hive ran ${tests - 1} transcripts (expected ${expected ?? "at least one"})`);
     if (failed !== 0)
         throw new Error(`Hive rpc-compat smoke failed ${failed} test(s)`);
+    return hiveLog;
 }
 try {
     await main();

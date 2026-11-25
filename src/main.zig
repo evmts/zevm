@@ -53,7 +53,7 @@ pub fn main() !void {
 
     installShutdownHandlers();
 
-    const allow_dev_methods = app_config.engine_rpc == null and isLoopbackHost(app_config.rpc.host);
+    const allow_dev_methods = app_config.engine_rpc == null and zevm.rpc.server.isLoopbackHost(app_config.rpc.host);
     switch (app_config.mode) {
         .trusted => |trusted_config| {
             zevm.log.info(.startup, "mode selected mode=trusted", .{});
@@ -77,6 +77,7 @@ pub fn main() !void {
             ) catch |err| exitStartupError("startup failed phase=runtime_init mode=trusted error={s}", .{@errorName(err)});
             defer node.deinit();
             const runtime = &node.runtime;
+            runtime.execution_api_timestamps = trusted_config.execution_apis;
             try node.startExtensions();
             var handlers = zevm.rpc.dispatcher.HandlerRegistry{};
             zevm.rpc.dispatch_wiring.install(&handlers, runtime);
@@ -117,7 +118,7 @@ pub fn main() !void {
                         .jwt_max_time_drift_seconds = zevm.rpc.server.DEFAULT_ENGINE_JWT_MAX_TIME_DRIFT_SECONDS,
                         .max_body_bytes = zevm.rpc.server.ENGINE_MAX_BODY_BYTES,
                         .cors_allow_origin = null,
-                        .validate_host = if (isLoopbackHost(engine_cfg.host)) engine_cfg.host else null,
+                        .validate_host = if (zevm.rpc.server.isLoopbackHost(engine_cfg.host)) engine_cfg.host else null,
                     },
                 ) catch |err| exitStartupError("startup failed phase=engine_rpc_listener mode=trusted host={s} port={} error={s}", .{
                     engine_rpc.host,
@@ -130,7 +131,7 @@ pub fn main() !void {
                     @errorName(err),
                 });
             }
-            servePublicRpc(allocator, app_config.rpc, runtime, &handlers, "trusted", allow_dev_methods);
+            servePublicRpc(allocator, app_config.rpc, runtime, &handlers, "trusted", allow_dev_methods, trusted_config.execution_apis);
         },
         .light => |light_config| {
             zevm.log.info(.startup, "mode selected mode=light", .{});
@@ -148,7 +149,7 @@ pub fn main() !void {
             zevm.rpc.dispatch_wiring.install(&handlers, runtime);
             runtime.startBackgroundServices() catch |err| exitStartupError("startup failed phase=background_services mode=light error={s}", .{@errorName(err)});
             defer runtime.stopBackgroundServices();
-            servePublicRpc(allocator, app_config.rpc, runtime, &handlers, "light", allow_dev_methods);
+            servePublicRpc(allocator, app_config.rpc, runtime, &handlers, "light", allow_dev_methods, false);
         },
     }
     zevm.log.info(.startup, "shutdown complete", .{});
@@ -163,10 +164,12 @@ fn servePublicRpc(
     handlers: *const zevm.rpc.dispatcher.HandlerRegistry,
     comptime mode_name: []const u8,
     allow_dev_methods: bool,
+    allow_testing_build_block: bool,
 ) void {
     var listener = zevm.rpc.server.RpcServer.init(allocator, rpc_config, handlers, .{
         .allow_dev_methods = allow_dev_methods,
-        .validate_host = if (isLoopbackHost(rpc_config.host)) rpc_config.host else null,
+        .allow_testing_build_block = allow_testing_build_block,
+        .validate_host = if (zevm.rpc.server.isLoopbackHost(rpc_config.host)) rpc_config.host else null,
     }) catch |err| exitStartupError("startup failed phase=rpc_listener mode=" ++ mode_name ++ " host={s} port={} error={s}", .{
         rpc_config.host,
         rpc_config.port,
@@ -187,15 +190,6 @@ fn servePublicRpc(
     });
     // Release the watcher if `run` returned for a reason other than a signal.
     listener.stop_requested.store(true, .seq_cst);
-}
-
-fn isLoopbackHost(host: []const u8) bool {
-    const address = zevm.rpc.server.parseListenAddress(host, 0) catch return false;
-    return switch (address.any.family) {
-        std.posix.AF.INET => @as([4]u8, @bitCast(address.in.sa.addr))[0] == 127,
-        std.posix.AF.INET6 => std.mem.eql(u8, &address.in6.sa.addr, &([_]u8{0} ** 15 ++ [_]u8{1})),
-        else => false,
-    };
 }
 
 fn shutdownWatcher(listener: *zevm.rpc.server.RpcServer) void {

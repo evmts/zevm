@@ -53,6 +53,7 @@ pub const usage =
     \\  --fork-follow                      Follow the upstream head and rebase local txs (needs --fork-url)
     \\  --genesis <path>                   Genesis alloc JSON
     \\  --chain-rlp <path>                 Chain RLP to import
+    \\  --execution-apis                   Loopback execution-apis compatibility profile
     \\  --execution-fixture-rpc-dir <dir>  Serve recorded .io fixtures (opt-in)
     \\
     \\Light mode:
@@ -102,6 +103,7 @@ pub const Options = struct {
     fork_follow: bool = false,
     genesis_alloc_path: ?[]const u8 = null,
     chain_rlp_path: ?[]const u8 = null,
+    execution_apis: bool = false,
     execution_fixture_rpc_dir: ?[]const u8 = null,
 
     network: ?Network = null,
@@ -129,7 +131,7 @@ pub const Options = struct {
             self.fork_follow or
             self.genesis_alloc_path != null or
             self.chain_rlp_path != null or
-            self.execution_fixture_rpc_dir != null;
+            self.execution_apis or self.execution_fixture_rpc_dir != null;
     }
 
     pub fn hasEngineRpc(self: Options) bool {
@@ -211,6 +213,8 @@ pub fn parse(args: []const []const u8) ParseError!Options {
             options.genesis_alloc_path = try nextValue(args, &index);
         } else if (std.mem.eql(u8, arg, "--chain-rlp")) {
             options.chain_rlp_path = try nextValue(args, &index);
+        } else if (std.mem.eql(u8, arg, "--execution-apis")) {
+            options.execution_apis = true;
         } else if (std.mem.eql(u8, arg, "--execution-fixture-rpc-dir")) {
             options.execution_fixture_rpc_dir = try nonEmptyValue(try nextValue(args, &index));
         } else if (std.mem.eql(u8, arg, "--network")) {

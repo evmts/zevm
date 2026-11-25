@@ -100,6 +100,43 @@ fn dispatchMethod(
     rt.runtime_mutex.lock();
     defer rt.runtime_mutex.unlock();
 
+    var result = try dispatchLocked(allocator, rt, method_name, params);
+    errdefer deinitJsonValue(allocator, &result);
+    if (rt.execution_api_timestamps and methodIs(method_name, &.{
+        "eth_getBlockByHash",                    "eth_getBlockByNumber",                    "eth_getBlockReceipts",     "eth_getLogs",
+        "eth_getTransactionByBlockHashAndIndex", "eth_getTransactionByBlockNumberAndIndex", "eth_getTransactionByHash", "eth_getTransactionReceipt",
+        "eth_simulateV1",                        "txpool_content",                          "txpool_contentFrom",
+    })) try addExecutionApiTimestamps(allocator, rt, &result, null);
+    return result;
+}
+
+// The execution-apis wire profile extends transactions and logs with their block
+// time. Simulated block hashes do not exist in the chain, so their children use
+// the containing simulated block's timestamp. Pending transactions use null.
+fn addExecutionApiTimestamps(allocator: std.mem.Allocator, rt: *runtime_mod.NodeRuntime, value: *std.json.Value, parent_time: ?u64) !void {
+    switch (value.*) {
+        .array => |array| for (array.items) |*item| try addExecutionApiTimestamps(allocator, rt, item, parent_time),
+        .object => |*obj| {
+            if (obj.get("blockHash")) |hash| {
+                if ((obj.contains("nonce") and obj.contains("transactionIndex")) or (obj.contains("logIndex") and obj.contains("topics"))) {
+                    const timestamp = if (hash == .null) null else parent_time orelse blk: {
+                        const block_hash = try rpc_parse.parseHash32Value(hash);
+                        const block = (try rt.blockchain.getBlockByHash(block_hash)) orelse break :blk null;
+                        break :blk block.header.timestamp;
+                    };
+                    if (!obj.contains("blockTimestamp")) try putOwnedJson(obj, allocator, "blockTimestamp", if (timestamp) |t| try hexQuantity(allocator, t) else .null);
+                    return;
+                }
+            }
+            const block_time = if (obj.get("timestamp")) |t| try rpc_parse.parseQuantityValue(u64, t) else parent_time;
+            var it = obj.iterator();
+            while (it.next()) |entry| try addExecutionApiTimestamps(allocator, rt, entry.value_ptr, block_time);
+        },
+        else => {},
+    }
+}
+
+fn dispatchLocked(allocator: std.mem.Allocator, rt: *runtime_mod.NodeRuntime, method_name: []const u8, params: ?std.json.Value) anyerror!std.json.Value {
     if (installed_fixture_cache) |cache| {
         if (try matchFixtureResponse(allocator, cache, method_name, params)) |result| {
             return result;

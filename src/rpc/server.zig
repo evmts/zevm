@@ -77,6 +77,7 @@ pub const RequestPolicy = struct {
     /// `engine_*`. Network listeners derive this from `RpcServer.Options`.
     allow_engine_methods: bool = true,
     allow_dev_methods: bool = true,
+    allow_testing_build_block: bool = false,
     max_json_values: usize = DEFAULT_MAX_JSON_VALUES,
     max_json_depth: usize = DEFAULT_MAX_JSON_DEPTH,
     max_batch_size: usize = DEFAULT_MAX_BATCH_SIZE,
@@ -131,6 +132,7 @@ pub const RpcServer = struct {
         /// Engine listeners set it true and must also set `jwt_secret`.
         allow_engine_methods: bool = false,
         allow_dev_methods: bool = true,
+        allow_testing_build_block: bool = false,
         max_json_values: usize = DEFAULT_MAX_JSON_VALUES,
         jwt_secret: ?[]const u8 = null,
         jwt_max_time_drift_seconds: i64 = DEFAULT_ENGINE_JWT_MAX_TIME_DRIFT_SECONDS,
@@ -149,6 +151,7 @@ pub const RpcServer = struct {
             return .{
                 .allow_engine_methods = self.allow_engine_methods,
                 .allow_dev_methods = self.allow_dev_methods,
+                .allow_testing_build_block = self.allow_testing_build_block,
                 .max_json_values = self.max_json_values,
                 .max_json_depth = self.max_json_depth,
                 .max_batch_size = self.max_batch_size,
@@ -430,6 +433,11 @@ fn nextAcceptBackoff(current_ns: u64) u64 {
 
 pub fn nextAcceptBackoffForTest(current_ns: u64) u64 {
     return nextAcceptBackoff(current_ns);
+}
+
+pub fn isLoopbackHost(host: []const u8) bool {
+    const address = parseListenAddress(host, 0) catch return false;
+    return isLoopbackAddress(address);
 }
 
 pub fn isLoopbackAddress(address: std.net.Address) bool {
@@ -1387,8 +1395,9 @@ fn dispatchWithPolicy(
     handlers: *const dispatcher.HandlerRegistry,
     policy: RequestPolicy,
 ) !jsonrpc.envelope.ResponseEnvelope {
+    const testing_build = policy.allow_testing_build_block and std.mem.eql(u8, request.method, "testing_buildBlockV1");
     if ((!policy.allow_engine_methods and dispatcher.isEngineNamespaceMethod(request.method)) or
-        (!policy.allow_dev_methods and isDevNamespaceMethod(request.method)))
+        (!policy.allow_dev_methods and !testing_build and isDevNamespaceMethod(request.method)))
     {
         return jsonrpc.envelope.ResponseEnvelope.makeError(request.id, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND, "Method not found");
     }

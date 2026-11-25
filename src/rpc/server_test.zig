@@ -1013,6 +1013,23 @@ test "dev method policy rejects each dev namespace before dispatch" {
         try expectErrorCode(response, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND);
     }
 
+    // The execution-apis profile additionally exposes only the simulated block builder.
+    for ([_][]const u8{ "testing_buildBlockV1", "anvil_mine", "zevm_mine", "engine_exchangeCapabilities" }, 0..) |method, i| {
+        const body = try std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"method\":\"{s}\",\"id\":1,\"params\":[]}}", .{method});
+        defer allocator.free(body);
+        const result = (try server.handlePostWithPolicy(allocator, body, &handlers, .{
+            .allow_dev_methods = false,
+            .allow_engine_methods = false,
+            .allow_testing_build_block = true,
+        })).?;
+        defer allocator.free(result);
+        if (i == 0) {
+            const parsed = try parseJson(result);
+            defer parsed.deinit();
+            try std.testing.expect(parsed.value.object.get("result") != null);
+        } else try expectErrorCode(result, jsonrpc.envelope.ErrorCode.METHOD_NOT_FOUND);
+    }
+
     // Read-only light-mode health status stays reachable even when dev mutators are off.
     const light_status = (try server.handlePostWithPolicy(
         allocator,

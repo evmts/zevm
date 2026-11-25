@@ -610,7 +610,11 @@ jq -n \
     }
   }' > "$config_path"
 
-/usr/local/bin/zevm --config "$config_path" --authrpc.jwtsecret "$jwt_secret_path" &
+zevm_args=(--config "$config_path" --authrpc.jwtsecret "$jwt_secret_path")
+if [ "${ZEVM_HIVE_EXECUTION_APIS:-}" = "1" ]; then
+  zevm_args+=(--execution-apis)
+fi
+/usr/local/bin/zevm "${zevm_args[@]}" &
 zevm_pid="$!"
 
 wait_for_rpc
