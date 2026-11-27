@@ -260,3 +260,6 @@ npm/platforms/*/LICENSE
 
 /npm/zevm/src/zevm.wasm
 /spec/lean/.lake/
+
+# Uphill generated reports
+.uphill/

@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+Follow the [Uphill rules](.agents/uphill/rules.md), which `uphill rules --write` rewrites from each metric's description: @.agents/uphill/rules.md
+
 ## Project Context
 
 - **We maintain voltaire (`../voltaire`) and guillotine-mini (`../guillotine-mini`).** They are upstream dependencies and we own them. Fix any issues in those repos directly rather than working around them.

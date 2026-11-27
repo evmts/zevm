@@ -1,0 +1,103 @@
+# .agents/uphill/uphill.yaml — Continuous metrics and hill climbing for evmts/zevm.
+# Scripts run from the repository root and append metric lines to $UPHILL_METRICS.
+
+safety:
+  title: Safety & TigerStyle
+  description: Execution-client crash freedom, explicit error handling, and assertion density across Zig and npm JS wrappers.
+  run: bun .agents/uphill/metrics/safety.ts
+  # Production Zig files must return errors rather than crashing with @panic or unreachable (TigerStyle).
+  zig-no-panic:
+    description: Never use @panic or unreachable in production src/**/*.zig; validate inputs and return typed errors.
+    weight: 2
+  # Production Zig modules must use src/log.zig instead of raw std.debug.print.
+  zig-no-debug-print:
+    description: Replace std.debug.print in production src/**/*.zig modules with structured logging via src/log.zig.
+  # Production Zig code must not swallow errors with empty catch {} or leave error.NotImplemented stubs.
+  zig-no-swallowed-errors:
+    description: Never swallow errors with empty catch {} or leave error.NotImplemented stubs in production src/**/*.zig.
+    weight: 2
+  # Runtime assertion density per 1,000 production Zig LOC (TigerStyle recommends >=2 assertions per function).
+  zig-assertion-density:
+    description: Add invariant assertions to production Zig execution, RPC, and consensus paths toward TigerStyle density.
+    better: higher
+    poor: 0.3
+  # Published npm JS entrypoints must parse cleanly under `node --check`.
+  npm-js-syntax:
+    description: Keep every JavaScript file under npm/zevm/src/ syntactically valid under `node --check`.
+
+style:
+  title: Style & Limits
+  description: CLAUDE.md Zig style rules, TigerStyle structural bounds (70-line functions, 120-char lines), and canonical formatting.
+  run: bun .agents/uphill/metrics/style.ts
+  # Canonical formatting verified by `zig fmt --check src`.
+  zig-fmt:
+    description: Keep every Zig file under src/ formatted with `zig fmt`.
+    weight: 2
+  # CLAUDE.md rule: avoid private top-level imported-symbol aliases like `const Foo = bar.Foo;`.
+  no-private-import-aliases:
+    description: "Follow CLAUDE.md Zig style: use fully qualified imported symbol paths inline instead of private top-level `const Foo = bar.Foo` aliases."
+    weight: 1.5
+  # Maximum runtime function length in lines per production Zig file (TigerStyle limit: 70 lines).
+  function-length:
+    description: Keep every production Zig runtime function at or below 70 lines (TigerStyle limit); decompose large RPC/block handlers.
+    poor: 200
+    weight: 2
+  # Line length check per production Zig file (TigerStyle limit: 120 columns).
+  line-length:
+    description: Keep production Zig lines at or below 120 characters (TigerStyle limit).
+  # Production Zig files must not accumulate TODO/FIXME/XXX/HACK markers.
+  no-todo-markers:
+    description: Resolve TODO, FIXME, XXX, and HACK markers in production src/**/*.zig instead of leaving deferred work.
+
+footprint:
+  title: Footprint & Modularity
+  description: Source file and subsystem modularity limits to keep the execution client auditable.
+  run: bun .agents/uphill/metrics/footprint.ts
+  # Line count per production Zig file; split large client modules (>500 lines) into focused components.
+  file-lines:
+    description: Keep production Zig files focused and under 500 lines; split monolithic modules like src/block_builder.zig and src/rpc/.
+    poor: 1200
+    weight: 2
+  # Source byte size per top-level src/ subsystem to surface monolithic growth early.
+  subsystem-size:
+    description: Keep each src/ subsystem modular and well-bounded in source footprint.
+    poor: 300kB
+
+verification:
+  title: Verification & Fuzzing
+  description: Native Zig fuzz targets, Lean 4 consensus/execution proofs, and module test coverage.
+  run: bun .agents/uphill/metrics/verification.ts
+  # Every Lean 4 file in spec/lean/ must be free of `sorry` and unproved `axiom` declarations.
+  lean-no-sorry:
+    description: Close every `sorry` and unproved `axiom` in spec/lean/**/*.lean formal proofs.
+    weight: 2
+  # Count of machine-checked Lean 4 theorems and lemmas in spec/lean/ (target: 60+ proofs).
+  lean-theorems:
+    description: Expand Lean 4 theorem and lemma coverage in spec/lean/ for block validation, consensus, and state transitions.
+    better: higher
+    poor: 20
+  # Count of `std.testing.fuzz` targets across src/fuzz/ and *_fuzz_test.zig (target: 50+ coverage-guided targets).
+  fuzz-targets:
+    description: Expand native `std.testing.fuzz` target coverage across RPC, Engine API, consensus, MPT, and C ABI boundaries.
+    better: higher
+    poor: 25
+    weight: 1.5
+  # Share (%) of production Zig modules in src/ with either inline `test` blocks or a sibling `*_test.zig`.
+  module-test-coverage:
+    description: Ensure every production src/**/*.zig module has inline `test` blocks or a dedicated sibling `*_test.zig`.
+    better: higher
+    poor: 85
+    weight: 1.5
+
+documentation:
+  title: Documentation
+  description: Astro/Starlight docs mirror parity (`tools/docs_mirror.mjs`) and markdown link integrity.
+  run: bun .agents/uphill/metrics/documentation.ts
+  # Mirror parity check via `node tools/docs_mirror.mjs` between docs/ and docs/src/content/docs/.
+  docs-mirror:
+    description: Keep docs/ and docs/src/content/docs/ synchronized by running `node tools/docs_mirror.mjs --write` after editing docs.
+    weight: 2
+  # Every primary Markdown/MDX doc in the root and docs/ must have zero broken local links.
+  broken-links:
+    description: Fix broken local paths and machine-specific links in root Markdown files and docs/.
+    weight: 1.5

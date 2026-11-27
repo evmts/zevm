@@ -1,0 +1,214 @@
+# Each measurement's `baseline`, the size, count, or check `uphill --update` accepted, and its
+# `target`. Edit a target here, and each run reports what changed since the baseline.
+
+safety:
+  zig-no-panic:
+    "*": { baseline: pass }
+    src/block_builder.zig: { baseline: fail }
+    src/consensus_sync.zig: { baseline: fail }
+    src/difficulty.zig: { baseline: fail }
+    src/hardfork_schedule.zig: { baseline: fail }
+    src/light_proof.zig: { baseline: fail }
+    src/rpc/handlers/simulation.zig: { baseline: fail }
+    src/rpc/server.zig: { baseline: fail }
+    src/system_contracts.zig: { baseline: fail }
+    src/transaction_encoding.zig: { baseline: fail }
+  zig-no-debug-print:
+    "*": { baseline: pass }
+    src/release_metadata.zig: { baseline: fail }
+  zig-no-swallowed-errors:
+    "*": { baseline: pass }
+    src/beacon_api.zig: { baseline: fail }
+    src/checkpoint.zig: { baseline: fail }
+    src/main.zig: { baseline: fail }
+    src/node/runtime.zig: { baseline: fail }
+    src/rebase_fork.zig: { baseline: fail }
+    src/rpc/server.zig: { baseline: fail }
+  zig-assertion-density: { baseline: 0.35, target: 20 }
+  npm-js-syntax:
+    "*": { baseline: pass }
+
+style:
+  zig-fmt:
+    "*": { baseline: pass }
+    src/exex_rebase_integration_test.zig: { baseline: fail }
+  no-private-import-aliases:
+    "*": { baseline: pass }
+    src/eof.zig: { baseline: fail }
+    src/node/runtime.zig: { baseline: fail }
+    src/rpc/handlers/tx_submission.zig: { baseline: fail }
+    src/rpc/server.zig: { baseline: fail }
+  function-length:
+    "*": { target: 70 }
+    src/beacon_api.zig: { baseline: 52 }
+    src/blob_fee.zig: { baseline: 23 }
+    src/blob_kzg.zig: { baseline: 36 }
+    src/block_builder.zig: { baseline: 305 }
+    src/browser.zig: { baseline: 4 }
+    src/c_bindings.zig: { baseline: 61 }
+    src/chain_import.zig: { baseline: 59 }
+    src/checkpoint.zig: { baseline: 39 }
+    src/cli.zig: { baseline: 84 }
+    src/config.zig: { baseline: 63 }
+    src/consensus_sync.zig: { baseline: 57 }
+    src/consensus_verifier.zig: { baseline: 164 }
+    src/console_log.zig: { baseline: 12 }
+    src/database/accounts.zig: { baseline: 7 }
+    src/database/contracts.zig: { baseline: 12 }
+    src/database/database.zig: { baseline: 36 }
+    src/difficulty.zig: { baseline: 39 }
+    src/embedded_node.zig: { baseline: 22 }
+    src/eof.zig: { baseline: 94 }
+    src/evm_backend.zig: { baseline: 79 }
+    src/execution_fixture_rpc.zig: { baseline: 57 }
+    src/exex.zig: { baseline: 25 }
+    src/genesis.zig: { baseline: 48 }
+    src/genesis_alloc.zig: { baseline: 55 }
+    src/hardfork_schedule.zig: { baseline: 31 }
+    src/host_adapter.zig: { baseline: 28 }
+    src/light_proof.zig: { baseline: 48 }
+    src/log.zig: { baseline: 37 }
+    src/log_index.zig: { baseline: 64 }
+    src/main.zig: { baseline: 139 }
+    src/mining.zig: { baseline: 3 }
+    src/mining_coordinator.zig: { baseline: 76 }
+    src/mpt_proof.zig: { baseline: 78 }
+    src/node/runtime.zig: { baseline: 315 }
+    src/precompile_compat.zig: { baseline: 35 }
+    src/rebase_fork.zig: { baseline: 46 }
+    src/receipt_index.zig: { baseline: 41 }
+    src/release_metadata.zig: { baseline: 61 }
+    src/rpc/block_queries.zig: { baseline: 114 }
+    src/rpc/dev_runtime.zig: { baseline: 30 }
+    src/rpc/dispatch_wiring.zig: { baseline: 576 }
+    src/rpc/dispatcher.zig: { baseline: 102 }
+    src/rpc/handlers/block_query_handlers.zig: { baseline: 71 }
+    src/rpc/handlers/block_spec.zig: { baseline: 28 }
+    src/rpc/handlers/debug_raw.zig: { baseline: 42 }
+    src/rpc/handlers/dev_erc20.zig: { baseline: 10 }
+    src/rpc/handlers/eth_config.zig: { baseline: 48 }
+    src/rpc/handlers/eth_read.zig: { baseline: 60 }
+    src/rpc/handlers/simulation.zig: { baseline: 249 }
+    src/rpc/handlers/tx_submission.zig: { baseline: 160 }
+    src/rpc/handlers/txpool.zig: { baseline: 46 }
+    src/rpc/parse.zig: { baseline: 15 }
+    src/rpc/server.zig: { baseline: 92 }
+    src/rpc/trusted_fork_handlers.zig: { baseline: 64 }
+    src/system_contracts.zig: { baseline: 14 }
+    src/transaction_encoding.zig: { baseline: 49 }
+    src/tx_processor.zig: { baseline: 350 }
+    src/txpool.zig: { baseline: 89 }
+  line-length:
+    "*": { baseline: fail }
+    src/browser.zig: { baseline: pass }
+    src/checkpoint.zig: { baseline: pass }
+    src/cli.zig: { baseline: pass }
+    src/console_log.zig: { baseline: pass }
+    src/database/root.zig: { baseline: pass }
+    src/difficulty.zig: { baseline: pass }
+    src/evm_backend.zig: { baseline: pass }
+    src/genesis_alloc.zig: { baseline: pass }
+    src/log.zig: { baseline: pass }
+    src/mining.zig: { baseline: pass }
+    src/mpt_proof.zig: { baseline: pass }
+    src/node.zig: { baseline: pass }
+    src/precompile_compat.zig: { baseline: pass }
+    src/release_metadata.zig: { baseline: pass }
+    src/root.zig: { baseline: pass }
+    src/rpc/dev_runtime.zig: { baseline: pass }
+    src/rpc/handlers/block_spec.zig: { baseline: pass }
+    src/rpc/handlers/dev_erc20.zig: { baseline: pass }
+    src/rpc/parse.zig: { baseline: pass }
+    src/rpc/root.zig: { baseline: pass }
+    src/rpc/trusted_fork_handlers.zig: { baseline: pass }
+  no-todo-markers:
+    "*": { baseline: pass }
+
+footprint:
+  file-lines:
+    "*": { target: 500 }
+    src/beacon_api.zig: { baseline: 967 }
+    src/blob_fee.zig: { baseline: 430 }
+    src/blob_kzg.zig: { baseline: 119 }
+    src/block_builder.zig: { baseline: 2989 }
+    src/browser.zig: { baseline: 15 }
+    src/c_bindings.zig: { baseline: 693 }
+    src/chain_import.zig: { baseline: 711 }
+    src/checkpoint.zig: { baseline: 184 }
+    src/cli.zig: { baseline: 323 }
+    src/config.zig: { baseline: 1175 }
+    src/consensus_sync.zig: { baseline: 761 }
+    src/consensus_verifier.zig: { baseline: 942 }
+    src/console_log.zig: { baseline: 143 }
+    src/database/accounts.zig: { baseline: 52 }
+    src/database/contracts.zig: { baseline: 49 }
+    src/database/database.zig: { baseline: 180 }
+    src/database/root.zig: { baseline: 8 }
+    src/difficulty.zig: { baseline: 148 }
+    src/embedded_node.zig: { baseline: 57 }
+    src/eof.zig: { baseline: 677 }
+    src/evm_backend.zig: { baseline: 311 }
+    src/execution_fixture_rpc.zig: { baseline: 468 }
+    src/exex.zig: { baseline: 1051 }
+    src/genesis.zig: { baseline: 661 }
+    src/genesis_alloc.zig: { baseline: 403 }
+    src/hardfork_schedule.zig: { baseline: 342 }
+    src/host_adapter.zig: { baseline: 312 }
+    src/light_default_checkpoints.zig: { baseline: 17 }
+    src/light_proof.zig: { baseline: 793 }
+    src/log.zig: { baseline: 499 }
+    src/log_index.zig: { baseline: 393 }
+    src/main.zig: { baseline: 272 }
+    src/mining.zig: { baseline: 18 }
+    src/mining_coordinator.zig: { baseline: 904 }
+    src/mpt_proof.zig: { baseline: 568 }
+    src/node.zig: { baseline: 16 }
+    src/node/runtime.zig: { baseline: 5325 }
+    src/precompile_compat.zig: { baseline: 71 }
+    src/rebase_fork.zig: { baseline: 851 }
+    src/receipt_index.zig: { baseline: 222 }
+    src/release_metadata.zig: { baseline: 804 }
+    src/root.zig: { baseline: 95 }
+    src/rpc/block_queries.zig: { baseline: 1003 }
+    src/rpc/dev_runtime.zig: { baseline: 286 }
+    src/rpc/dispatch_wiring.zig: { baseline: 4673 }
+    src/rpc/dispatcher.zig: { baseline: 358 }
+    src/rpc/handlers/block_query_handlers.zig: { baseline: 1224 }
+    src/rpc/handlers/block_spec.zig: { baseline: 85 }
+    src/rpc/handlers/debug_raw.zig: { baseline: 390 }
+    src/rpc/handlers/dev_erc20.zig: { baseline: 87 }
+    src/rpc/handlers/eth_config.zig: { baseline: 366 }
+    src/rpc/handlers/eth_read.zig: { baseline: 1324 }
+    src/rpc/handlers/simulation.zig: { baseline: 3085 }
+    src/rpc/handlers/tx_submission.zig: { baseline: 621 }
+    src/rpc/handlers/txpool.zig: { baseline: 462 }
+    src/rpc/parse.zig: { baseline: 225 }
+    src/rpc/root.zig: { baseline: 28 }
+    src/rpc/server.zig: { baseline: 1497 }
+    src/rpc/trusted_fork_handlers.zig: { baseline: 302 }
+    src/system_contracts.zig: { baseline: 161 }
+    src/transaction_encoding.zig: { baseline: 1658 }
+    src/tx_processor.zig: { baseline: 914 }
+    src/txpool.zig: { baseline: 1010 }
+  subsystem-size:
+    "*": { target: 80kB }
+    "src/(root)": { baseline: 932256B }
+    src/database: { baseline: 12008B }
+    src/node: { baseline: 236496B }
+    src/rpc: { baseline: 640944B }
+
+verification:
+  lean-no-sorry:
+    "*": { baseline: pass }
+    spec/lean/ZevmSpec/RlpTx.lean: { baseline: fail }
+  lean-theorems: { baseline: 20, target: 60 }
+  fuzz-targets: { baseline: 29, target: 50 }
+  module-test-coverage: { baseline: 90.5, target: 100 }
+
+documentation:
+  docs-mirror:
+    "*": { baseline: pass }
+  broken-links:
+    "*": { baseline: pass }
+    REVIEWS.md: { baseline: fail }
+    docs/reference/ci-and-release-gates.mdx: { baseline: fail }
