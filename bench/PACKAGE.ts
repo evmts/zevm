@@ -17,23 +17,27 @@ import { Package as txpool } from "./txpool/PACKAGE.ts"
 
 const node = S.Host.bin("node")
 
-const allSuites = [
-  database.bench,
-  hostAdapter.bench,
-  txEncoding.bench,
-  blobKzg.bench,
-  txProcessor.bench,
-  txpool.bench,
-  blockBuilder.bench,
-  indexes.bench,
-  mptProof.bench,
-  consensusLight.bench,
-  chainGenesis.bench,
-  miningNode.bench,
-  rpc.bench,
-  configCliLog.bench,
-  cFfi.bench,
+const suites = [
+  database,
+  hostAdapter,
+  txEncoding,
+  blobKzg,
+  txProcessor,
+  txpool,
+  blockBuilder,
+  indexes,
+  mptProof,
+  consensusLight,
+  chainGenesis,
+  miningNode,
+  rpc,
+  configCliLog,
+  cFfi,
 ] as const
+const allSuites = suites.map((suite) => suite.bench)
+const zigSources = S.Filegroup({
+  srcs: [S.glob("*.zig"), ...suites.map((suite) => suite["zig-sources"])],
+})
 
 /**
  * Aggregates every suite's cached or freshly run JSON result, compares against
@@ -75,8 +79,8 @@ const depsCheck = S.Shell.Test({
     S.file("//tools/bench_deps_check.mjs"),
     S.file("//src/root.zig"),
     S.glob("//src/**/*.zig"),
-    S.glob("*/main.zig"),
-    S.glob("*/PACKAGE.ts"),
+    zigSources,
+    ...suites.map((suite) => suite.declaration),
   ],
   sandbox: "none",
   timeout: "1m",
@@ -103,6 +107,7 @@ const updateBaseline = S.Shell.Run({
 
 export const Package = S.Package({
   targets: {
+    "zig-sources": zigSources,
     report,
     "deps-check": depsCheck,
     "update-baseline": updateBaseline,

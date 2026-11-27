@@ -89,6 +89,8 @@ export const benchSuite = (options: BenchSuiteOptions) => {
     test,
     Package: S.Package({
       targets: {
+        "zig-sources": S.Filegroup({ srcs: [S.glob("**/*.zig")] }),
+        declaration: S.Filegroup({ srcs: [S.file("PACKAGE.ts")] }),
         bench,
         test,
       },
