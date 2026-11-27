@@ -114,6 +114,8 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
           ALCHEMY_PASSWORD: ${{ secrets.ALCHEMY_PASSWORD }}
+          ALCHEMY_CI_STATE_STORE_CHECK: "false"
+          ALCHEMY_TELEMETRY_DISABLED: "1"
         working-directory: cloudflare/zevm-docs-worker
         run: |
           if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
