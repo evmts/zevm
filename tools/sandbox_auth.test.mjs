@@ -48,3 +48,37 @@ test("sandbox_auth emits streamable-http MCP config and untrusted cache isolatio
   assert.equal(u.env.SMITHERS_CACHE_NAMESPACE, "pr-42");
   assert.equal(u.env.SMITHERS_CACHE_WRITE_TOKEN, "");
 });
+
+test("sandbox_auth rejects approve scopes, oversized TTLs, and invalid origin/repo", () => {
+  const badScope = spawnSync(
+    "node",
+    ["tools/sandbox_auth.mjs", "--mode", "gateway", "--scope", "approve:runs"],
+    { encoding: "utf8" },
+  );
+  assert.notEqual(badScope.status, 0);
+  assert.match(badScope.stderr, /unsupported scope/);
+
+  const badTtl = spawnSync(
+    "node",
+    ["tools/sandbox_auth.mjs", "--mode", "gateway", "--ttl", "999999d"],
+    { encoding: "utf8" },
+  );
+  assert.notEqual(badTtl.status, 0);
+  assert.match(badTtl.stderr, /invalid ttl/);
+
+  const badOrigin = spawnSync(
+    "node",
+    ["tools/sandbox_auth.mjs", "--mode", "attach", "--origin", "http://evil.example"],
+    { encoding: "utf8" },
+  );
+  assert.notEqual(badOrigin.status, 0);
+  assert.match(badOrigin.stderr, /invalid --origin/);
+
+  const badRepo = spawnSync(
+    "node",
+    ["tools/sandbox_auth.mjs", "--mode", "attach", "--repo", "../etc/passwd"],
+    { encoding: "utf8" },
+  );
+  assert.notEqual(badRepo.status, 0);
+  assert.match(badRepo.stderr, /invalid --repo/);
+});

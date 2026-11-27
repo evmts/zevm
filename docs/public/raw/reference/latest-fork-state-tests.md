@@ -1,7 +1,3 @@
-# Latest-Fork State Tests
-
-# Latest-Fork State Tests
-
 `zig build verify-latest-state` runs every Cancun and Prague `GeneralStateTests` post case against ZEVM and reports pass, fail, and unsupported counts per fork and per category.
 
 ```bash

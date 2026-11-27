@@ -926,7 +926,7 @@ fn typedSigningHash(
         0x02 => try primitives.Transaction.encodeEip1559ForSigning(allocator, unsigned),
         0x03 => try primitives.Transaction.encodeEip4844ForSigning(allocator, unsigned),
         0x04 => try primitives.Transaction.encodeEip7702ForSigning(allocator, unsigned),
-        else => unreachable,
+        else => @compileError("unsupported typed transaction type"),
     };
     defer allocator.free(encoded);
     return transactionHash(encoded);

@@ -65,10 +65,12 @@ pub const ReleaseMetadataError = error{
 pub fn main() !void {
     runMain() catch |err| {
         if (err == error.InvalidArgs) {
-            std.debug.print(
+            var buffer: [256]u8 = undefined;
+            var stderr = std.fs.File.stderr().writer(&buffer);
+            stderr.interface.writeAll(
                 "usage: release-metadata [--out-dir PATH] [--release-identifier IDENTIFIER]\n",
-                .{},
-            );
+            ) catch return err;
+            stderr.interface.flush() catch return err;
         }
         return err;
     };

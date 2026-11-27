@@ -436,7 +436,9 @@ pub const RebaseTracker = struct {
         var timer = std.time.Timer.start() catch {
             // No monotonic clock: fall back to a single wait.
             if (self.stop_flag.load(.acquire)) return true;
-            self.cond.timedWait(&self.mutex, interval_ns) catch {};
+            self.cond.timedWait(&self.mutex, interval_ns) catch |err| switch (err) {
+                error.Timeout => {},
+            };
             return self.stop_flag.load(.acquire);
         };
         while (!self.stop_flag.load(.acquire)) {

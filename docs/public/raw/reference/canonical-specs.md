@@ -1,7 +1,3 @@
-# Canonical Specs
-
-# Canonical Specs
-
 Use this page as the short index of ZEVM public contract sources.
 
 ## Canonical Contract Sources

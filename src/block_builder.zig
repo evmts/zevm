@@ -556,18 +556,18 @@ pub fn executionTxRlpSize(item: tx_processor.ExecutionTx, chain_id: u256) usize 
         rlpUintSize(std.mem.readInt(u256, &tx.r, .big)) +|
         rlpUintSize(std.mem.readInt(u256, &tx.s, .big));
 
-    if (item.receipt_type == .legacy) {
-        payload +|= rlpUintSize(tx.gas_price) +| rlpUintSize(tx.v);
-        return rlpItemSize(payload);
-    }
-
-    // Typed payloads carry the chain id, a one-byte y parity and an access list.
-    payload +|= rlpUintSize(chain_id) +| 1 +| accessListRlpSize(item.access_list orelse &.{});
     switch (item.receipt_type) {
-        .legacy => unreachable,
-        .eip2930 => payload +|= rlpUintSize(tx.gas_price),
+        .legacy => {
+            payload +|= rlpUintSize(tx.gas_price) +| rlpUintSize(tx.v);
+            return rlpItemSize(payload);
+        },
+        .eip2930 => {
+            payload +|= rlpUintSize(chain_id) +| 1 +| accessListRlpSize(item.access_list orelse &.{}) +|
+                rlpUintSize(tx.gas_price);
+        },
         .eip1559, .eip4844, .eip7702 => {
-            payload +|= rlpUintSize(item.max_priority_fee_per_gas orelse tx.gas_price) +|
+            payload +|= rlpUintSize(chain_id) +| 1 +| accessListRlpSize(item.access_list orelse &.{}) +|
+                rlpUintSize(item.max_priority_fee_per_gas orelse tx.gas_price) +|
                 rlpUintSize(item.max_fee_per_gas orelse tx.gas_price);
         },
     }
@@ -2121,6 +2121,7 @@ pub fn encodeReceiptEnvelope(
     const prefix_len: usize = if (type_byte != null) 1 else 0;
 
     const out = try allocator.alloc(u8, prefix_len + receipt_rlp_len);
+    errdefer allocator.free(out);
     var pos: usize = 0;
     if (type_byte) |byte| {
         out[pos] = byte;
@@ -2133,7 +2134,7 @@ pub fn encodeReceiptEnvelope(
     } else if (receipt.status) |status| {
         out[pos] = if (status.success) 0x01 else 0x80;
         pos += 1;
-    } else unreachable;
+    } else return error.InvalidReceipt;
 
     pos = writeRlpUint(out, pos, receipt.cumulative_gas_used);
     pos = writeRlpBytes(out, pos, &receipt.logs_bloom);

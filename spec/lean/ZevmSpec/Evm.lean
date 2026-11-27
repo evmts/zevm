@@ -483,4 +483,94 @@ theorem execEvm_gasUsed_le (fork : Hardfork) (code calldata : ByteArray) (gasLim
   unfold execEvm
   split <;> simp
 
+/-- `clz256 1 = 255` (only the least-significant bit is set). -/
+theorem clz256_one : clz256 1 = 255 := by
+  decide
+
+/-- `clz256 (2^255) = 0` (the most-significant bit of a 256-bit word is set). -/
+theorem clz256_top_bit : clz256 (2 ^ 255) = 0 := by
+  unfold clz256
+  have h0 : (2 ^ 255 : Nat) ≠ 0 := Nat.ne_of_gt (Nat.pow_pos (by decide))
+  have hlog : Nat.log2 (2 ^ 255) = 255 := by
+    have h1 : 2 ^ 255 ≤ 2 ^ 255 := Nat.le_refl _
+    have h2 : 2 ^ 255 < 2 ^ (255 + 1) := by
+      have : 2 ^ (255 + 1) = 2 ^ 255 * 2 := Nat.pow_succ 2 255
+      omega
+    have hge : 255 ≤ Nat.log2 (2 ^ 255) := (Nat.le_log2 h0).2 h1
+    have hlt : Nat.log2 (2 ^ 255) < 256 := (Nat.log2_lt h0).2 h2
+    omega
+  simp [h0, hlog]
+
+/-- Reading a byte at or past the end of a `ByteArray` always returns 0. -/
+theorem byteAt_out_of_bounds (b : ByteArray) (i : Nat) (h : i ≥ b.size) :
+    Evm.byteAt b i = 0 := by
+  unfold Evm.byteAt
+  have hnot : ¬ (i < b.size) := Nat.not_lt.mpr h
+  simp [hnot]
+
+/-- Every byte read via `Evm.byteAt` is strictly less than 256. -/
+theorem byteAt_lt_256 (b : ByteArray) (i : Nat) :
+    Evm.byteAt b i < 256 := by
+  unfold Evm.byteAt
+  split
+  · exact UInt8.toNat_lt _
+  · omega
+
+/-- Modular exponentiation modulo 0 always yields 0. -/
+theorem powMod_zero_mod (b e : Nat) : Evm.powMod b e 0 = 0 := by
+  simp [Evm.powMod]
+
+/-- `Evm.modexpIterations` is always at least 1 (preventing zero-iteration undercharge). -/
+theorem modexpIterations_pos (expLen expHead mult : Nat) :
+    Evm.modexpIterations expLen expHead mult ≥ 1 := by
+  unfold Evm.modexpIterations
+  exact Nat.le_max_right _ _
+
+/-- EIP-7883 (Osaka): MODEXP always charges at least 500 gas. -/
+theorem modexpGas_osaka_ge_500 (fork : Hardfork) (baseLen expLen modLen expHead : Nat)
+    (h : fork.isAtLeast .osaka = true) :
+    Evm.modexpGas fork baseLen expLen modLen expHead ≥ 500 := by
+  unfold Evm.modexpGas
+  simp only [h, ↓reduceIte]
+  exact Nat.le_max_left _ _
+
+/-- EIP-2565 / EIP-7883 (Berlin+): MODEXP always charges at least 200 gas. -/
+theorem modexpGas_berlin_ge_200 (fork : Hardfork) (baseLen expLen modLen expHead : Nat)
+    (h : fork.isAtLeast .berlin = true) :
+    Evm.modexpGas fork baseLen expLen modLen expHead ≥ 200 := by
+  unfold Evm.modexpGas
+  by_cases ho : fork.isAtLeast .osaka = true
+  · simp only [ho, ↓reduceIte]
+    have h500 : 500 ≤ max 500 ((if max baseLen modLen ≤ 32 then 16 else 2 * ((max baseLen modLen + 7) / 8) * ((max baseLen modLen + 7) / 8)) * Evm.modexpIterations expLen expHead 16) := Nat.le_max_left _ _
+    omega
+  · simp only [ho, Bool.false_eq_true, ↓reduceIte, h]
+    exact Nat.le_max_left _ _
+
+/-- EIP-7883 (Osaka): above 32 bytes, MODEXP uses the exact `2 * words^2` complexity
+    with 16x long-exponent multiplier and 500-gas minimum floor. -/
+theorem modexpGas_osaka_gt32 (fork : Hardfork) (baseLen expLen modLen expHead : Nat)
+    (hfork : fork.isAtLeast .osaka = true)
+    (hgt : max baseLen modLen > 32) :
+    Evm.modexpGas fork baseLen expLen modLen expHead =
+      max 500 (2 * ((max baseLen modLen + 7) / 8) * ((max baseLen modLen + 7) / 8)
+        * Evm.modexpIterations expLen expHead 16) := by
+  unfold Evm.modexpGas
+  have hnotle : ¬ (max baseLen modLen ≤ 32) := Nat.not_le.mpr hgt
+  simp [hfork, hnotle]
+
+/-- Executing empty bytecode always succeeds cleanly. -/
+theorem execEvm_empty_code_success (fork : Hardfork) (calldata : ByteArray) (gasLimit : Nat) :
+    (execEvm fork ByteArray.empty calldata gasLimit).success = true := by
+  simp [execEvm, Evm.run, ByteArray.size]
+
+/-- Executing empty bytecode consumes 0 gas. -/
+theorem execEvm_empty_code_zero_gas (fork : Hardfork) (calldata : ByteArray) (gasLimit : Nat) :
+    (execEvm fork ByteArray.empty calldata gasLimit).gasUsed = 0 := by
+  simp [execEvm, Evm.run, ByteArray.size]
+
+/-- Executing empty bytecode returns empty output. -/
+theorem execEvm_empty_code_empty_output (fork : Hardfork) (calldata : ByteArray) (gasLimit : Nat) :
+    (execEvm fork ByteArray.empty calldata gasLimit).output = ByteArray.empty := by
+  simp [execEvm, Evm.run, ByteArray.size]
+
 end ZevmSpec

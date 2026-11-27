@@ -1,7 +1,3 @@
-# Forked Dev Node
-
-# Forked Dev Node
-
 A forked dev node is still trusted mode. ZEVM keeps local state and mining, and uses the upstream RPC as a backing read source.
 
 > Prerequisite: complete [Installation](./installation) first, including Zig package fetch and a successful source build that produces `./zig-out/bin/zevm`.

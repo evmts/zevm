@@ -1,7 +1,3 @@
-# Active Plan: Public Docs Maintenance
-
-# Active Plan: Public Docs Maintenance
-
 ## Status
 
 This file is a lightweight maintenance plan for the current public docs structure.

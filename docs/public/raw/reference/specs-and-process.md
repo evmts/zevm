@@ -1,7 +1,3 @@
-# Canonical Specs And Docs-First Process
-
-# Canonical Specs And Docs-First Process
-
 Use this page for docs-first update order and process policy.  
 If you only need direct contract-source links, use [Canonical Specs](./canonical-specs).
 

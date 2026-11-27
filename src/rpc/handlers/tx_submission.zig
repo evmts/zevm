@@ -45,7 +45,6 @@ pub const TxSubmissionError = error{
     StateError,
 };
 
-const MAX_INITCODE_SIZE = tx_processor.MAX_INITCODE_SIZE;
 // EIP-4844: version byte of a KZG versioned hash.
 const BLOB_COMMITMENT_VERSION_KZG: u8 = 0x01;
 // EIP-7702: a delegation designator is `0xef0100 || address`.
@@ -309,7 +308,7 @@ pub fn handleSendTransaction(
     };
 
     const hardfork = rt.pendingHardfork();
-    if (hardfork.isAtLeast(.SHANGHAI) and tx.to == null and tx.data.len > MAX_INITCODE_SIZE) {
+    if (hardfork.isAtLeast(.SHANGHAI) and tx.to == null and tx.data.len > tx_processor.MAX_INITCODE_SIZE) {
         return TxSubmissionError.InitcodeTooLarge;
     }
     const intrinsic = computeLegacyIntrinsicGas(tx.to == null, tx.data, hardfork);
@@ -393,7 +392,7 @@ pub fn handleSignTransaction(
     };
 
     const hardfork = rt.pendingHardfork();
-    if (hardfork.isAtLeast(.SHANGHAI) and tx.to == null and tx.data.len > MAX_INITCODE_SIZE) {
+    if (hardfork.isAtLeast(.SHANGHAI) and tx.to == null and tx.data.len > tx_processor.MAX_INITCODE_SIZE) {
         return TxSubmissionError.InitcodeTooLarge;
     }
     const intrinsic = computeLegacyIntrinsicGas(tx.to == null, tx.data, hardfork);

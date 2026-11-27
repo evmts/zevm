@@ -1,7 +1,3 @@
-# ZEVM Specs Index
-
-# ZEVM Specs Index
-
 ## Normative contract
 
 The ZEVM normative product/API contract is defined only by:

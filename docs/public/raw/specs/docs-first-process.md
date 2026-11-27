@@ -1,7 +1,3 @@
-# ZEVM Documentation Process
-
-# ZEVM Documentation Process
-
 ZEVM documentation is contract-first.
 
 ## Purpose

@@ -93,11 +93,22 @@ pub const MAINNET_CANCUN_BLOB_CONFIG = BlobConfig{ .target = 3, .max = 6, .base_
 pub const MAINNET_PRAGUE_BLOB_CONFIG = BlobConfig{ .target = 6, .max = 9, .base_fee_update_fraction = 5_007_716 };
 pub const MAINNET_OSAKA_BLOB_CONFIG = BlobConfig{ .target = 6, .max = 9, .base_fee_update_fraction = 5_007_716 };
 /// Mainnet BPO1 (2025-12-09): target 10, max 15, update fraction 8_346_193.
-pub const MAINNET_BPO1 = BlobScheduleEntry{ .timestamp = 1_765_290_071, .target = 10, .max = 15, .base_fee_update_fraction = 8_346_193 };
+pub const MAINNET_BPO1 = BlobScheduleEntry{
+    .timestamp = 1_765_290_071,
+    .target = 10,
+    .max = 15,
+    .base_fee_update_fraction = 8_346_193,
+};
 /// Mainnet BPO2 (2026-01-07): target 14, max 21, update fraction 11_684_671.
-pub const MAINNET_BPO2 = BlobScheduleEntry{ .timestamp = 1_767_747_671, .target = 14, .max = 21, .base_fee_update_fraction = 11_684_671 };
+pub const MAINNET_BPO2 = BlobScheduleEntry{
+    .timestamp = 1_767_747_671,
+    .target = 14,
+    .max = 21,
+    .base_fee_update_fraction = 11_684_671,
+};
 
-pub const MAINNET_BLOB_SCHEDULE = BlobSchedule.init(&.{ MAINNET_BPO1, MAINNET_BPO2 }) catch unreachable;
+pub const MAINNET_BLOB_SCHEDULE = BlobSchedule.init(&.{ MAINNET_BPO1, MAINNET_BPO2 }) catch
+    @compileError("invalid MAINNET_BLOB_SCHEDULE");
 
 pub const MAINNET_CHAIN_CONFIG = ChainConfig{};
 

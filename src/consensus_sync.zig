@@ -673,9 +673,12 @@ fn genericFromOptimisticUpdate(
 }
 
 fn parseHex32(comptime value: []const u8) [32]u8 {
-    var bytes: [32]u8 = undefined;
-    _ = std.fmt.hexToBytes(&bytes, value) catch unreachable;
-    return bytes;
+    return comptime blk: {
+        if (value.len != 64) @compileError("expected 64-character hex literal for 32-byte hash");
+        var bytes: [32]u8 = undefined;
+        _ = std.fmt.hexToBytes(&bytes, value) catch @compileError("invalid 32-byte hex literal");
+        break :blk bytes;
+    };
 }
 
 test "nextUpdatesBatchSize pages up to the expected current period and stops" {

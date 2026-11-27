@@ -26,7 +26,12 @@ pub const Contracts = struct {
     }
 
     /// Store contract bytecode keyed by its code hash.
-    pub fn put(self: *Contracts, allocator: std.mem.Allocator, code_hash: primitives.Hash.Hash, bytecode: []const u8) !void {
+    pub fn put(
+        self: *Contracts,
+        allocator: std.mem.Allocator,
+        code_hash: primitives.Hash.Hash,
+        bytecode: []const u8,
+    ) !void {
         // Allocate the replacement before touching the map. Freeing the old
         // slice first would leave a dangling entry (and a double free in
         // `deinit`) when the dupe fails.
@@ -46,3 +51,33 @@ pub const Contracts = struct {
         }
     }
 };
+
+test "Contracts put, overwrite without leaks, get, and remove" {
+    const allocator = std.testing.allocator;
+    var contracts = Contracts.init();
+    defer contracts.deinit(allocator);
+
+    var code_hash: primitives.Hash.Hash = [_]u8{0xab} ** 32;
+    try std.testing.expectEqual(@as(?[]const u8, null), contracts.get(code_hash));
+
+    try contracts.put(allocator, code_hash, &[_]u8{ 0x60, 0x00, 0x60, 0x00, 0xf3 });
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{ 0x60, 0x00, 0x60, 0x00, 0xf3 },
+        contracts.get(code_hash).?,
+    );
+
+    // Overwriting an existing code hash frees the previous owned copy cleanly.
+    try contracts.put(allocator, code_hash, &[_]u8{ 0x60, 0x2a, 0x60, 0x00, 0x52 });
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{ 0x60, 0x2a, 0x60, 0x00, 0x52 },
+        contracts.get(code_hash).?,
+    );
+
+    contracts.remove(allocator, code_hash);
+    try std.testing.expectEqual(@as(?[]const u8, null), contracts.get(code_hash));
+    // Removing a missing key is a safe no-op.
+    code_hash[0] = 0xcd;
+    contracts.remove(allocator, code_hash);
+}

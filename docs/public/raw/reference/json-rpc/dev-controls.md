@@ -1,7 +1,3 @@
-# ZEVM Controls
-
-# ZEVM Controls
-
 This page covers trusted-mode `zevm_*` state and control methods.
 
 > Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).

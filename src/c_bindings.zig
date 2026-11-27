@@ -395,7 +395,11 @@ fn classifyReadError(err: anyerror) c_int {
         error.BlockUnavailable => ZEVM_ERR_BLOCK_UNAVAILABLE,
         error.InvalidArg => ZEVM_ERR_INVALID_ARG,
         error.MalformedProof, error.ProofVerifyFailed => ZEVM_ERR_PROOF,
-        error.UpstreamRpcFailed, error.UpstreamTimeout, error.InvalidUpstreamRpcResponse, error.ProofResponseTooLarge => ZEVM_ERR_NETWORK,
+        error.UpstreamRpcFailed,
+        error.UpstreamTimeout,
+        error.InvalidUpstreamRpcResponse,
+        error.ProofResponseTooLarge,
+        => ZEVM_ERR_NETWORK,
         else => ZEVM_ERR_INTERNAL,
     };
 }

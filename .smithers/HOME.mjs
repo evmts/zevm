@@ -122,7 +122,7 @@ export const home = {
             { label: "GitHub Mirror", url: "https://github.com/evmts/zevm" },
           ],
           announcement: {
-            label: "v0.1.0 native Zig engine: Fusaka/Osaka EIPs, Lean 4 spec (140k diff-fuzz cases, 0 divergences), ExEx + Rebase Fork",
+            label: "v0.1.0 native Zig: Osaka/Fusaka EIPs, 62 Lean 4 theorems, 50 fuzz targets",
             url: "https://zevm.sh/docs/audit/",
           },
         },
@@ -137,11 +137,11 @@ export const home = {
           type: "stats",
           stats: [
             { value: "Zig 0.15.2", label: "Native, C ABI, N-API, WASM" },
-            { value: "140k / 0", label: "Lean 4 diff-fuzz cases / divergences" },
+            { value: "62 Theorems", label: "Zero-sorry Lean 4 + 140k diff-fuzz" },
             { value: "99.0% / 98.7%", label: "Cancun & Prague GeneralStateTests" },
-            { value: "30 Targets", label: "Coverage-guided Zig fuzzing" },
+            { value: "50 Targets", label: "Coverage-guided Zig fuzzing" },
+            { value: "100% Tested", label: "Production Zig module test coverage" },
             { value: "11 Platforms", label: "macOS, Linux, FreeBSD, Windows" },
-            { value: "MIT", label: "Open source on Smithers Cloud" },
           ],
         },
         {
@@ -165,8 +165,8 @@ export const home = {
             },
             {
               label: "Formal verification",
-              title: "Lean 4 spec and 30 fuzz targets",
-              text: "Zero-sorry Lean 4 reference spec differentially fuzzed against Zig alongside 14 property suites and Hive rpc-compat transcripts.",
+              title: "62 Lean 4 theorems and 50 fuzz targets",
+              text: "Zero-sorry Lean 4 reference spec differentially fuzzed against Zig alongside 100% module test coverage and Hive rpc-compat transcripts.",
             },
             {
               label: "Embeddable",

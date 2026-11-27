@@ -89,7 +89,11 @@ pub const Database = struct {
         return false;
     }
 
-    fn buildAccountState(self: *Database, allocator: std.mem.Allocator, address: primitives.Address) !primitives.AccountState.AccountState {
+    fn buildAccountState(
+        self: *Database,
+        allocator: std.mem.Allocator,
+        address: primitives.Address,
+    ) !primitives.AccountState.AccountState {
         const balance = try self.state.getBalance(address);
         const nonce = try self.state.getNonce(address);
         const code = try self.state.getCode(address);

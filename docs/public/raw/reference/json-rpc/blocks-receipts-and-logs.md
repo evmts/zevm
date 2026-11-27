@@ -1,7 +1,3 @@
-# Blocks, Receipts, And Logs
-
-# Blocks, Receipts, And Logs
-
 This page covers trusted-mode query methods for blocks, transactions, receipts, and logs.
 
 > Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).

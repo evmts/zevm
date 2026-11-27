@@ -107,9 +107,24 @@ pub const SystemContract = struct {
 /// Every system contract a chain needs through Osaka. Osaka adds none.
 pub const ALL = [_]SystemContract{
     .{ .name = "BEACON_ROOTS_ADDRESS", .address = BEACON_ROOTS_ADDRESS, .code = &BEACON_ROOTS_CODE, .fork = .CANCUN },
-    .{ .name = "HISTORY_STORAGE_ADDRESS", .address = HISTORY_STORAGE_ADDRESS, .code = &HISTORY_STORAGE_CODE, .fork = .PRAGUE },
-    .{ .name = "WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS", .address = WITHDRAWAL_REQUESTS_ADDRESS, .code = &WITHDRAWAL_REQUESTS_CODE, .fork = .PRAGUE },
-    .{ .name = "CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS", .address = CONSOLIDATION_REQUESTS_ADDRESS, .code = &CONSOLIDATION_REQUESTS_CODE, .fork = .PRAGUE },
+    .{
+        .name = "HISTORY_STORAGE_ADDRESS",
+        .address = HISTORY_STORAGE_ADDRESS,
+        .code = &HISTORY_STORAGE_CODE,
+        .fork = .PRAGUE,
+    },
+    .{
+        .name = "WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS",
+        .address = WITHDRAWAL_REQUESTS_ADDRESS,
+        .code = &WITHDRAWAL_REQUESTS_CODE,
+        .fork = .PRAGUE,
+    },
+    .{
+        .name = "CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS",
+        .address = CONSOLIDATION_REQUESTS_ADDRESS,
+        .code = &CONSOLIDATION_REQUESTS_CODE,
+        .fork = .PRAGUE,
+    },
 };
 
 /// Installs every system contract into a genesis state: canonical runtime
@@ -153,8 +168,10 @@ pub fn find(address: primitives.Address) ?SystemContract {
 }
 
 fn hex(comptime text: []const u8) [text.len / 2]u8 {
-    @setEvalBranchQuota(100_000);
-    var out: [text.len / 2]u8 = undefined;
-    _ = std.fmt.hexToBytes(&out, text) catch unreachable;
-    return out;
+    return comptime blk: {
+        @setEvalBranchQuota(100_000);
+        var out: [text.len / 2]u8 = undefined;
+        _ = std.fmt.hexToBytes(&out, text) catch @compileError("invalid system contract hex literal");
+        break :blk out;
+    };
 }

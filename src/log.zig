@@ -67,6 +67,15 @@ pub fn sanitizeRpcMethod(method: []const u8) []const u8 {
     return method;
 }
 
+pub fn debug(
+    comptime scope: @Type(.enum_literal),
+    comptime fmt: []const u8,
+    args: anytype,
+) void {
+    if (!shouldLog(.debug)) return;
+    std.log.scoped(scope).debug(fmt, args);
+}
+
 pub fn info(
     comptime scope: @Type(.enum_literal),
     comptime fmt: []const u8,

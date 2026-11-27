@@ -1,7 +1,3 @@
-# Run Light Mode
-
-# Run Light Mode
-
 Light mode is ZEVM's read-only, proof-backed, consensus-anchored runtime.
 
 > Prerequisite: complete [Installation](./installation) first, including Zig package fetch and a successful source build that produces `./zig-out/bin/zevm`.

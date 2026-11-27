@@ -10,10 +10,13 @@ on:
       - "cloudflare/zevm-docs-worker/**"
       - ".smithers/wiki/**"
       - ".smithers/history/**"
+      - ".smithers/HOME.mjs"
+      - ".smithers/home.json"
       - ".agents/uphill/**"
       - "tools/generate_llms_txt.mjs"
       - "tools/audit_report.mjs"
       - "tools/wiki_sync.mjs"
+      - "tools/home_projection.mjs"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
@@ -25,7 +28,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-publish:
+  build:
     name: Build Docs, llms.txt & Lighthouse Audit
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -44,18 +47,19 @@ jobs:
         with:
           version: "0.15.2"
 
-      - name: Verify docs mirror, llms.txt, and Obsidian wiki
+      - name: Verify docs mirror, llms.txt, home projection, and Obsidian wiki
         run: |
           node tools/docs_mirror.mjs
           node tools/generate_llms_txt.mjs --check
+          node tools/home_projection.mjs --check
           node tools/wiki_sync.mjs --check --out .smithers/reports/wiki-feed.json
 
-      - name: Run Uphill and generate Lighthouse Backpressure Audit Report
-        uses: wevm/uphill@main
+      - name: Run Uphill (SHA-pinned)
+        uses: wevm/uphill@f71fba4d199409cbc8bf00d713dab4b24d91b980
 
       - name: Render Lighthouse Audit UI into docs/public/audit/index.html
         env:
-          SMITHERS_TRUST: ${{ github.event_name == 'pull_request' && 'untrusted' || 'controlled-sandbox' }}
+          SMITHERS_TRUST: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'controlled-sandbox' || 'untrusted' }}
         run: |
           node tools/audit_report.mjs \
             --input .uphill/report.json \
@@ -72,28 +76,60 @@ jobs:
           test -s docs/dist/llms.txt
           test -s docs/dist/audit/index.html
 
-      - name: Deploy zevm.sh docs worker on main (when Cloudflare credentials are configured)
-        if: github.event_name != 'pull_request'
+      - name: Upload built docs and feeds for trunk deploy
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: zevm-docs-bundle
+          path: |
+            docs/dist/
+            .uphill/factory-feed.json
+            .smithers/reports/wiki-feed.json
+          retention-days: 7
+
+  deploy:
+    name: Deploy zevm.sh & Sync Smithers Cloud Feeds (trunk)
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: trunk
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Download built docs bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: zevm-docs-bundle
+          path: .
+
+      - name: Deploy zevm.sh docs worker (when trunk Cloudflare credentials are configured)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
           ALCHEMY_PASSWORD: ${{ secrets.ALCHEMY_PASSWORD }}
         working-directory: cloudflare/zevm-docs-worker
         run: |
           if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
-            echo "CLOUDFLARE_API_TOKEN not configured; skipping live zevm.sh deploy"
+            echo "CLOUDFLARE_API_TOKEN not configured on trunk environment; skipping live zevm.sh deploy"
             exit 0
           fi
-          npm ci
-          npm run deploy
+          npm install --no-audit --no-fund
+          rm -rf public && mkdir -p public && cp -R ../../docs/dist/. public/
+          USER=williamcory npx alchemy deploy
 
-      - name: Sync Obsidian wiki and Backpressure feeds to Smithers Cloud on main
-        if: github.event_name != 'pull_request'
+      - name: Sync Obsidian wiki and Backpressure feeds to Smithers Cloud
         env:
           SMITHERS_FEED_KEY: ${{ secrets.SMITHERS_FEED_KEY }}
         run: |
           if [ -z "${SMITHERS_FEED_KEY:-}" ]; then
-            echo "SMITHERS_FEED_KEY not configured; skipping live Smithers Cloud feed push"
+            echo "SMITHERS_FEED_KEY not configured on trunk environment; skipping live Smithers Cloud feed push"
             exit 0
           fi
           node tools/wiki_sync.mjs --push

@@ -43,7 +43,29 @@ const repo = flag("--repo", "evmts/zevm");
 const jsonOut = hasFlag("--json");
 
 const INTENT_RE = /^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/;
-const ALLOWED_SCOPES = new Set(["read:runs", "write:runs", "approve:runs"]);
+const ORIGIN_RE = /^https:\/\/[A-Za-z0-9.-]+(?::\d+)?$/;
+const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+// Agents may read or run workflows, never mint human-only approval/merge scopes.
+const ALLOWED_SCOPES = new Set(["read:runs", "write:runs"]);
+const MAX_TTL_SECONDS = 24 * 60 * 60;
+
+if (!ORIGIN_RE.test(origin)) {
+  console.error(`sandbox-auth: invalid --origin ${JSON.stringify(origin)} (expected https://<host>)`);
+  process.exit(1);
+}
+if (!REPO_RE.test(repo)) {
+  console.error(`sandbox-auth: invalid --repo ${JSON.stringify(repo)} (expected owner/name)`);
+  process.exit(1);
+}
+
+function parseTtlSeconds(spec) {
+  const m = String(spec).match(/^(\d+)([smhd])$/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  const mult = { s: 1, m: 60, h: 3600, d: 86400 }[m[2]];
+  if (!Number.isSafeInteger(n) || n <= 0) return null;
+  return n * mult;
+}
 
 function makeDemoCodeVerifier() {
   // RFC 7636 PKCE verifier (never reused; freshly generated per handoff if requested)
@@ -108,8 +130,9 @@ if (mode === "attach") {
     }
   }
   const ttl = flag("--ttl", "30m");
-  if (!/^\d+[smhd]$/.test(ttl)) {
-    console.error(`sandbox-auth: invalid ttl ${JSON.stringify(ttl)} (expected e.g. 15m, 1h)`);
+  const ttlSec = parseTtlSeconds(ttl);
+  if (ttlSec === null || ttlSec > MAX_TTL_SECONDS) {
+    console.error(`sandbox-auth: invalid ttl ${JSON.stringify(ttl)} (expected 1s..24h, e.g. 15m, 1h)`);
     process.exit(1);
   }
   const runId = flag("--run", null);

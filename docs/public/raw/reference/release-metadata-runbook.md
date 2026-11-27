@@ -1,7 +1,3 @@
-# Release Metadata Runbook
-
-# Release Metadata Runbook
-
 Use this runbook to reproduce a ZEVM release/build boundary and audit light-mode baked defaults against published release metadata artifacts.
 
 Canonical release metadata location: [ZEVM release metadata](https://github.com/evmts/zevm/releases).

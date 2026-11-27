@@ -15,7 +15,11 @@ pub const Verifier = struct {
         self.settings = null;
     }
 
-    pub fn verify(self: *Verifier, allocator: std.mem.Allocator, sidecars: []const transaction_encoding.BlobSidecar) !void {
+    pub fn verify(
+        self: *Verifier,
+        allocator: std.mem.Allocator,
+        sidecars: []const transaction_encoding.BlobSidecar,
+    ) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (self.settings == null) self.settings = try loadSettings(allocator);

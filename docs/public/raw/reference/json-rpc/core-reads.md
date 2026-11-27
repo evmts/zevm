@@ -1,7 +1,3 @@
-# Core Reads
-
-# Core Reads
-
 This page defines trusted-mode core reads and marks the subset that is also available in light mode.
 
 > Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).

@@ -86,14 +86,6 @@ export const factory = S.Factory({
     "change.landed": {
       flow: ["wiki-refresh", "docs-publish"],
       description: "Verify the Obsidian wiki, mythical history, and docs bundle after every landing"
-    },
-    "github.push:main": {
-      flow: ["wiki-refresh", "docs-publish"],
-      description: "Keep wiki citations, llms.txt, and docs artifacts aligned with main"
-    },
-    "schedule:17 9 * * 1": {
-      flow: "conformance-review",
-      description: "Weekly Monday conformance, native pin, and benchmark audit"
     }
   },
   triggers: {
@@ -115,7 +107,7 @@ export const factory = S.Factory({
     issues: "two-way",
     changes: "land",
     maintainers: ["roninjin10"],
-    dailyTokens: 1_000_000_000,
+    dailyTokens: 100_000_000,
     protectedPaths: [
       ".smithers",
       ".agents/uphill",

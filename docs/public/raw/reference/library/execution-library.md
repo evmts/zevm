@@ -1,7 +1,3 @@
-# Execution Library
-
-# Execution library
-
 The root ZEVM module exports transaction processing, block building, consensus verification, chain import, MPT proofs, and mining configuration. Reach for it when building a Zig application that needs execution primitives without starting the JSON-RPC server.
 
 ## Working example

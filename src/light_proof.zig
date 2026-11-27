@@ -501,7 +501,7 @@ fn accountProofParams(
     const address_hex = addressHex(address);
     if (storage_slot) |slot| {
         var slot_buf: [66]u8 = undefined;
-        const slot_hex = std.fmt.bufPrint(&slot_buf, "0x{x:0>64}", .{slot}) catch unreachable;
+        const slot_hex = try std.fmt.bufPrint(&slot_buf, "0x{x:0>64}", .{slot});
         return std.fmt.allocPrint(
             allocator,
             "[\"{s}\",[\"{s}\"],\"{s}\"]",

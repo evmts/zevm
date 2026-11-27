@@ -1,4 +1,26 @@
 const DOCS_PATH_PREFIX = "/docs";
+
+const SECURITY_HEADERS = {
+    "x-content-type-options": "nosniff",
+    "referrer-policy": "no-referrer",
+    "x-frame-options": "SAMEORIGIN",
+};
+
+function withSecurityHeaders(response, extra = {}) {
+    const headers = new Headers(response.headers);
+    for (const [k, v] of Object.entries(SECURITY_HEADERS)) {
+        if (!headers.has(k)) headers.set(k, v);
+    }
+    for (const [k, v] of Object.entries(extra)) {
+        headers.set(k, v);
+    }
+    return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+    });
+}
+
 export default {
     async fetch(request, env) {
         const url = new URL(request.url);
@@ -14,11 +36,11 @@ export default {
             return serveTextAsset(request, env, url.pathname, "text/plain; charset=utf-8");
         }
         if (url.pathname === DOCS_PATH_PREFIX) {
-            return serveAsset(request, env, "/");
+            return withSecurityHeaders(await serveAsset(request, env, "/"));
         }
         if (url.pathname.startsWith(`${DOCS_PATH_PREFIX}/`)) {
             if (url.pathname === `${DOCS_PATH_PREFIX}/404` || url.pathname === `${DOCS_PATH_PREFIX}/404/`) {
-                return new Response("Not found", { status: 404 });
+                return new Response("Not found", { status: 404, headers: SECURITY_HEADERS });
             }
             const assetPath = url.pathname.slice(DOCS_PATH_PREFIX.length) || "/";
             if (assetPath === "/llms.txt" || assetPath === "/llms-full.txt") {
@@ -30,51 +52,52 @@ export default {
             if (!hasFileExtension(url.pathname) && !url.pathname.endsWith("/")) {
                 const redirectUrl = new URL(request.url);
                 redirectUrl.pathname = `${url.pathname}/`;
-                return Response.redirect(redirectUrl, 302);
+                return Response.redirect(redirectUrl, 301);
             }
             const response = await serveAsset(request, env, assetPath);
-            return response.status === 404 ? new Response("Not found", { status: 404 }) : response;
+            return response.status === 404
+                ? new Response("Not found", { status: 404, headers: SECURITY_HEADERS })
+                : withSecurityHeaders(response);
         }
         if (isExportAssetPath(url.pathname)) {
-            return serveAsset(request, env, url.pathname);
+            return withSecurityHeaders(await serveAsset(request, env, url.pathname));
         }
         if (request.method === "GET" || request.method === "HEAD") {
             const redirectUrl = new URL(request.url);
             redirectUrl.pathname = `${DOCS_PATH_PREFIX}${url.pathname}`;
-            return Response.redirect(redirectUrl, 302);
+            return Response.redirect(redirectUrl, 301);
         }
-        return new Response("Not found", { status: 404 });
+        return new Response("Not found", { status: 404, headers: SECURITY_HEADERS });
     },
 };
+
 function isExportAssetPath(pathname) {
     return (pathname.startsWith("/_astro/") ||
         pathname.startsWith("/pagefind/") ||
         pathname.startsWith("/raw/") ||
-        pathname.startsWith("/audit/") ||
         pathname === "/favicon.svg" ||
         pathname === "/sitemap-index.xml" ||
         pathname === "/sitemap-0.xml");
 }
+
 function hasFileExtension(pathname) {
     const lastSegment = pathname.split("/").pop() ?? "";
     return lastSegment.includes(".");
 }
+
 function serveAsset(request, env, pathname) {
     const assetUrl = new URL(request.url);
     assetUrl.pathname = pathname;
     return env.ASSETS.fetch(new Request(assetUrl, request));
 }
+
 async function serveTextAsset(request, env, pathname, contentType) {
     const response = await serveAsset(request, env, pathname);
     if (response.status === 404) {
-        return new Response("Not found", { status: 404 });
+        return new Response("Not found", { status: 404, headers: SECURITY_HEADERS });
     }
-    const headers = new Headers(response.headers);
-    headers.set("content-type", contentType);
-    headers.set("access-control-allow-origin", "*");
-    return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers,
+    return withSecurityHeaders(response, {
+        "content-type": contentType,
+        "access-control-allow-origin": "*",
     });
 }

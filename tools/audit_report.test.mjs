@@ -93,6 +93,11 @@ test("audit_report generates Lighthouse HTML, Factory feed JSON, and PR Markdown
   assert.match(html, /Untrusted External Run/);
   assert.match(html, /gauge-svg/);
   assert.match(html, /Copy fix prompt/);
+  assert.match(html, /Connect Agent \/ MCP/);
+  assert.match(html, /id="mcpModal"/);
+  assert.match(html, /id="downloadJsonBtn"/);
+  assert.match(html, /id="downloadMdBtn"/);
+  assert.match(html, /id="auditEmptyState"/);
 
   const feed = JSON.parse(fs.readFileSync(outFeed, "utf8"));
   assert.equal(feed.set.backpressure.visibility, "public");

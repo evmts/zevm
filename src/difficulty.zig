@@ -64,7 +64,7 @@ pub fn calcDifficulty(
         .homestead => @max(1 - @divFloor(elapsed, 10), -99),
         else => @max(uncle_factor - @divFloor(elapsed, 9), -99),
     };
-    const change = (parent_difficulty / 2048) * @as(u256, @abs(adjustment));
+    const change = (parent_difficulty / 2048) *| @as(u256, @abs(adjustment));
     const adjusted = if (adjustment < 0) parent_difficulty -| change else parent_difficulty +| change;
     const base = @max(MINIMUM_DIFFICULTY, adjusted);
 
@@ -76,7 +76,7 @@ pub fn calcDifficulty(
         .london => 9_700_000,
         .arrow_glacier => 10_700_000,
         .gray_glacier => 11_400_000,
-        .merge => unreachable,
+        .merge => return 0,
     };
     const period = (current_block_number -| bomb_delay) / 100_000;
     if (period < 2) return base;

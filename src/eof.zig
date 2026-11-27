@@ -30,7 +30,6 @@ pub const ValidationError = error{
     InvalidReturn,
 };
 
-const Allocator = std.mem.Allocator;
 const max_container_size = 49152; // EIP-3860 MAX_INITCODE_SIZE
 const max_section_height = 1023;
 const non_returning = 0x80;
@@ -111,7 +110,7 @@ const Pending = struct {
     allow_short_data: bool = false,
 };
 
-fn parse(arena: Allocator, item: Pending) ValidationError!Container {
+fn parse(arena: std.mem.Allocator, item: Pending) ValidationError!Container {
     var cursor = Cursor{ .rest = item.bytes };
     for ([_]u8{ 0xef, 0x00, 0x01, 0x01 }) |byte| try cursor.marker(byte);
     const type_size = try cursor.word();
@@ -151,19 +150,28 @@ fn parse(arena: Allocator, item: Pending) ValidationError!Container {
 
 /// Validate one complete EOF1 container, including every nested initcode and
 /// runtime template. Code and data are borrowed only for the duration of the call.
-pub fn validateContainer(allocator: Allocator, code: []const u8, kind: ContainerKind) ValidationError!void {
+pub fn validateContainer(allocator: std.mem.Allocator, code: []const u8, kind: ContainerKind) ValidationError!void {
     return validate(allocator, code, kind, .reject_jumpdest);
 }
 
 /// The Osaka fixtures use the EIP-4750 assignment of 0x5b to NOP. The fixture
 /// runner uses this entry point to verify divergences from the strict opcode ban.
-pub fn validateWithEip4750Nop(allocator: Allocator, code: []const u8, kind: ContainerKind) ValidationError!void {
+pub fn validateWithEip4750Nop(
+    allocator: std.mem.Allocator,
+    code: []const u8,
+    kind: ContainerKind,
+) ValidationError!void {
     return validate(allocator, code, kind, .eof_nop);
 }
 
 const Opcode5b = enum { reject_jumpdest, eof_nop };
 
-fn validate(allocator: Allocator, code: []const u8, kind: ContainerKind, opcode_5b: Opcode5b) ValidationError!void {
+fn validate(
+    allocator: std.mem.Allocator,
+    code: []const u8,
+    kind: ContainerKind,
+    opcode_5b: Opcode5b,
+) ValidationError!void {
     if (code.len > max_container_size) return error.ContainerTooLarge;
     var pending: std.ArrayList(Pending) = .empty;
     defer pending.deinit(allocator);
@@ -283,7 +291,7 @@ fn branch(layout: []Instruction, pc: usize, next: usize, offset: []const u8, hei
 }
 
 fn validateSection(
-    allocator: Allocator,
+    allocator: std.mem.Allocator,
     container: Container,
     index: usize,
     kind: ContainerKind,
@@ -329,7 +337,9 @@ fn validateSection(
                     if (target.outputs == non_returning) return error.InvalidReturn;
                     after = try h.after(effect(target.inputs, target.outputs));
                 } else if (target.outputs != non_returning) {
-                    if (section.outputs == non_returning or section.outputs < target.outputs) return error.InvalidReturn;
+                    if (section.outputs == non_returning or section.outputs < target.outputs) {
+                        return error.InvalidReturn;
+                    }
                     if (!h.exactly(section.outputs - target.outputs + target.inputs)) return error.InvalidReturn;
                     can_return = true;
                 }

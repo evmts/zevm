@@ -3,23 +3,23 @@ title: Smithers Cloud Coding Factory
 description: How evmts/zevm runs on Smithers Cloud with shared object-store caching, Lighthouse backpressure audits, Obsidian wiki, authenticated MCP, and untrusted contributor isolation.
 ---
 
-# Smithers Cloud Coding Factory
-
 ZEVM is developed publicly through its Smithers Cloud Coding Factory at [smithers.sh/evmts/zevm](https://smithers.sh/evmts/zevm), continuously mirrored to GitHub (`evmts/zevm`).
 
-```mermaid
-flowchart LR
-  Contributor["Contributor / Agent"] -->|"One-time attach or OAuth 2.1"| MCP["smithers.sh/evmts/zevm/mcp"]
-  Contributor -->|"Untrusted PR / local run (read-only cache)"| Cache["build.smithers.sh (Shared Object Store)"]
-  Maintainer["Maintainer (person-only)"] -->|"pr/Merge on Smithers Cloud"| Main["GitHub main"]
-  Main -->|"push: main (controlled sandbox)"| CacheWrite["build.smithers.sh Write + CI"]
-  Main -->|"push: main"| Docs["zevm.sh Docs + llms.txt + Lighthouse Audit"]
-  Main -->|"tag: v*"| Release["11-Platform npm + WASM + GitHub Release"]
+```text
+Contributor / Agent
+  ├── One-time attach / OAuth 2.1 ──► https://smithers.sh/evmts/zevm/mcp
+  └── Untrusted PR / local run ─────► https://build.smithers.sh (read-only, pr-<N> namespace)
+
+Maintainer (person-only approve & merge)
+  └── pr/Merge on Smithers Cloud ───► GitHub main (mirror: push, changes: land)
+        ├── push: main ─────────────► Controlled sandbox CI + build.smithers.sh write
+        ├── push: main ─────────────► https://zevm.sh Docs + llms.txt + Lighthouse Audit
+        └── tag:  v*   ─────────────► 11-Platform npm + WASM + Canonical GitHub Release
 ```
 
 ## Personalized 3-Audience Factory UI
 
-`.smithers/FACTORY.ts` projects `.smithers/home.json` (`docs: "https://zevm.sh/docs/llms.txt"`, `contributors: "role"`) with tailored sections for three audiences:
+`.smithers/HOME.mjs` projects `.smithers/home.json` (`docs: "https://zevm.sh/docs/llms.txt"`, `contributors: "role"`) with tailored sections for three audiences:
 
 - **Maintainers (`Today`):** one-key `New branch` (`b`), live issue/PR triage queue, committed TODO stack, recent flow runs, and maintainer flows.
 - **Contributors (`Contribute`):** local setup, incremental `smthrs ci`, Lighthouse backpressure commands, untrusted execution guidelines, one-time sandbox auth, and workspace links.

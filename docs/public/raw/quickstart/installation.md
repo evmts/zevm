@@ -1,7 +1,3 @@
-# Installation
-
-# Installation
-
 ZEVM can be built from source or from release artifact jobs. Source builds compile sibling checkouts of Voltaire and Guillotine Mini: `build.zig.zon` resolves `../voltaire` and `../guillotine-mini` by path, and `native-dependencies.json` pins each to a commit.
 
 ## Prerequisites

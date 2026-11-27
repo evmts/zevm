@@ -1,7 +1,3 @@
-# CI And Release Gates
-
-# CI And Release Gates
-
 This page maps the local release-readiness commands to the root GitHub Actions workflow.
 
 ## Local Gate Commands

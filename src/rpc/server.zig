@@ -66,7 +66,6 @@ const ACCEPT_BACKOFF_INITIAL_NS = 5 * std.time.ns_per_ms;
 const ACCEPT_BACKOFF_MAX_NS = 500 * std.time.ns_per_ms;
 pub const REQUEST_HEAD_DEADLINE_MS: i64 = 10_000;
 pub const REQUEST_BODY_DEADLINE_MS: i64 = 30_000;
-const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
 
 /// Deprecated name for `RpcServer.Options`.
 pub const TransportLimits = RpcServer.Options;
@@ -228,8 +227,8 @@ pub const RpcServer = struct {
     }
 
     pub fn boundHost(self: *const RpcServer, buffer: *[64]u8) []const u8 {
-        const endpoint = std.fmt.bufPrint(buffer, "{f}", .{self.address()}) catch unreachable;
-        const port_separator = std.mem.lastIndexOfScalar(u8, endpoint, ':').?;
+        const endpoint = std.fmt.bufPrint(buffer, "{f}", .{self.address()}) catch return "";
+        const port_separator = std.mem.lastIndexOfScalar(u8, endpoint, ':') orelse return endpoint;
         return std.mem.trim(u8, endpoint[0..port_separator], "[]");
     }
 
@@ -391,7 +390,9 @@ pub const RpcServer = struct {
 
         var node = self.active_head;
         while (node) |ctx| : (node = ctx.next) {
-            std.posix.shutdown(ctx.connection.stream.handle, .both) catch {};
+            std.posix.shutdown(ctx.connection.stream.handle, .both) catch |err| {
+                log.debug(.rpc, "active_connection_shutdown_failed error={s}", .{@errorName(err)});
+            };
         }
     }
 
@@ -478,7 +479,9 @@ pub fn connectableAddress(bound: std.net.Address) std.net.Address {
 }
 
 fn sendRawResponse(stream: std.net.Stream, bytes: []const u8) void {
-    stream.writeAll(bytes) catch {};
+    stream.writeAll(bytes) catch |err| {
+        log.debug(.rpc, "raw_response_write_failed error={s}", .{@errorName(err)});
+    };
 }
 
 fn sameIp(a: std.net.Address, b: std.net.Address) bool {
@@ -887,9 +890,9 @@ pub fn engineJwtAuthorization(allocator: std.mem.Allocator, secret: []const u8, 
     signing_input[header_segment.len] = '.';
     _ = encoder.encode(signing_input[header_segment.len + 1 ..], payload_json);
 
-    var signature: [HmacSha256.mac_length]u8 = undefined;
-    HmacSha256.create(&signature, signing_input, secret);
-    var signature_segment: [encoder.calcSize(HmacSha256.mac_length)]u8 = undefined;
+    var signature: [std.crypto.auth.hmac.sha2.HmacSha256.mac_length]u8 = undefined;
+    std.crypto.auth.hmac.sha2.HmacSha256.create(&signature, signing_input, secret);
+    var signature_segment: [encoder.calcSize(std.crypto.auth.hmac.sha2.HmacSha256.mac_length)]u8 = undefined;
     _ = encoder.encode(&signature_segment, &signature);
 
     return std.fmt.allocPrint(allocator, "Bearer {s}.{s}", .{ signing_input, signature_segment });
@@ -1014,15 +1017,15 @@ fn jwtSignatureValid(
         else => return false,
     };
     defer allocator.free(signature);
-    if (signature.len != HmacSha256.mac_length) return false;
+    if (signature.len != std.crypto.auth.hmac.sha2.HmacSha256.mac_length) return false;
 
-    var expected: [HmacSha256.mac_length]u8 = undefined;
-    HmacSha256.create(&expected, signing_input, secret);
+    var expected: [std.crypto.auth.hmac.sha2.HmacSha256.mac_length]u8 = undefined;
+    std.crypto.auth.hmac.sha2.HmacSha256.create(&expected, signing_input, secret);
 
-    var actual: [HmacSha256.mac_length]u8 = undefined;
+    var actual: [std.crypto.auth.hmac.sha2.HmacSha256.mac_length]u8 = undefined;
     @memcpy(actual[0..], signature);
 
-    return std.crypto.timing_safe.eql([HmacSha256.mac_length]u8, expected, actual);
+    return std.crypto.timing_safe.eql([std.crypto.auth.hmac.sha2.HmacSha256.mac_length]u8, expected, actual);
 }
 
 fn decodeBase64UrlNoPad(allocator: std.mem.Allocator, source: []const u8) ![]u8 {

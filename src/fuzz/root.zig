@@ -11,6 +11,7 @@ test {
     _ = @import("block_chain_import_prop_test.zig");
     _ = @import("config_cli_genesis_fuzz_test.zig");
     _ = @import("engine_api_fuzz_test.zig");
+    _ = @import("eof_difficulty_schedule_fuzz_test.zig");
     _ = @import("light_consensus_fuzz_test.zig");
     _ = @import("mpt_kzg_fixture_fuzz_test.zig");
     _ = @import("node_runtime_rpc_stateful_fuzz_test.zig");

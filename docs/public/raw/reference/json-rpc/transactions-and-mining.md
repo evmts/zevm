@@ -1,7 +1,3 @@
-# Transactions And Mining
-
-# Transactions And Mining
-
 This page covers trusted-mode transaction submission plus mining, txpool, block-environment, time, and fork-source controls.
 
 > Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).

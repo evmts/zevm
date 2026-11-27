@@ -172,7 +172,8 @@ pub const HostAdapter = struct {
     }
 
     pub fn accountIsEmpty(self: *HostAdapter, address: primitives.Address) Error!bool {
-        const account = self.state.journaled_state.getAccount(address) catch |err| return hostErrorToError(mapStateReadError(err));
+        const account = self.state.journaled_state.getAccount(address) catch |err|
+            return hostErrorToError(mapStateReadError(err));
         const code = self.state.getCode(address) catch |err| return hostErrorToError(mapStateReadError(err));
         return account.balance == 0 and account.nonce == 0 and code.len == 0;
     }

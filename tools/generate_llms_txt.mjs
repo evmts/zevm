@@ -83,7 +83,11 @@ function parsePage(rel, raw) {
     description = (firstPara || `ZEVM documentation page ${title}`).slice(0, 220);
   }
   const slug = rel.replace(/\.(?:md|mdx)$/, "");
-  const cleanMd = `# ${title}\n\n${body.trim()}\n`;
+  const trimmedBody = body.trim();
+  const bodyWithoutDupH1 = trimmedBody.replace(/^#\s+([^\n]+)\n+/, (full, h1Text) =>
+    h1Text.trim().toLowerCase() === title.trim().toLowerCase() ? "" : full,
+  );
+  const cleanMd = `${bodyWithoutDupH1.trim()}\n`;
   return { rel, slug, title: title.slice(0, 180), description: description.slice(0, 260), cleanMd };
 }
 
@@ -137,7 +141,22 @@ const llmsFullTxt =
 const llmsPath = path.join(publicDir, "llms.txt");
 const llmsFullPath = path.join(publicDir, "llms-full.txt");
 
+function walkExistingRaw(dir, out = []) {
+  if (!fs.existsSync(dir)) return out;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) walkExistingRaw(full, out);
+    else if (entry.isFile() && entry.name.endsWith(".md")) {
+      out.push(path.relative(rawDir, full).split(path.sep).join("/"));
+    }
+  }
+  return out;
+}
+
+const expectedRaw = new Set(pages.map((p) => `${p.slug}.md`));
+
 if (writeMode) {
+  fs.rmSync(rawDir, { recursive: true, force: true });
   fs.mkdirSync(rawDir, { recursive: true });
   fs.writeFileSync(llmsPath, llmsTxt);
   fs.writeFileSync(llmsFullPath, llmsFullTxt);
@@ -160,6 +179,11 @@ if (writeMode) {
     if (!fs.existsSync(dest) || fs.readFileSync(dest, "utf8") !== page.cleanMd) {
       errors.push(`docs/public/raw/${page.slug}.md is missing or out of date`);
       break;
+    }
+  }
+  for (const existing of walkExistingRaw(rawDir)) {
+    if (!expectedRaw.has(existing)) {
+      errors.push(`docs/public/raw/${existing} is an orphan (run node tools/generate_llms_txt.mjs --write)`);
     }
   }
   if (errors.length > 0) {

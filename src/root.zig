@@ -65,6 +65,7 @@ test {
     _ = @import("beacon_api_test.zig");
     _ = @import("consensus_sync_test.zig");
     _ = @import("light_proof.zig");
+    _ = @import("light_default_checkpoints_test.zig");
     _ = @import("checkpoint_test.zig");
     _ = @import("chain_import_test.zig");
     _ = @import("console_log.zig");

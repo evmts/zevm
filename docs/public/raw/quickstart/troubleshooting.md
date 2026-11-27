@@ -1,7 +1,3 @@
-# Troubleshooting
-
-# Troubleshooting
-
 Before troubleshooting startup/runtime behavior, confirm [Installation](./installation) prerequisites are satisfied (Zig version, Rust/Cargo, pinned sibling checkouts of `voltaire` and `guillotine-mini`, and successful source build output at `./zig-out/bin/zevm`).
 
 ## Capture Startup Logs (Phase 1)

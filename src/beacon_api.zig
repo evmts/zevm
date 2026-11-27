@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const primitives = @import("primitives");
+const log = @import("log.zig");
 
 const MAX_EXTRA_DATA_BYTES: usize = 32;
 
@@ -24,7 +25,12 @@ pub const UpstreamDeadline = struct {
         try self.startWithTimeouts(connection, 15 * std.time.ms_per_s, 30 * std.time.ns_per_s);
     }
 
-    fn startWithTimeouts(self: *UpstreamDeadline, connection: *std.http.Client.Connection, idle_ms: u32, budget_ns: u64) !void {
+    fn startWithTimeouts(
+        self: *UpstreamDeadline,
+        connection: *std.http.Client.Connection,
+        idle_ms: u32,
+        budget_ns: u64,
+    ) !void {
         const socket = connection.stream_reader.getStream().handle;
         const timeout = if (builtin.os.tag == .windows) idle_ms else std.posix.timeval{
             .sec = @intCast(idle_ms / std.time.ms_per_s),
@@ -36,10 +42,18 @@ pub const UpstreamDeadline = struct {
         self.watchdog = try std.Thread.spawn(.{}, interruptAtDeadline, .{ &self.done, socket, self.timer, budget_ns });
     }
 
-    fn interruptAtDeadline(done: *std.Thread.ResetEvent, socket: std.net.Stream.Handle, started: std.time.Timer, budget_ns: u64) void {
+    fn interruptAtDeadline(
+        done: *std.Thread.ResetEvent,
+        socket: std.net.Stream.Handle,
+        started: std.time.Timer,
+        budget_ns: u64,
+    ) void {
         var timer = started;
         done.timedWait(budget_ns -| timer.read()) catch {
-            std.posix.shutdown(socket, .both) catch {};
+            std.posix.shutdown(socket, .both) catch |err| switch (err) {
+                error.SocketNotConnected => {},
+                else => log.debug(.consensus_sync, "deadline_socket_shutdown_failed error={s}", .{@errorName(err)}),
+            };
         };
     }
 
@@ -339,7 +353,9 @@ pub const BeaconApi = struct {
 
 /// Maps a `ReadFailed` body read error using `response.bodyErr()` queried
 /// *after* the read failed. Decompression failures leave `body_err == null`.
-fn resolveBodyReadError(body_err: ?std.http.Reader.BodyError) (std.http.Reader.BodyError || error{InvalidCompressedResponse}) {
+fn resolveBodyReadError(
+    body_err: ?std.http.Reader.BodyError,
+) (std.http.Reader.BodyError || error{InvalidCompressedResponse}) {
     return body_err orelse error.InvalidCompressedResponse;
 }
 

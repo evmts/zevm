@@ -245,7 +245,12 @@ fn resolveEngineJwtSecret(
 
     try std.fs.cwd().makePath(GENERATED_JWT_SECRET_DIR);
     const file = try std.fs.cwd().createFile(GENERATED_JWT_SECRET_PATH, .{ .exclusive = true, .mode = 0o600 });
-    errdefer std.fs.cwd().deleteFile(GENERATED_JWT_SECRET_PATH) catch {};
+    errdefer std.fs.cwd().deleteFile(GENERATED_JWT_SECRET_PATH) catch |cleanup_err| {
+        zevm.log.warn(.startup, "engine_jwt_cleanup_failed path={s} error={s}", .{
+            GENERATED_JWT_SECRET_PATH,
+            @errorName(cleanup_err),
+        });
+    };
     defer file.close();
 
     std.crypto.random.bytes(out);

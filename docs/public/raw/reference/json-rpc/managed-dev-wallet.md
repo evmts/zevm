@@ -1,7 +1,3 @@
-# Managed Dev Wallet (Trusted Mode)
-
-# Managed Dev Wallet (Trusted Mode)
-
 This page defines ZEVM trusted mode's exact deterministic managed dev-wallet contract.
 
 > Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).

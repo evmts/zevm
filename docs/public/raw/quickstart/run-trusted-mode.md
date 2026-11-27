@@ -1,7 +1,3 @@
-# Run Trusted Mode
-
-# Run Trusted Mode
-
 Trusted mode is ZEVM's writable local dev-node runtime.
 
 > Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).

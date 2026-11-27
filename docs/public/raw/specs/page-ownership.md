@@ -1,7 +1,3 @@
-# Public Docs Page Ownership and Anchors
-
-# Public Docs Page Ownership and Anchors
-
 ## Status
 
 This file is the non-normative traceability map for public docs pages.

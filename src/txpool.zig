@@ -174,7 +174,8 @@ pub const TransactionPool = struct {
                 // existing sidecars.
                 if (tx.blob_sidecars.len == 0) return;
                 if (existing.blob_sidecars.len != 0 and
-                    std.meta.activeTag(tx.blob_sidecars[0].proofs) == std.meta.activeTag(existing.blob_sidecars[0].proofs))
+                    std.meta.activeTag(tx.blob_sidecars[0].proofs) ==
+                        std.meta.activeTag(existing.blob_sidecars[0].proofs))
                 {
                     return;
                 }
@@ -465,7 +466,8 @@ pub const TransactionPool = struct {
             const moved = self.transactions.items[index];
             // The moved transaction is already indexed, so its entry is
             // updated in place. An insert could allocate and fail.
-            if (self.sender_nonce_index.getPtr(.{ .sender = moved.sender.bytes, .nonce = moved.nonce })) |ptr| ptr.* = index;
+            const moved_key: SenderNonceKey = .{ .sender = moved.sender.bytes, .nonce = moved.nonce };
+            if (self.sender_nonce_index.getPtr(moved_key)) |ptr| ptr.* = index;
             if (self.hash_index.getPtr(moved.hash)) |ptr| {
                 if (ptr.* == self.transactions.items.len) ptr.* = index;
             }
@@ -542,9 +544,15 @@ fn cloneTransaction(
     errdefer if (cloned.input.len > 0) allocator.free(cloned.input);
     cloned.raw = if (tx.raw.len > 0) try allocator.dupe(u8, tx.raw) else &.{};
     errdefer if (cloned.raw.len > 0) allocator.free(cloned.raw);
-    cloned.blob_versioned_hashes = if (tx.blob_versioned_hashes.len > 0) try allocator.dupe([32]u8, tx.blob_versioned_hashes) else &.{};
+    cloned.blob_versioned_hashes = if (tx.blob_versioned_hashes.len > 0)
+        try allocator.dupe([32]u8, tx.blob_versioned_hashes)
+    else
+        &.{};
     errdefer if (cloned.blob_versioned_hashes.len > 0) allocator.free(cloned.blob_versioned_hashes);
-    cloned.blob_sidecars = if (tx.blob_sidecars.len > 0) try allocator.dupe(tx_encoding.BlobSidecar, tx.blob_sidecars) else &.{};
+    cloned.blob_sidecars = if (tx.blob_sidecars.len > 0)
+        try allocator.dupe(tx_encoding.BlobSidecar, tx.blob_sidecars)
+    else
+        &.{};
     errdefer if (cloned.blob_sidecars.len > 0) allocator.free(cloned.blob_sidecars);
     return cloned;
 }

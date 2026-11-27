@@ -151,11 +151,11 @@ factory:
     weight: 1.5
   # Personalized 3-audience home (maintainer, contributor, everyone) with zero pre-clone-blocking markdown blocks.
   factory-personalized-home:
-    description: Declare maintainer, contributor, and everyone sections in .smithers/FACTORY.ts home without markdown blocks so smithers.sh renders pre-clone.
+    description: Declare maintainer, contributor, and everyone sections in .smithers/HOME.mjs (projected to .smithers/home.json) without markdown blocks so smithers.sh renders pre-clone.
     weight: 1.5
   # home.json must point to an HTTPS llms.txt docs index for the Smithers Docs tab and MCP docs_list.
   factory-docs-index:
-    description: Declare docs pointing to https://zevm.sh/docs/llms.txt in .smithers/FACTORY.ts home.
+    description: Declare docs pointing to https://zevm.sh/docs/llms.txt in .smithers/HOME.mjs.
     weight: 1
   # Shared Smithers Cloud object store (build.smithers.sh) must split read vs main-only write credentials.
   cache-trust-isolation:

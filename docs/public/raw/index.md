@@ -1,7 +1,3 @@
-# ZEVM
-
-# ZEVM
-
 ZEVM is a Zig Ethereum client with two runtime modes:
 
 - **Trusted mode**: a writable local dev node with mining controls, transaction submission, and ZEVM dev methods.

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
+import fs from "node:fs"
 import { fileURLToPath } from "node:url"
 import { test } from "node:test"
 
@@ -9,8 +10,12 @@ const run = (request) => JSON.parse(execFileSync(process.execPath, [entry, JSON.
   timeout: 10_000
 }))
 const example = { method: "debug_traceCall", bytecode: "0x602a60005260206000f3" }
+const hasNativeAddon =
+  process.env.ZEVM_REQUIRE_NATIVE === "1" ||
+  fs.existsSync(new URL("../../zig-out/lib/zevm.node", import.meta.url)) ||
+  fs.existsSync(new URL("../../npm/zevm/src/zevm.wasm", import.meta.url))
 
-test("runs an in-memory EVM program and returns its opcode trace", () => {
+test("runs an in-memory EVM program and returns its opcode trace", { skip: !hasNativeAddon }, () => {
   const result = run(example)
   assert.equal(result.failed, false)
   assert.equal(result.returnValue, "0x" + "2a".padStart(64, "0"))

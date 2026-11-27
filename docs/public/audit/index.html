@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>ZEVM Backpressure Audit Report · 03210599</title>
+<title>ZEVM Backpressure Audit Report · f675cdfb</title>
 <style>
   :root {
     --bg: #0b0e14;
@@ -96,16 +96,19 @@
     margin-top: 8px; font-size: 13px; font-weight: 700; padding: 2px 10px; border-radius: 999px;
   }
   .gauges-grid {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(122px, 1fr)); gap: 14px; align-items: start;
+    display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 10px; align-items: start;
+  }
+  @media (max-width: 1080px) {
+    .gauges-grid { grid-template-columns: repeat(auto-fit, minmax(126px, 1fr)); }
   }
   .gauge-tile {
     display: flex; flex-direction: column; align-items: center; text-align: center;
-    text-decoration: none; color: inherit; padding: 10px 6px; border-radius: 12px;
+    text-decoration: none; color: inherit; padding: 10px 4px; border-radius: 12px;
     border: 1px solid transparent; transition: border-color 0.15s, background 0.15s;
   }
   .gauge-tile:hover { background: var(--surface-2); border-color: var(--border); }
   .gauge-label { margin-top: 8px; font-size: 12px; font-weight: 600; line-height: 1.25; }
-  .gauge-sub { font-size: 11px; color: var(--muted); margin-top: 2px; font-family: var(--mono); }
+  .gauge-sub { font-size: 11px; color: var(--muted); margin-top: 3px; font-family: var(--mono); white-space: nowrap; }
   .gauge-track { fill: none; stroke: var(--surface-2); }
   .gauge-arc { fill: none; stroke-linecap: round; transition: stroke-dashoffset 0.6s ease; }
   .gauge-pass .gauge-arc { stroke: var(--pass); }
@@ -168,6 +171,17 @@
   .pill-fail { background: var(--fail-bg); color: var(--fail); }
 
   .cat-section { margin-top: 22px; }
+  .cat-section.hidden { display: none; }
+  .empty-state {
+    background: var(--surface); border: 1px dashed var(--border); border-radius: 12px;
+    padding: 28px 18px; text-align: center; color: var(--muted); font-size: 14px; margin-top: 14px;
+  }
+  .empty-state.hidden { display: none; }
+  .pin-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .pin-badge {
+    font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 999px;
+    background: var(--pass-bg); color: var(--pass); border: 1px solid rgba(12, 206, 107, 0.28);
+  }
   .cat-header {
     display: flex; align-items: center; justify-content: space-between; gap: 12px;
     margin-bottom: 10px;
@@ -207,6 +221,33 @@
     font-family: var(--mono); font-size: 11px; padding: 3px 8px; border-radius: 6px;
     background: var(--surface-2); border: 1px solid var(--border);
   }
+  .btn-accent {
+    background: var(--accent); color: #fff; border-color: var(--accent-bright);
+  }
+  .btn-accent:hover { filter: brightness(1.08); }
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(7, 11, 18, 0.72);
+    display: grid; place-items: center; padding: 20px; z-index: 40;
+  }
+  .modal-backdrop.hidden { display: none; }
+  .modal-card {
+    width: min(680px, 100%); max-height: 90vh; overflow-y: auto;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 22px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  }
+  .modal-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px;
+  }
+  .modal-head h2 { margin: 0; font-size: 17px; }
+  .code-block {
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 12px; font-family: var(--mono); font-size: 12px; overflow-x: auto;
+    white-space: pre; margin: 6px 0 12px;
+  }
+  .snippet-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px;
+    font-size: 12px; font-weight: 600;
+  }
 </style>
 </head>
 <body>
@@ -216,11 +257,12 @@
       <div class="brand-mark">Z</div>
       <div>
         <h1>ZEVM Backpressure Audit Report</h1>
-        <div class="sub">evmts/zevm · main @ 03210599 · 2026-11-27 07:52:07 UTC</div>
+        <div class="sub">evmts/zevm · main @ f675cdfb · 2026-11-27 13:33:02 UTC</div>
       </div>
     </div>
     <div class="topbar-right">
       <span class="trust-badge trust-maintainer">Maintainer Verified</span>
+      <button class="btn btn-accent" id="openMcpModal" type="button">Connect Agent / MCP</button>
       <a class="btn" href="https://smithers.sh/evmts/zevm">Smithers Factory</a>
       <a class="btn" href="https://zevm.sh/docs">Docs</a>
       <button class="btn" id="themeToggle" type="button">Light / Dark</button>
@@ -234,7 +276,8 @@
     </div>
     <div class="mono small">
       <div>Cache: <strong>read-only (local)</strong></div>
-      <div>Gate authority: <strong>authoritative</strong></div>
+      <div>Gate authority: <strong>advisory only</strong></div>
+      
     </div>
   </section>
 
@@ -243,81 +286,81 @@
       <svg class="gauge-svg gauge-average" width="128" height="128" viewBox="0 0 128 128" aria-hidden="true">
     <circle class="gauge-track" cx="64" cy="64" r="59.5" stroke-width="9" />
     <circle class="gauge-arc" cx="64" cy="64" r="59.5" stroke-width="9"
-      stroke-dasharray="373.85" stroke-dashoffset="71.03"
+      stroke-dasharray="373.85" stroke-dashoffset="56.08"
       transform="rotate(-90 64 64)" />
-    <text class="gauge-value" x="50%" y="52%" dominant-baseline="middle" text-anchor="middle">81</text>
+    <text class="gauge-value" x="50%" y="52%" dominant-baseline="middle" text-anchor="middle">85</text>
   </svg>
-      <div class="overall-grade pill-average">Overall B+</div>
+      <div class="overall-grade pill-average">Overall A-</div>
       <div class="muted small" style="margin-top:6px">Mean across 7 audit categories</div>
     </div>
     <div class="card">
       <div class="gauges-grid">
         <a class="gauge-tile" href="#cat-safety">
-              <svg class="gauge-svg gauge-average" width="84" height="84" viewBox="0 0 84 84" aria-hidden="true">
-    <circle class="gauge-track" cx="42" cy="42" r="38.5" stroke-width="7" />
-    <circle class="gauge-arc" cx="42" cy="42" r="38.5" stroke-width="7"
-      stroke-dasharray="241.90" stroke-dashoffset="33.87"
-      transform="rotate(-90 42 42)" />
-    <text class="gauge-value" x="50%" y="52%" dominant-baseline="middle" text-anchor="middle">86</text>
+              <svg class="gauge-svg gauge-pass" width="76" height="76" viewBox="0 0 76 76" aria-hidden="true">
+    <circle class="gauge-track" cx="38" cy="38" r="35" stroke-width="6" />
+    <circle class="gauge-arc" cx="38" cy="38" r="35" stroke-width="6"
+      stroke-dasharray="219.91" stroke-dashoffset="15.39"
+      transform="rotate(-90 38 38)" />
+    <text class="gauge-value" x="50%" y="52%" dominant-baseline="middle" text-anchor="middle">93</text>
   </svg>
               <div class="gauge-label">Safety &amp; TigerStyle</div>
-              <div class="gauge-sub">175 pass · 17 open</div>
+              <div class="gauge-sub">191 pass · 1 open</div>
             </a><a class="gauge-tile" href="#cat-style">
-              <svg class="gauge-svg gauge-average" width="84" height="84" viewBox="0 0 84 84" aria-hidden="true">
-    <circle class="gauge-track" cx="42" cy="42" r="38.5" stroke-width="7" />
-    <circle class="gauge-arc" cx="42" cy="42" r="38.5" stroke-width="7"
-      stroke-dasharray="241.90" stroke-dashoffset="50.80"
-      transform="rotate(-90 42 42)" />
-    <text class="gauge-value" x="50%" y="52%" dominant-baseline="middle" text-anchor="middle">79</text>
+              <svg class="gauge-svg gauge-average" width="76" height="76" viewBox="0 0 76 76" aria-hidden="true">
+    <circle class="gauge-track" cx="38" cy="38" r="35" stroke-width="6" />
+    <circle class="gauge-arc" cx="38" cy="38" r="35" stroke-width="6"
+      stroke-dasharray="219.91" stroke-dashoffset="35.19"
+      transform="rotate(-90 38 38)" />
+    <text class="gauge-value" x="50%" y="52%" dominant-baseline="middle" text-anchor="middle">84</text>
   </svg>
               <div class="gauge-label">Style &amp; Limits</div>
-              <div class="gauge-sub">296 pass · 64 open</div>
+              <div class="gauge-sub">321 pass · 41 open</div>
             </a><a class="gauge-tile" href="#cat-footprint">
-              <svg class="gauge-svg gauge-fail" width="84" height="84" viewBox="0 0 84 84" aria-hidden="true">
-    <circle class="gauge-track" cx="42" cy="42" r="38.5" stroke-width="7" />
-    <circle class="gauge-arc" cx="42" cy="42" r="38.5" stroke-width="7"
-      stroke-dasharray="241.90" stroke-dashoffset="159.66"
-      transform="rotate(-90 42 42)" />
+              <svg class="gauge-svg gauge-fail" width="76" height="76" viewBox="0 0 76 76" aria-hidden="true">
+    <circle class="gauge-track" cx="38" cy="38" r="35" stroke-width="6" />
+    <circle class="gauge-arc" cx="38" cy="38" r="35" stroke-width="6"
+      stroke-dasharray="219.91" stroke-dashoffset="145.14"
+      transform="rotate(-90 38 38)" />
     <text class="gauge-value" x="50%" y="52%" dominant-baseline="middle" text-anchor="middle">34</text>
   </svg>
               <div class="gauge-label">Footprint &amp; Modularity</div>
-              <div class="gauge-sub">38 pass · 29 open</div>
+              <div class="gauge-sub">37 pass · 30 open</div>
             </a><a class="gauge-tile" href="#cat-verification">
-              <svg class="gauge-svg gauge-average" width="84" height="84" viewBox="0 0 84 84" aria-hidden="true">
-    <circle class="gauge-track" cx="42" cy="42" r="38.5" stroke-width="7" />
-    <circle class="gauge-arc" cx="42" cy="42" r="38.5" stroke-width="7"
-      stroke-dasharray="241.90" stroke-dashoffset="62.89"
-      transform="rotate(-90 42 42)" />
-    <text class="gauge-value" x="50%" y="52%" dominant-baseline="middle" text-anchor="middle">74</text>
+              <svg class="gauge-svg gauge-pass" width="76" height="76" viewBox="0 0 76 76" aria-hidden="true">
+    <circle class="gauge-track" cx="38" cy="38" r="35" stroke-width="6" />
+    <circle class="gauge-arc" cx="38" cy="38" r="35" stroke-width="6"
+      stroke-dasharray="219.91" stroke-dashoffset="15.39"
+      transform="rotate(-90 38 38)" />
+    <text class="gauge-value" x="50%" y="52%" dominant-baseline="middle" text-anchor="middle">93</text>
   </svg>
               <div class="gauge-label">Verification &amp; Fuzzing</div>
-              <div class="gauge-sub">5 pass · 3 open</div>
+              <div class="gauge-sub">8 pass · 0 open</div>
             </a><a class="gauge-tile" href="#cat-documentation">
-              <svg class="gauge-svg gauge-pass" width="84" height="84" viewBox="0 0 84 84" aria-hidden="true">
-    <circle class="gauge-track" cx="42" cy="42" r="38.5" stroke-width="7" />
-    <circle class="gauge-arc" cx="42" cy="42" r="38.5" stroke-width="7"
-      stroke-dasharray="241.90" stroke-dashoffset="0.00"
-      transform="rotate(-90 42 42)" />
+              <svg class="gauge-svg gauge-pass" width="76" height="76" viewBox="0 0 76 76" aria-hidden="true">
+    <circle class="gauge-track" cx="38" cy="38" r="35" stroke-width="6" />
+    <circle class="gauge-arc" cx="38" cy="38" r="35" stroke-width="6"
+      stroke-dasharray="219.91" stroke-dashoffset="0.00"
+      transform="rotate(-90 38 38)" />
     <text class="gauge-value" x="50%" y="52%" dominant-baseline="middle" text-anchor="middle">100</text>
   </svg>
               <div class="gauge-label">Documentation</div>
-              <div class="gauge-sub">102 pass · 0 open</div>
+              <div class="gauge-sub">60 pass · 0 open</div>
             </a><a class="gauge-tile" href="#cat-conformance">
-              <svg class="gauge-svg gauge-pass" width="84" height="84" viewBox="0 0 84 84" aria-hidden="true">
-    <circle class="gauge-track" cx="42" cy="42" r="38.5" stroke-width="7" />
-    <circle class="gauge-arc" cx="42" cy="42" r="38.5" stroke-width="7"
-      stroke-dasharray="241.90" stroke-dashoffset="16.93"
-      transform="rotate(-90 42 42)" />
+              <svg class="gauge-svg gauge-pass" width="76" height="76" viewBox="0 0 76 76" aria-hidden="true">
+    <circle class="gauge-track" cx="38" cy="38" r="35" stroke-width="6" />
+    <circle class="gauge-arc" cx="38" cy="38" r="35" stroke-width="6"
+      stroke-dasharray="219.91" stroke-dashoffset="15.39"
+      transform="rotate(-90 38 38)" />
     <text class="gauge-value" x="50%" y="52%" dominant-baseline="middle" text-anchor="middle">93</text>
   </svg>
               <div class="gauge-label">Ethereum Conformance</div>
               <div class="gauge-sub">4 pass · 2 open</div>
             </a><a class="gauge-tile" href="#cat-factory">
-              <svg class="gauge-svg gauge-pass" width="84" height="84" viewBox="0 0 84 84" aria-hidden="true">
-    <circle class="gauge-track" cx="42" cy="42" r="38.5" stroke-width="7" />
-    <circle class="gauge-arc" cx="42" cy="42" r="38.5" stroke-width="7"
-      stroke-dasharray="241.90" stroke-dashoffset="0.00"
-      transform="rotate(-90 42 42)" />
+              <svg class="gauge-svg gauge-pass" width="76" height="76" viewBox="0 0 76 76" aria-hidden="true">
+    <circle class="gauge-track" cx="38" cy="38" r="35" stroke-width="6" />
+    <circle class="gauge-arc" cx="38" cy="38" r="35" stroke-width="6"
+      stroke-dasharray="219.91" stroke-dashoffset="0.00"
+      transform="rotate(-90 38 38)" />
     <text class="gauge-value" x="50%" y="52%" dominant-baseline="middle" text-anchor="middle">100</text>
   </svg>
               <div class="gauge-label">Smithers Factory &amp; Trust</div>
@@ -354,8 +397,11 @@
     <div class="card stat-card">
       <h3>Pinned Native Siblings</h3>
       <div class="stat-big">Zig 0.15.2</div>
-      <div class="muted small mono">voltaire 93c4e67d · guillotine-mini 2264d998</div>
-      <div class="bar"><span style="width:100%"></span></div>
+      <div class="muted small mono">Canonical deterministic pins in native-dependencies.json</div>
+      <div class="pin-badges">
+        <span class="pin-badge">voltaire 93c4e67d</span>
+        <span class="pin-badge">guillotine-mini 2264d998</span>
+      </div>
     </div>
   </section>
 
@@ -366,54 +412,6 @@
     </div>
     <div class="opp-list">
       <div class="opp-row">
-            <div class="gain-pill">+9 pts</div>
-            <div>
-              <div><strong>line-length</strong> <span class="muted small mono">style</span></div>
-              <div class="muted small mono">false → target true</div>
-            </div>
-            <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
-- Category: style
-- Metric: line-length
-- Current: false -&gt; Target: true (+9 pts)
-- Verify with: uphill style --compact &amp;&amp; node tools/audit_report.mjs
-- Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy fix prompt</button>
-          </div><div class="opp-row">
-            <div class="gain-pill">+8 pts</div>
-            <div>
-              <div><strong>function-length</strong> <span class="muted small mono">style</span></div>
-              <div class="muted small mono">164 → target 70</div>
-            </div>
-            <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
-- Category: style
-- Metric: function-length
-- Current: 164 -&gt; Target: 70 (+8 pts)
-- Verify with: uphill style --compact &amp;&amp; node tools/audit_report.mjs
-- Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy fix prompt</button>
-          </div><div class="opp-row">
-            <div class="gain-pill">+8 pts</div>
-            <div>
-              <div><strong>fuzz-targets</strong> <span class="muted small mono">verification</span></div>
-              <div class="muted small mono">29 → target 50</div>
-            </div>
-            <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
-- Category: verification
-- Metric: fuzz-targets
-- Current: 29 -&gt; Target: 50 (+8 pts)
-- Verify with: uphill verification --compact &amp;&amp; node tools/audit_report.mjs
-- Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy fix prompt</button>
-          </div><div class="opp-row">
-            <div class="gain-pill">+7 pts</div>
-            <div>
-              <div><strong>lean-theorems</strong> <span class="muted small mono">verification</span></div>
-              <div class="muted small mono">20 → target 60</div>
-            </div>
-            <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
-- Category: verification
-- Metric: lean-theorems
-- Current: 20 -&gt; Target: 60 (+7 pts)
-- Verify with: uphill verification --compact &amp;&amp; node tools/audit_report.mjs
-- Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy fix prompt</button>
-          </div><div class="opp-row">
             <div class="gain-pill">+6 pts</div>
             <div>
               <div><strong>zig-assertion-density</strong> <span class="muted small mono">safety</span></div>
@@ -428,49 +426,37 @@
           </div><div class="opp-row">
             <div class="gain-pill">+5 pts</div>
             <div>
-              <div><strong>module-test-coverage</strong> <span class="muted small mono">verification</span></div>
-              <div class="muted small mono">90.5 → target 100</div>
-            </div>
-            <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
-- Category: verification
-- Metric: module-test-coverage
-- Current: 90.5 -&gt; Target: 100 (+5 pts)
-- Verify with: uphill verification --compact &amp;&amp; node tools/audit_report.mjs
-- Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy fix prompt</button>
-          </div><div class="opp-row">
-            <div class="gain-pill">+4 pts</div>
-            <div>
-              <div><strong>zig-no-panic</strong> <span class="muted small mono">safety</span></div>
+              <div><strong>line-length</strong> <span class="muted small mono">style</span></div>
               <div class="muted small mono">false → target true</div>
             </div>
             <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
-- Category: safety
-- Metric: zig-no-panic
-- Current: false -&gt; Target: true (+4 pts)
-- Verify with: uphill safety --compact &amp;&amp; node tools/audit_report.mjs
+- Category: style
+- Metric: line-length
+- Current: false -&gt; Target: true (+5 pts)
+- Verify with: uphill style --compact &amp;&amp; node tools/audit_report.mjs
 - Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy fix prompt</button>
           </div><div class="opp-row">
             <div class="gain-pill">+3 pts</div>
             <div>
               <div><strong>subsystem-size</strong> <span class="muted small mono">footprint · src/(root)</span></div>
-              <div class="muted small mono">932256 → target 80000</div>
+              <div class="muted small mono">938126 → target 80000</div>
             </div>
             <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
 - Category: footprint
 - Metric: subsystem-size on src/(root)
-- Current: 932256 -&gt; Target: 80000 (+3 pts)
+- Current: 938126 -&gt; Target: 80000 (+3 pts)
 - Verify with: uphill footprint --compact &amp;&amp; node tools/audit_report.mjs
 - Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy fix prompt</button>
           </div><div class="opp-row">
             <div class="gain-pill">+3 pts</div>
             <div>
               <div><strong>file-lines</strong> <span class="muted small mono">footprint · src/node/runtime.zig</span></div>
-              <div class="muted small mono">5325 → target 500</div>
+              <div class="muted small mono">5341 → target 500</div>
             </div>
             <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
 - Category: footprint
 - Metric: file-lines on src/node/runtime.zig
-- Current: 5325 -&gt; Target: 500 (+3 pts)
+- Current: 5341 -&gt; Target: 500 (+3 pts)
 - Verify with: uphill footprint --compact &amp;&amp; node tools/audit_report.mjs
 - Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy fix prompt</button>
           </div><div class="opp-row">
@@ -489,24 +475,24 @@
             <div class="gain-pill">+3 pts</div>
             <div>
               <div><strong>file-lines</strong> <span class="muted small mono">footprint · src/rpc/handlers/simulation.zig</span></div>
-              <div class="muted small mono">3085 → target 500</div>
+              <div class="muted small mono">3094 → target 500</div>
             </div>
             <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
 - Category: footprint
 - Metric: file-lines on src/rpc/handlers/simulation.zig
-- Current: 3085 -&gt; Target: 500 (+3 pts)
+- Current: 3094 -&gt; Target: 500 (+3 pts)
 - Verify with: uphill footprint --compact &amp;&amp; node tools/audit_report.mjs
 - Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy fix prompt</button>
           </div><div class="opp-row">
             <div class="gain-pill">+3 pts</div>
             <div>
               <div><strong>file-lines</strong> <span class="muted small mono">footprint · src/block_builder.zig</span></div>
-              <div class="muted small mono">2989 → target 500</div>
+              <div class="muted small mono">2990 → target 500</div>
             </div>
             <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
 - Category: footprint
 - Metric: file-lines on src/block_builder.zig
-- Current: 2989 -&gt; Target: 500 (+3 pts)
+- Current: 2990 -&gt; Target: 500 (+3 pts)
 - Verify with: uphill footprint --compact &amp;&amp; node tools/audit_report.mjs
 - Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy fix prompt</button>
           </div><div class="opp-row">
@@ -525,12 +511,12 @@
             <div class="gain-pill">+3 pts</div>
             <div>
               <div><strong>file-lines</strong> <span class="muted small mono">footprint · src/rpc/server.zig</span></div>
-              <div class="muted small mono">1497 → target 500</div>
+              <div class="muted small mono">1500 → target 500</div>
             </div>
             <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
 - Category: footprint
 - Metric: file-lines on src/rpc/server.zig
-- Current: 1497 -&gt; Target: 500 (+3 pts)
+- Current: 1500 -&gt; Target: 500 (+3 pts)
 - Verify with: uphill footprint --compact &amp;&amp; node tools/audit_report.mjs
 - Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy fix prompt</button>
           </div><div class="opp-row">
@@ -545,6 +531,66 @@
 - Current: 1324 -&gt; Target: 500 (+3 pts)
 - Verify with: uphill footprint --compact &amp;&amp; node tools/audit_report.mjs
 - Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy fix prompt</button>
+          </div><div class="opp-row">
+            <div class="gain-pill">+1 pts</div>
+            <div>
+              <div><strong>function-length</strong> <span class="muted small mono">style · src/rpc/dispatch_wiring.zig</span></div>
+              <div class="muted small mono">576 → target 70</div>
+            </div>
+            <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
+- Category: style
+- Metric: function-length on src/rpc/dispatch_wiring.zig
+- Current: 576 -&gt; Target: 70 (+1 pts)
+- Verify with: uphill style --compact &amp;&amp; node tools/audit_report.mjs
+- Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy fix prompt</button>
+          </div><div class="opp-row">
+            <div class="gain-pill">+1 pts</div>
+            <div>
+              <div><strong>function-length</strong> <span class="muted small mono">style · src/tx_processor.zig</span></div>
+              <div class="muted small mono">350 → target 70</div>
+            </div>
+            <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
+- Category: style
+- Metric: function-length on src/tx_processor.zig
+- Current: 350 -&gt; Target: 70 (+1 pts)
+- Verify with: uphill style --compact &amp;&amp; node tools/audit_report.mjs
+- Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy fix prompt</button>
+          </div><div class="opp-row">
+            <div class="gain-pill">+1 pts</div>
+            <div>
+              <div><strong>function-length</strong> <span class="muted small mono">style · src/node/runtime.zig</span></div>
+              <div class="muted small mono">315 → target 70</div>
+            </div>
+            <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
+- Category: style
+- Metric: function-length on src/node/runtime.zig
+- Current: 315 -&gt; Target: 70 (+1 pts)
+- Verify with: uphill style --compact &amp;&amp; node tools/audit_report.mjs
+- Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy fix prompt</button>
+          </div><div class="opp-row">
+            <div class="gain-pill">+1 pts</div>
+            <div>
+              <div><strong>function-length</strong> <span class="muted small mono">style · src/block_builder.zig</span></div>
+              <div class="muted small mono">305 → target 70</div>
+            </div>
+            <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
+- Category: style
+- Metric: function-length on src/block_builder.zig
+- Current: 305 -&gt; Target: 70 (+1 pts)
+- Verify with: uphill style --compact &amp;&amp; node tools/audit_report.mjs
+- Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy fix prompt</button>
+          </div><div class="opp-row">
+            <div class="gain-pill">+1 pts</div>
+            <div>
+              <div><strong>function-length</strong> <span class="muted small mono">style · src/rpc/handlers/simulation.zig</span></div>
+              <div class="muted small mono">249 → target 70</div>
+            </div>
+            <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
+- Category: style
+- Metric: function-length on src/rpc/handlers/simulation.zig
+- Current: 249 -&gt; Target: 70 (+1 pts)
+- Verify with: uphill style --compact &amp;&amp; node tools/audit_report.mjs
+- Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy fix prompt</button>
           </div>
     </div>
   </section>
@@ -557,6 +603,8 @@
         <button class="filter-btn active" data-filter="all" type="button">All</button>
         <button class="filter-btn" data-filter="fail" type="button">Open / Missed</button>
         <button class="filter-btn" data-filter="pass" type="button">Passing</button>
+        <button class="btn" id="downloadJsonBtn" type="button">Export JSON</button>
+        <button class="btn" id="downloadMdBtn" type="button">Export Markdown</button>
       </div>
     </div>
     <div class="cat-section" id="cat-safety">
@@ -565,64 +613,28 @@
               <h3 style="margin:0">Safety &amp; TigerStyle</h3>
               <div class="muted small">Execution-client crash freedom, explicit error handling, and assertion density across Zig and npm JS wrappers.</div>
             </div>
-            <span class="pill pill-average">86 · A-</span>
+            <span class="pill pill-pass">93 · A</span>
           </div>
-          <details class="audit-item" data-status="fail" data-search="safety zig-no-panic zig no panic never use @panic or unreachable in production src/**/*.zig; validate inputs and return typed errors." open>
-    <summary class="audit-summary">
-      <span class="pill pill-average">86</span>
+          <details class="audit-item" data-status="pass" data-search="safety zig-no-panic zig no panic never use @panic or unreachable in production src/**/*.zig; validate inputs and return typed errors." >
+    <summary class="audit-summary" aria-expanded="false">
+      <span class="pill pill-pass">100</span>
       <span class="audit-title">Zig no panic</span>
-      <span class="audit-meta mono">54/63 pass <span class="muted">target 100% pass</span></span>
+      <span class="audit-meta mono">63/63 pass <span class="muted">target 100% pass</span></span>
     </summary>
     <div class="audit-body">
       <p class="audit-desc">Never use @panic or unreachable in production src/**/*.zig; validate inputs and return typed errors.</p>
       <div class="audit-actions">
         <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
 - Category: safety
-- Metric: zig-no-panic on src/block_builder.zig
-- Current: 54/63 pass -&gt; Target: 100% pass (+1 pts)
+- Metric: zig-no-panic
+- Current: 63/63 pass -&gt; Target: 100% pass (+1 pts)
 - Verify with: uphill safety --compact &amp;&amp; node tools/audit_report.mjs
 - Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy agent fix prompt</button>
         <span class="mono muted">weight 2 · check</span>
       </div>
       <div class="table-wrap"><table class="items-table">
         <thead><tr><th>Item</th><th>Observed</th><th>Diagnostic</th></tr></thead>
-        <tbody><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/block_builder.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 567: unreachable in production code</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/consensus_sync.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 677: catch unreachable in production code</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/difficulty.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 79: unreachable in production code</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/hardfork_schedule.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 100: catch unreachable in production code</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/light_proof.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 504: catch unreachable in production code</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/rpc/handlers/simulation.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 439: catch unreachable in production code</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/rpc/server.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 231: catch unreachable in production code</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/system_contracts.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 158: catch unreachable in production code</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/transaction_encoding.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 929: unreachable in production code</td>
-      </tr><tr class="item-row item-pass">
+        <tbody><tr class="item-row item-pass">
         <td><span class="dot dot-pass"></span><code>src/beacon_api.zig</code></td>
         <td class="mono">pass</td>
         <td class="muted"></td>
@@ -632,6 +644,10 @@
         <td class="muted"></td>
       </tr><tr class="item-row item-pass">
         <td><span class="dot dot-pass"></span><code>src/blob_kzg.zig</code></td>
+        <td class="mono">pass</td>
+        <td class="muted"></td>
+      </tr><tr class="item-row item-pass">
+        <td><span class="dot dot-pass"></span><code>src/block_builder.zig</code></td>
         <td class="mono">pass</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-pass">
@@ -659,6 +675,10 @@
         <td class="mono">pass</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-pass">
+        <td><span class="dot dot-pass"></span><code>src/consensus_sync.zig</code></td>
+        <td class="mono">pass</td>
+        <td class="muted"></td>
+      </tr><tr class="item-row item-pass">
         <td><span class="dot dot-pass"></span><code>src/consensus_verifier.zig</code></td>
         <td class="mono">pass</td>
         <td class="muted"></td>
@@ -674,41 +694,29 @@
         <td><span class="dot dot-pass"></span><code>src/database/contracts.zig</code></td>
         <td class="mono">pass</td>
         <td class="muted"></td>
-      </tr><tr class="item-row item-pass">
-        <td><span class="dot dot-pass"></span><code>src/database/database.zig</code></td>
-        <td class="mono">pass</td>
-        <td class="muted"></td>
-      </tr><tr class="item-row item-pass">
-        <td><span class="dot dot-pass"></span><code>src/database/root.zig</code></td>
-        <td class="mono">pass</td>
-        <td class="muted"></td>
       </tr></tbody>
-      </table></div><p class="muted small">Showing top entries (39 more omitted for brevity).</p>
+      </table></div><p class="muted small">Showing top entries (48 more omitted for brevity).</p>
     </div>
-  </details><details class="audit-item" data-status="fail" data-search="safety zig-no-debug-print zig no debug print replace std.debug.print in production src/**/*.zig modules with structured logging via src/log.zig." open>
-    <summary class="audit-summary">
-      <span class="pill pill-pass">98</span>
+  </details><details class="audit-item" data-status="pass" data-search="safety zig-no-debug-print zig no debug print replace std.debug.print in production src/**/*.zig modules with structured logging via src/log.zig." >
+    <summary class="audit-summary" aria-expanded="false">
+      <span class="pill pill-pass">100</span>
       <span class="audit-title">Zig no debug print</span>
-      <span class="audit-meta mono">62/63 pass <span class="muted">target 100% pass</span></span>
+      <span class="audit-meta mono">63/63 pass <span class="muted">target 100% pass</span></span>
     </summary>
     <div class="audit-body">
       <p class="audit-desc">Replace std.debug.print in production src/**/*.zig modules with structured logging via src/log.zig.</p>
       <div class="audit-actions">
         <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
 - Category: safety
-- Metric: zig-no-debug-print on src/release_metadata.zig
-- Current: 62/63 pass -&gt; Target: 100% pass (+1 pts)
+- Metric: zig-no-debug-print
+- Current: 63/63 pass -&gt; Target: 100% pass (+1 pts)
 - Verify with: uphill safety --compact &amp;&amp; node tools/audit_report.mjs
 - Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy agent fix prompt</button>
         <span class="mono muted">weight 1 · check</span>
       </div>
       <div class="table-wrap"><table class="items-table">
         <thead><tr><th>Item</th><th>Observed</th><th>Diagnostic</th></tr></thead>
-        <tbody><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/release_metadata.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 68: std.debug.print (use src/log.zig)</td>
-      </tr><tr class="item-row item-pass">
+        <tbody><tr class="item-row item-pass">
         <td><span class="dot dot-pass"></span><code>src/beacon_api.zig</code></td>
         <td class="mono">pass</td>
         <td class="muted"></td>
@@ -769,51 +777,31 @@
         <td class="mono">pass</td>
         <td class="muted"></td>
       </tr></tbody>
-      </table></div><p class="muted small">Showing top entries (47 more omitted for brevity).</p>
+      </table></div><p class="muted small">Showing top entries (48 more omitted for brevity).</p>
     </div>
-  </details><details class="audit-item" data-status="fail" data-search="safety zig-no-swallowed-errors zig no swallowed errors never swallow errors with empty catch {} or leave error.notimplemented stubs in production src/**/*.zig." open>
-    <summary class="audit-summary">
-      <span class="pill pill-pass">90</span>
+  </details><details class="audit-item" data-status="pass" data-search="safety zig-no-swallowed-errors zig no swallowed errors never swallow errors with empty catch {} or leave error.notimplemented stubs in production src/**/*.zig." >
+    <summary class="audit-summary" aria-expanded="false">
+      <span class="pill pill-pass">100</span>
       <span class="audit-title">Zig no swallowed errors</span>
-      <span class="audit-meta mono">57/63 pass <span class="muted">target 100% pass</span></span>
+      <span class="audit-meta mono">63/63 pass <span class="muted">target 100% pass</span></span>
     </summary>
     <div class="audit-body">
       <p class="audit-desc">Never swallow errors with empty catch {} or leave error.NotImplemented stubs in production src/**/*.zig.</p>
       <div class="audit-actions">
         <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
 - Category: safety
-- Metric: zig-no-swallowed-errors on src/beacon_api.zig
-- Current: 57/63 pass -&gt; Target: 100% pass (+1 pts)
+- Metric: zig-no-swallowed-errors
+- Current: 63/63 pass -&gt; Target: 100% pass (+1 pts)
 - Verify with: uphill safety --compact &amp;&amp; node tools/audit_report.mjs
 - Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy agent fix prompt</button>
         <span class="mono muted">weight 2 · check</span>
       </div>
       <div class="table-wrap"><table class="items-table">
         <thead><tr><th>Item</th><th>Observed</th><th>Diagnostic</th></tr></thead>
-        <tbody><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/beacon_api.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 42: empty catch {} swallows error</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/checkpoint.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 29: empty catch {} swallows error</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/main.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 248: empty catch {} swallows error</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/node/runtime.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 1548: empty catch {} swallows error</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/rebase_fork.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 439: empty catch {} swallows error</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/rpc/server.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 394: empty catch {} swallows error</td>
+        <tbody><tr class="item-row item-pass">
+        <td><span class="dot dot-pass"></span><code>src/beacon_api.zig</code></td>
+        <td class="mono">pass</td>
+        <td class="muted"></td>
       </tr><tr class="item-row item-pass">
         <td><span class="dot dot-pass"></span><code>src/blob_fee.zig</code></td>
         <td class="mono">pass</td>
@@ -836,6 +824,10 @@
         <td class="muted"></td>
       </tr><tr class="item-row item-pass">
         <td><span class="dot dot-pass"></span><code>src/chain_import.zig</code></td>
+        <td class="mono">pass</td>
+        <td class="muted"></td>
+      </tr><tr class="item-row item-pass">
+        <td><span class="dot dot-pass"></span><code>src/checkpoint.zig</code></td>
         <td class="mono">pass</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-pass">
@@ -866,19 +858,11 @@
         <td><span class="dot dot-pass"></span><code>src/database/contracts.zig</code></td>
         <td class="mono">pass</td>
         <td class="muted"></td>
-      </tr><tr class="item-row item-pass">
-        <td><span class="dot dot-pass"></span><code>src/database/database.zig</code></td>
-        <td class="mono">pass</td>
-        <td class="muted"></td>
-      </tr><tr class="item-row item-pass">
-        <td><span class="dot dot-pass"></span><code>src/database/root.zig</code></td>
-        <td class="mono">pass</td>
-        <td class="muted"></td>
       </tr></tbody>
-      </table></div><p class="muted small">Showing top entries (42 more omitted for brevity).</p>
+      </table></div><p class="muted small">Showing top entries (48 more omitted for brevity).</p>
     </div>
   </details><details class="audit-item" data-status="fail" data-search="safety zig-assertion-density zig assertion density add invariant assertions to production zig execution, rpc, and consensus paths toward tigerstyle density." open>
-    <summary class="audit-summary">
+    <summary class="audit-summary" aria-expanded="true">
       <span class="pill pill-average">51</span>
       <span class="audit-title">Zig assertion density</span>
       <span class="audit-meta mono">0.3 <span class="muted">target 20</span></span>
@@ -897,7 +881,7 @@
       
     </div>
   </details><details class="audit-item" data-status="pass" data-search="safety npm-js-syntax npm js syntax keep every javascript file under npm/zevm/src/ syntactically valid under `node --check`." >
-    <summary class="audit-summary">
+    <summary class="audit-summary" aria-expanded="false">
       <span class="pill pill-pass">100</span>
       <span class="audit-title">Npm js syntax</span>
       <span class="audit-meta mono">2/2 pass <span class="muted">target 100% pass</span></span>
@@ -933,13 +917,13 @@
               <h3 style="margin:0">Style &amp; Limits</h3>
               <div class="muted small">CLAUDE.md Zig style rules, TigerStyle structural bounds (70-line functions, 120-char lines), and canonical formatting.</div>
             </div>
-            <span class="pill pill-average">79 · B</span>
+            <span class="pill pill-average">84 · B+</span>
           </div>
           <details class="audit-item" data-status="pass" data-search="style zig-fmt zig fmt keep every zig file under src/ formatted with `zig fmt`." >
-    <summary class="audit-summary">
+    <summary class="audit-summary" aria-expanded="false">
       <span class="pill pill-pass">100</span>
       <span class="audit-title">Zig fmt</span>
-      <span class="audit-meta mono">113/113 pass <span class="muted">target 100% pass</span></span>
+      <span class="audit-meta mono">115/115 pass <span class="muted">target 100% pass</span></span>
     </summary>
     <div class="audit-body">
       <p class="audit-desc">Keep every Zig file under src/ formatted with `zig fmt`.</p>
@@ -947,7 +931,7 @@
         <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
 - Category: style
 - Metric: zig-fmt
-- Current: 113/113 pass -&gt; Target: 100% pass (+1 pts)
+- Current: 115/115 pass -&gt; Target: 100% pass (+1 pts)
 - Verify with: uphill style --compact &amp;&amp; node tools/audit_report.mjs
 - Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy agent fix prompt</button>
         <span class="mono muted">weight 2 · check</span>
@@ -1015,44 +999,28 @@
         <td class="mono">pass</td>
         <td class="muted"></td>
       </tr></tbody>
-      </table></div><p class="muted small">Showing top entries (98 more omitted for brevity).</p>
+      </table></div><p class="muted small">Showing top entries (100 more omitted for brevity).</p>
     </div>
-  </details><details class="audit-item" data-status="fail" data-search="style no-private-import-aliases no private import aliases follow claude.md zig style: use fully qualified imported symbol paths inline instead of private top-level `const foo = bar.foo` aliases." open>
-    <summary class="audit-summary">
-      <span class="pill pill-pass">94</span>
+  </details><details class="audit-item" data-status="pass" data-search="style no-private-import-aliases no private import aliases follow claude.md zig style: use fully qualified imported symbol paths inline instead of private top-level `const foo = bar.foo` aliases." >
+    <summary class="audit-summary" aria-expanded="false">
+      <span class="pill pill-pass">100</span>
       <span class="audit-title">No private import aliases</span>
-      <span class="audit-meta mono">59/63 pass <span class="muted">target 100% pass</span></span>
+      <span class="audit-meta mono">63/63 pass <span class="muted">target 100% pass</span></span>
     </summary>
     <div class="audit-body">
       <p class="audit-desc">Follow CLAUDE.md Zig style: use fully qualified imported symbol paths inline instead of private top-level `const Foo = bar.Foo` aliases.</p>
       <div class="audit-actions">
         <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
 - Category: style
-- Metric: no-private-import-aliases on src/eof.zig
-- Current: 59/63 pass -&gt; Target: 100% pass (+1 pts)
+- Metric: no-private-import-aliases
+- Current: 63/63 pass -&gt; Target: 100% pass (+1 pts)
 - Verify with: uphill style --compact &amp;&amp; node tools/audit_report.mjs
 - Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy agent fix prompt</button>
         <span class="mono muted">weight 1.5 · check</span>
       </div>
       <div class="table-wrap"><table class="items-table">
         <thead><tr><th>Item</th><th>Observed</th><th>Diagnostic</th></tr></thead>
-        <tbody><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/eof.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 33: private imported-symbol alias (const Allocator = std.mem.Allocator;)</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/node/runtime.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 362: private imported-symbol alias (const OwnedBlockBody = chain_import.OwnedBlockBody;)</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/rpc/handlers/tx_submission.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 48: private imported-symbol alias (const MAX_INITCODE_SIZE = tx_processor.MAX_INITCODE_SIZE;)</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/rpc/server.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 69: private imported-symbol alias (const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;)</td>
-      </tr><tr class="item-row item-pass">
+        <tbody><tr class="item-row item-pass">
         <td><span class="dot dot-pass"></span><code>src/beacon_api.zig</code></td>
         <td class="mono">pass</td>
         <td class="muted"></td>
@@ -1113,13 +1081,13 @@
         <td class="mono">pass</td>
         <td class="muted"></td>
       </tr></tbody>
-      </table></div><p class="muted small">Showing top entries (44 more omitted for brevity).</p>
+      </table></div><p class="muted small">Showing top entries (48 more omitted for brevity).</p>
     </div>
   </details><details class="audit-item" data-status="fail" data-search="style function-length function length keep every production zig runtime function at or below 70 lines (tigerstyle limit); decompose large rpc/block handlers." open>
-    <summary class="audit-summary">
-      <span class="pill pill-average">59</span>
+    <summary class="audit-summary" aria-expanded="true">
+      <span class="pill pill-average">57</span>
       <span class="audit-title">Function length</span>
-      <span class="audit-meta mono">164 <span class="muted">target 70</span></span>
+      <span class="audit-meta mono">172 <span class="muted">target 70</span></span>
     </summary>
     <div class="audit-body">
       <p class="audit-desc">Keep every production Zig runtime function at or below 70 lines (TigerStyle limit); decompose large RPC/block handlers.</p>
@@ -1127,7 +1095,7 @@
         <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
 - Category: style
 - Metric: function-length on src/rpc/dispatch_wiring.zig
-- Current: 164 -&gt; Target: 70 (+4 pts)
+- Current: 172 -&gt; Target: 70 (+4 pts)
 - Verify with: uphill style --compact &amp;&amp; node tools/audit_report.mjs
 - Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy agent fix prompt</button>
         <span class="mono muted">weight 2 · count</span>
@@ -1156,8 +1124,8 @@
         <td class="muted">simulateBlock() is 249 lines (TigerStyle limit 70)</td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/consensus_verifier.zig</code></td>
-        <td class="mono">164</td>
-        <td class="muted">verifyUpdate() is 164 lines (TigerStyle limit 70)</td>
+        <td class="mono">172</td>
+        <td class="muted">verifyUpdate() is 172 lines (TigerStyle limit 70)</td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/rpc/handlers/tx_submission.zig</code></td>
         <td class="mono">160</td>
@@ -1176,16 +1144,16 @@
         <td class="muted">dispatch() is 102 lines (TigerStyle limit 70)</td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/eof.zig</code></td>
-        <td class="mono">94</td>
-        <td class="muted">validateSection() is 94 lines (TigerStyle limit 70)</td>
+        <td class="mono">96</td>
+        <td class="muted">validateSection() is 96 lines (TigerStyle limit 70)</td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/rpc/server.zig</code></td>
         <td class="mono">92</td>
         <td class="muted">handleRequest() is 92 lines (TigerStyle limit 70)</td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/txpool.zig</code></td>
-        <td class="mono">89</td>
-        <td class="muted">insert() is 89 lines (TigerStyle limit 70)</td>
+        <td class="mono">90</td>
+        <td class="muted">insert() is 90 lines (TigerStyle limit 70)</td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/cli.zig</code></td>
         <td class="mono">84</td>
@@ -1208,7 +1176,7 @@
         <td class="muted">internalTxToRpc() is 71 lines (TigerStyle limit 70)</td>
       </tr><tr class="item-row item-pass">
         <td><span class="dot dot-pass"></span><code>src/log_index.zig</code></td>
-        <td class="mono">64</td>
+        <td class="mono">65</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-pass">
         <td><span class="dot dot-pass"></span><code>src/rpc/trusted_fork_handlers.zig</code></td>
@@ -1251,6 +1219,10 @@
         <td class="mono">52</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-pass">
+        <td><span class="dot dot-pass"></span><code>src/checkpoint.zig</code></td>
+        <td class="mono">49</td>
+        <td class="muted"></td>
+      </tr><tr class="item-row item-pass">
         <td><span class="dot dot-pass"></span><code>src/transaction_encoding.zig</code></td>
         <td class="mono">49</td>
         <td class="muted"></td>
@@ -1262,26 +1234,22 @@
         <td><span class="dot dot-pass"></span><code>src/light_proof.zig</code></td>
         <td class="mono">48</td>
         <td class="muted"></td>
-      </tr><tr class="item-row item-pass">
-        <td><span class="dot dot-pass"></span><code>src/rpc/handlers/eth_config.zig</code></td>
-        <td class="mono">48</td>
-        <td class="muted"></td>
       </tr></tbody>
       </table></div><p class="muted small">Showing top entries (25 more omitted for brevity).</p>
     </div>
   </details><details class="audit-item" data-status="fail" data-search="style line-length line length keep production zig lines at or below 120 characters (tigerstyle limit)." open>
-    <summary class="audit-summary">
-      <span class="pill pill-fail">33</span>
+    <summary class="audit-summary" aria-expanded="true">
+      <span class="pill pill-average">63</span>
       <span class="audit-title">Line length</span>
-      <span class="audit-meta mono">21/63 pass <span class="muted">target 100% pass</span></span>
+      <span class="audit-meta mono">40/63 pass <span class="muted">target 100% pass</span></span>
     </summary>
     <div class="audit-body">
       <p class="audit-desc">Keep production Zig lines at or below 120 characters (TigerStyle limit).</p>
       <div class="audit-actions">
         <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
 - Category: style
-- Metric: line-length on src/beacon_api.zig
-- Current: 21/63 pass -&gt; Target: 100% pass (+7 pts)
+- Metric: line-length on src/block_builder.zig
+- Current: 40/63 pass -&gt; Target: 100% pass (+4 pts)
 - Verify with: uphill style --compact &amp;&amp; node tools/audit_report.mjs
 - Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy agent fix prompt</button>
         <span class="mono muted">weight 1 · check</span>
@@ -1289,29 +1257,9 @@
       <div class="table-wrap"><table class="items-table">
         <thead><tr><th>Item</th><th>Observed</th><th>Diagnostic</th></tr></thead>
         <tbody><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/beacon_api.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 27: 128 chars (limit 120)</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/blob_fee.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 207: 123 chars (limit 120)</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/blob_kzg.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 18: 124 chars (limit 120)</td>
-      </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/block_builder.zig</code></td>
         <td class="mono">fail</td>
         <td class="muted">line 305: 122 chars (limit 120)</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/c_bindings.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 398: 138 chars (limit 120)</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/chain_import.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 264: 129 chars (limit 120)</td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/config.zig</code></td>
         <td class="mono">fail</td>
@@ -1321,34 +1269,6 @@
         <td class="mono">fail</td>
         <td class="muted">line 194: 121 chars (limit 120)</td>
       </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/consensus_verifier.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 181: 164 chars (limit 120)</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/database/accounts.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 24: 131 chars (limit 120)</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/database/contracts.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 29: 125 chars (limit 120)</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/database/database.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 92: 140 chars (limit 120)</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/embedded_node.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 14: 139 chars (limit 120)</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/eof.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 332: 121 chars (limit 120)</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/execution_fixture_rpc.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 164: 130 chars (limit 120)</td>
-      </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/exex.zig</code></td>
         <td class="mono">fail</td>
         <td class="muted">line 298: 125 chars (limit 120)</td>
@@ -1357,14 +1277,6 @@
         <td class="mono">fail</td>
         <td class="muted">line 64: 157 chars (limit 120)</td>
       </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/hardfork_schedule.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 96: 137 chars (limit 120)</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/host_adapter.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 175: 131 chars (limit 120)</td>
-      </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/light_default_checkpoints.zig</code></td>
         <td class="mono">fail</td>
         <td class="muted">line 7: 121 chars (limit 120)</td>
@@ -1372,10 +1284,6 @@
         <td><span class="dot dot-fail"></span><code>src/light_proof.zig</code></td>
         <td class="mono">fail</td>
         <td class="muted">line 150: 132 chars (limit 120)</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/log_index.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 167: 129 chars (limit 120)</td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/main.zig</code></td>
         <td class="mono">fail</td>
@@ -1393,10 +1301,6 @@
         <td class="mono">fail</td>
         <td class="muted">line 108: 126 chars (limit 120)</td>
       </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/receipt_index.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 147: 124 chars (limit 120)</td>
-      </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/rpc/block_queries.zig</code></td>
         <td class="mono">fail</td>
         <td class="muted">line 313: 122 chars (limit 120)</td>
@@ -1413,10 +1317,6 @@
         <td class="mono">fail</td>
         <td class="muted">line 200: 147 chars (limit 120)</td>
       </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/rpc/handlers/debug_raw.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 167: 140 chars (limit 120)</td>
-      </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/rpc/handlers/eth_config.zig</code></td>
         <td class="mono">fail</td>
         <td class="muted">line 63: 134 chars (limit 120)</td>
@@ -1431,7 +1331,7 @@
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/rpc/handlers/tx_submission.zig</code></td>
         <td class="mono">fail</td>
-        <td class="muted">line 66: 130 chars (limit 120)</td>
+        <td class="muted">line 65: 130 chars (limit 120)</td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/rpc/handlers/txpool.zig</code></td>
         <td class="mono">fail</td>
@@ -1439,17 +1339,37 @@
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/rpc/server.zig</code></td>
         <td class="mono">fail</td>
-        <td class="muted">line 100: 122 chars (limit 120)</td>
-      </tr><tr class="item-row item-fail">
-        <td><span class="dot dot-fail"></span><code>src/system_contracts.zig</code></td>
-        <td class="mono">fail</td>
-        <td class="muted">line 110: 127 chars (limit 120)</td>
+        <td class="muted">line 99: 122 chars (limit 120)</td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/transaction_encoding.zig</code></td>
         <td class="mono">fail</td>
         <td class="muted">line 67: 129 chars (limit 120)</td>
+      </tr><tr class="item-row item-fail">
+        <td><span class="dot dot-fail"></span><code>src/tx_processor.zig</code></td>
+        <td class="mono">fail</td>
+        <td class="muted">line 127: 147 chars (limit 120)</td>
+      </tr><tr class="item-row item-pass">
+        <td><span class="dot dot-pass"></span><code>src/beacon_api.zig</code></td>
+        <td class="mono">pass</td>
+        <td class="muted"></td>
+      </tr><tr class="item-row item-pass">
+        <td><span class="dot dot-pass"></span><code>src/blob_fee.zig</code></td>
+        <td class="mono">pass</td>
+        <td class="muted"></td>
+      </tr><tr class="item-row item-pass">
+        <td><span class="dot dot-pass"></span><code>src/blob_kzg.zig</code></td>
+        <td class="mono">pass</td>
+        <td class="muted"></td>
       </tr><tr class="item-row item-pass">
         <td><span class="dot dot-pass"></span><code>src/browser.zig</code></td>
+        <td class="mono">pass</td>
+        <td class="muted"></td>
+      </tr><tr class="item-row item-pass">
+        <td><span class="dot dot-pass"></span><code>src/c_bindings.zig</code></td>
+        <td class="mono">pass</td>
+        <td class="muted"></td>
+      </tr><tr class="item-row item-pass">
+        <td><span class="dot dot-pass"></span><code>src/chain_import.zig</code></td>
         <td class="mono">pass</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-pass">
@@ -1461,7 +1381,23 @@
         <td class="mono">pass</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-pass">
+        <td><span class="dot dot-pass"></span><code>src/consensus_verifier.zig</code></td>
+        <td class="mono">pass</td>
+        <td class="muted"></td>
+      </tr><tr class="item-row item-pass">
         <td><span class="dot dot-pass"></span><code>src/console_log.zig</code></td>
+        <td class="mono">pass</td>
+        <td class="muted"></td>
+      </tr><tr class="item-row item-pass">
+        <td><span class="dot dot-pass"></span><code>src/database/accounts.zig</code></td>
+        <td class="mono">pass</td>
+        <td class="muted"></td>
+      </tr><tr class="item-row item-pass">
+        <td><span class="dot dot-pass"></span><code>src/database/contracts.zig</code></td>
+        <td class="mono">pass</td>
+        <td class="muted"></td>
+      </tr><tr class="item-row item-pass">
+        <td><span class="dot dot-pass"></span><code>src/database/database.zig</code></td>
         <td class="mono">pass</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-pass">
@@ -1472,47 +1408,11 @@
         <td><span class="dot dot-pass"></span><code>src/difficulty.zig</code></td>
         <td class="mono">pass</td>
         <td class="muted"></td>
-      </tr><tr class="item-row item-pass">
-        <td><span class="dot dot-pass"></span><code>src/evm_backend.zig</code></td>
-        <td class="mono">pass</td>
-        <td class="muted"></td>
-      </tr><tr class="item-row item-pass">
-        <td><span class="dot dot-pass"></span><code>src/genesis_alloc.zig</code></td>
-        <td class="mono">pass</td>
-        <td class="muted"></td>
-      </tr><tr class="item-row item-pass">
-        <td><span class="dot dot-pass"></span><code>src/log.zig</code></td>
-        <td class="mono">pass</td>
-        <td class="muted"></td>
-      </tr><tr class="item-row item-pass">
-        <td><span class="dot dot-pass"></span><code>src/mining.zig</code></td>
-        <td class="mono">pass</td>
-        <td class="muted"></td>
-      </tr><tr class="item-row item-pass">
-        <td><span class="dot dot-pass"></span><code>src/mpt_proof.zig</code></td>
-        <td class="mono">pass</td>
-        <td class="muted"></td>
-      </tr><tr class="item-row item-pass">
-        <td><span class="dot dot-pass"></span><code>src/node.zig</code></td>
-        <td class="mono">pass</td>
-        <td class="muted"></td>
-      </tr><tr class="item-row item-pass">
-        <td><span class="dot dot-pass"></span><code>src/precompile_compat.zig</code></td>
-        <td class="mono">pass</td>
-        <td class="muted"></td>
-      </tr><tr class="item-row item-pass">
-        <td><span class="dot dot-pass"></span><code>src/release_metadata.zig</code></td>
-        <td class="mono">pass</td>
-        <td class="muted"></td>
-      </tr><tr class="item-row item-pass">
-        <td><span class="dot dot-pass"></span><code>src/root.zig</code></td>
-        <td class="mono">pass</td>
-        <td class="muted"></td>
       </tr></tbody>
-      </table></div><p class="muted small">Showing top entries (8 more omitted for brevity).</p>
+      </table></div><p class="muted small">Showing top entries (25 more omitted for brevity).</p>
     </div>
   </details><details class="audit-item" data-status="pass" data-search="style no-todo-markers no todo markers resolve todo, fixme, xxx, and hack markers in production src/**/*.zig instead of leaving deferred work." >
-    <summary class="audit-summary">
+    <summary class="audit-summary" aria-expanded="false">
       <span class="pill pill-pass">100</span>
       <span class="audit-title">No todo markers</span>
       <span class="audit-meta mono">63/63 pass <span class="muted">target 100% pass</span></span>
@@ -1603,7 +1503,7 @@
             <span class="pill pill-fail">34 · F</span>
           </div>
           <details class="audit-item" data-status="fail" data-search="footprint file-lines file lines keep production zig files focused and under 500 lines; split monolithic modules like src/block_builder.zig and src/rpc/." open>
-    <summary class="audit-summary">
+    <summary class="audit-summary" aria-expanded="true">
       <span class="pill pill-fail">44</span>
       <span class="audit-title">File lines</span>
       <span class="audit-meta mono">1324 <span class="muted">target 500</span></span>
@@ -1623,7 +1523,7 @@
         <thead><tr><th>Item</th><th>Observed</th><th>Diagnostic</th></tr></thead>
         <tbody><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/node/runtime.zig</code></td>
-        <td class="mono">5325</td>
+        <td class="mono">5341</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/rpc/dispatch_wiring.zig</code></td>
@@ -1631,11 +1531,11 @@
         <td class="muted"></td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/rpc/handlers/simulation.zig</code></td>
-        <td class="mono">3085</td>
+        <td class="mono">3094</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/block_builder.zig</code></td>
-        <td class="mono">2989</td>
+        <td class="mono">2990</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/transaction_encoding.zig</code></td>
@@ -1643,7 +1543,7 @@
         <td class="muted"></td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/rpc/server.zig</code></td>
-        <td class="mono">1497</td>
+        <td class="mono">1500</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/rpc/handlers/eth_read.zig</code></td>
@@ -1663,7 +1563,7 @@
         <td class="muted"></td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/txpool.zig</code></td>
-        <td class="mono">1010</td>
+        <td class="mono">1018</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/rpc/block_queries.zig</code></td>
@@ -1671,11 +1571,11 @@
         <td class="muted"></td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/beacon_api.zig</code></td>
-        <td class="mono">967</td>
+        <td class="mono">983</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/consensus_verifier.zig</code></td>
-        <td class="mono">942</td>
+        <td class="mono">950</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/tx_processor.zig</code></td>
@@ -1687,11 +1587,11 @@
         <td class="muted"></td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/rebase_fork.zig</code></td>
-        <td class="mono">851</td>
+        <td class="mono">853</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/release_metadata.zig</code></td>
-        <td class="mono">804</td>
+        <td class="mono">806</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/light_proof.zig</code></td>
@@ -1699,19 +1599,19 @@
         <td class="muted"></td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/consensus_sync.zig</code></td>
-        <td class="mono">761</td>
+        <td class="mono">764</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/chain_import.zig</code></td>
-        <td class="mono">711</td>
+        <td class="mono">725</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/c_bindings.zig</code></td>
-        <td class="mono">693</td>
+        <td class="mono">697</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/eof.zig</code></td>
-        <td class="mono">677</td>
+        <td class="mono">687</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/genesis.zig</code></td>
@@ -1719,19 +1619,19 @@
         <td class="muted"></td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/rpc/handlers/tx_submission.zig</code></td>
-        <td class="mono">621</td>
+        <td class="mono">620</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/mpt_proof.zig</code></td>
         <td class="mono">568</td>
         <td class="muted"></td>
-      </tr><tr class="item-row item-pass">
-        <td><span class="dot dot-pass"></span><code>src/log.zig</code></td>
-        <td class="mono">499</td>
+      </tr><tr class="item-row item-fail">
+        <td><span class="dot dot-fail"></span><code>src/log.zig</code></td>
+        <td class="mono">508</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-pass">
         <td><span class="dot dot-pass"></span><code>src/execution_fixture_rpc.zig</code></td>
-        <td class="mono">468</td>
+        <td class="mono">488</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-pass">
         <td><span class="dot dot-pass"></span><code>src/rpc/handlers/txpool.zig</code></td>
@@ -1739,7 +1639,7 @@
         <td class="muted"></td>
       </tr><tr class="item-row item-pass">
         <td><span class="dot dot-pass"></span><code>src/blob_fee.zig</code></td>
-        <td class="mono">430</td>
+        <td class="mono">434</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-pass">
         <td><span class="dot dot-pass"></span><code>src/genesis_alloc.zig</code></td>
@@ -1747,11 +1647,11 @@
         <td class="muted"></td>
       </tr><tr class="item-row item-pass">
         <td><span class="dot dot-pass"></span><code>src/log_index.zig</code></td>
-        <td class="mono">393</td>
+        <td class="mono">394</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-pass">
         <td><span class="dot dot-pass"></span><code>src/rpc/handlers/debug_raw.zig</code></td>
-        <td class="mono">390</td>
+        <td class="mono">393</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-pass">
         <td><span class="dot dot-pass"></span><code>src/rpc/handlers/eth_config.zig</code></td>
@@ -1763,7 +1663,7 @@
         <td class="muted"></td>
       </tr><tr class="item-row item-pass">
         <td><span class="dot dot-pass"></span><code>src/hardfork_schedule.zig</code></td>
-        <td class="mono">342</td>
+        <td class="mono">353</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-pass">
         <td><span class="dot dot-pass"></span><code>src/cli.zig</code></td>
@@ -1771,7 +1671,7 @@
         <td class="muted"></td>
       </tr><tr class="item-row item-pass">
         <td><span class="dot dot-pass"></span><code>src/host_adapter.zig</code></td>
-        <td class="mono">312</td>
+        <td class="mono">313</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-pass">
         <td><span class="dot dot-pass"></span><code>src/evm_backend.zig</code></td>
@@ -1785,14 +1685,18 @@
         <td><span class="dot dot-pass"></span><code>src/rpc/dev_runtime.zig</code></td>
         <td class="mono">286</td>
         <td class="muted"></td>
+      </tr><tr class="item-row item-pass">
+        <td><span class="dot dot-pass"></span><code>src/main.zig</code></td>
+        <td class="mono">277</td>
+        <td class="muted"></td>
       </tr></tbody>
-      </table></div><p class="muted small">Showing top entries (22 more omitted for brevity).</p>
+      </table></div><p class="muted small">Showing top entries (21 more omitted for brevity).</p>
     </div>
   </details><details class="audit-item" data-status="fail" data-search="footprint subsystem-size subsystem size keep each src/ subsystem modular and well-bounded in source footprint." open>
-    <summary class="audit-summary">
+    <summary class="audit-summary" aria-expanded="true">
       <span class="pill pill-fail">13</span>
       <span class="audit-title">Subsystem size</span>
-      <span class="audit-meta mono">910.4 kB <span class="muted">target 78.1 kB</span></span>
+      <span class="audit-meta mono">916.1 kB <span class="muted">target 78.1 kB</span></span>
     </summary>
     <div class="audit-body">
       <p class="audit-desc">Keep each src/ subsystem modular and well-bounded in source footprint.</p>
@@ -1800,7 +1704,7 @@
         <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
 - Category: footprint
 - Metric: subsystem-size on src/(root)
-- Current: 910.4 kB -&gt; Target: 78.1 kB (+9 pts)
+- Current: 916.1 kB -&gt; Target: 78.1 kB (+9 pts)
 - Verify with: uphill footprint --compact &amp;&amp; node tools/audit_report.mjs
 - Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy agent fix prompt</button>
         <span class="mono muted">weight 1 · size</span>
@@ -1809,19 +1713,19 @@
         <thead><tr><th>Item</th><th>Observed</th><th>Diagnostic</th></tr></thead>
         <tbody><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/(root)</code></td>
-        <td class="mono">910.4 kB</td>
+        <td class="mono">916.1 kB</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/rpc</code></td>
-        <td class="mono">625.9 kB</td>
+        <td class="mono">626.7 kB</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-fail">
         <td><span class="dot dot-fail"></span><code>src/node</code></td>
-        <td class="mono">231.0 kB</td>
+        <td class="mono">232.0 kB</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-pass">
         <td><span class="dot dot-pass"></span><code>src/database</code></td>
-        <td class="mono">11.7 kB</td>
+        <td class="mono">14.5 kB</td>
         <td class="muted"></td>
       </tr></tbody>
       </table></div>
@@ -1833,10 +1737,10 @@
               <h3 style="margin:0">Verification &amp; Fuzzing</h3>
               <div class="muted small">Native Zig fuzz targets, Lean 4 consensus/execution proofs, and module test coverage.</div>
             </div>
-            <span class="pill pill-average">74 · B</span>
+            <span class="pill pill-pass">93 · A</span>
           </div>
           <details class="audit-item" data-status="pass" data-search="verification lean-no-sorry lean no sorry close every `sorry` and unproved `axiom` in spec/lean/**/*.lean formal proofs." >
-    <summary class="audit-summary">
+    <summary class="audit-summary" aria-expanded="false">
       <span class="pill pill-pass">100</span>
       <span class="audit-title">Lean no sorry</span>
       <span class="audit-meta mono">5/5 pass <span class="muted">target 100% pass</span></span>
@@ -1877,11 +1781,11 @@
       </tr></tbody>
       </table></div>
     </div>
-  </details><details class="audit-item" data-status="fail" data-search="verification lean-theorems lean theorems expand lean 4 theorem and lemma coverage in spec/lean/ for block validation, consensus, and state transitions." open>
-    <summary class="audit-summary">
-      <span class="pill pill-average">50</span>
+  </details><details class="audit-item" data-status="pass" data-search="verification lean-theorems lean theorems expand lean 4 theorem and lemma coverage in spec/lean/ for block validation, consensus, and state transitions." >
+    <summary class="audit-summary" aria-expanded="false">
+      <span class="pill pill-pass">90</span>
       <span class="audit-title">Lean theorems</span>
-      <span class="audit-meta mono">20 <span class="muted">target 60</span></span>
+      <span class="audit-meta mono">62 <span class="muted">target 60</span></span>
     </summary>
     <div class="audit-body">
       <p class="audit-desc">Expand Lean 4 theorem and lemma coverage in spec/lean/ for block validation, consensus, and state transitions.</p>
@@ -1889,18 +1793,18 @@
         <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
 - Category: verification
 - Metric: lean-theorems
-- Current: 20 -&gt; Target: 60 (+5 pts)
+- Current: 62 -&gt; Target: 60 (+1 pts)
 - Verify with: uphill verification --compact &amp;&amp; node tools/audit_report.mjs
 - Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy agent fix prompt</button>
         <span class="mono muted">weight 1 · count</span>
       </div>
       
     </div>
-  </details><details class="audit-item" data-status="fail" data-search="verification fuzz-targets fuzz targets expand native `std.testing.fuzz` target coverage across rpc, engine api, consensus, mpt, and c abi boundaries." open>
-    <summary class="audit-summary">
-      <span class="pill pill-average">60</span>
+  </details><details class="audit-item" data-status="pass" data-search="verification fuzz-targets fuzz targets expand native `std.testing.fuzz` target coverage across rpc, engine api, consensus, mpt, and c abi boundaries." >
+    <summary class="audit-summary" aria-expanded="false">
+      <span class="pill pill-pass">90</span>
       <span class="audit-title">Fuzz targets</span>
-      <span class="audit-meta mono">29 <span class="muted">target 50</span></span>
+      <span class="audit-meta mono">50 <span class="muted">target 50</span></span>
     </summary>
     <div class="audit-body">
       <p class="audit-desc">Expand native `std.testing.fuzz` target coverage across RPC, Engine API, consensus, MPT, and C ABI boundaries.</p>
@@ -1908,18 +1812,18 @@
         <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
 - Category: verification
 - Metric: fuzz-targets
-- Current: 29 -&gt; Target: 50 (+4 pts)
+- Current: 50 -&gt; Target: 50 (+1 pts)
 - Verify with: uphill verification --compact &amp;&amp; node tools/audit_report.mjs
 - Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy agent fix prompt</button>
         <span class="mono muted">weight 1.5 · count</span>
       </div>
       
     </div>
-  </details><details class="audit-item" data-status="fail" data-search="verification module-test-coverage module test coverage ensure every production src/**/*.zig module has inline `test` blocks or a dedicated sibling `*_test.zig`." open>
-    <summary class="audit-summary">
-      <span class="pill pill-average">68</span>
+  </details><details class="audit-item" data-status="pass" data-search="verification module-test-coverage module test coverage ensure every production src/**/*.zig module has inline `test` blocks or a dedicated sibling `*_test.zig`." >
+    <summary class="audit-summary" aria-expanded="false">
+      <span class="pill pill-pass">90</span>
       <span class="audit-title">Module test coverage</span>
-      <span class="audit-meta mono">90.5 <span class="muted">target 100</span></span>
+      <span class="audit-meta mono">100 <span class="muted">target 100</span></span>
     </summary>
     <div class="audit-body">
       <p class="audit-desc">Ensure every production src/**/*.zig module has inline `test` blocks or a dedicated sibling `*_test.zig`.</p>
@@ -1927,7 +1831,7 @@
         <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
 - Category: verification
 - Metric: module-test-coverage
-- Current: 90.5 -&gt; Target: 100 (+3 pts)
+- Current: 100 -&gt; Target: 100 (+1 pts)
 - Verify with: uphill verification --compact &amp;&amp; node tools/audit_report.mjs
 - Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy agent fix prompt</button>
         <span class="mono muted">weight 1.5 · count</span>
@@ -1944,7 +1848,7 @@
             <span class="pill pill-pass">100 · A+</span>
           </div>
           <details class="audit-item" data-status="pass" data-search="documentation docs-mirror docs mirror keep docs/ and docs/src/content/docs/ synchronized by running `node tools/docs_mirror.mjs --write` after editing docs." >
-    <summary class="audit-summary">
+    <summary class="audit-summary" aria-expanded="false">
       <span class="pill pill-pass">100</span>
       <span class="audit-title">Docs mirror</span>
       <span class="audit-meta mono">1/1 pass <span class="muted">target 100% pass</span></span>
@@ -1970,10 +1874,10 @@
       </table></div>
     </div>
   </details><details class="audit-item" data-status="pass" data-search="documentation broken-links broken links fix broken local paths and machine-specific links in root markdown files and docs/." >
-    <summary class="audit-summary">
+    <summary class="audit-summary" aria-expanded="false">
       <span class="pill pill-pass">100</span>
       <span class="audit-title">Broken links</span>
-      <span class="audit-meta mono">101/101 pass <span class="muted">target 100% pass</span></span>
+      <span class="audit-meta mono">59/59 pass <span class="muted">target 100% pass</span></span>
     </summary>
     <div class="audit-body">
       <p class="audit-desc">Fix broken local paths and machine-specific links in root Markdown files and docs/.</p>
@@ -1981,7 +1885,7 @@
         <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
 - Category: documentation
 - Metric: broken-links
-- Current: 101/101 pass -&gt; Target: 100% pass (+1 pts)
+- Current: 59/59 pass -&gt; Target: 100% pass (+1 pts)
 - Verify with: uphill documentation --compact &amp;&amp; node tools/audit_report.mjs
 - Keep all work inside Smithers Cloud / jj workflow and never modify protected paths without maintainer approval.">Copy agent fix prompt</button>
         <span class="mono muted">weight 1.5 · check</span>
@@ -2037,19 +1941,19 @@
         <td class="mono">pass</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-pass">
-        <td><span class="dot dot-pass"></span><code>docs/dist/raw/concepts/architecture-and-upstream-ownership.md</code></td>
+        <td><span class="dot dot-pass"></span><code>docs/index.mdx</code></td>
         <td class="mono">pass</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-pass">
-        <td><span class="dot dot-pass"></span><code>docs/dist/raw/concepts/light-mode.md</code></td>
+        <td><span class="dot dot-pass"></span><code>docs/quickstart/forked-dev-node.mdx</code></td>
         <td class="mono">pass</td>
         <td class="muted"></td>
       </tr><tr class="item-row item-pass">
-        <td><span class="dot dot-pass"></span><code>docs/dist/raw/concepts/method-support-by-mode.md</code></td>
+        <td><span class="dot dot-pass"></span><code>docs/quickstart/installation.mdx</code></td>
         <td class="mono">pass</td>
         <td class="muted"></td>
       </tr></tbody>
-      </table></div><p class="muted small">Showing top entries (86 more omitted for brevity).</p>
+      </table></div><p class="muted small">Showing top entries (44 more omitted for brevity).</p>
     </div>
   </details>
         </div><div class="cat-section" id="cat-conformance">
@@ -2061,7 +1965,7 @@
             <span class="pill pill-pass">93 · A</span>
           </div>
           <details class="audit-item" data-status="pass" data-search="conformance native-pins-valid native pins valid keep native-dependencies.json pinned to pushed 40-hex commit shas for evmts/voltaire and evmts/guillotine-mini." >
-    <summary class="audit-summary">
+    <summary class="audit-summary" aria-expanded="false">
       <span class="pill pill-pass">100</span>
       <span class="audit-title">Native pins valid</span>
       <span class="audit-meta mono">2/2 pass <span class="muted">target 100% pass</span></span>
@@ -2091,7 +1995,7 @@
       </table></div>
     </div>
   </details><details class="audit-item" data-status="pass" data-search="conformance qualification-coverage qualification coverage keep every release qualification assertion in docs/specs/qualification/assertion-map.json covered." >
-    <summary class="audit-summary">
+    <summary class="audit-summary" aria-expanded="false">
       <span class="pill pill-pass">90</span>
       <span class="audit-title">Qualification coverage</span>
       <span class="audit-meta mono">100 <span class="muted">target 100</span></span>
@@ -2110,7 +2014,7 @@
       
     </div>
   </details><details class="audit-item" data-status="fail" data-search="conformance cancun-state-floor cancun state floor raise the cancun generalstatetests pass floor in tools/latest_fork_state_baseline.json toward 100%." open>
-    <summary class="audit-summary">
+    <summary class="audit-summary" aria-expanded="true">
       <span class="pill pill-average">87</span>
       <span class="audit-title">Cancun state floor</span>
       <span class="audit-meta mono">99 <span class="muted">target 100</span></span>
@@ -2129,7 +2033,7 @@
       
     </div>
   </details><details class="audit-item" data-status="fail" data-search="conformance prague-state-floor prague state floor raise the prague generalstatetests pass floor in tools/latest_fork_state_baseline.json toward 100%." open>
-    <summary class="audit-summary">
+    <summary class="audit-summary" aria-expanded="true">
       <span class="pill pill-average">86</span>
       <span class="audit-title">Prague state floor</span>
       <span class="audit-meta mono">98.7 <span class="muted">target 100</span></span>
@@ -2148,7 +2052,7 @@
       
     </div>
   </details><details class="audit-item" data-status="pass" data-search="conformance release-version-parity release version parity keep package versions, platform optionaldependencies, build.zig.zon, and native zevm_version aligned (npm run verify:release)." >
-    <summary class="audit-summary">
+    <summary class="audit-summary" aria-expanded="false">
       <span class="pill pill-pass">100</span>
       <span class="audit-title">Release version parity</span>
       <span class="audit-meta mono">1/1 pass <span class="muted">target 100% pass</span></span>
@@ -2183,7 +2087,7 @@
             <span class="pill pill-pass">100 · A+</span>
           </div>
           <details class="audit-item" data-status="pass" data-search="factory factory-triggers factory triggers declare smithers cloud repository workflow triggers in .smithers/factory.ts so factory.json emits apiversion 1 and contributes.triggers." >
-    <summary class="audit-summary">
+    <summary class="audit-summary" aria-expanded="false">
       <span class="pill pill-pass">100</span>
       <span class="audit-title">Factory triggers</span>
       <span class="audit-meta mono">1/1 pass <span class="muted">target 100% pass</span></span>
@@ -2209,7 +2113,7 @@
       </table></div>
     </div>
   </details><details class="audit-item" data-status="pass" data-search="factory factory-person-only factory person only enforce policy.approvals approve=person and merge=person in .smithers/factory.ts." >
-    <summary class="audit-summary">
+    <summary class="audit-summary" aria-expanded="false">
       <span class="pill pill-pass">100</span>
       <span class="audit-title">Factory person only</span>
       <span class="audit-meta mono">1/1 pass <span class="muted">target 100% pass</span></span>
@@ -2235,7 +2139,7 @@
       </table></div>
     </div>
   </details><details class="audit-item" data-status="pass" data-search="factory factory-protected-paths factory protected paths protect consensus, abi, native pins, build, and factory paths in github.protectedpaths." >
-    <summary class="audit-summary">
+    <summary class="audit-summary" aria-expanded="false">
       <span class="pill pill-pass">100</span>
       <span class="audit-title">Factory protected paths</span>
       <span class="audit-meta mono">1/1 pass <span class="muted">target 100% pass</span></span>
@@ -2260,14 +2164,14 @@
       </tr></tbody>
       </table></div>
     </div>
-  </details><details class="audit-item" data-status="pass" data-search="factory factory-personalized-home factory personalized home declare maintainer, contributor, and everyone sections in .smithers/factory.ts home without markdown blocks so smithers.sh renders pre-clone." >
-    <summary class="audit-summary">
+  </details><details class="audit-item" data-status="pass" data-search="factory factory-personalized-home factory personalized home declare maintainer, contributor, and everyone sections in .smithers/home.mjs (projected to .smithers/home.json) without markdown blocks so smithers.sh renders pre-clone." >
+    <summary class="audit-summary" aria-expanded="false">
       <span class="pill pill-pass">100</span>
       <span class="audit-title">Factory personalized home</span>
       <span class="audit-meta mono">1/1 pass <span class="muted">target 100% pass</span></span>
     </summary>
     <div class="audit-body">
-      <p class="audit-desc">Declare maintainer, contributor, and everyone sections in .smithers/FACTORY.ts home without markdown blocks so smithers.sh renders pre-clone.</p>
+      <p class="audit-desc">Declare maintainer, contributor, and everyone sections in .smithers/HOME.mjs (projected to .smithers/home.json) without markdown blocks so smithers.sh renders pre-clone.</p>
       <div class="audit-actions">
         <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
 - Category: factory
@@ -2286,14 +2190,14 @@
       </tr></tbody>
       </table></div>
     </div>
-  </details><details class="audit-item" data-status="pass" data-search="factory factory-docs-index factory docs index declare docs pointing to https://zevm.sh/docs/llms.txt in .smithers/factory.ts home." >
-    <summary class="audit-summary">
+  </details><details class="audit-item" data-status="pass" data-search="factory factory-docs-index factory docs index declare docs pointing to https://zevm.sh/docs/llms.txt in .smithers/home.mjs." >
+    <summary class="audit-summary" aria-expanded="false">
       <span class="pill pill-pass">100</span>
       <span class="audit-title">Factory docs index</span>
       <span class="audit-meta mono">1/1 pass <span class="muted">target 100% pass</span></span>
     </summary>
     <div class="audit-body">
-      <p class="audit-desc">Declare docs pointing to https://zevm.sh/docs/llms.txt in .smithers/FACTORY.ts home.</p>
+      <p class="audit-desc">Declare docs pointing to https://zevm.sh/docs/llms.txt in .smithers/HOME.mjs.</p>
       <div class="audit-actions">
         <button class="copy-btn" type="button" data-copy="Fix Uphill backpressure opportunity in evmts/zevm:
 - Category: factory
@@ -2313,7 +2217,7 @@
       </table></div>
     </div>
   </details><details class="audit-item" data-status="pass" data-search="factory cache-trust-isolation cache trust isolation isolate untrusted pr execution from trunk cache writes using split smithers_cache_read_token and main-only smithers_cache_write_token." >
-    <summary class="audit-summary">
+    <summary class="audit-summary" aria-expanded="false">
       <span class="pill pill-pass">100</span>
       <span class="audit-title">Cache trust isolation</span>
       <span class="audit-meta mono">1/1 pass <span class="muted">target 100% pass</span></span>
@@ -2339,7 +2243,7 @@
       </table></div>
     </div>
   </details><details class="audit-item" data-status="pass" data-search="factory wiki-integrity wiki integrity keep .smithers/wiki/ wikilinks, frontmatter, mythical history, and code citations valid (node tools/wiki_sync.mjs --check)." >
-    <summary class="audit-summary">
+    <summary class="audit-summary" aria-expanded="false">
       <span class="pill pill-pass">100</span>
       <span class="audit-title">Wiki integrity</span>
       <span class="audit-meta mono">1/1 pass <span class="muted">target 100% pass</span></span>
@@ -2365,7 +2269,7 @@
       </table></div>
     </div>
   </details><details class="audit-item" data-status="pass" data-search="factory llms-txt-index llms txt index keep docs/public/llms.txt synchronized with docs/ (node tools/generate_llms_txt.mjs --check)." >
-    <summary class="audit-summary">
+    <summary class="audit-summary" aria-expanded="false">
       <span class="pill pill-pass">100</span>
       <span class="audit-title">Llms txt index</span>
       <span class="audit-meta mono">1/1 pass <span class="muted">target 100% pass</span></span>
@@ -2391,7 +2295,7 @@
       </table></div>
     </div>
   </details><details class="audit-item" data-status="pass" data-search="factory sandbox-auth-and-merge sandbox auth and merge maintain .smithers/merge.json and tools/sandbox_auth.mjs for one-time-use sandbox agent authentication." >
-    <summary class="audit-summary">
+    <summary class="audit-summary" aria-expanded="false">
       <span class="pill pill-pass">100</span>
       <span class="audit-title">Sandbox auth and merge</span>
       <span class="audit-meta mono">1/1 pass <span class="muted">target 100% pass</span></span>
@@ -2418,6 +2322,7 @@
     </div>
   </details>
         </div>
+    <div id="auditEmptyState" class="empty-state hidden">No audits match your current filter or search query.</div>
   </section>
 
   <section class="footer-grid">
@@ -2436,21 +2341,396 @@
     </div>
   </section>
 </div>
+<div id="mcpModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="mcpModalTitle">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 id="mcpModalTitle">Connect Agent &amp; One-Time Sandbox Auth</h2>
+      <button class="btn" id="closeMcpModal" type="button" aria-label="Close modal">Close</button>
+    </div>
+    <p class="small muted" style="margin-top:0">Agents interact with ZEVM issues, PRs, flows, docs, and artifacts through the authenticated Smithers Cloud MCP server. Never embed long-lived credentials in prompts or container images.</p>
+    <div class="snippet-head">
+      <span>1. Streamable HTTP MCP Endpoint</span>
+      <button class="copy-btn" type="button" data-copy="{
+  &quot;mcpServers&quot;: {
+    &quot;zevm-smithers-cloud&quot;: {
+      &quot;type&quot;: &quot;streamable-http&quot;,
+      &quot;url&quot;: &quot;https://smithers.sh/evmts/zevm/mcp&quot;
+    }
+  }
+}">Copy MCP config</button>
+    </div>
+    <pre class="code-block">{
+  &quot;mcpServers&quot;: {
+    &quot;zevm-smithers-cloud&quot;: {
+      &quot;type&quot;: &quot;streamable-http&quot;,
+      &quot;url&quot;: &quot;https://smithers.sh/evmts/zevm/mcp&quot;
+    }
+  }
+}</pre>
+    <div class="snippet-head">
+      <span>2. Print One-Time-Use Sandbox Attach Auth</span>
+      <button class="copy-btn" type="button" data-copy="scripts/sandbox-auth --mode attach
+# Prints one-time BYOA pairing code (RFC 7636 PKCE, 8h scoped smat_ token)">Copy command</button>
+    </div>
+    <pre class="code-block">scripts/sandbox-auth --mode attach
+# Prints one-time BYOA pairing code (RFC 7636 PKCE, 8h scoped smat_ token)</pre>
+    <div class="snippet-head">
+      <span>3. Untrusted External Contributor Run (Read-Only Cache)</span>
+      <button class="copy-btn" type="button" data-copy="scripts/sandbox-auth --mode untrusted --pr 42
+# Runs tests and Lighthouse audit in isolated pr-42 read-only cache namespace">Copy command</button>
+    </div>
+    <pre class="code-block">scripts/sandbox-auth --mode untrusted --pr 42
+# Runs tests and Lighthouse audit in isolated pr-42 read-only cache namespace</pre>
+    <p class="small muted" style="margin-bottom:0">Trust boundary: approvals and merges are locked to authenticated maintainers (<code>person</code>). External contributor runs are encouraged and never write to trunk cache on <code>build.smithers.sh</code>.</p>
+  </div>
+</div>
+<script type="application/json" id="auditJsonData">{
+  "set": {
+    "backpressure": {
+      "visibility": "public",
+      "body": {
+        "schemaVersion": "zevm-backpressure-audit.v1",
+        "generatedAt": "2026-11-27T13:33:02.289Z",
+        "repository": "evmts/zevm",
+        "revision": "f675cdfb24c4be09b80d2e89b4d929bf8910f380",
+        "shortSha": "f675cdfb",
+        "ref": "main",
+        "trust": {
+          "level": "maintainer",
+          "label": "Maintainer Verified",
+          "summary": "Executed on maintainer host with pinned native dependencies. Advisory locally, authoritative once verified on main CI.",
+          "cachePolicy": "read-only (local)",
+          "gateAuthoritative": false,
+          "runUrl": null
+        },
+        "overall": {
+          "score": 85,
+          "grade": "A-",
+          "band": "average"
+        },
+        "categories": [
+          {
+            "name": "safety",
+            "title": "Safety & TigerStyle",
+            "score": 93,
+            "grade": "A",
+            "band": "pass",
+            "passingItems": 191,
+            "failingItems": 1
+          },
+          {
+            "name": "style",
+            "title": "Style & Limits",
+            "score": 84,
+            "grade": "B+",
+            "band": "average",
+            "passingItems": 321,
+            "failingItems": 41
+          },
+          {
+            "name": "footprint",
+            "title": "Footprint & Modularity",
+            "score": 34,
+            "grade": "F",
+            "band": "fail",
+            "passingItems": 37,
+            "failingItems": 30
+          },
+          {
+            "name": "verification",
+            "title": "Verification & Fuzzing",
+            "score": 93,
+            "grade": "A",
+            "band": "pass",
+            "passingItems": 8,
+            "failingItems": 0
+          },
+          {
+            "name": "documentation",
+            "title": "Documentation",
+            "score": 100,
+            "grade": "A+",
+            "band": "pass",
+            "passingItems": 60,
+            "failingItems": 0
+          },
+          {
+            "name": "conformance",
+            "title": "Ethereum Conformance",
+            "score": 93,
+            "grade": "A",
+            "band": "pass",
+            "passingItems": 4,
+            "failingItems": 2
+          },
+          {
+            "name": "factory",
+            "title": "Smithers Factory & Trust",
+            "score": 100,
+            "grade": "A+",
+            "band": "pass",
+            "passingItems": 9,
+            "failingItems": 0
+          }
+        ],
+        "opportunities": [
+          {
+            "category": "safety",
+            "subject": null,
+            "metric": "zig-assertion-density",
+            "item": null,
+            "items": 1,
+            "value": 0.35,
+            "target": 20,
+            "gain": 6
+          },
+          {
+            "category": "style",
+            "subject": null,
+            "metric": "line-length",
+            "item": null,
+            "items": 23,
+            "value": false,
+            "target": true,
+            "gain": 5
+          },
+          {
+            "category": "footprint",
+            "subject": null,
+            "metric": "subsystem-size",
+            "item": "src/(root)",
+            "items": 1,
+            "value": 938126,
+            "target": 80000,
+            "gain": 3
+          },
+          {
+            "category": "footprint",
+            "subject": null,
+            "metric": "file-lines",
+            "item": "src/node/runtime.zig",
+            "items": 1,
+            "value": 5341,
+            "target": 500,
+            "gain": 3
+          },
+          {
+            "category": "footprint",
+            "subject": null,
+            "metric": "file-lines",
+            "item": "src/rpc/dispatch_wiring.zig",
+            "items": 1,
+            "value": 4673,
+            "target": 500,
+            "gain": 3
+          },
+          {
+            "category": "footprint",
+            "subject": null,
+            "metric": "file-lines",
+            "item": "src/rpc/handlers/simulation.zig",
+            "items": 1,
+            "value": 3094,
+            "target": 500,
+            "gain": 3
+          },
+          {
+            "category": "footprint",
+            "subject": null,
+            "metric": "file-lines",
+            "item": "src/block_builder.zig",
+            "items": 1,
+            "value": 2990,
+            "target": 500,
+            "gain": 3
+          },
+          {
+            "category": "footprint",
+            "subject": null,
+            "metric": "file-lines",
+            "item": "src/transaction_encoding.zig",
+            "items": 1,
+            "value": 1658,
+            "target": 500,
+            "gain": 3
+          },
+          {
+            "category": "footprint",
+            "subject": null,
+            "metric": "file-lines",
+            "item": "src/rpc/server.zig",
+            "items": 1,
+            "value": 1500,
+            "target": 500,
+            "gain": 3
+          },
+          {
+            "category": "footprint",
+            "subject": null,
+            "metric": "file-lines",
+            "item": "src/rpc/handlers/eth_read.zig",
+            "items": 1,
+            "value": 1324,
+            "target": 500,
+            "gain": 3
+          }
+        ],
+        "changes": [],
+        "conformance": {
+          "cancun": {
+            "passed": 19527,
+            "total": 19732
+          },
+          "prague": {
+            "passed": 17767,
+            "total": 17992
+          },
+          "qualification": {
+            "covered": 21,
+            "total": 21
+          },
+          "pins": {
+            "voltaire": "93c4e67ddaffc7eb1fab169da7c1c3db292549b6",
+            "guillotineMini": "2264d99896a883d75451d35f1f0234ead9c49d3d"
+          }
+        }
+      }
+    },
+    "grades": {
+      "visibility": "public",
+      "body": {
+        "generatedAt": "2026-11-27T13:33:02.289Z",
+        "revision": "f675cdfb",
+        "overallScore": 85,
+        "overallGrade": "A-",
+        "trustLevel": "maintainer",
+        "categories": {
+          "safety": {
+            "score": 93,
+            "grade": "A"
+          },
+          "style": {
+            "score": 84,
+            "grade": "B+"
+          },
+          "footprint": {
+            "score": 34,
+            "grade": "F"
+          },
+          "verification": {
+            "score": 93,
+            "grade": "A"
+          },
+          "documentation": {
+            "score": 100,
+            "grade": "A+"
+          },
+          "conformance": {
+            "score": 93,
+            "grade": "A"
+          },
+          "factory": {
+            "score": 100,
+            "grade": "A+"
+          }
+        }
+      }
+    }
+  }
+}
+</script>
+<script type="text/plain" id="auditMdData">## ZEVM Backpressure Audit Report (85/100 · A-)
+
+- **Revision:** `f675cdfb` (`main`)
+- **Execution Trust:** `Maintainer Verified` (read-only (local), gate advisory only)
+- **Factory:** https://smithers.sh/evmts/zevm · **MCP:** https://smithers.sh/evmts/zevm/mcp
+
+| Category | Score | Grade | Status |
+| --- | ---: | :---: | --- |
+| Safety & TigerStyle | 93 | A | 191 pass / 1 open |
+| Style & Limits | 84 | B+ | 321 pass / 41 open |
+| Footprint & Modularity | 34 | F | 37 pass / 30 open |
+| Verification & Fuzzing | 93 | A | 8 pass / 0 open |
+| Documentation | 100 | A+ | 60 pass / 0 open |
+| Ethereum Conformance | 93 | A | 4 pass / 2 open |
+| Smithers Factory & Trust | 100 | A+ | 9 pass / 0 open |
+
+### Top Opportunities
+
+| Gain | Category | Metric | Current | Target |
+| ---: | --- | --- | --- | --- |
+| +6 | safety | zig-assertion-density | 0.35 | 20 |
+| +5 | style | line-length | false | true |
+| +3 | footprint | subsystem-size (`src/(root)`) | 938126 | 80000 |
+| +3 | footprint | file-lines (`src/node/runtime.zig`) | 5341 | 500 |
+| +3 | footprint | file-lines (`src/rpc/dispatch_wiring.zig`) | 4673 | 500 |
+| +3 | footprint | file-lines (`src/rpc/handlers/simulation.zig`) | 3094 | 500 |
+| +3 | footprint | file-lines (`src/block_builder.zig`) | 2990 | 500 |
+| +3 | footprint | file-lines (`src/transaction_encoding.zig`) | 1658 | 500 |
+</script>
 <script>
   const root = document.documentElement;
   document.getElementById("themeToggle")?.addEventListener("click", () => {
     root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
   });
+  const mcpModal = document.getElementById("mcpModal");
+  document.getElementById("openMcpModal")?.addEventListener("click", () => {
+    mcpModal?.classList.remove("hidden");
+  });
+  document.getElementById("closeMcpModal")?.addEventListener("click", () => {
+    mcpModal?.classList.add("hidden");
+  });
+  mcpModal?.addEventListener("click", (e) => {
+    if (e.target === mcpModal) mcpModal.classList.add("hidden");
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") mcpModal?.classList.add("hidden");
+  });
+  function triggerDownload(filename, mime, text) {
+    const blob = new Blob([text], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  document.getElementById("downloadJsonBtn")?.addEventListener("click", () => {
+    const raw = document.getElementById("auditJsonData")?.textContent || "{}";
+    triggerDownload("zevm-backpressure-audit-f675cdfb.json", "application/json", raw);
+  });
+  document.getElementById("downloadMdBtn")?.addEventListener("click", () => {
+    const raw = document.getElementById("auditMdData")?.textContent || "";
+    triggerDownload("zevm-backpressure-audit-f675cdfb.md", "text/markdown", raw);
+  });
   let currentFilter = "all";
   const searchInput = document.getElementById("auditSearch");
   const items = [...document.querySelectorAll(".audit-item")];
+  const sections = [...document.querySelectorAll(".cat-section")];
+  const emptyState = document.getElementById("auditEmptyState");
   function applyFilter() {
     const q = (searchInput?.value || "").trim().toLowerCase();
+    let visibleCount = 0;
     for (const el of items) {
       const statusOk = currentFilter === "all" || el.dataset.status === currentFilter;
       const textOk = !q || (el.dataset.search || "").includes(q) || el.textContent.toLowerCase().includes(q);
-      el.classList.toggle("hidden", !(statusOk && textOk));
+      const visible = statusOk && textOk;
+      el.classList.toggle("hidden", !visible);
+      if (visible) visibleCount++;
     }
+    for (const sec of sections) {
+      const anyVisible = sec.querySelector(".audit-item:not(.hidden)") !== null;
+      sec.classList.toggle("hidden", !anyVisible);
+    }
+    emptyState?.classList.toggle("hidden", visibleCount > 0);
+  }
+  for (const el of items) {
+    el.addEventListener("toggle", () => {
+      const summary = el.querySelector(".audit-summary");
+      if (summary) summary.setAttribute("aria-expanded", el.open ? "true" : "false");
+    });
   }
   searchInput?.addEventListener("input", applyFilter);
   for (const btn of document.querySelectorAll(".filter-btn")) {

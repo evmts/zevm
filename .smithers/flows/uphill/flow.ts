@@ -6,7 +6,7 @@ import { Schema } from "effect"
 const uphill = CiJob.make("uphill", {
   steps: [
     { name: "uphill", run: "uphill --compact" },
-    { name: "lighthouse-audit-report", run: "node tools/audit_report.mjs --input .uphill/report.json --out .uphill/audit-report.html --feed-out .uphill/factory-feed.json --md-out .uphill/audit-comment.md" }
+    { name: "lighthouse-audit-report", run: "node tools/audit_report.mjs --input .uphill/report.json --out .uphill/audit-report.html --feed-out .uphill/factory-feed.json --md-out .uphill/audit-comment.md --trust auto" }
   ]
 })
 

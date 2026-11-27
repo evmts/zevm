@@ -1,7 +1,3 @@
-# Light-Mode Configuration
-
-# Light-Mode Configuration
-
 Light mode is read-only, proof-backed, and consensus-anchored.
 
 > Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).

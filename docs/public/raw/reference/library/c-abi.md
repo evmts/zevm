@@ -1,7 +1,3 @@
-# C ABI
-
-# C ABI
-
 The ZEVM C ABI exposes an in-memory execution node and the proof-verified light client through `libzevm` and `zevm.h`. Reach for it when embedding ZEVM in C, C++, Swift, or another host that can call a C-compatible library.
 
 ## Working example

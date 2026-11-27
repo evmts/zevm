@@ -1,7 +1,3 @@
-# ZEVM Maintainer Decisions
-
-# ZEVM Maintainer Decisions
-
 This file is a non-normative historical decision log.
 
 Normative ZEVM contract sources are only:

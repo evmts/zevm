@@ -27,13 +27,21 @@ const hasFlag = (name) => args.includes(name);
 
 const repoRoot = process.cwd();
 const inputPath = path.resolve(repoRoot, flag("--input", ".uphill/report.json"));
-const outHtmlPath = path.resolve(repoRoot, flag("--out", ".uphill/audit-report.html"));
-const publishDocsPath = flag("--publish-docs", null)
-  ? path.resolve(repoRoot, flag("--publish-docs"))
-  : null;
-const feedOutPath = path.resolve(repoRoot, flag("--feed-out", ".uphill/factory-feed.json"));
-const mdOutPath = path.resolve(repoRoot, flag("--md-out", ".uphill/audit-comment.md"));
-const trustArg = flag("--trust", "auto");
+const outHtmlPath = path.resolve(
+  repoRoot,
+  flag("--out", flag("--out-html", ".uphill/audit-report.html")),
+);
+const publishDocsFlag = flag("--publish-docs", flag("--out-public", null));
+const publishDocsPath = publishDocsFlag ? path.resolve(repoRoot, publishDocsFlag) : null;
+const feedOutPath = path.resolve(
+  repoRoot,
+  flag("--feed-out", flag("--out-feed", ".uphill/factory-feed.json")),
+);
+const mdOutPath = path.resolve(
+  repoRoot,
+  flag("--md-out", flag("--out-markdown", ".uphill/audit-comment.md")),
+);
+const trustArg = flag("--trust", flag("--trust-tier", "auto"));
 
 if (hasFlag("--run") || !fs.existsSync(inputPath)) {
   const uphillBin = findUphillBin();
@@ -119,13 +127,20 @@ function detectVcsInfo() {
 }
 
 function resolveTrust(mode) {
+  const runId = process.env.GITHUB_RUN_ID || null;
+  const runUrl =
+    runId && /^\d+$/.test(runId)
+      ? `https://github.com/evmts/zevm/actions/runs/${runId}`
+      : null;
+
   if (mode === "controlled-sandbox") {
     return {
       level: "controlled-sandbox",
       label: "Controlled Sandbox",
-      summary: "Executed inside a Smithers Cloud controlled sandbox on exact target SHA. Cache write allowed on main only. Gate authoritative.",
-      cachePolicy: "read+write (main only)",
+      summary: "Executed inside a Smithers Cloud / GitHub Actions trunk sandbox on exact target SHA. Trunk cache write allowed on main only. Gate authoritative.",
+      cachePolicy: "read+write (main trunk environment only)",
       gateAuthoritative: true,
+      runUrl,
     };
   }
   if (mode === "maintainer") {
@@ -134,7 +149,18 @@ function resolveTrust(mode) {
       label: "Maintainer Verified",
       summary: "Executed on maintainer host with pinned native dependencies. Advisory locally, authoritative once verified on main CI.",
       cachePolicy: "read-only (local)",
-      gateAuthoritative: true,
+      gateAuthoritative: false,
+      runUrl: null,
+    };
+  }
+  if (mode === "local") {
+    return {
+      level: "untrusted",
+      label: "Local Unverified Run",
+      summary: "Generated locally outside trunk CI. Useful for fast feedback, but advisory only and cannot write trunk cache or satisfy merge gates.",
+      cachePolicy: "read-only (local)",
+      gateAuthoritative: false,
+      runUrl: null,
     };
   }
   if (mode === "untrusted") {
@@ -144,17 +170,21 @@ function resolveTrust(mode) {
       summary: "Contributor execution is encouraged and visible here, but results are advisory only. Trunk cache writes and gate bypasses are blocked.",
       cachePolicy: "read-only (PR namespace isolated)",
       gateAuthoritative: false,
+      runUrl,
     };
   }
-  // auto
-  const isPR =
+  // auto: only trust controlled-sandbox on an authentic main push in CI.
+  const isMainPushCi =
+    process.env.GITHUB_ACTIONS === "true" &&
+    process.env.GITHUB_EVENT_NAME === "push" &&
+    process.env.GITHUB_REF === "refs/heads/main";
+  if (isMainPushCi) return resolveTrust("controlled-sandbox");
+  const isCiNonMain =
+    process.env.GITHUB_ACTIONS === "true" ||
     process.env.GITHUB_EVENT_NAME === "pull_request" ||
     process.env.SMITHERS_TRUST === "untrusted";
-  if (isPR) return resolveTrust("untrusted");
-  if (process.env.GITHUB_ACTIONS === "true" || process.env.SMITHERS_SANDBOX === "1") {
-    return resolveTrust("controlled-sandbox");
-  }
-  return resolveTrust("maintainer");
+  if (isCiNonMain) return resolveTrust("untrusted");
+  return resolveTrust("local");
 }
 
 function band(score) {
@@ -397,7 +427,7 @@ function renderMetricBlock(cat, metric) {
 
   return `<details class="audit-item" data-status="${statusAttr}" data-search="${esc(`${cat.name} ${metric.name} ${metric.title} ${metric.description ?? ""}`.toLowerCase())}" ${statusAttr === "fail" ? "open" : ""}>
     <summary class="audit-summary" aria-expanded="${statusAttr === "fail" ? "true" : "false"}">
-      <span class="pill pill-${mBand}">${metric.score ?? 0}</span>
+      <span class="pill pill-${mBand}">${esc(metric.score ?? 0)}</span>
       <span class="audit-title">${esc(metric.title || metric.name)}</span>
       <span class="audit-meta mono">${esc(formatMetricValue(metric))} <span class="muted">target ${esc(formatTarget(metric))}</span></span>
     </summary>
@@ -414,6 +444,50 @@ function renderMetricBlock(cat, metric) {
     </div>
   </details>`;
 }
+
+const mdLines = [
+  `## ZEVM Backpressure Audit Report (${overallScore}/100 · ${overallGrade})`,
+  "",
+  `- **Revision:** \`${vcs.shortSha}\` (\`${vcs.ref}\`)`,
+  `- **Execution Trust:** \`${trust.label}\` (${trust.cachePolicy}, gate ${trust.gateAuthoritative ? "authoritative" : "advisory only"})`,
+  `- **Factory:** https://smithers.sh/evmts/zevm · **MCP:** https://smithers.sh/evmts/zevm/mcp`,
+  "",
+  "| Category | Score | Grade | Status |",
+  "| --- | ---: | :---: | --- |",
+  ...categories.map(
+    (c) => `| ${c.title} | ${c.score} | ${c.grade} | ${c.passingItems} pass / ${c.failingItems} open |`,
+  ),
+  "",
+];
+if (opportunities.length > 0) {
+  mdLines.push("### Top Opportunities", "");
+  mdLines.push("| Gain | Category | Metric | Current | Target |");
+  mdLines.push("| ---: | --- | --- | --- | --- |");
+  for (const opp of opportunities.slice(0, 8)) {
+    mdLines.push(
+      `| +${opp.gain ?? 0} | ${opp.category} | ${opp.title || opp.metric}${opp.item ? ` (\`${opp.item}\`)` : ""} | ${opp.value ?? "fail"} | ${opp.target ?? "pass"} |`,
+    );
+  }
+  mdLines.push("");
+}
+const markdownText = mdLines.join("\n");
+const feedJsonText = JSON.stringify(feedPayload, null, 2) + "\n";
+const safeScriptEmbed = (text) => text.replace(/<\//g, "<\\/").replace(/<!--/g, "<\\!--");
+const safeFileSlug = String(vcs.shortSha || "local").replace(/[^A-Za-z0-9._-]/g, "");
+const mcpConfigSnippet = JSON.stringify(
+  {
+    mcpServers: {
+      "zevm-smithers-cloud": {
+        type: "streamable-http",
+        url: "https://smithers.sh/evmts/zevm/mcp",
+      },
+    },
+  },
+  null,
+  2,
+);
+const attachCmdSnippet = "scripts/sandbox-auth --mode attach\n# Prints one-time BYOA pairing code (RFC 7636 PKCE, 8h scoped smat_ token)";
+const untrustedCmdSnippet = "scripts/sandbox-auth --mode untrusted --pr 42\n# Runs tests and Lighthouse audit in isolated pr-42 read-only cache namespace";
 
 const html = `<!doctype html>
 <html lang="en" data-theme="dark">
@@ -638,6 +712,33 @@ const html = `<!doctype html>
     font-family: var(--mono); font-size: 11px; padding: 3px 8px; border-radius: 6px;
     background: var(--surface-2); border: 1px solid var(--border);
   }
+  .btn-accent {
+    background: var(--accent); color: #fff; border-color: var(--accent-bright);
+  }
+  .btn-accent:hover { filter: brightness(1.08); }
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(7, 11, 18, 0.72);
+    display: grid; place-items: center; padding: 20px; z-index: 40;
+  }
+  .modal-backdrop.hidden { display: none; }
+  .modal-card {
+    width: min(680px, 100%); max-height: 90vh; overflow-y: auto;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 22px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  }
+  .modal-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px;
+  }
+  .modal-head h2 { margin: 0; font-size: 17px; }
+  .code-block {
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 12px; font-family: var(--mono); font-size: 12px; overflow-x: auto;
+    white-space: pre; margin: 6px 0 12px;
+  }
+  .snippet-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px;
+    font-size: 12px; font-weight: 600;
+  }
 </style>
 </head>
 <body>
@@ -652,6 +753,7 @@ const html = `<!doctype html>
     </div>
     <div class="topbar-right">
       <span class="trust-badge trust-${esc(trust.level)}">${esc(trust.label)}</span>
+      <button class="btn btn-accent" id="openMcpModal" type="button">Connect Agent / MCP</button>
       <a class="btn" href="https://smithers.sh/evmts/zevm">Smithers Factory</a>
       <a class="btn" href="https://zevm.sh/docs">Docs</a>
       <button class="btn" id="themeToggle" type="button">Light / Dark</button>
@@ -666,6 +768,7 @@ const html = `<!doctype html>
     <div class="mono small">
       <div>Cache: <strong>${esc(trust.cachePolicy)}</strong></div>
       <div>Gate authority: <strong>${trust.gateAuthoritative ? "authoritative" : "advisory only"}</strong></div>
+      ${trust.runUrl ? `<div>Provenance: <a style="color:var(--accent-bright)" href="${esc(trust.runUrl)}" target="_blank" rel="noreferrer">Verify CI run</a></div>` : ""}
     </div>
   </section>
 
@@ -756,6 +859,8 @@ const html = `<!doctype html>
         <button class="filter-btn active" data-filter="all" type="button">All</button>
         <button class="filter-btn" data-filter="fail" type="button">Open / Missed</button>
         <button class="filter-btn" data-filter="pass" type="button">Passing</button>
+        <button class="btn" id="downloadJsonBtn" type="button">Export JSON</button>
+        <button class="btn" id="downloadMdBtn" type="button">Export Markdown</button>
       </div>
     </div>
     ${categories
@@ -766,7 +871,7 @@ const html = `<!doctype html>
               <h3 style="margin:0">${esc(cat.title)}</h3>
               <div class="muted small">${esc(cat.description ?? "")}</div>
             </div>
-            <span class="pill pill-${cat.band}">${cat.score} · ${esc(cat.grade)}</span>
+            <span class="pill pill-${cat.band}">${esc(cat.score)} · ${esc(cat.grade)}</span>
           </div>
           ${(cat.metrics ?? []).map((m) => renderMetricBlock(cat, m)).join("")}
         </div>`,
@@ -791,10 +896,69 @@ const html = `<!doctype html>
     </div>
   </section>
 </div>
+<div id="mcpModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="mcpModalTitle">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 id="mcpModalTitle">Connect Agent &amp; One-Time Sandbox Auth</h2>
+      <button class="btn" id="closeMcpModal" type="button" aria-label="Close modal">Close</button>
+    </div>
+    <p class="small muted" style="margin-top:0">Agents interact with ZEVM issues, PRs, flows, docs, and artifacts through the authenticated Smithers Cloud MCP server. Never embed long-lived credentials in prompts or container images.</p>
+    <div class="snippet-head">
+      <span>1. Streamable HTTP MCP Endpoint</span>
+      <button class="copy-btn" type="button" data-copy="${esc(mcpConfigSnippet)}">Copy MCP config</button>
+    </div>
+    <pre class="code-block">${esc(mcpConfigSnippet)}</pre>
+    <div class="snippet-head">
+      <span>2. Print One-Time-Use Sandbox Attach Auth</span>
+      <button class="copy-btn" type="button" data-copy="${esc(attachCmdSnippet)}">Copy command</button>
+    </div>
+    <pre class="code-block">${esc(attachCmdSnippet)}</pre>
+    <div class="snippet-head">
+      <span>3. Untrusted External Contributor Run (Read-Only Cache)</span>
+      <button class="copy-btn" type="button" data-copy="${esc(untrustedCmdSnippet)}">Copy command</button>
+    </div>
+    <pre class="code-block">${esc(untrustedCmdSnippet)}</pre>
+    <p class="small muted" style="margin-bottom:0">Trust boundary: approvals and merges are locked to authenticated maintainers (<code>person</code>). External contributor runs are encouraged and never write to trunk cache on <code>build.smithers.sh</code>.</p>
+  </div>
+</div>
+<script type="application/json" id="auditJsonData">${safeScriptEmbed(feedJsonText)}</script>
+<script type="text/plain" id="auditMdData">${safeScriptEmbed(markdownText)}</script>
 <script>
   const root = document.documentElement;
   document.getElementById("themeToggle")?.addEventListener("click", () => {
     root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
+  });
+  const mcpModal = document.getElementById("mcpModal");
+  document.getElementById("openMcpModal")?.addEventListener("click", () => {
+    mcpModal?.classList.remove("hidden");
+  });
+  document.getElementById("closeMcpModal")?.addEventListener("click", () => {
+    mcpModal?.classList.add("hidden");
+  });
+  mcpModal?.addEventListener("click", (e) => {
+    if (e.target === mcpModal) mcpModal.classList.add("hidden");
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") mcpModal?.classList.add("hidden");
+  });
+  function triggerDownload(filename, mime, text) {
+    const blob = new Blob([text], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  document.getElementById("downloadJsonBtn")?.addEventListener("click", () => {
+    const raw = document.getElementById("auditJsonData")?.textContent || "{}";
+    triggerDownload(${JSON.stringify(`zevm-backpressure-audit-${safeFileSlug}.json`)}, "application/json", raw);
+  });
+  document.getElementById("downloadMdBtn")?.addEventListener("click", () => {
+    const raw = document.getElementById("auditMdData")?.textContent || "";
+    triggerDownload(${JSON.stringify(`zevm-backpressure-audit-${safeFileSlug}.md`)}, "text/markdown", raw);
   });
   let currentFilter = "all";
   const searchInput = document.getElementById("auditSearch");
@@ -850,40 +1014,14 @@ const html = `<!doctype html>
 </html>
 `;
 
-const mdLines = [
-  `## ZEVM Backpressure Audit Report (${overallScore}/100 · ${overallGrade})`,
-  "",
-  `- **Revision:** \`${vcs.shortSha}\` (\`${vcs.ref}\`)`,
-  `- **Execution Trust:** \`${trust.label}\` (${trust.cachePolicy}, gate ${trust.gateAuthoritative ? "authoritative" : "advisory only"})`,
-  `- **Factory:** https://smithers.sh/evmts/zevm · **MCP:** https://smithers.sh/evmts/zevm/mcp`,
-  "",
-  "| Category | Score | Grade | Status |",
-  "| --- | ---: | :---: | --- |",
-  ...categories.map(
-    (c) => `| ${c.title} | ${c.score} | ${c.grade} | ${c.passingItems} pass / ${c.failingItems} open |`,
-  ),
-  "",
-];
-if (opportunities.length > 0) {
-  mdLines.push("### Top Opportunities", "");
-  mdLines.push("| Gain | Category | Metric | Current | Target |");
-  mdLines.push("| ---: | --- | --- | --- | --- |");
-  for (const opp of opportunities.slice(0, 8)) {
-    mdLines.push(
-      `| +${opp.gain ?? 0} | ${opp.category} | ${opp.title || opp.metric}${opp.item ? ` (\`${opp.item}\`)` : ""} | ${opp.value ?? "fail"} | ${opp.target ?? "pass"} |`,
-    );
-  }
-  mdLines.push("");
-}
-
 function writeOut(filePath, content) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, content);
 }
 
 writeOut(outHtmlPath, html);
-writeOut(feedOutPath, JSON.stringify(feedPayload, null, 2) + "\n");
-writeOut(mdOutPath, mdLines.join("\n"));
+writeOut(feedOutPath, feedJsonText);
+writeOut(mdOutPath, markdownText);
 if (publishDocsPath) {
   writeOut(publishDocsPath, html);
 }

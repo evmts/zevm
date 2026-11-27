@@ -1,7 +1,3 @@
-# Genesis And Chain Import
-
-# Genesis and chain import
-
 `zevm.genesis_alloc` loads genesis accounts and header fields, while `zevm.chain_import` decodes concatenated RLP blocks into canonical query history. Reach for them when bootstrapping a custom trusted chain or attaching prebuilt block history without executing the imported transactions.
 
 ## Working example

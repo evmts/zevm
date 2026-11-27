@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const log = @import("log.zig");
 
 const CHECKPOINT_FILE_NAME = "checkpoint";
 const CHECKPOINT_TMP_PREFIX = "checkpoint.tmp.";
@@ -26,7 +27,12 @@ pub fn saveCheckpoint(allocator: std.mem.Allocator, dir_path: []const u8, checkp
     {
         errdefer {
             file.close();
-            dir.deleteFile(tmp_name) catch {};
+            dir.deleteFile(tmp_name) catch |cleanup_err| {
+                log.warn(.startup, "checkpoint_tmp_cleanup_failed path={s} error={s}", .{
+                    tmp_name,
+                    @errorName(cleanup_err),
+                });
+            };
         }
 
         const checkpoint_hex = std.fmt.bytesToHex(checkpoint_hash, .lower);
@@ -36,7 +42,12 @@ pub fn saveCheckpoint(allocator: std.mem.Allocator, dir_path: []const u8, checkp
     file.close();
 
     dir.rename(tmp_name, CHECKPOINT_FILE_NAME) catch |err| {
-        dir.deleteFile(tmp_name) catch {};
+        dir.deleteFile(tmp_name) catch |cleanup_err| {
+            log.warn(.startup, "checkpoint_tmp_cleanup_failed path={s} error={s}", .{
+                tmp_name,
+                @errorName(cleanup_err),
+            });
+        };
         return err;
     };
 

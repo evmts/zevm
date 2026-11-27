@@ -4,10 +4,6 @@
 Source: https://zevm.sh/docs/raw/concepts/architecture-and-upstream-ownership.md
 ---
 
-# Architecture And Upstream Ownership
-
-# Architecture And Upstream Ownership
-
 ZEVM is an integration shell. It does not re-own upstream execution internals.
 
 ## Layered Composition
@@ -64,10 +60,6 @@ Behavior changes or defects in those internals are owned by upstream projects; Z
 ---
 Source: https://zevm.sh/docs/raw/concepts/light-mode.md
 ---
-
-# Light Mode
-
-# Light Mode
 
 Light mode is ZEVM's read-only, proof-backed, consensus-anchored runtime.
 
@@ -190,10 +182,6 @@ For detailed internal semantics (checkpoint-age policy, persisted-checkpoint han
 Source: https://zevm.sh/docs/raw/concepts/method-support-by-mode.md
 ---
 
-# Method Support By Mode
-
-# Method Support By Mode
-
 Use this matrix to choose the right mode. This page is a summary of the normative contract sources in `docs/specs/prd.md` and `docs/specs/json-rpc-contract.md`.
 Use JSON-RPC reference pages for exact method signatures, params, payloads, and errors.
 
@@ -241,10 +229,6 @@ Use JSON-RPC reference pages for exact method signatures, params, payloads, and 
 ---
 Source: https://zevm.sh/docs/raw/concepts/runtime-modes.md
 ---
-
-# Runtime Modes
-
-# Runtime Modes
 
 ZEVM has exactly two runtime modes:
 
@@ -340,10 +324,6 @@ In light mode:
 Source: https://zevm.sh/docs/raw/concepts/state-fork-and-snapshots.md
 ---
 
-# State Fork And Snapshots
-
-# State Fork And Snapshots
-
 Forking is trusted-mode configuration. It is not a runtime mode.
 
 > Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).
@@ -418,10 +398,6 @@ These families are separate and should not be conflated:
 ---
 Source: https://zevm.sh/docs/raw/concepts/trusted-mode.md
 ---
-
-# Trusted Mode
-
-# Trusted Mode
 
 Trusted mode is ZEVM's writable local development node.
 
@@ -508,10 +484,6 @@ Resolved unions:
 Source: https://zevm.sh/docs/raw/index.md
 ---
 
-# ZEVM
-
-# ZEVM
-
 ZEVM is a Zig Ethereum client with two runtime modes:
 
 - **Trusted mode**: a writable local dev node with mining controls, transaction submission, and ZEVM dev methods.
@@ -592,10 +564,6 @@ Normative source ownership:
 ---
 Source: https://zevm.sh/docs/raw/quickstart/forked-dev-node.md
 ---
-
-# Forked Dev Node
-
-# Forked Dev Node
 
 A forked dev node is still trusted mode. ZEVM keeps local state and mining, and uses the upstream RPC as a backing read source.
 
@@ -708,10 +676,6 @@ curl -s -X POST http://127.0.0.1:8545 \
 ---
 Source: https://zevm.sh/docs/raw/quickstart/installation.md
 ---
-
-# Installation
-
-# Installation
 
 ZEVM can be built from source or from release artifact jobs. Source builds compile sibling checkouts of Voltaire and Guillotine Mini: `build.zig.zon` resolves `../voltaire` and `../guillotine-mini` by path, and `native-dependencies.json` pins each to a commit.
 
@@ -838,10 +802,6 @@ Multi-platform releases should run those commands in an OS/architecture matrix. 
 ---
 Source: https://zevm.sh/docs/raw/quickstart/run-light-mode.md
 ---
-
-# Run Light Mode
-
-# Run Light Mode
 
 Light mode is ZEVM's read-only, proof-backed, consensus-anchored runtime.
 
@@ -1088,10 +1048,6 @@ Canonical error map in light mode:
 Source: https://zevm.sh/docs/raw/quickstart/run-trusted-mode.md
 ---
 
-# Run Trusted Mode
-
-# Run Trusted Mode
-
 Trusted mode is ZEVM's writable local dev-node runtime.
 
 > Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).
@@ -1230,10 +1186,6 @@ curl -s -X POST http://127.0.0.1:8545 \
 ---
 Source: https://zevm.sh/docs/raw/quickstart/troubleshooting.md
 ---
-
-# Troubleshooting
-
-# Troubleshooting
 
 Before troubleshooting startup/runtime behavior, confirm [Installation](./installation) prerequisites are satisfied (Zig version, Rust/Cargo, pinned sibling checkouts of `voltaire` and `guillotine-mini`, and successful source build output at `./zig-out/bin/zevm`).
 
@@ -1473,10 +1425,6 @@ jq . /path/to/zevm.config.json
 Source: https://zevm.sh/docs/raw/reference/canonical-specs.md
 ---
 
-# Canonical Specs
-
-# Canonical Specs
-
 Use this page as the short index of ZEVM public contract sources.
 
 ## Canonical Contract Sources
@@ -1495,10 +1443,6 @@ If wording differs across public docs, treat `docs/specs/json-rpc-contract.md` a
 ---
 Source: https://zevm.sh/docs/raw/reference/ci-and-release-gates.md
 ---
-
-# CI And Release Gates
-
-# CI And Release Gates
 
 This page maps the local release-readiness commands to the root GitHub Actions workflow.
 
@@ -1658,10 +1602,6 @@ If any item fails, the release metadata is invalid for canonical reproducibility
 ---
 Source: https://zevm.sh/docs/raw/reference/configuration/light-mode.md
 ---
-
-# Light-Mode Configuration
-
-# Light-Mode Configuration
 
 Light mode is read-only, proof-backed, and consensus-anchored.
 
@@ -1979,10 +1919,6 @@ zevm \
 Source: https://zevm.sh/docs/raw/reference/configuration/overview.md
 ---
 
-# Configuration Overview
-
-# Configuration Overview
-
 ZEVM supports two runtime modes:
 
 > Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).
@@ -2296,10 +2232,6 @@ Light-mode startup includes a network-validation handshake before listener bind:
 Source: https://zevm.sh/docs/raw/reference/configuration/trusted-mode.md
 ---
 
-# Trusted-Mode Configuration
-
-# Trusted-Mode Configuration
-
 Trusted mode is the default runtime. It provides local execution and local mutation with optional fork backing.
 
 > Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).
@@ -2483,10 +2415,6 @@ zevm \
 ---
 Source: https://zevm.sh/docs/raw/reference/json-rpc/blocks-receipts-and-logs.md
 ---
-
-# Blocks, Receipts, And Logs
-
-# Blocks, Receipts, And Logs
 
 This page covers trusted-mode query methods for blocks, transactions, receipts, and logs.
 
@@ -2828,10 +2756,6 @@ Response:
 Source: https://zevm.sh/docs/raw/reference/json-rpc/core-reads.md
 ---
 
-# Core Reads
-
-# Core Reads
-
 This page defines trusted-mode core reads and marks the subset that is also available in light mode.
 
 > Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).
@@ -3034,10 +2958,6 @@ Response shape:
 ---
 Source: https://zevm.sh/docs/raw/reference/json-rpc/dev-controls.md
 ---
-
-# ZEVM Controls
-
-# ZEVM Controls
 
 This page covers trusted-mode `zevm_*` state and control methods.
 
@@ -3355,10 +3275,6 @@ Revert response:
 Source: https://zevm.sh/docs/raw/reference/json-rpc/managed-dev-wallet.md
 ---
 
-# Managed Dev Wallet (Trusted Mode)
-
-# Managed Dev Wallet (Trusted Mode)
-
 This page defines ZEVM trusted mode's exact deterministic managed dev-wallet contract.
 
 > Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).
@@ -3406,10 +3322,6 @@ These keys are public development-only keys and are never safe for public networ
 ---
 Source: https://zevm.sh/docs/raw/reference/json-rpc/overview.md
 ---
-
-# JSON-RPC Overview
-
-# JSON-RPC Overview
 
 This page defines the ZEVM HTTP JSON-RPC 2.0 contract shared across trusted mode and light mode.
 
@@ -3616,10 +3528,6 @@ Response: no JSON-RPC body, HTTP `204`.
 Source: https://zevm.sh/docs/raw/reference/json-rpc/simulation.md
 ---
 
-# Simulation
-
-# Simulation
-
 `eth_call`, `eth_estimateGas`, `eth_createAccessList`, `eth_simulateV1`, and `testing_buildBlockV1` are trusted-mode execution simulation methods.
 
 - trusted mode: supported
@@ -3808,10 +3716,6 @@ Response:
 ---
 Source: https://zevm.sh/docs/raw/reference/json-rpc/transactions-and-mining.md
 ---
-
-# Transactions And Mining
-
-# Transactions And Mining
 
 This page covers trusted-mode transaction submission plus mining, txpool, block-environment, time, and fork-source controls.
 
@@ -4062,10 +3966,6 @@ Response shape:
 Source: https://zevm.sh/docs/raw/reference/json-rpc/unsupported-and-deferred.md
 ---
 
-# Unsupported And Deferred
-
-# Unsupported And Deferred
-
 This page lists surfaces intentionally outside the current public ZEVM contract.
 
 ## Unsupported Public Surface
@@ -4151,10 +4051,6 @@ No trusted helper methods are deferred in the current trusted-mode contract. Deb
 ---
 Source: https://zevm.sh/docs/raw/reference/json-rpc/verified-light-mode-reads.md
 ---
-
-# Verified Light-Mode Reads
-
-# Verified Light-Mode Reads
 
 This page defines the exact light-mode JSON-RPC contract.
 
@@ -4366,10 +4262,6 @@ Error response:
 Source: https://zevm.sh/docs/raw/reference/latest-fork-state-tests.md
 ---
 
-# Latest-Fork State Tests
-
-# Latest-Fork State Tests
-
 `zig build verify-latest-state` runs every Cancun and Prague `GeneralStateTests` post case against ZEVM and reports pass, fail, and unsupported counts per fork and per category.
 
 ```bash
@@ -4445,10 +4337,6 @@ The `Official External Verification` job runs `zig build verify-latest-state -Do
 Source: https://zevm.sh/docs/raw/reference/library/c-abi.md
 ---
 
-# C ABI
-
-# C ABI
-
 The ZEVM C ABI exposes an in-memory execution node and the proof-verified light client through `libzevm` and `zevm.h`. Reach for it when embedding ZEVM in C, C++, Swift, or another host that can call a C-compatible library.
 
 ## Working example
@@ -4518,10 +4406,6 @@ Output buffers are caller-owned. Calls using the same handle or node must be ser
 Source: https://zevm.sh/docs/raw/reference/library/database.md
 ---
 
-# Database
-
-# Database
-
 `zevm.database` combines journaled account state with account and contract-code stores used by block execution. Reach for it when embedding ZEVM execution and you need owned in-memory state or a Merkle account root.
 
 ## Working example
@@ -4572,10 +4456,6 @@ The public declarations come from [`database/root.zig`](https://github.com/evmts
 ---
 Source: https://zevm.sh/docs/raw/reference/library/execution-library.md
 ---
-
-# Execution Library
-
-# Execution library
 
 The root ZEVM module exports transaction processing, block building, consensus verification, chain import, MPT proofs, and mining configuration. Reach for it when building a Zig application that needs execution primitives without starting the JSON-RPC server.
 
@@ -4629,10 +4509,6 @@ Execution APIs mutate the supplied state manager. Result types that expose `dein
 ---
 Source: https://zevm.sh/docs/raw/reference/library/genesis-and-chain-import.md
 ---
-
-# Genesis And Chain Import
-
-# Genesis and chain import
 
 `zevm.genesis_alloc` loads genesis accounts and header fields, while `zevm.chain_import` decodes concatenated RLP blocks into canonical query history. Reach for them when bootstrapping a custom trusted chain or attaching prebuilt block history without executing the imported transactions.
 
@@ -4704,10 +4580,6 @@ Imported RLP blocks become canonical query history. Phase 1 does not execute the
 ---
 Source: https://zevm.sh/docs/raw/reference/release-metadata-runbook.md
 ---
-
-# Release Metadata Runbook
-
-# Release Metadata Runbook
 
 Use this runbook to reproduce a ZEVM release/build boundary and audit light-mode baked defaults against published release metadata artifacts.
 
@@ -5116,25 +4988,23 @@ If canonical release metadata artifacts were not published for the build, rely o
 Source: https://zevm.sh/docs/raw/reference/smithers-factory.md
 ---
 
-# Smithers Cloud Coding Factory
-
-# Smithers Cloud Coding Factory
-
 ZEVM is developed publicly through its Smithers Cloud Coding Factory at [smithers.sh/evmts/zevm](https://smithers.sh/evmts/zevm), continuously mirrored to GitHub (`evmts/zevm`).
 
-```mermaid
-flowchart LR
-  Contributor["Contributor / Agent"] -->|"One-time attach or OAuth 2.1"| MCP["smithers.sh/evmts/zevm/mcp"]
-  Contributor -->|"Untrusted PR / local run (read-only cache)"| Cache["build.smithers.sh (Shared Object Store)"]
-  Maintainer["Maintainer (person-only)"] -->|"pr/Merge on Smithers Cloud"| Main["GitHub main"]
-  Main -->|"push: main (controlled sandbox)"| CacheWrite["build.smithers.sh Write + CI"]
-  Main -->|"push: main"| Docs["zevm.sh Docs + llms.txt + Lighthouse Audit"]
-  Main -->|"tag: v*"| Release["11-Platform npm + WASM + GitHub Release"]
+```text
+Contributor / Agent
+  ├── One-time attach / OAuth 2.1 ──► https://smithers.sh/evmts/zevm/mcp
+  └── Untrusted PR / local run ─────► https://build.smithers.sh (read-only, pr-<N> namespace)
+
+Maintainer (person-only approve & merge)
+  └── pr/Merge on Smithers Cloud ───► GitHub main (mirror: push, changes: land)
+        ├── push: main ─────────────► Controlled sandbox CI + build.smithers.sh write
+        ├── push: main ─────────────► https://zevm.sh Docs + llms.txt + Lighthouse Audit
+        └── tag:  v*   ─────────────► 11-Platform npm + WASM + Canonical GitHub Release
 ```
 
 ## Personalized 3-Audience Factory UI
 
-`.smithers/FACTORY.ts` projects `.smithers/home.json` (`docs: "https://zevm.sh/docs/llms.txt"`, `contributors: "role"`) with tailored sections for three audiences:
+`.smithers/HOME.mjs` projects `.smithers/home.json` (`docs: "https://zevm.sh/docs/llms.txt"`, `contributors: "role"`) with tailored sections for three audiences:
 
 - **Maintainers (`Today`):** one-key `New branch` (`b`), live issue/PR triage queue, committed TODO stack, recent flow runs, and maintainer flows.
 - **Contributors (`Contribute`):** local setup, incremental `smthrs ci`, Lighthouse backpressure commands, untrusted execution guidelines, one-time sandbox auth, and workspace links.
@@ -5180,10 +5050,6 @@ The repository maintains an Obsidian-compatible engineering wiki under `.smither
 ---
 Source: https://zevm.sh/docs/raw/reference/specs-and-process.md
 ---
-
-# Canonical Specs And Docs-First Process
-
-# Canonical Specs And Docs-First Process
 
 Use this page for docs-first update order and process policy.  
 If you only need direct contract-source links, use [Canonical Specs](./canonical-specs).
@@ -5295,10 +5161,6 @@ Before shipping, confirm all PRD criteria:
 Source: https://zevm.sh/docs/raw/reference/submodule-update-policy.md
 ---
 
-# Submodule Update Policy
-
-# Submodule Update Policy
-
 Last updated 2026-11-22
 
 ## Classification
@@ -5342,10 +5204,6 @@ Verification result for this refresh batch:
 ---
 Source: https://zevm.sh/docs/raw/specs/docs-first-process.md
 ---
-
-# ZEVM Documentation Process
-
-# ZEVM Documentation Process
 
 ZEVM documentation is contract-first.
 
@@ -5404,10 +5262,6 @@ If any of these are unclear, the docs pass is incomplete.
 Source: https://zevm.sh/docs/raw/specs/embedded-node.md
 ---
 
-# Embedded execution node
-
-# Embedded execution node
-
 `zevm_node_create`, `zevm_node_rpc`, and `zevm_node_destroy` expose the same
 native NodeRuntime and JSON-RPC dispatcher as the executable, without a socket.
 Voltaire owns Ethereum primitives and state; Guillotine Mini executes bytecode.
@@ -5429,10 +5283,6 @@ leave this resolver unset and retain `RpcPending` behavior.
 ---
 Source: https://zevm.sh/docs/raw/specs/json-rpc-contract.md
 ---
-
-# ZEVM JSON-RPC Contract
-
-# ZEVM JSON-RPC Contract
 
 This file is the exact ZEVM JSON-RPC API contract.
 
@@ -6629,10 +6479,6 @@ JSON-RPC mapping for this deferred/out-of-contract surface:
 Source: https://zevm.sh/docs/raw/specs/maintainer-decisions.md
 ---
 
-# ZEVM Maintainer Decisions
-
-# ZEVM Maintainer Decisions
-
 This file is a non-normative historical decision log.
 
 Normative ZEVM contract sources are only:
@@ -6684,10 +6530,6 @@ Entries here record rationale/history and must not be treated as a third spec la
 Source: https://zevm.sh/docs/raw/specs/mintlify-docs-plan.md
 ---
 
-# Active Plan: Public Docs Maintenance
-
-# Active Plan: Public Docs Maintenance
-
 ## Status
 
 This file is a lightweight maintenance plan for the current public docs structure.
@@ -6727,10 +6569,6 @@ This file tracks structure/process only. Do not duplicate tuple-level semantics,
 ---
 Source: https://zevm.sh/docs/raw/specs/page-ownership.md
 ---
-
-# Public Docs Page Ownership and Anchors
-
-# Public Docs Page Ownership and Anchors
 
 ## Status
 
@@ -6841,10 +6679,6 @@ These internal docs are non-normative support dependencies for active public doc
 ---
 Source: https://zevm.sh/docs/raw/specs/prd.md
 ---
-
-# ZEVM Product Requirements
-
-# ZEVM Product Requirements
 
 ## 1. Purpose
 
@@ -7694,10 +7528,6 @@ Every extension observes delivered events in emission order, and emission order 
 ---
 Source: https://zevm.sh/docs/raw/specs/README.md
 ---
-
-# ZEVM Specs Index
-
-# ZEVM Specs Index
 
 ## Normative contract
 

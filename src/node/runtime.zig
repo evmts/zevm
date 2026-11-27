@@ -359,8 +359,6 @@ pub const LightReadSelector = union(enum) {
     number: u64,
 };
 
-const OwnedBlockBody = chain_import.OwnedBlockBody;
-
 pub const EnginePayloadImportStatus = enum {
     valid,
     invalid,
@@ -495,7 +493,7 @@ pub fn isDeterministicPayloadError(err: anyerror) bool {
 
 const FetchedEngineFallbackBlock = struct {
     block: primitives.Block.Block,
-    owned_body: OwnedBlockBody,
+    owned_body: chain_import.OwnedBlockBody,
     requests_hash: ?[32]u8,
 
     fn deinit(self: *FetchedEngineFallbackBlock, allocator: std.mem.Allocator) void {
@@ -529,7 +527,7 @@ pub const EnginePayloadJob = struct {
 
 const QueryIndexSnapshot = struct {
     blockchain: blockchain_mod.Blockchain,
-    owned_block_bodies: std.ArrayList(OwnedBlockBody),
+    owned_block_bodies: std.ArrayList(chain_import.OwnedBlockBody),
     receipt_index: receipt_index_mod.ReceiptIndex,
     log_index: log_index_mod.LogIndex,
 
@@ -795,7 +793,7 @@ pub const NodeRuntime = struct {
     console_logs: console_log.ConsoleLogBuffer,
     state: state_manager.StateManager,
     blockchain: blockchain_mod.Blockchain,
-    owned_block_bodies: std.ArrayList(OwnedBlockBody),
+    owned_block_bodies: std.ArrayList(chain_import.OwnedBlockBody),
     genesis_alloc_path: ?[]u8,
     genesis_extra_data: ?[]u8,
     /// Genesis header overrides loaded at startup. `extra_data` aliases
@@ -920,7 +918,7 @@ pub const NodeRuntime = struct {
             primitives.Address.ZERO_ADDRESS
         else
             default_coinbase;
-        var owned_block_bodies = std.ArrayList(OwnedBlockBody){};
+        var owned_block_bodies = std.ArrayList(chain_import.OwnedBlockBody){};
         errdefer {
             clearOwnedBlockBodyList(allocator, &owned_block_bodies);
             owned_block_bodies.deinit(allocator);
@@ -1545,7 +1543,9 @@ pub const NodeRuntime = struct {
         defer self.emitLightModeTransitions();
         const light = if (self.light) |*state| state else return;
         if (!light.advance_on_request or !light.ready()) return;
-        self.advanceLightSync() catch {};
+        self.advanceLightSync() catch |err| {
+            log.debug(.consensus_sync, "light_sync_status_refresh_failed error={s}", .{@errorName(err)});
+        };
     }
 
     pub fn resolveLightReadHead(self: *const NodeRuntime, selector: LightReadSelector) !LightReadHead {
@@ -2612,7 +2612,12 @@ pub const NodeRuntime = struct {
         defer self.runtime_mutex.unlock();
         const state_snapshot_id = try self.state.snapshot();
         // Reverting to a snapshot taken just now only pops its checkpoint.
-        errdefer self.state.revertToSnapshot(state_snapshot_id) catch {};
+        errdefer self.state.revertToSnapshot(state_snapshot_id) catch |revert_err| {
+            log.warn(.startup, "snapshot_rollback_failed id={} error={s}", .{
+                state_snapshot_id,
+                @errorName(revert_err),
+            });
+        };
         const fork_copy = try allocForkConfig(self.allocator, self.fork_config);
         errdefer freeForkConfig(self.allocator, fork_copy);
         var pool_copy = try self.pool.clone(self.allocator);
@@ -2715,7 +2720,9 @@ pub const NodeRuntime = struct {
         self.replaceQueryIndexes(removed_entry.query_indexes);
         if (removed_entry.canonical_head_hash) |head_hash| {
             const restored_max = self.blockchain.getHeadBlockNumber() orelse removed_entry.head_block_number;
-            self.blockchain.setCanonicalHead(head_hash) catch {};
+            self.blockchain.setCanonicalHead(head_hash) catch |err| {
+                log.warn(.startup, "snapshot_canonical_head_restore_failed error={s}", .{@errorName(err)});
+            };
             self.pruneCanonicalChainAbove(removed_entry.head_block_number, restored_max);
         }
         self.time_offset = removed_entry.time_offset;
@@ -3598,7 +3605,9 @@ pub const NodeRuntime = struct {
             if (can_extend_current) {
                 self.materializeCanonicalExtension(previous_head_number, head_block.header.number) catch |err| {
                     if (previous_head_hash) |hash| {
-                        self.blockchain.setCanonicalHead(hash) catch {};
+                        self.blockchain.setCanonicalHead(hash) catch |rollback_err| {
+                            log.warn(.startup, "canonical_head_rollback_failed error={s}", .{@errorName(rollback_err)});
+                        };
                         self.pruneCanonicalChainAbove(previous_head_number, @max(previous_canonical_max, head_block.header.number));
                     }
                     return err;
@@ -3606,7 +3615,9 @@ pub const NodeRuntime = struct {
             } else {
                 var materialized = self.materializeCanonicalStateAndIndexes(head_block.header.number) catch |err| {
                     if (previous_head_hash) |hash| {
-                        self.blockchain.setCanonicalHead(hash) catch {};
+                        self.blockchain.setCanonicalHead(hash) catch |rollback_err| {
+                            log.warn(.startup, "canonical_head_rollback_failed error={s}", .{@errorName(rollback_err)});
+                        };
                         self.pruneCanonicalChainAbove(previous_head_number, @max(previous_canonical_max, head_block.header.number));
                     }
                     return err;
@@ -3844,7 +3855,12 @@ pub const NodeRuntime = struct {
             const response_payload = self.resolveForkRequest(resolver, fork_cfg.url, request) catch |err| {
                 // Release the backend's pending entry. Otherwise the request is
                 // never re-queued and every later read of this key fails.
-                backend.continueRequest(request.id, "null") catch {};
+                backend.continueRequest(request.id, "null") catch |release_err| {
+                    log.debug(.fork, "fork_request_release_failed kind={s} error={s}", .{
+                        @tagName(request.kind),
+                        @errorName(release_err),
+                    });
+                };
                 return err;
             };
             defer self.allocator.free(response_payload);
@@ -3929,7 +3945,7 @@ pub const NodeRuntime = struct {
 
     fn resetQueryIndexes(self: *NodeRuntime) !void {
         const genesis_state_root = try block_builder.computeStateRoot(self.allocator, &self.state);
-        var new_owned_block_bodies = std.ArrayList(OwnedBlockBody){};
+        var new_owned_block_bodies = std.ArrayList(chain_import.OwnedBlockBody){};
         errdefer {
             clearOwnedBlockBodyList(self.allocator, &new_owned_block_bodies);
             new_owned_block_bodies.deinit(self.allocator);
@@ -4118,14 +4134,14 @@ fn cloneEnginePayloadAttributes(
 fn cloneQueryIndexSnapshot(
     allocator: std.mem.Allocator,
     source_blockchain: *const blockchain_mod.Blockchain,
-    source_owned_block_bodies: []const OwnedBlockBody,
+    source_owned_block_bodies: []const chain_import.OwnedBlockBody,
     source_receipt_index: *const receipt_index_mod.ReceiptIndex,
     source_log_index: *const log_index_mod.LogIndex,
 ) !QueryIndexSnapshot {
     var blockchain = try blockchain_mod.Blockchain.init(allocator, null);
     errdefer blockchain.deinit();
 
-    var owned_block_bodies = std.ArrayList(OwnedBlockBody){};
+    var owned_block_bodies = std.ArrayList(chain_import.OwnedBlockBody){};
     errdefer {
         clearOwnedBlockBodyList(allocator, &owned_block_bodies);
         owned_block_bodies.deinit(allocator);
@@ -4156,9 +4172,9 @@ fn cloneQueryIndexSnapshot(
 fn cloneBlockStore(
     allocator: std.mem.Allocator,
     source: anytype,
-    source_owned_block_bodies: []const OwnedBlockBody,
+    source_owned_block_bodies: []const chain_import.OwnedBlockBody,
     target: anytype,
-    owned_block_bodies: *std.ArrayList(OwnedBlockBody),
+    owned_block_bodies: *std.ArrayList(chain_import.OwnedBlockBody),
 ) !void {
     // The EIP-7685 requests hash lives beside the block, not in its header;
     // carry it over so restored Prague blocks keep their commitment.
@@ -4193,7 +4209,7 @@ fn cloneBlockStore(
 
 fn clearOwnedBlockBodyList(
     allocator: std.mem.Allocator,
-    owned_block_bodies: *std.ArrayList(OwnedBlockBody),
+    owned_block_bodies: *std.ArrayList(chain_import.OwnedBlockBody),
 ) void {
     for (owned_block_bodies.items) |*entry| {
         entry.deinit(allocator);
@@ -4692,7 +4708,7 @@ fn initBlockchainWithGenesis(
     gas_limit: u64,
     genesis_header: genesis_alloc.HeaderConfig,
     hardfork_config: hardfork_schedule.ChainConfig,
-    owned_block_bodies: *std.ArrayList(OwnedBlockBody),
+    owned_block_bodies: *std.ArrayList(chain_import.OwnedBlockBody),
 ) !blockchain_mod.Blockchain {
     _ = chain_id;
     var blockchain = try blockchain_mod.Blockchain.init(allocator, null);
@@ -4791,7 +4807,7 @@ test "Hive rpc-compat chain materializes canonical state roots" {
     defer loaded.deinit(allocator);
 
     const genesis_state_root = try block_builder.computeStateRoot(allocator, &state);
-    var owned_block_bodies = std.ArrayList(OwnedBlockBody){};
+    var owned_block_bodies = std.ArrayList(chain_import.OwnedBlockBody){};
     defer {
         clearOwnedBlockBodyList(allocator, &owned_block_bodies);
         owned_block_bodies.deinit(allocator);

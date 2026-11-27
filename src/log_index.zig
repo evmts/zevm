@@ -164,7 +164,8 @@ pub const LogIndex = struct {
         self.block_range.putAssumeCapacity(block_number, range);
         self.block_hash_range.putAssumeCapacity(block_hash, range);
         if (!existed) {
-            if (self.block_numbers.items.len == 0 or self.block_numbers.items[self.block_numbers.items.len - 1] < block_number) {
+            const bn = self.block_numbers.items;
+            if (bn.len == 0 or bn[bn.len - 1] < block_number) {
                 self.block_numbers.appendAssumeCapacity(block_number);
             } else {
                 const pos = lowerBound(self.block_numbers.items, block_number);

@@ -144,7 +144,10 @@ pub const ReceiptIndex = struct {
     }
 };
 
-fn cloneReceipts(allocator: std.mem.Allocator, receipts: []const primitives.Receipt.Receipt) ![]primitives.Receipt.Receipt {
+fn cloneReceipts(
+    allocator: std.mem.Allocator,
+    receipts: []const primitives.Receipt.Receipt,
+) ![]primitives.Receipt.Receipt {
     const cloned = try allocator.alloc(primitives.Receipt.Receipt, receipts.len);
     var cloned_count: usize = 0;
     errdefer {

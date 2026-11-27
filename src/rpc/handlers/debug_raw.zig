@@ -164,11 +164,14 @@ fn encodeHeader(
     try appendField(allocator, &fields, primitives.Rlp.encodeBytes(allocator, header.extra_data));
     try appendField(allocator, &fields, primitives.Rlp.encodeBytes(allocator, &header.mix_hash));
     try appendField(allocator, &fields, primitives.Rlp.encodeBytes(allocator, &header.nonce));
-    try appendField(allocator, &fields, primitives.Rlp.encode(allocator, header.base_fee_per_gas orelse return error.MissingBaseFeePerGas));
+    const base_fee = header.base_fee_per_gas orelse return error.MissingBaseFeePerGas;
+    try appendField(allocator, &fields, primitives.Rlp.encode(allocator, base_fee));
     const withdrawals_root = header.withdrawals_root orelse return error.MissingWithdrawalsRoot;
     try appendField(allocator, &fields, primitives.Rlp.encodeBytes(allocator, &withdrawals_root));
-    try appendField(allocator, &fields, primitives.Rlp.encode(allocator, header.blob_gas_used orelse return error.MissingBlobGasUsed));
-    try appendField(allocator, &fields, primitives.Rlp.encode(allocator, header.excess_blob_gas orelse return error.MissingExcessBlobGas));
+    const blob_gas_used = header.blob_gas_used orelse return error.MissingBlobGasUsed;
+    try appendField(allocator, &fields, primitives.Rlp.encode(allocator, blob_gas_used));
+    const excess_blob_gas = header.excess_blob_gas orelse return error.MissingExcessBlobGas;
+    try appendField(allocator, &fields, primitives.Rlp.encode(allocator, excess_blob_gas));
     const parent_beacon_block_root = header.parent_beacon_block_root orelse return error.MissingParentBeaconBlockRoot;
     try appendField(allocator, &fields, primitives.Rlp.encodeBytes(allocator, &parent_beacon_block_root));
     try appendField(allocator, &fields, primitives.Rlp.encodeBytes(allocator, &hash));

@@ -1,7 +1,3 @@
-# ZEVM Product Requirements
-
-# ZEVM Product Requirements
-
 ## 1. Purpose
 
 ZEVM is one Zig binary (`zevm`) with two runtime modes:

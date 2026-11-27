@@ -9,7 +9,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
   uphill:
@@ -17,6 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: oven-sh/setup-bun@v2
 
@@ -28,12 +29,12 @@ jobs:
         with:
           version: "0.15.2"
 
-      - name: Run Uphill
-        uses: wevm/uphill@main
+      - name: Run Uphill (SHA-pinned)
+        uses: wevm/uphill@f71fba4d199409cbc8bf00d713dab4b24d91b980
 
       - name: Build Lighthouse Backpressure Audit Report
         env:
-          SMITHERS_TRUST: ${{ github.event_name == 'pull_request' && 'untrusted' || 'controlled-sandbox' }}
+          SMITHERS_TRUST: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'controlled-sandbox' || 'untrusted' }}
         run: |
           node tools/audit_report.mjs \
             --input .uphill/report.json \

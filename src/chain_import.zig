@@ -261,7 +261,9 @@ fn decodeHeaderForImport(
     header_bytes: []const u8,
 ) !primitives.BlockHeader.BlockHeader {
     const header_span = try itemSpan(header_bytes, 0);
-    if (header_span.kind != .list or header_span.start != 0 or header_span.end != header_bytes.len) return error.InvalidChainRlp;
+    if (header_span.kind != .list or header_span.start != 0 or header_span.end != header_bytes.len) {
+        return error.InvalidChainRlp;
+    }
 
     const fields = try childSpans(allocator, header_bytes, header_span.payload_start, header_span.payload_end);
     defer allocator.free(fields);
@@ -306,7 +308,9 @@ fn decodeHeaderForImport(
 
 fn decodeHeaderRequestsHash(allocator: std.mem.Allocator, header_bytes: []const u8) !?[32]u8 {
     const header_span = try itemSpan(header_bytes, 0);
-    if (header_span.kind != .list or header_span.start != 0 or header_span.end != header_bytes.len) return error.InvalidChainRlp;
+    if (header_span.kind != .list or header_span.start != 0 or header_span.end != header_bytes.len) {
+        return error.InvalidChainRlp;
+    }
 
     const fields = try childSpans(allocator, header_bytes, header_span.payload_start, header_span.payload_end);
     defer allocator.free(fields);
@@ -457,7 +461,12 @@ fn decodeWithdrawals(
     withdrawals_span: RlpSpan,
 ) ![]const primitives.BlockBody.Withdrawal {
     if (withdrawals_span.kind != .list) return error.InvalidChainRlp;
-    const withdrawal_spans = try childSpans(allocator, block_bytes, withdrawals_span.payload_start, withdrawals_span.payload_end);
+    const withdrawal_spans = try childSpans(
+        allocator,
+        block_bytes,
+        withdrawals_span.payload_start,
+        withdrawals_span.payload_end,
+    );
     defer allocator.free(withdrawal_spans);
     if (withdrawal_spans.len == 0) return &.{};
 
@@ -466,7 +475,12 @@ fn decodeWithdrawals(
 
     for (withdrawal_spans, 0..) |withdrawal_span, index| {
         if (withdrawal_span.kind != .list) return error.InvalidChainRlp;
-        const fields = try childSpans(allocator, block_bytes, withdrawal_span.payload_start, withdrawal_span.payload_end);
+        const fields = try childSpans(
+            allocator,
+            block_bytes,
+            withdrawal_span.payload_start,
+            withdrawal_span.payload_end,
+        );
         defer allocator.free(fields);
         if (fields.len != 4) return error.InvalidChainRlp;
         for (fields) |field| {

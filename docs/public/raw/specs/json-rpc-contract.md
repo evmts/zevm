@@ -1,7 +1,3 @@
-# ZEVM JSON-RPC Contract
-
-# ZEVM JSON-RPC Contract
-
 This file is the exact ZEVM JSON-RPC API contract.
 
 It defines:

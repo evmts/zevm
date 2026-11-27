@@ -1,7 +1,3 @@
-# Simulation
-
-# Simulation
-
 `eth_call`, `eth_estimateGas`, `eth_createAccessList`, `eth_simulateV1`, and `testing_buildBlockV1` are trusted-mode execution simulation methods.
 
 - trusted mode: supported

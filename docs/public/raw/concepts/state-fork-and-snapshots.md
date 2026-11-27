@@ -1,7 +1,3 @@
-# State Fork And Snapshots
-
-# State Fork And Snapshots
-
 Forking is trusted-mode configuration. It is not a runtime mode.
 
 > Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).

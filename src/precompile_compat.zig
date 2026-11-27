@@ -68,3 +68,35 @@ fn emptyEcrecoverOutput(allocator: std.mem.Allocator) !guillotine_mini.Precompil
         .success = true,
     };
 }
+
+test "precompile_compat ecrecover rejects insufficient gas and invalid v values" {
+    const allocator = std.testing.allocator;
+    const ecrecover_addr = primitives.Address.fromU256(1);
+
+    try std.testing.expectError(
+        error.OutOfGas,
+        execute(allocator, ecrecover_addr, &.{}, ECRECOVER_GAS - 1, .OSAKA),
+    );
+
+    var bad_v = [_]u8{0} ** 128;
+    bad_v[63] = 29;
+    const res = try execute(allocator, ecrecover_addr, &bad_v, ECRECOVER_GAS, .OSAKA);
+    defer allocator.free(res.output);
+    try std.testing.expect(res.success);
+    try std.testing.expectEqual(ECRECOVER_GAS, res.gas_used);
+    try std.testing.expectEqual(@as(usize, 0), res.output.len);
+}
+
+test "precompile_compat delegates non-ecrecover precompiles to SHA256 (0x02)" {
+    const allocator = std.testing.allocator;
+    const sha256_addr = primitives.Address.fromU256(2);
+
+    const res = try execute(allocator, sha256_addr, "abc", 10_000, .OSAKA);
+    defer allocator.free(res.output);
+    try std.testing.expect(res.success);
+    try std.testing.expectEqual(@as(usize, 32), res.output.len);
+
+    var expected: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash("abc", &expected, .{});
+    try std.testing.expectEqualSlices(u8, &expected, res.output);
+}

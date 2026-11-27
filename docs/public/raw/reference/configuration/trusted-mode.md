@@ -1,7 +1,3 @@
-# Trusted-Mode Configuration
-
-# Trusted-Mode Configuration
-
 Trusted mode is the default runtime. It provides local execution and local mutation with optional fork backing.
 
 > Normative sources: [`docs/specs/prd.md`](https://github.com/evmts/zevm/blob/main/docs/specs/prd.md) and [`docs/specs/json-rpc-contract.md`](https://github.com/evmts/zevm/blob/main/docs/specs/json-rpc-contract.md).

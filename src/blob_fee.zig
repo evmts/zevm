@@ -204,7 +204,11 @@ pub fn nextExcessBlobGasForHeader(
     const child_fork = hardfork_schedule.resolveHardforkWithConfig(config, child_number, child_timestamp);
     if (child_fork.isBefore(.CANCUN)) return 0;
 
-    const parent_fork = hardfork_schedule.resolveHardforkWithConfig(config, parent_header.number, parent_header.timestamp);
+    const parent_fork = hardfork_schedule.resolveHardforkWithConfig(
+        config,
+        parent_header.number,
+        parent_header.timestamp,
+    );
     const parent_has_blobs = parent_fork.isAtLeast(.CANCUN);
     return calcExcessBlobGas(
         child_fork,

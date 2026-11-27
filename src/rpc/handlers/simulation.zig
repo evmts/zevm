@@ -435,8 +435,11 @@ const TraceResponse = struct {
                 try writer.objectField("stack");
                 try writer.beginArray();
                 for (entry.stack) |word| {
+                    var raw: [32]u8 = undefined;
+                    std.mem.writeInt(u256, &raw, word, .big);
                     var bytes: [64]u8 = undefined;
-                    try writer.write(std.fmt.bufPrint(&bytes, "{x:0>64}", .{word}) catch unreachable);
+                    writeHexLower(&bytes, &raw);
+                    try writer.write(&bytes);
                 }
                 try writer.endArray();
             }
@@ -2523,9 +2526,13 @@ fn simulateLogsValue(
     next_log_index: *u32,
 ) !std.json.Value {
     const first_log_index = next_log_index.*;
-    var array = switch (try logsValue(allocator, receipt.logs, receipt.block_hash, first_log_index)) {
+    var logs_val = try logsValue(allocator, receipt.logs, receipt.block_hash, first_log_index);
+    var array = switch (logs_val) {
         .array => |array| array,
-        else => unreachable,
+        else => {
+            deinitJsonValue(allocator, &logs_val);
+            return error.InvalidLogsValue;
+        },
     };
     errdefer {
         for (array.items) |*item| deinitJsonValue(allocator, item);
@@ -2537,7 +2544,8 @@ fn simulateLogsValue(
         for (transfers) |transfer| {
             if (transfer.value == 0) continue;
             const synthetic_log_index = first_log_index + @as(u32, @intCast(array.items.len));
-            try array.append(try traceTransferLogValue(
+            try array.ensureUnusedCapacity(1);
+            array.appendAssumeCapacity(try traceTransferLogValue(
                 allocator,
                 transfer.from,
                 transfer.to,
@@ -2553,7 +2561,8 @@ fn simulateLogsValue(
     if (options.trace_transfers and success and transfers.len == 0 and tx.value > 0) {
         if (tx.to) |to| {
             const synthetic_log_index = first_log_index + @as(u32, @intCast(array.items.len));
-            try array.append(try traceTransferLogValue(
+            try array.ensureUnusedCapacity(1);
+            array.appendAssumeCapacity(try traceTransferLogValue(
                 allocator,
                 tx.from,
                 to,

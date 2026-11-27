@@ -1,7 +1,3 @@
-# JSON-RPC Overview
-
-# JSON-RPC Overview
-
 This page defines the ZEVM HTTP JSON-RPC 2.0 contract shared across trusted mode and light mode.
 
 ## Current Public Contract

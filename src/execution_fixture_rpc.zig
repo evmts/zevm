@@ -161,7 +161,12 @@ const Entry = struct {
         allocator: std.mem.Allocator,
         request: jsonrpc.envelope.RequestEnvelope,
     ) !bool {
-        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, self.request_json, .{ .allocate = .alloc_if_needed });
+        var parsed = try std.json.parseFromSlice(
+            std.json.Value,
+            allocator,
+            self.request_json,
+            .{ .allocate = .alloc_if_needed },
+        );
         defer parsed.deinit();
 
         const object = switch (parsed.value) {
@@ -191,7 +196,12 @@ const Entry = struct {
             };
         }
 
-        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, self.response_json, .{ .allocate = .alloc_if_needed });
+        var parsed = try std.json.parseFromSlice(
+            std.json.Value,
+            allocator,
+            self.response_json,
+            .{ .allocate = .alloc_if_needed },
+        );
         defer parsed.deinit();
 
         const object = switch (parsed.value) {
@@ -215,7 +225,12 @@ const ErrorInfo = struct {
 };
 
 fn errorInfoFromResponseJson(allocator: std.mem.Allocator, response_json: []const u8) !?ErrorInfo {
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, response_json, .{ .allocate = .alloc_if_needed });
+    var parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        response_json,
+        .{ .allocate = .alloc_if_needed },
+    );
     defer parsed.deinit();
 
     const object = switch (parsed.value) {
@@ -252,7 +267,12 @@ fn errorInfoFromResponseJson(allocator: std.mem.Allocator, response_json: []cons
 }
 
 fn methodFromRequestJson(allocator: std.mem.Allocator, request_json: []const u8) ![]u8 {
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, request_json, .{ .allocate = .alloc_if_needed });
+    var parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        request_json,
+        .{ .allocate = .alloc_if_needed },
+    );
     defer parsed.deinit();
 
     const object = switch (parsed.value) {

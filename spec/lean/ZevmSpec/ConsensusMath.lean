@@ -412,6 +412,244 @@ theorem effectiveGasUsed_le (fork : Hardfork) (execGas refund zeroBytes nonZeroB
   repeat' split
   all_goals omega
 
+/-- Hardfork ordering is reflexive. -/
+theorem hardfork_isAtLeast_refl (a : Hardfork) : a.isAtLeast a = true := by
+  simp [Hardfork.isAtLeast]
+
+/-- Hardfork ordering is transitive. -/
+theorem hardfork_isAtLeast_trans (a b c : Hardfork)
+    (hab : a.isAtLeast b = true) (hbc : b.isAtLeast c = true) :
+    a.isAtLeast c = true := by
+  simp only [Hardfork.isAtLeast, decide_eq_true_eq] at hab hbc ⊢
+  omega
+
+/-- Hardfork ordering is antisymmetric. -/
+theorem hardfork_isAtLeast_antisymm (a b : Hardfork)
+    (hab : a.isAtLeast b = true) (hba : b.isAtLeast a = true) : a = b := by
+  simp only [Hardfork.isAtLeast, decide_eq_true_eq] at hab hba
+  cases a <;> cases b <;> simp [Hardfork.rank] at hab hba <;> rfl
+
+/-- Osaka is at least every hardfork in the schedule. -/
+theorem hardfork_osaka_top (a : Hardfork) : Hardfork.osaka.isAtLeast a = true := by
+  cases a <;> rfl
+
+/-- Every hardfork is at least Frontier. -/
+theorem hardfork_frontier_bot (a : Hardfork) : a.isAtLeast .frontier = true := by
+  cases a <;> rfl
+
+/-- Pre-Cancun zero update fraction always yields a 0 blob base fee. -/
+theorem calcBlobBaseFee_zero_fraction (excess : Nat) :
+    calcBlobBaseFee excess 0 = 0 := by
+  simp [calcBlobBaseFee]
+
+/-- Zero denominator saturates `fakeExponentialU256` at `U256_MAX`. -/
+theorem fakeExponentialU256_zero_denom (factor numerator : Nat) :
+    fakeExponentialU256 factor numerator 0 = U256_MAX := by
+  simp [fakeExponentialU256]
+
+/-- `fakeExponentialU256` never exceeds `U256_MAX`. -/
+theorem fakeExponentialU256_le_u256 (factor numerator denominator : Nat) :
+    fakeExponentialU256 factor numerator denominator ≤ U256_MAX := by
+  unfold fakeExponentialU256
+  split
+  · exact Nat.le_refl _
+  · exact Nat.min_le_left _ _
+
+/-- `calcBlobBaseFee` always fits in a u256. -/
+theorem calcBlobBaseFee_le_u256 (excess fraction : Nat) :
+    calcBlobBaseFee excess fraction ≤ U256_MAX := by
+  unfold calcBlobBaseFee
+  split
+  · exact Nat.zero_le _
+  · exact fakeExponentialU256_le_u256 _ _ _
+
+/-- Pre-Cancun forks always compute 0 excess blob gas. -/
+theorem calcExcessBlobGas_pre_cancun (fork : Hardfork)
+    (target max fraction parentExcess parentUsed parentBaseFee : Nat)
+    (h : fork.isAtLeast .cancun = false) :
+    calcExcessBlobGas fork target max fraction parentExcess parentUsed parentBaseFee = 0 := by
+  simp [calcExcessBlobGas, h]
+
+/-- Pre-Cancun mainnet blob params are all zero. -/
+theorem mainnetBlobParams_pre_cancun (fork : Hardfork) (ts : Nat)
+    (h : fork.isAtLeast .cancun = false) :
+    mainnetBlobParams fork ts = BlobParams.none := by
+  simp [mainnetBlobParams, h]
+
+/-- Mainnet blob parameters always satisfy `target ≤ max`. -/
+theorem mainnetBlobParams_target_le_max (fork : Hardfork) (ts : Nat) :
+    (mainnetBlobParams fork ts).target ≤ (mainnetBlobParams fork ts).max := by
+  unfold mainnetBlobParams
+  repeat' split
+  all_goals decide
+
+/-- Every Cancun+ mainnet blob parameter set has a strictly positive update fraction. -/
+theorem mainnetBlobParams_fraction_pos (fork : Hardfork) (ts : Nat)
+    (h : fork.isAtLeast .cancun = true) :
+    (mainnetBlobParams fork ts).fraction > 0 := by
+  unfold mainnetBlobParams
+  rw [h]
+  simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+  repeat' split
+  all_goals decide
+
+/-- Mainnet Osaka BPO transitions never decrease max blobs per block. -/
+theorem mainnetBlobParams_osaka_mono_max (t1 t2 : Nat) (h : t1 ≤ t2) :
+    (mainnetBlobParams .osaka t1).max ≤ (mainnetBlobParams .osaka t2).max := by
+  unfold mainnetBlobParams MAINNET_BPO1_TIMESTAMP MAINNET_BPO2_TIMESTAMP
+  simp only [Hardfork.isAtLeast, Hardfork.rank, ge_iff_le]
+  repeat' split
+  all_goals simp [MAINNET_OSAKA_BLOB_PARAMS, MAINNET_BPO1_BLOB_PARAMS, MAINNET_BPO2_BLOB_PARAMS] at *
+  all_goals omega
+
+/-- EIP-1559 rejects parent blocks with gas limit below 2 (zero gas target). -/
+theorem expectedBaseFee_zero_target_none (bf used limit : Nat) (h : limit < 2) :
+    expectedBaseFeePerGas bf used limit = none := by
+  unfold expectedBaseFeePerGas ELASTICITY_MULTIPLIER
+  have h0 : limit / 2 = 0 := by omega
+  rw [if_pos h0]
+
+/-- EIP-1559 rejects parent base fees exceeding `U256_MAX`. -/
+theorem expectedBaseFee_over_u256_none (bf used limit : Nat) (h : bf > U256_MAX) :
+    expectedBaseFeePerGas bf used limit = none := by
+  unfold expectedBaseFeePerGas ELASTICITY_MULTIPLIER
+  by_cases ht : limit / 2 = 0
+  · rw [if_pos ht]
+  · rw [if_neg ht, if_pos h]
+
+/-- Above target gas usage, a defined next EIP-1559 base fee strictly increases. -/
+theorem expectedBaseFee_increases_above_target (bf used limit next : Nat)
+    (hUsed : used > limit / 2)
+    (hRes : expectedBaseFeePerGas bf used limit = some next) :
+    next > bf := by
+  unfold expectedBaseFeePerGas ELASTICITY_MULTIPLIER at hRes
+  by_cases ht : limit / 2 = 0
+  · rw [if_pos ht] at hRes; cases hRes
+  · rw [if_neg ht] at hRes
+    by_cases ho : bf > U256_MAX
+    · rw [if_pos ho] at hRes; cases hRes
+    · rw [if_neg ho] at hRes
+      have hne : used ≠ limit / 2 := by omega
+      rw [if_neg hne, if_pos hUsed] at hRes
+      split at hRes
+      · cases hRes
+      · have hEq := Option.some.inj hRes
+        have hpos : 1 ≤ Nat.max 1 (bf * (used - limit / 2) / (limit / 2) /
+            BASE_FEE_MAX_CHANGE_DENOMINATOR) := Nat.le_max_left 1 _
+        omega
+
+/-- Below target gas usage, a defined next EIP-1559 base fee never increases. -/
+theorem expectedBaseFee_decreases_below_target (bf used limit next : Nat)
+    (hUsed : used < limit / 2)
+    (hRes : expectedBaseFeePerGas bf used limit = some next) :
+    next ≤ bf := by
+  unfold expectedBaseFeePerGas ELASTICITY_MULTIPLIER at hRes
+  by_cases ht : limit / 2 = 0
+  · rw [if_pos ht] at hRes; cases hRes
+  · rw [if_neg ht] at hRes
+    by_cases ho : bf > U256_MAX
+    · rw [if_pos ho] at hRes; cases hRes
+    · rw [if_neg ho] at hRes
+      have hne : used ≠ limit / 2 := by omega
+      have hng : ¬ used > limit / 2 := by omega
+      rw [if_neg hne, if_neg hng] at hRes
+      have hEq := Option.some.inj hRes
+      rw [← hEq]
+      exact Nat.sub_le _ _
+
+/-- EIP-7623 calldata tokens are monotone in both zero and nonzero byte counts. -/
+theorem calldataTokens_mono (z1 z2 nz1 nz2 : Nat) (hz : z1 ≤ z2) (hnz : nz1 ≤ nz2) :
+    calldataTokens z1 nz1 ≤ calldataTokens z2 nz2 := by
+  unfold calldataTokens CALLDATA_ZERO_TOKENS CALLDATA_NONZERO_TOKENS
+  omega
+
+/-- Pre-Prague forks have a zero EIP-7623 calldata floor. -/
+theorem calldataFloor_pre_prague (fork : Hardfork) (z nz : Nat)
+    (h : fork.isAtLeast .prague = false) :
+    calldataFloor fork z nz = 0 := by
+  simp [calldataFloor, h]
+
+/-- EIP-7623 calldata floor is monotone in both zero and nonzero byte counts. -/
+theorem calldataFloor_mono (fork : Hardfork) (z1 z2 nz1 nz2 : Nat)
+    (hz : z1 ≤ z2) (hnz : nz1 ≤ nz2) :
+    calldataFloor fork z1 nz1 ≤ calldataFloor fork z2 nz2 := by
+  unfold calldataFloor
+  split
+  · have ht := calldataTokens_mono z1 z2 nz1 nz2 hz hnz
+    unfold TX_BASE_GAS CALLDATA_FLOOR_GAS_PER_TOKEN
+    omega
+  · exact Nat.le_refl 0
+
+/-- EIP-3529 refund cap never exceeds half of execution gas on any fork. -/
+theorem maxRefund_le_half (fork : Hardfork) (g : Nat) :
+    maxRefund fork g ≤ g / 2 := by
+  unfold maxRefund
+  split
+  · omega
+  · exact Nat.le_refl _
+
+/-- From London onward, EIP-3529 caps refunds at `gasUsed / 5`. -/
+theorem maxRefund_london (fork : Hardfork) (g : Nat) (h : fork.isAtLeast .london = true) :
+    maxRefund fork g = g / 5 := by
+  simp [maxRefund, h]
+
+/-- With zero refund, effective gas used is at least execution gas. -/
+theorem effectiveGasUsed_zero_refund_ge_exec (fork : Hardfork) (execGas z nz : Nat) :
+    effectiveGasUsed fork execGas 0 z nz ≥ execGas := by
+  unfold effectiveGasUsed
+  have h0 : Nat.min 0 (maxRefund fork execGas) = 0 := Nat.zero_min _
+  rw [h0, Nat.sub_zero]
+  exact Nat.le_max_left _ _
+
+/-- Larger refunds never increase effective gas billed. -/
+theorem effectiveGasUsed_antitone_refund (fork : Hardfork) (execGas r1 r2 z nz : Nat)
+    (h : r1 ≤ r2) :
+    effectiveGasUsed fork execGas r2 z nz ≤ effectiveGasUsed fork execGas r1 z nz := by
+  unfold effectiveGasUsed
+  have hm : Nat.min r1 (maxRefund fork execGas) ≤ Nat.min r2 (maxRefund fork execGas) := by
+    simp only [Nat.min_def]
+    repeat' split
+    all_goals omega
+  have hs : execGas - Nat.min r2 (maxRefund fork execGas) ≤
+      execGas - Nat.min r1 (maxRefund fork execGas) := by omega
+  simp only [Nat.max_def]
+  repeat' split
+  all_goals omega
+
+/-- Pre-Osaka forks do not enforce the EIP-7825 transaction gas limit cap. -/
+theorem validateTxGasLimit_pre_osaka (fork : Hardfork) (g : Nat)
+    (h : fork.isAtLeast .osaka = false) :
+    validateTxGasLimit fork g = true := by
+  simp [validateTxGasLimit, h]
+
+/-- On Osaka, EIP-7825 accepts a transaction iff `gasLimit ≤ MAX_TX_GAS_OSAKA`. -/
+theorem validateTxGasLimit_osaka_iff (g : Nat) :
+    validateTxGasLimit .osaka g = true ↔ g ≤ MAX_TX_GAS_OSAKA := by
+  simp [validateTxGasLimit, Hardfork.isAtLeast, Hardfork.rank]
+
+/-- Decreasing a valid transaction gas limit keeps it valid under EIP-7825. -/
+theorem validateTxGasLimit_mono (fork : Hardfork) (g1 g2 : Nat)
+    (hle : g1 ≤ g2) (h : validateTxGasLimit fork g2 = true) :
+    validateTxGasLimit fork g1 = true := by
+  unfold validateTxGasLimit at h ⊢
+  cases hfork : fork.isAtLeast .osaka
+  · simp
+  · rw [hfork] at h
+    simp only [Bool.true_and, Bool.not_eq_true', decide_eq_false_iff_not, gt_iff_lt,
+      Nat.not_lt] at h ⊢
+    omega
+
+/-- Pre-Osaka forks do not enforce the EIP-7934 RLP block size cap. -/
+theorem validateBlockRlpSize_pre_osaka (fork : Hardfork) (s : Nat)
+    (h : fork.isAtLeast .osaka = false) :
+    validateBlockRlpSize fork s = true := by
+  simp [validateBlockRlpSize, h]
+
+/-- On Osaka, EIP-7934 accepts a block iff `size ≤ MAX_RLP_BLOCK_SIZE_OSAKA`. -/
+theorem validateBlockRlpSize_osaka_iff (s : Nat) :
+    validateBlockRlpSize .osaka s = true ↔ s ≤ MAX_RLP_BLOCK_SIZE_OSAKA := by
+  simp [validateBlockRlpSize, Hardfork.isAtLeast, Hardfork.rank]
+
 /-! ## Executable checks
 
 Vectors from go-ethereum `TestFakeExponential` and the zevm unit tests in

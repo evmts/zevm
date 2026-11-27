@@ -1,7 +1,3 @@
-# Embedded execution node
-
-# Embedded execution node
-
 `zevm_node_create`, `zevm_node_rpc`, and `zevm_node_destroy` expose the same
 native NodeRuntime and JSON-RPC dispatcher as the executable, without a socket.
 Voltaire owns Ethereum primitives and state; Guillotine Mini executes bytecode.

@@ -187,11 +187,13 @@ const factoryToolsTest = S.Shell.Test({
     "tools/wiki_sync.test.mjs",
     "tools/sandbox_auth.test.mjs",
     "tools/generate_llms_txt.test.mjs",
+    ".smithers/playground/run.test.mjs",
   ],
   data: [
     S.glob("tools/*.mjs"),
     smithersPkg["home-sources"],
     smithersPkg["wiki-sources"],
+    smithersPkg["playground-sources"],
     S.file("docs/astro.config.mjs"),
     S.glob("docs/**/*.md", { exclude: ["docs/node_modules/**", "docs/src/content/docs/**", "docs/public/**"] }),
     S.glob("docs/**/*.mdx", { exclude: ["docs/node_modules/**", "docs/src/content/docs/**", "docs/public/**"] }),

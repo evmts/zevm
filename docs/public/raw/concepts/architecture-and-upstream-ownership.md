@@ -1,7 +1,3 @@
-# Architecture And Upstream Ownership
-
-# Architecture And Upstream Ownership
-
 ZEVM is an integration shell. It does not re-own upstream execution internals.
 
 ## Layered Composition

@@ -1,7 +1,3 @@
-# Method Support By Mode
-
-# Method Support By Mode
-
 Use this matrix to choose the right mode. This page is a summary of the normative contract sources in `docs/specs/prd.md` and `docs/specs/json-rpc-contract.md`.
 Use JSON-RPC reference pages for exact method signatures, params, payloads, and errors.
 

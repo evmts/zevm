@@ -193,8 +193,10 @@ jobs:
         working-directory: zevm
         run: git diff --exit-code -- .
 
-  smithers:
-    name: smthrs ci //...
+  smithers-trunk:
+    name: smthrs ci //... (trunk)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: trunk
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -245,16 +247,80 @@ jobs:
         working-directory: zevm
         run: node tools/native_deps_digest.mjs .native-deps.digest
 
-      # Pull requests read the shared remote cache under an isolated PR namespace;
-      # pushes to main also publish to the shared Smithers Cloud object store.
-      - name: smthrs ci //...
+      - name: smthrs ci //... (controlled trunk cache write)
         working-directory: zevm
         run: npx --yes --package=@smthrs/cli@"$SMTHRS_VERSION" smthrs ci '//...' --workspace . --verbose
         env:
-          SMITHERS_TRUST: ${{ github.event_name == 'pull_request' && 'untrusted' || 'controlled-sandbox' }}
-          SMITHERS_CACHE_NAMESPACE: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || '' }}
+          SMITHERS_TRUST: controlled-sandbox
           SMITHERS_CACHE_READ_TOKEN: ${{ secrets.SMITHERS_CACHE_READ_TOKEN }}
-          SMITHERS_CACHE_WRITE_TOKEN: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.SMITHERS_CACHE_WRITE_TOKEN || '' }}
+          SMITHERS_CACHE_WRITE_TOKEN: ${{ secrets.SMITHERS_CACHE_WRITE_TOKEN }}
+
+      - name: Dirty worktree preflight
+        working-directory: zevm
+        run: git diff --exit-code -- .
+
+  smithers-untrusted:
+    name: smthrs ci //... (read-only cache)
+    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      SMTHRS_VERSION: "1.0.0-rc.18"
+    steps:
+      - name: Checkout ZEVM
+        uses: actions/checkout@v7
+        with:
+          path: zevm
+          persist-credentials: false
+
+      - name: Checkout execution-apis test fixtures
+        working-directory: zevm
+        run: git submodule update --init --depth 1 -- lib/execution-apis
+
+      - name: Checkout pinned native dependencies
+        working-directory: zevm
+        run: bash tools/checkout-native.sh
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2.2.1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cargo perl rustc
+
+      - name: Restore Smithers local cache
+        uses: actions/cache@v4
+        with:
+          path: zevm/.smithers/cache
+          key: smithers-${{ runner.os }}-${{ github.sha }}
+          restore-keys: smithers-${{ runner.os }}-
+
+      - name: Fetch Zig package dependencies
+        working-directory: zevm
+        run: zig build --fetch
+
+      - name: Digest pinned native dependencies
+        working-directory: zevm
+        run: node tools/native_deps_digest.mjs .native-deps.digest
+
+      # Non-main and pull request runs only ever receive read-only remote cache
+      # credentials in an isolated namespace so untrusted code cannot poison trunk.
+      - name: smthrs ci //... (isolated read-only cache)
+        working-directory: zevm
+        run: npx --yes --package=@smthrs/cli@"$SMTHRS_VERSION" smthrs ci '//...' --workspace . --verbose
+        env:
+          SMITHERS_TRUST: untrusted
+          SMITHERS_CACHE_NAMESPACE: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('branch-{0}', github.run_id) }}
+          SMITHERS_CACHE_READ_TOKEN: ${{ secrets.SMITHERS_CACHE_READ_TOKEN }}
 
       - name: Dirty worktree preflight
         working-directory: zevm
@@ -454,7 +520,7 @@ jobs:
             and (.zevmGitRevision | test("^[0-9a-fA-F]{40}$"))
             and (.voltaireGitRevision | test("^[0-9a-fA-F]{40}$"))
             and (.guillotineMiniGitRevision | test("^[0-9a-fA-F]{40}$"))
-            and (.zigVersion | type == "string" and length > 0)
+            and (.zigVersion | type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.+-]+)?$"))
           ' "$ARTIFACT_DIR/release-tuple.json" > /dev/null
           EXPECTED_MAINNET="0x$(sed -n 's/^pub const mainnet_hex = "\(.*\)";$/\1/p' src/light_default_checkpoints.zig)"
           EXPECTED_SEPOLIA="0x$(sed -n 's/^pub const sepolia_hex = "\(.*\)";$/\1/p' src/light_default_checkpoints.zig)"

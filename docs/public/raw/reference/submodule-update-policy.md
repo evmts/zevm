@@ -1,7 +1,3 @@
-# Submodule Update Policy
-
-# Submodule Update Policy
-
 Last updated 2026-11-22
 
 ## Classification

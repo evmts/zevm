@@ -62,8 +62,8 @@ Coding factory projection, 3-audience personalized home, shared cache trust isol
 - Declare Smithers Cloud repository workflow triggers in .smithers/FACTORY.ts so factory.json emits apiVersion 1 and contributes.triggers.
 - Enforce policy.approvals approve=person and merge=person in .smithers/FACTORY.ts.
 - Protect consensus, ABI, native pins, build, and factory paths in github.protectedPaths.
-- Declare maintainer, contributor, and everyone sections in .smithers/FACTORY.ts home without markdown blocks so smithers.sh renders pre-clone.
-- Declare docs pointing to https://zevm.sh/docs/llms.txt in .smithers/FACTORY.ts home.
+- Declare maintainer, contributor, and everyone sections in .smithers/HOME.mjs (projected to .smithers/home.json) without markdown blocks so smithers.sh renders pre-clone.
+- Declare docs pointing to https://zevm.sh/docs/llms.txt in .smithers/HOME.mjs.
 - Isolate untrusted PR execution from trunk cache writes using split SMITHERS_CACHE_READ_TOKEN and main-only SMITHERS_CACHE_WRITE_TOKEN.
 - Keep .smithers/wiki/ wikilinks, frontmatter, mythical history, and code citations valid (node tools/wiki_sync.mjs --check).
 - Keep docs/public/llms.txt synchronized with docs/ (node tools/generate_llms_txt.mjs --check).

@@ -88,13 +88,23 @@ for (const file of files) {
   }
 
   // Validate inline code citations that look like repository file paths.
+  const ROOT_KNOWN = new Set([
+    "PACKAGE.ts",
+    "build.zig",
+    "build.zig.zon",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "CHANGELOG.md",
+    "README.md",
+    "native-dependencies.json",
+  ]);
   for (const match of prose.matchAll(/`([A-Za-z0-9_./-]+\.(?:zig|ts|js|mjs|cjs|json|yaml|yml|md|mdx|h|c|lean|zon|sh))`/g)) {
     const candidate = match[1];
     if (
       candidate.startsWith("http") ||
       candidate.startsWith("..") ||
       candidate.includes("*") ||
-      !candidate.includes("/")
+      (!candidate.includes("/") && !ROOT_KNOWN.has(candidate))
     ) {
       continue;
     }
@@ -109,7 +119,6 @@ for (const file of files) {
     title: fm.title || file.replace(/\.md$/, ""),
     tags: fm.tags,
     markdown,
-    updatedAt: stat.mtime.toISOString(),
   });
 }
 

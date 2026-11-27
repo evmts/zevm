@@ -1,7 +1,3 @@
-# Unsupported And Deferred
-
-# Unsupported And Deferred
-
 This page lists surfaces intentionally outside the current public ZEVM contract.
 
 ## Unsupported Public Surface

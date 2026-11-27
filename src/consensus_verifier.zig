@@ -178,8 +178,10 @@ pub fn verifyUpdate(
     }
 
     if (update.next_sync_committee_pubkeys) |next_sync_committee_pubkeys| {
-        const next_sync_committee_aggregate_pubkey = update.next_sync_committee_aggregate_pubkey orelse return ConsensusVerifierError.InvalidNextSyncCommitteeProof;
-        const next_sync_committee_branch = update.next_sync_committee_branch orelse return ConsensusVerifierError.InvalidNextSyncCommitteeProof;
+        const next_sync_committee_aggregate_pubkey = update.next_sync_committee_aggregate_pubkey orelse
+            return ConsensusVerifierError.InvalidNextSyncCommitteeProof;
+        const next_sync_committee_branch = update.next_sync_committee_branch orelse
+            return ConsensusVerifierError.InvalidNextSyncCommitteeProof;
 
         const next_committee_root = try syncCommitteeRoot(
             next_sync_committee_pubkeys,
@@ -189,12 +191,18 @@ pub fn verifyUpdate(
 
         if (update_attested_period == store_period) {
             if (store.next_sync_committee_pubkeys) |known_next_sync_committee_pubkeys| {
-                if (!std.mem.eql(u8, std.mem.asBytes(&known_next_sync_committee_pubkeys), std.mem.asBytes(&next_sync_committee_pubkeys))) {
+                const known_bytes = std.mem.asBytes(&known_next_sync_committee_pubkeys);
+                const next_bytes = std.mem.asBytes(&next_sync_committee_pubkeys);
+                if (!std.mem.eql(u8, known_bytes, next_bytes)) {
                     return ConsensusVerifierError.InvalidNextSyncCommitteeProof;
                 }
 
                 if (store.next_sync_committee_aggregate_pubkey) |known_next_sync_committee_aggregate_pubkey| {
-                    if (!std.mem.eql(u8, known_next_sync_committee_aggregate_pubkey[0..], next_sync_committee_aggregate_pubkey[0..])) {
+                    if (!std.mem.eql(
+                        u8,
+                        known_next_sync_committee_aggregate_pubkey[0..],
+                        next_sync_committee_aggregate_pubkey[0..],
+                    )) {
                         return ConsensusVerifierError.InvalidNextSyncCommitteeProof;
                     }
                 } else {

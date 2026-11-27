@@ -1,7 +1,3 @@
-# Database
-
-# Database
-
 `zevm.database` combines journaled account state with account and contract-code stores used by block execution. Reach for it when embedding ZEVM execution and you need owned in-memory state or a Merkle account root.
 
 ## Working example
