@@ -14,9 +14,15 @@ try {
   assert.equal(node.rpc(JSON.stringify({ jsonrpc: "2.0", method: "anvil_setCode", params: [address, "0x602a60005260206000f3"] })), null);
   assert.equal(rpc("eth_call", [{ to: address }, "latest"]).result, "0x" + "00".repeat(31) + "2a");
   assert.equal(JSON.parse(other.rpc(JSON.stringify(request("eth_getCode", [address, "latest"])))).result, "0x");
-  const batch = JSON.parse(node.rpc(JSON.stringify([request("eth_chainId"), request("debug_traceCall")])));
+  const batch = JSON.parse(node.rpc(JSON.stringify([request("eth_chainId"), request("debug_traceTransaction", ["0x" + "00".repeat(32)])])));
   assert.equal(batch[0].result, "0x7a69");
   assert.equal(batch[1].error.code, -32601);
+  const filterId = rpc("eth_newBlockFilter").result;
+  assert.match(filterId, /^0x[0-9a-f]+$/i);
+  assert.equal(rpc("eth_uninstallFilter", [filterId]).result, true);
+  const trace = rpc("debug_traceCall", [{ to: address }, "latest"]).result;
+  assert.equal(trace.failed, false);
+  assert.ok(Array.isArray(trace.structLogs) && trace.structLogs.length > 0);
   assert.equal(JSON.parse(node.rpc("{")).error.code, -32700);
 } finally {
   node.close();

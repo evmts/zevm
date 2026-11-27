@@ -26,7 +26,7 @@ In this PRD, phase-1 scope is declared in sections 3.1, 3.3, 3.4, and 3.5, with 
 
 - startup and configuration for trusted and light mode
 - HTTP JSON-RPC 2.0 transport
-- phase-1 trusted-mode JSON-RPC inventory includes standard reads (`eth_chainId`, `eth_blockNumber`, account/code/storage/proof reads, pricing/fee reads including `eth_feeHistory`), execution simulation and testing (`eth_call`, `eth_estimateGas`, `eth_createAccessList`, `eth_simulateV1`, `testing_buildBlockV1`), submission (`eth_sendTransaction`, `eth_sendRawTransaction`), canonical block/receipt/log/access-list queries, debug/raw inspection, Engine API listener methods, txpool methods, compatibility utilities, and trusted controls under canonical `zevm_*` methods (mining, snapshot/revert, state mutation, impersonation, and time controls); canonical tuples/errors are under `Trusted-Mode Standard Methods` and `Trusted-Mode zevm_* Methods` in `docs/specs/json-rpc-contract.md`
+- phase-1 trusted-mode JSON-RPC inventory includes standard reads (`eth_chainId`, `eth_blockNumber`, account/code/storage/proof reads, pricing/fee reads including `eth_feeHistory`), execution simulation and testing (`eth_call`, `eth_estimateGas`, `eth_createAccessList`, `eth_simulateV1`, `testing_buildBlockV1`, `debug_traceCall`), submission (`eth_sendTransaction`, `eth_sendRawTransaction`), canonical block/receipt/log/access-list queries and filter lifecycle methods (`eth_newBlockFilter`, `eth_newPendingTransactionFilter`, `eth_newFilter`, `eth_getFilterChanges`, `eth_getFilterLogs`, `eth_uninstallFilter`), debug/raw inspection, Engine API listener methods, txpool methods, compatibility utilities, and trusted controls under canonical `zevm_*` methods (mining, snapshot/revert, state mutation, impersonation, and time controls); canonical tuples/errors are under `Trusted-Mode Standard Methods` and `Trusted-Mode zevm_* Methods` in `docs/specs/json-rpc-contract.md`
 - phase-1 light-mode JSON-RPC inventory is exactly `zevm_lightSyncStatus`, `eth_chainId`, `eth_blockNumber`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, and `eth_getTransactionCount`; canonical tuples/errors are under `Light-Mode Methods` in `docs/specs/json-rpc-contract.md`
 - in this PRD, "proof-backed reads" means exactly `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, and `eth_getTransactionCount` in light mode; it does not include `eth_chainId`, `zevm_lightSyncStatus`, or `eth_blockNumber`
 - while light mode is not ready, proof-backed reads and `eth_blockNumber` are readiness-gated (`-32011`) as defined in sections 4.2 and 10
@@ -36,9 +36,8 @@ In this PRD, phase-1 scope is declared in sections 3.1, 3.3, 3.4, and 3.5, with 
 
 ### 3.2 Out of scope
 
-- WebSocket transport and subscriptions
-- filter lifecycle APIs beyond `eth_getLogs` (RPC error `-32601`)
-- debug tracing APIs
+- WebSocket transport and subscriptions (`eth_subscribe`, `eth_unsubscribe`)
+- debug tracing APIs other than `debug_traceCall` (such as `debug_traceTransaction` and `debug_traceBlockByHash`)
 - proof-backed `eth_call` in light mode
 - `eth_estimateGas` in light mode
 - `eth_feeHistory` and canonical block/receipt/log queries in light mode

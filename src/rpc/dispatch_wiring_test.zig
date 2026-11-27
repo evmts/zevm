@@ -1001,13 +1001,6 @@ test "deferred RPC families return method not found in both modes before validat
         var rt = if (light) try initLightRuntime(null) else try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
         defer rt.deinit();
         for ([_][]const u8{
-            "eth_newBlockFilter",
-            "eth_newPendingTransactionFilter",
-            "eth_newFilter",
-            "eth_getFilterChanges",
-            "eth_getFilterLogs",
-            "eth_uninstallFilter",
-            "debug_traceCall",
             "debug_traceTransaction",
             "debug_traceBlockByHash",
             "eth_subscribe",
@@ -1019,6 +1012,45 @@ test "deferred RPC families return method not found in both modes before validat
                 try std.testing.expectEqual(@as(i32, -32601), response.error_value.?.code);
             }
         }
+    }
+}
+
+test "installed dispatch wiring tracks eth_newBlockFilter changes" {
+    var rt = try runtime_mod.NodeRuntime.init(std.testing.allocator, null);
+    defer rt.deinit();
+
+    var create_response = try dispatchForTest(&rt, "eth_newBlockFilter", null);
+    defer create_response.deinit(std.testing.allocator);
+    try std.testing.expect(create_response.error_value == null);
+    const filter_id = create_response.result.?.string;
+
+    try rt.mineBlocks(1, 0);
+    const block = (try rt.blockchain.getBlockByNumber(1)).?;
+    const block_hash = try primitives.Hex.bytesToHex(std.testing.allocator, &block.hash);
+    defer std.testing.allocator.free(block_hash);
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .string = filter_id });
+
+        var response = try dispatchForTest(&rt, "eth_getFilterChanges", .{ .array = params });
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        const changes = response.result.?.array.items;
+        try std.testing.expectEqual(@as(usize, 1), changes.len);
+        try std.testing.expectEqualStrings(block_hash, changes[0].string);
+    }
+
+    {
+        var params = std.json.Array.init(std.testing.allocator);
+        defer params.deinit();
+        try params.append(.{ .string = filter_id });
+
+        var response = try dispatchForTest(&rt, "eth_uninstallFilter", .{ .array = params });
+        defer response.deinit(std.testing.allocator);
+        try std.testing.expect(response.error_value == null);
+        try std.testing.expect(response.result.?.bool);
     }
 }
 
@@ -1781,12 +1813,17 @@ test "transaction queries enforce canonical-mined-only and omit nonstandard bloc
     try std.testing.expect(send_response.error_value == null);
     const tx_hash = send_response.result.?.string;
 
-    // Issue #32: eth_getTransactionByHash returns null for txpool-only pending transactions.
+    // Pending txpool transaction is returned with null block fields and no blockTimestamp.
     {
         var response = try dispatchOneStringParam(&handlers, "eth_getTransactionByHash", tx_hash);
         defer response.deinit(allocator);
         try std.testing.expect(response.error_value == null);
-        try std.testing.expect(response.result.? == .null);
+        const pending = response.result.?;
+        try std.testing.expectEqualStrings(tx_hash, (try getObjectField(pending, "hash")).string);
+        try std.testing.expect(pending.object.get("blockHash").? == .null);
+        try std.testing.expect(pending.object.get("blockNumber").? == .null);
+        try std.testing.expect(pending.object.get("transactionIndex").? == .null);
+        try std.testing.expect(pending.object.get("blockTimestamp") == null);
     }
 
     rt.setNextBlockTimestamp(rt.head_block_timestamp + 42);

@@ -7,6 +7,7 @@ const log_index_mod = @import("../../log_index.zig");
 const receipt_index_mod = @import("../../receipt_index.zig");
 const runtime = @import("../../node/runtime.zig");
 const rpc_parse = @import("../parse.zig");
+const txpool_handlers = @import("txpool.zig");
 
 /// Context needed by block query handlers beyond NodeRuntime.
 pub const BlockQueryContext = struct {
@@ -410,6 +411,22 @@ pub fn handleGetTransactionByHashValue(
     var scratch = std.heap.ArenaAllocator.init(allocator);
     defer scratch.deinit();
 
+    // Fast path 1: O(1) mined receipt lookup.
+    if (ctx.receipt_index.getByTxHash(params.transaction_hash.bytes) != null) {
+        const internal = try block_queries.getTransactionByHash(
+            scratch.allocator(),
+            ctx.blockchain,
+            ctx.receipt_index,
+            params.transaction_hash.bytes,
+        );
+        if (internal) |tx| return try transactionResponseValue(allocator, tx);
+    }
+    // Fast path 2: pending transaction pool lookup (required by wallets and TEVM).
+    for (ctx.rt.pool.items()) |pooled| {
+        if (std.mem.eql(u8, &pooled.hash, &params.transaction_hash.bytes)) {
+            return txpool_handlers.transactionObject(allocator, pooled);
+        }
+    }
     const tx = try block_queries.getTransactionByHash(scratch.allocator(), ctx.blockchain, ctx.receipt_index, params.transaction_hash.bytes);
     return if (tx) |mined| try transactionResponseValue(allocator, mined) else .null;
 }

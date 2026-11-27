@@ -22,7 +22,12 @@ try {
   assert.equal(rpc('evm_setAutomine', [false]).error, undefined);
   const deployment = rpc('eth_sendTransaction', [{from, data: '0x600a600c600039600a6000f3602a60005260206000f3'}]);
   assert.equal(deployment.error, undefined);
-  assert.equal(rpc('eth_getTransactionByHash', [deployment.result]).result, null);
+  const pendingTx = rpc('eth_getTransactionByHash', [deployment.result]).result;
+  assert.equal(pendingTx.hash, deployment.result);
+  assert.equal(pendingTx.blockHash, null);
+  assert.equal(pendingTx.blockNumber, null);
+  assert.equal(pendingTx.transactionIndex, null);
+  assert.equal('blockTimestamp' in pendingTx, false);
   assert.equal(rpc('evm_mine').error, undefined);
   const tx = rpc('eth_getTransactionByHash', [deployment.result]).result;
   assert.equal(tx.hash, deployment.result);
@@ -55,7 +60,13 @@ try {
   const logs = rpc('eth_getLogs', [{blockHash: loggedReceipt.blockHash, address}]).result;
   assert.equal(logs.length, 1);
   assert.equal('blockTimestamp' in logs[0], false);
-  assert.equal(rpc('debug_traceCall', [{to:address}, 'latest']).error.code, -32601);
+  const trace = rpc('debug_traceCall', [{to:address}, 'latest']).result;
+  assert.equal(trace.failed, false);
+  assert.ok(Array.isArray(trace.structLogs) && trace.structLogs.length > 0);
+  const blockFilter = rpc('eth_newBlockFilter').result;
+  assert.match(blockFilter, /^0x[0-9a-f]+$/i);
+  assert.equal(rpc('eth_uninstallFilter', [blockFilter]).result, true);
+  assert.equal(rpc('debug_traceTransaction', ['0x' + '00'.repeat(32)]).error.code, -32601);
   rpc('anvil_setCode', [address, '0x5b600056']);
   const exhausted = rpc('eth_call', [{to:address,gas:'0x5300'}, 'latest']);
   assert.deepEqual(exhausted.error, {code:-32000,message:'out of gas'});

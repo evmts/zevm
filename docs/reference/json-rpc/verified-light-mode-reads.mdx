@@ -141,7 +141,7 @@ In light mode, these supported trusted-mode method families are mode-gated and r
 
 Out-of-contract note:
 
-- subscriptions, filter lifecycle methods, and debug tracing return `-32601` in both modes
+- subscriptions and debug tracing methods other than `debug_traceCall` are deferred/out of contract and return `-32601`, not `-32010`; trusted-only `debug_traceCall` and filter lifecycle methods return `-32010` in light mode
 
 Transport note:
 

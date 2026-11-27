@@ -52,6 +52,12 @@ Selector alias scope on this page:
 | `eth_getBlockReceipts` | `[block]` (`ReceiptSelector`) | receipt array or `null` | unknown block -> `null`; malformed selector -> `-32602` |
 | `eth_getBlockAccessList` | `[block]` (`BlockNumberOrTagOrHash`) | block access list or `null` | unknown block or retained block without access-list data -> `null`; malformed selector -> `-32602` |
 | `eth_getLogs` | `[filter]` | log array | no matches -> `[]`; malformed filter or invalid selector combinations -> `-32602` |
+| `eth_newBlockFilter` | `[]` or omitted | `QuantityHex` filter id | non-empty params -> `-32602` |
+| `eth_newPendingTransactionFilter` | `[]` or omitted | `QuantityHex` filter id | non-empty params -> `-32602` |
+| `eth_newFilter` | `[filter]` | `QuantityHex` filter id | malformed filter -> `-32602` |
+| `eth_getFilterChanges` | `[filterId]` | array of new block hashes, pending tx hashes, or log objects | unknown filter -> `-32000`; malformed id -> `-32602` |
+| `eth_getFilterLogs` | `[filterId]` | log array matching a log filter's criteria | malformed id -> `-32602` |
+| `eth_uninstallFilter` | `[filterId]` | `true` if removed, else `false` | malformed id -> `-32602` |
 
 Lookup behavior:
 
@@ -59,7 +65,7 @@ Lookup behavior:
 - `eth_getUncleCountByBlockNumber` and `eth_getUncleCountByBlockHash` return `0x0` for unknown blocks and for ZEVM-produced post-Merge blocks
 - `eth_getTransactionByBlockNumberAndIndex` and `eth_getTransactionByBlockHashAndIndex` return `null` when the target block is unknown or the zero-based `index` is out of range for that block
 - index params for `eth_getTransactionByBlockNumberAndIndex` and `eth_getTransactionByBlockHashAndIndex` must be `QuantityHex` and are interpreted as zero-based transaction positions within the resolved canonical block
-- `eth_getTransactionByHash` returns the canonical mined transaction or `null`
+- `eth_getTransactionByHash` returns a canonical mined transaction, else a pending txpool transaction with `null` block fields, else `null`
 - `eth_getTransactionReceipt` is mined-only; it returns `null` before inclusion
 - `eth_getBlockAccessList` accepts block number/tag/hash selectors and returns `null` for unknown blocks or retained-history blocks without Amsterdam block access-list data
 
