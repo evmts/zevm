@@ -68,8 +68,19 @@ async function publish() {
       assert.equal((await response.json()).dist.integrity, integrity, pkg.name + " already exists with different content");
     }
   }
+  const token = (process.env.NODE_AUTH_TOKEN || process.env.NPM_TOKEN || "").trim();
+  const publishEnv = { ...process.env };
+  delete publishEnv.NODE_AUTH_TOKEN;
+  delete publishEnv.NPM_TOKEN;
+  if (token) {
+    publishEnv["npm_config_//registry.npmjs.org/:_authToken"] = token;
+  } else {
+    // Pure OIDC Trusted Publishing: prevent any blank _authToken in .npmrc from
+    // short-circuiting npm's GitHub Actions OIDC token exchange.
+    publishEnv.NPM_CONFIG_USERCONFIG = process.platform === "win32" ? "NUL" : "/dev/null";
+  }
   for (const file of pending) {
-    execFileSync("npm", ["publish", file, "--registry=https://registry.npmjs.org", "--provenance", "--access", "public", "--tag", tag], { stdio: "inherit" });
+    execFileSync("npm", ["publish", file, "--registry=https://registry.npmjs.org", "--provenance", "--access", "public", "--tag", tag], { stdio: "inherit", env: publishEnv });
   }
 }
 
