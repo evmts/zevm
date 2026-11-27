@@ -7,6 +7,7 @@ const suite = benchSuite({
     "src/beacon_api.zig",
     "src/checkpoint.zig",
     "src/consensus_verifier.zig",
+    "src/log.zig",
   ],
 })
 

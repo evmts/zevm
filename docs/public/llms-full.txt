@@ -199,7 +199,7 @@ Use JSON-RPC reference pages for exact method signatures, params, payloads, and 
 | ZEVM light namespace (`zevm_lightSyncStatus`) | no | yes | [Verified Light-Mode Reads](../reference/json-rpc/verified-light-mode-reads) |
 | Trusted compatibility aliases (`anvil_*`, selected `hardhat_*`, selected `evm_*`) | yes | no | [ZEVM Controls](../reference/json-rpc/dev-controls), [Transactions And Mining](../reference/json-rpc/transactions-and-mining) |
 | Optional Engine API listener (`engine_*`) | yes, only when enabled at trusted startup | no (`-32010`) | [Trusted-Mode Configuration](../reference/configuration/trusted-mode#engine-api-listener) |
-| Filter lifecycle (`eth_newFilter`, `eth_newBlockFilter`, `eth_newPendingTransactionFilter`, `eth_getFilterChanges`, `eth_getFilterLogs`, `eth_uninstallFilter`) | `-32601` | `-32601` | [Blocks, Receipts, And Logs](../reference/json-rpc/blocks-receipts-and-logs) |
+| Filter lifecycle (`eth_newFilter`, `eth_newBlockFilter`, `eth_newPendingTransactionFilter`, `eth_getFilterChanges`, `eth_getFilterLogs`, `eth_uninstallFilter`) | yes | no (`-32010`) | [Blocks, Receipts, And Logs](../reference/json-rpc/blocks-receipts-and-logs) |
 | Subscriptions (`eth_subscribe`, `eth_unsubscribe`) | not part of current contract (deferred method surface) | not part of current contract (deferred method surface) | [Unsupported And Deferred](../reference/json-rpc/unsupported-and-deferred) |
 | WebSocket transport | transport-level unsupported (HTTP JSON-RPC only; outside JSON-RPC method dispatch, not a method-level deferred mapping) | transport-level unsupported (HTTP JSON-RPC only; outside JSON-RPC method dispatch, not a method-level deferred mapping) | [Unsupported And Deferred](../reference/json-rpc/unsupported-and-deferred) |
 
@@ -2463,6 +2463,12 @@ Selector alias scope on this page:
 | `eth_getBlockReceipts` | `[block]` (`ReceiptSelector`) | receipt array or `null` | unknown block -> `null`; malformed selector -> `-32602` |
 | `eth_getBlockAccessList` | `[block]` (`BlockNumberOrTagOrHash`) | block access list or `null` | unknown block or retained block without access-list data -> `null`; malformed selector -> `-32602` |
 | `eth_getLogs` | `[filter]` | log array | no matches -> `[]`; malformed filter or invalid selector combinations -> `-32602` |
+| `eth_newBlockFilter` | `[]` or omitted | `QuantityHex` filter id | non-empty params -> `-32602` |
+| `eth_newPendingTransactionFilter` | `[]` or omitted | `QuantityHex` filter id | non-empty params -> `-32602` |
+| `eth_newFilter` | `[filter]` | `QuantityHex` filter id | malformed filter -> `-32602` |
+| `eth_getFilterChanges` | `[filterId]` | array of new block hashes, pending tx hashes, or log objects | unknown filter -> `-32000`; malformed id -> `-32602` |
+| `eth_getFilterLogs` | `[filterId]` | log array matching a log filter's criteria | malformed id -> `-32602` |
+| `eth_uninstallFilter` | `[filterId]` | `true` if removed, else `false` | malformed id -> `-32602` |
 
 Lookup behavior:
 
@@ -2470,7 +2476,7 @@ Lookup behavior:
 - `eth_getUncleCountByBlockNumber` and `eth_getUncleCountByBlockHash` return `0x0` for unknown blocks and for ZEVM-produced post-Merge blocks
 - `eth_getTransactionByBlockNumberAndIndex` and `eth_getTransactionByBlockHashAndIndex` return `null` when the target block is unknown or the zero-based `index` is out of range for that block
 - index params for `eth_getTransactionByBlockNumberAndIndex` and `eth_getTransactionByBlockHashAndIndex` must be `QuantityHex` and are interpreted as zero-based transaction positions within the resolved canonical block
-- `eth_getTransactionByHash` returns the canonical mined transaction or `null`
+- `eth_getTransactionByHash` returns a canonical mined transaction, else a pending txpool transaction with `null` block fields, else `null`
 - `eth_getTransactionReceipt` is mined-only; it returns `null` before inclusion
 - `eth_getBlockAccessList` accepts block number/tag/hash selectors and returns `null` for unknown blocks or retained-history blocks without Amsterdam block access-list data
 
@@ -3481,8 +3487,8 @@ Startup policy context:
 - Mining/txpool controls: trusted `zevm_*` mining and txpool controls (plus accepted aliases)
 - Txpool introspection: `txpool_content`, `txpool_contentFrom`, `txpool_status`, `txpool_inspect`
 - Block-environment/time/reset/fork-source controls: trusted `zevm_*` block-environment/time/reset/fork-source controls (plus accepted aliases)
-- Queries: `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getBlockTransactionCountByNumber`, `eth_getBlockTransactionCountByHash`, `eth_getUncleCountByBlockNumber`, `eth_getUncleCountByBlockHash`, `eth_getUncleByBlockNumberAndIndex`, `eth_getUncleByBlockHashAndIndex`, `eth_getTransactionByHash`, `eth_getTransactionByBlockNumberAndIndex`, `eth_getTransactionByBlockHashAndIndex`, `eth_getTransactionReceipt`, `eth_getBlockReceipts`, `eth_getBlockAccessList`, and `eth_getLogs`
-- Debug/raw inspection: `debug_getBadBlocks`, `debug_getRawBlock`, `debug_getRawHeader`, `debug_getRawReceipts`, `debug_getRawTransaction`
+- Queries: `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getBlockTransactionCountByNumber`, `eth_getBlockTransactionCountByHash`, `eth_getUncleCountByBlockNumber`, `eth_getUncleCountByBlockHash`, `eth_getUncleByBlockNumberAndIndex`, `eth_getUncleByBlockHashAndIndex`, `eth_getTransactionByHash`, `eth_getTransactionByBlockNumberAndIndex`, `eth_getTransactionByBlockHashAndIndex`, `eth_getTransactionReceipt`, `eth_getBlockReceipts`, `eth_getBlockAccessList`, `eth_getLogs`, and filter lifecycle methods
+- Debug/raw inspection: `debug_traceCall`, `debug_getBadBlocks`, `debug_getRawBlock`, `debug_getRawHeader`, `debug_getRawReceipts`, `debug_getRawTransaction`
 - Account/state/chain-id/snapshot/impersonation/funding/metadata controls: trusted `zevm_*` account/state/chain-id/snapshot/impersonation/funding/metadata controls (plus accepted aliases)
 - Optional Engine API listener: `engine_*` methods from the generated execution API surface when trusted startup enables `engineRpc` or `--engine-host` / `--engine-port`; supports local payload build jobs, strict `newPayload` import for known local parents, `getPayload` by payload id, payload-body lookup, and null blob sidecar lookup for unavailable blobs
 
@@ -3705,6 +3711,19 @@ Response:
   "result": "0x5208"
 }
 ```
+
+## `debug_traceCall`
+
+Trusted mode traces one call with Guillotine Mini's tracer on the same checkpoint-and-revert path. Light mode returns `-32010`.
+
+| Method | Exact params | Exact result | Errors |
+| --- | --- | --- | --- |
+| `debug_traceCall` | `[transaction, blockSelector, options?]` | `{gas, failed, returnValue, structLogs, truncated}` | `-32602` malformed or unsupported options |
+
+- options are boolean `disableStack`, `enableMemory`, `enableReturnData`, and `disableStorage: true`; custom tracer programs and storage capture return `-32602`
+- each `structLogs` entry records the opcode name, gas, depth, and the stack before the opcode, plus memory and return data when enabled
+- capture stops at 100,000 entries and sets `truncated`; execution still completes
+- only the current local state is traceable, and a trace never commits state
 
 ## Related Pages
 
@@ -3972,7 +3991,7 @@ This page lists surfaces intentionally outside the current public ZEVM contract.
 
 Not part of the current contract:
 
-- debug tracing and filter lifecycle methods
+- debug tracing methods other than `debug_traceCall` (trusted mode serves `debug_traceCall`, see [Simulation](./simulation))
 - subscriptions
 - WebSocket transport (`ws://` / `wss://`) is outside the current public contract scope (ZEVM JSON-RPC is HTTP-only)
 
@@ -4188,7 +4207,7 @@ In light mode, these supported trusted-mode method families are mode-gated and r
 
 Out-of-contract note:
 
-- subscriptions, filter lifecycle methods, and debug tracing return `-32601` in both modes
+- subscriptions and debug tracing methods other than `debug_traceCall` are deferred/out of contract and return `-32601`, not `-32010`; trusted-only `debug_traceCall` and filter lifecycle methods return `-32010` in light mode
 
 Transport note:
 
@@ -5280,6 +5299,14 @@ Native fork reads use Voltaire's optional synchronous resolver to drain its
 request/continue queue inside RPC and interpreter state reads. Async/WASM hosts
 leave this resolver unset and retain `RpcPending` behavior.
 
+`debug_traceCall` uses Guillotine Mini's tracer and returns opcode names, entering
+stack/memory, gas, depth, output and failure status. Supported options are
+`disableStack`, `enableMemory`, `enableReturnData`, and `disableStorage: true`.
+Custom tracer programs and other options return -32602. The response retains at
+most 100,000 steps and reports `truncated`; execution continues after that cap.
+Trace execution reverts its state checkpoint. Native out-of-gas exceptions retain
+their diagnostic and return -32000 rather than masquerading as a Solidity revert.
+
 ---
 Source: https://zevm.sh/docs/raw/specs/json-rpc-contract.md
 ---
@@ -5939,6 +5966,12 @@ Submission outcome semantics:
 | `eth_getBlockReceipts` | `[block]` (`ReceiptSelector`) | receipt array or `null` | `-32602` malformed selector |
 | `eth_getBlockAccessList` | `[block]` (`BlockNumberOrTagOrHash`) | block access list or `null`; current trusted implementation returns `null` when Amsterdam access-list data is not retained | `-32602` malformed selector |
 | `eth_getLogs` | `[filter]` | log array | `-32602` malformed filter |
+| `eth_newBlockFilter` | `[]` or omitted | `QuantityHex` filter id | `-32602` for non-empty params |
+| `eth_newPendingTransactionFilter` | `[]` or omitted | `QuantityHex` filter id | `-32602` for non-empty params |
+| `eth_newFilter` | `[filter]` | `QuantityHex` filter id | `-32602` malformed filter |
+| `eth_getFilterChanges` | `[filterId]` | array of items since the previous poll: block hashes for block filters, transaction hashes for pending-transaction filters, log objects for log filters | `-32602` malformed filter id, `-32000` filter not found |
+| `eth_getFilterLogs` | `[filterId]` | log array matching a log filter's criteria | `-32602` malformed filter id |
+| `eth_uninstallFilter` | `[filterId]` | `true` when the filter existed and was removed; `false` for an unknown id | `-32602` malformed filter id |
 
 Query selector behavior:
 
@@ -5947,7 +5980,7 @@ Query selector behavior:
 - `eth_getBlockTransactionCountByHash`, `eth_getBlockTransactionCountByNumber`, `eth_getTransactionByBlockHashAndIndex`, and `eth_getTransactionByBlockNumberAndIndex` return `null` when the referenced canonical block is not found
 - `eth_getUncleCountByBlockHash` and `eth_getUncleCountByBlockNumber` return `0x0` for unknown blocks and for all ZEVM-produced post-Merge blocks
 - `eth_getTransactionByBlockHashAndIndex` and `eth_getTransactionByBlockNumberAndIndex` return `null` when `index` is out of range for a found block
-- `eth_getTransactionByHash` returns the canonical mined transaction or `null`
+- `eth_getTransactionByHash` returns a canonical mined transaction, else a txpool entry with `null` `blockHash`, `blockNumber`, and `transactionIndex`, else `null`
 - `eth_getTransactionReceipt` is mined-only and returns `null` until inclusion
 - `eth_getBlockAccessList` accepts block number/tag/hash selectors and returns `null` for unknown blocks or retained-history blocks without Amsterdam block access list data
 
@@ -5976,11 +6009,14 @@ These methods are trusted-mode only. In light mode, well-formed requests return 
 
 | Method | Exact params | Exact result | Errors |
 | --- | --- | --- | --- |
+| `debug_traceCall` | `[transaction, blockSelector, options?]` | `{gas, failed, returnValue, structLogs, truncated}` with native pre-op stack and optional memory/return data | `-32602` for malformed or unsupported options |
 | `debug_getBadBlocks` | `[]` or omitted | bad-block array; phase-1 trusted mode returns `[]` | `-32602` for non-empty params |
 | `debug_getRawBlock` | `[blockNumber]` | raw RLP block `HexData` or `null` | `-32602` for malformed block number |
 | `debug_getRawHeader` | `[blockNumber]` | raw RLP header `HexData` or `null` | `-32602` for malformed block number |
 | `debug_getRawReceipts` | `[blockNumber]` | array of raw receipt `HexData` values or `null` when block is unknown | `-32602` for malformed block number |
 | `debug_getRawTransaction` | `[transactionHash]` | raw transaction `HexData` or `null` | `-32602` for malformed transaction hash |
+
+Trace options are boolean `disableStack`, `enableMemory`, `enableReturnData`, and `disableStorage: true`. Custom tracer programs and storage capture are unsupported. Capture stops at 100,000 entries and sets `truncated`; execution still completes. Only the current local state is traceable. Trace failures preserve EVM return data and never commit state.
 
 ### 8.7 Engine API listener methods
 
@@ -6706,7 +6742,7 @@ In this PRD, phase-1 scope is declared in sections 3.1, 3.3, 3.4, and 3.5, with 
 
 - startup and configuration for trusted and light mode
 - HTTP JSON-RPC 2.0 transport
-- phase-1 trusted-mode JSON-RPC inventory includes standard reads (`eth_chainId`, `eth_blockNumber`, account/code/storage/proof reads, pricing/fee reads including `eth_feeHistory`), execution simulation and testing (`eth_call`, `eth_estimateGas`, `eth_createAccessList`, `eth_simulateV1`, `testing_buildBlockV1`), submission (`eth_sendTransaction`, `eth_sendRawTransaction`), canonical block/receipt/log/access-list queries, debug/raw inspection, Engine API listener methods, txpool methods, compatibility utilities, and trusted controls under canonical `zevm_*` methods (mining, snapshot/revert, state mutation, impersonation, and time controls); canonical tuples/errors are under `Trusted-Mode Standard Methods` and `Trusted-Mode zevm_* Methods` in `docs/specs/json-rpc-contract.md`
+- phase-1 trusted-mode JSON-RPC inventory includes standard reads (`eth_chainId`, `eth_blockNumber`, account/code/storage/proof reads, pricing/fee reads including `eth_feeHistory`), execution simulation and testing (`eth_call`, `eth_estimateGas`, `eth_createAccessList`, `eth_simulateV1`, `testing_buildBlockV1`, `debug_traceCall`), submission (`eth_sendTransaction`, `eth_sendRawTransaction`), canonical block/receipt/log/access-list queries and filter lifecycle methods (`eth_newBlockFilter`, `eth_newPendingTransactionFilter`, `eth_newFilter`, `eth_getFilterChanges`, `eth_getFilterLogs`, `eth_uninstallFilter`), debug/raw inspection, Engine API listener methods, txpool methods, compatibility utilities, and trusted controls under canonical `zevm_*` methods (mining, snapshot/revert, state mutation, impersonation, and time controls); canonical tuples/errors are under `Trusted-Mode Standard Methods` and `Trusted-Mode zevm_* Methods` in `docs/specs/json-rpc-contract.md`
 - phase-1 light-mode JSON-RPC inventory is exactly `zevm_lightSyncStatus`, `eth_chainId`, `eth_blockNumber`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, and `eth_getTransactionCount`; canonical tuples/errors are under `Light-Mode Methods` in `docs/specs/json-rpc-contract.md`
 - in this PRD, "proof-backed reads" means exactly `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, and `eth_getTransactionCount` in light mode; it does not include `eth_chainId`, `zevm_lightSyncStatus`, or `eth_blockNumber`
 - while light mode is not ready, proof-backed reads and `eth_blockNumber` are readiness-gated (`-32011`) as defined in sections 4.2 and 10
@@ -6716,9 +6752,8 @@ In this PRD, phase-1 scope is declared in sections 3.1, 3.3, 3.4, and 3.5, with 
 
 ### 3.2 Out of scope
 
-- WebSocket transport and subscriptions
-- filter lifecycle APIs beyond `eth_getLogs` (RPC error `-32601`)
-- debug tracing APIs
+- WebSocket transport and subscriptions (`eth_subscribe`, `eth_unsubscribe`)
+- debug tracing APIs other than `debug_traceCall` (such as `debug_traceTransaction` and `debug_traceBlockByHash`)
 - proof-backed `eth_call` in light mode
 - `eth_estimateGas` in light mode
 - `eth_feeHistory` and canonical block/receipt/log queries in light mode

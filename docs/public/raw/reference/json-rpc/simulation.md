@@ -176,6 +176,19 @@ Response:
 }
 ```
 
+## `debug_traceCall`
+
+Trusted mode traces one call with Guillotine Mini's tracer on the same checkpoint-and-revert path. Light mode returns `-32010`.
+
+| Method | Exact params | Exact result | Errors |
+| --- | --- | --- | --- |
+| `debug_traceCall` | `[transaction, blockSelector, options?]` | `{gas, failed, returnValue, structLogs, truncated}` | `-32602` malformed or unsupported options |
+
+- options are boolean `disableStack`, `enableMemory`, `enableReturnData`, and `disableStorage: true`; custom tracer programs and storage capture return `-32602`
+- each `structLogs` entry records the opcode name, gas, depth, and the stack before the opcode, plus memory and return data when enabled
+- capture stops at 100,000 entries and sets `truncated`; execution still completes
+- only the current local state is traceable, and a trace never commits state
+
 ## Related Pages
 
 - [Core Reads](./core-reads)
