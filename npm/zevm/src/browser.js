@@ -1,11 +1,11 @@
 // Each backend owns its reactor, linear memory and trusted local chain.
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const wasmURL = new URL("./zevm.wasm", import.meta.url);
 
 export async function createWasmBackend({ chainId = 31337, wasm } = {}) {
   if (!Number.isSafeInteger(chainId) || chainId < 1) throw new RangeError("chainId must be a positive safe integer");
   if (wasm === undefined) {
+    const wasmURL = new URL("./zevm.wasm", import.meta.url);
     const response = await fetch(wasmURL);
     if (!response.ok) throw new Error(`Failed to fetch ZEVM wasm (HTTP ${response.status})`);
     wasm = await response.arrayBuffer();
