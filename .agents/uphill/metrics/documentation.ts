@@ -32,7 +32,7 @@ const primaryDocs = [
   ...new Glob("docs/**/*.md").scanSync("."),
   ...new Glob("docs/**/*.mdx").scanSync("."),
 ]
-  .filter((f) => !f.startsWith("docs/src/content/docs/") && !f.includes("node_modules/"))
+  .filter((f) => !f.startsWith("docs/src/content/docs/") && !f.startsWith("docs/public/") && !f.includes("node_modules/"))
   .sort();
 
 for (const file of primaryDocs) {

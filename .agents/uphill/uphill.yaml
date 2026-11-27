@@ -101,3 +101,75 @@ documentation:
   broken-links:
     description: Fix broken local paths and machine-specific links in root Markdown files and docs/.
     weight: 1.5
+
+conformance:
+  title: Ethereum Conformance
+  description: Pinned Voltaire and Guillotine Mini provenance, release qualification coverage, Cancun/Prague GeneralStateTests floors, and npm release version parity.
+  run: bun .agents/uphill/metrics/conformance.ts
+  # Native sibling pins must be immutable 40-hex commit revisions under evmts/*.
+  native-pins-valid:
+    description: Keep native-dependencies.json pinned to pushed 40-hex commit SHAs for evmts/voltaire and evmts/guillotine-mini.
+    weight: 2
+  # Share (%) of release qualification assertions marked covered in docs/specs/qualification/assertion-map.json.
+  qualification-coverage:
+    description: Keep every release qualification assertion in docs/specs/qualification/assertion-map.json covered.
+    better: higher
+    poor: 80
+    weight: 2
+  # Minimum passing percentage across pinned Cancun GeneralStateTests (tools/latest_fork_state_baseline.json).
+  cancun-state-floor:
+    description: Raise the Cancun GeneralStateTests pass floor in tools/latest_fork_state_baseline.json toward 100%.
+    better: higher
+    poor: 90
+    weight: 1.5
+  # Minimum passing percentage across pinned Prague GeneralStateTests (tools/latest_fork_state_baseline.json).
+  prague-state-floor:
+    description: Raise the Prague GeneralStateTests pass floor in tools/latest_fork_state_baseline.json toward 100%.
+    better: higher
+    poor: 90
+    weight: 1.5
+  # Version parity across npm/zevm, all 11 platform packages, build.zig.zon, and src/c_bindings.zig.
+  release-version-parity:
+    description: Keep package versions, platform optionalDependencies, build.zig.zon, and native ZEVM_VERSION aligned (npm run verify:release).
+    weight: 1.5
+
+factory:
+  title: Smithers Factory & Trust
+  description: Coding factory projection, 3-audience personalized home, shared cache trust isolation, Obsidian wiki, llms.txt index, and one-time sandbox auth.
+  run: bun .agents/uphill/metrics/factory.ts
+  # .smithers/factory.json must project apiVersion: 1 and contributes.triggers from .smithers/FACTORY.ts.
+  factory-triggers:
+    description: Declare Smithers Cloud repository workflow triggers in .smithers/FACTORY.ts so factory.json emits apiVersion 1 and contributes.triggers.
+    weight: 2
+  # Repository policy must lock approvals and merges to authenticated persons (never agents).
+  factory-person-only:
+    description: Enforce policy.approvals approve=person and merge=person in .smithers/FACTORY.ts.
+    weight: 2
+  # Critical consensus, ABI, build, and factory paths must be declared in github.protectedPaths.
+  factory-protected-paths:
+    description: Protect consensus, ABI, native pins, build, and factory paths in github.protectedPaths.
+    weight: 1.5
+  # Personalized 3-audience home (maintainer, contributor, everyone) with zero pre-clone-blocking markdown blocks.
+  factory-personalized-home:
+    description: Declare maintainer, contributor, and everyone sections in .smithers/FACTORY.ts home without markdown blocks so smithers.sh renders pre-clone.
+    weight: 1.5
+  # home.json must point to an HTTPS llms.txt docs index for the Smithers Docs tab and MCP docs_list.
+  factory-docs-index:
+    description: Declare docs pointing to https://zevm.sh/docs/llms.txt in .smithers/FACTORY.ts home.
+    weight: 1
+  # Shared Smithers Cloud object store (build.smithers.sh) must split read vs main-only write credentials.
+  cache-trust-isolation:
+    description: Isolate untrusted PR execution from trunk cache writes using split SMITHERS_CACHE_READ_TOKEN and main-only SMITHERS_CACHE_WRITE_TOKEN.
+    weight: 2
+  # Obsidian-compatible wiki and mythical history must have zero broken wikilinks or missing cited source files.
+  wiki-integrity:
+    description: Keep .smithers/wiki/ wikilinks, frontmatter, mythical history, and code citations valid (node tools/wiki_sync.mjs --check).
+    weight: 1.5
+  # Docs site must generate a synchronized llms.txt index and markdown page mirrors.
+  llms-txt-index:
+    description: Keep docs/public/llms.txt synchronized with docs/ (node tools/generate_llms_txt.mjs --check).
+    weight: 1
+  # Explicit merge strategy and one-time-use sandbox auth handoff helper must be present.
+  sandbox-auth-and-merge:
+    description: Maintain .smithers/merge.json and tools/sandbox_auth.mjs for one-time-use sandbox agent authentication.
+    weight: 1

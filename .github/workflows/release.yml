@@ -236,3 +236,42 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: node npm/zevm/scripts/release-tarballs.cjs publish
+
+  github-release:
+    if: github.ref_type == 'tag'
+    needs: publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: zevm
+          persist-credentials: false
+      - uses: mlugg/setup-zig@v2.2.1
+        with:
+          version: 0.15.2
+      - name: Generate canonical release metadata tuple and checkpoints
+        working-directory: zevm
+        run: |
+          bash tools/checkout-native.sh
+          zig build --fetch
+          zig build release-metadata -- \
+            --out-dir "zig-out/release/${GITHUB_REF_NAME}" \
+            --release-identifier "${GITHUB_REF_NAME}"
+          test -s "zig-out/release/${GITHUB_REF_NAME}/release-tuple.json"
+          test -s "zig-out/release/${GITHUB_REF_NAME}/light-default-checkpoints.json"
+      - name: Publish GitHub Release with canonical metadata assets
+        working-directory: zevm
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "Release ${GITHUB_REF_NAME} already exists; refusing in-place mutation per append-only policy"
+            exit 1
+          fi
+          gh release create "${GITHUB_REF_NAME}" \
+            "zig-out/release/${GITHUB_REF_NAME}/release-tuple.json" \
+            "zig-out/release/${GITHUB_REF_NAME}/light-default-checkpoints.json" \
+            --title "ZEVM ${GITHUB_REF_NAME}" \
+            --generate-notes

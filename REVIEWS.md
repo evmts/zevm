@@ -318,22 +318,22 @@ _chunks=10 avgConform=30 avgCov=24 issues=72 crit=12_
 - [critical] Holistic block validity commitments are missing (stateRoot/transactionsRoot/receiptsRoot/withdrawalsRoot/logsBloom) ([src/block_builder.zig](src/block_builder.zig)).
 - [critical] London fee settlement is incorrect: base-fee burn is missing and coinbase is over-credited ([src/tx_processor.zig:190](src/tx_processor.zig:190)).
 - [critical] Typed transaction execution is missing; executor is legacy-only ([src/tx_processor.zig:10](src/tx_processor.zig:10)).
-- [critical] Top-level CALL/CREATE integration does not correctly execute bytecode in key paths ([src/tx_processor.zig:149](src/tx_processor.zig:149), [/Users/williamcory/zevm/src/tx_processor.zig](/Users/williamcory/zevm/src/tx_processor.zig)).
+- [critical] Top-level CALL/CREATE integration does not correctly execute bytecode in key paths ([src/tx_processor.zig:149](src/tx_processor.zig:149), [src/tx_processor.zig](src/tx_processor.zig)).
 - [critical] Canonical 21,000-gas transfer behavior currently fails ([src/tx_processor.zig:133](src/tx_processor.zig:133), [src/tx_processor_test.zig](src/tx_processor_test.zig)).
 - [major] Intrinsic gas and validity checks are incomplete for modern rules (initcode word cost, initcode size cap, access-list costs, sender-with-code) ([src/tx_processor.zig](src/tx_processor.zig)).
 - [critical] Appendix I genesis tuple is absent in audited pipeline; current constructor diverges from Appendix I constants and stateRoot derivation ([src/block_builder.zig:28](src/block_builder.zig:28), [src/genesis.zig:80](src/genesis.zig:80), [src/genesis.zig:96](src/genesis.zig:96)).
 
 ## Foreign Feature Gaps
-- Hardfork-aware header derivation/validation and post-Merge defaults ([lib/edr/crates/block/header/src/lib.rs](lib/edr/crates/block/header/src/lib.rs)).
-- Explicit withdrawals-aware block builder and required-fork checks ([lib/edr/crates/block/builder/api/src/lib.rs](lib/edr/crates/block/builder/api/src/lib.rs)).
-- PREVRANDAO and next-block base-fee controls with hardfork gating ([lib/edr/crates/edr_provider/src/requests/methods.rs](lib/edr/crates/edr_provider/src/requests/methods.rs), [lib/edr/crates/edr_provider/src/data.rs](lib/edr/crates/edr_provider/src/data.rs), [lib/edr/crates/edr_provider/src/requests/hardhat/config.rs](lib/edr/crates/edr_provider/src/requests/hardhat/config.rs)).
-- Typed fee/effective-gas-price logic and validation for EIP-1559 ([lib/edr/crates/edr_transaction/src/signed/eip1559.rs](lib/edr/crates/edr_transaction/src/signed/eip1559.rs), [lib/edr/crates/edr_provider/src/requests/validation.rs](lib/edr/crates/edr_provider/src/requests/validation.rs)).
-- Access-list-aware execution and intrinsic gas paths ([lib/foundry/crates/evm/evm/src/inspectors/mod.rs](lib/foundry/crates/evm/evm/src/inspectors/mod.rs), [lib/foundry/crates/evm/evm/src/executors/mod.rs](lib/foundry/crates/evm/evm/src/executors/mod.rs)).
-- Runtime-selectable hardfork/spec controls ([lib/foundry/crates/evm/evm/src/executors/builder.rs](lib/foundry/crates/evm/evm/src/executors/builder.rs), [lib/edr/crates/foundry/evm/evm/src/executors/builder.rs](lib/edr/crates/foundry/evm/evm/src/executors/builder.rs)).
-- Strong primitive/newtype typing and explicit tx-kind modeling ([lib/edr/crates/primitives/src/lib.rs](lib/edr/crates/primitives/src/lib.rs), [lib/edr/crates/edr_chain_spec/src/transaction.rs](lib/edr/crates/edr_chain_spec/src/transaction.rs)).
-- Inspector/dry-run/tracing APIs and call lifecycle observability ([lib/edr/crates/evm/src/lib.rs](lib/edr/crates/evm/src/lib.rs), [lib/edr/crates/tracing/src/lib.rs](lib/edr/crates/tracing/src/lib.rs), [lib/foundry/crates/evm/evm/src/inspectors/stack.rs](lib/foundry/crates/evm/evm/src/inspectors/stack.rs)).
-- Debug trace RPCs, impersonation/prank/origin override, precompile override controls ([lib/edr/crates/edr_provider/src/requests/methods.rs](lib/edr/crates/edr_provider/src/requests/methods.rs), [lib/edr/crates/foundry/cheatcodes/src/evm/prank.rs](lib/edr/crates/foundry/cheatcodes/src/evm/prank.rs), [lib/edr/crates/edr_provider/src/data.rs](lib/edr/crates/edr_provider/src/data.rs)).
-- CREATE2 helper surfaces and configurable initcode/code-size policy knobs ([lib/foundry/crates/evm/evm/src/executors/mod.rs](lib/foundry/crates/evm/evm/src/executors/mod.rs), [lib/edr/crates/edr_provider/src/requests/eth/transactions.rs](lib/edr/crates/edr_provider/src/requests/eth/transactions.rs), [lib/foundry/crates/evm/core/src/opts.rs](lib/foundry/crates/evm/core/src/opts.rs)).
+- Hardfork-aware header derivation/validation and post-Merge defaults (`lib/edr/crates/block/header/src/lib.rs`).
+- Explicit withdrawals-aware block builder and required-fork checks (`lib/edr/crates/block/builder/api/src/lib.rs`).
+- PREVRANDAO and next-block base-fee controls with hardfork gating (`lib/edr/crates/edr_provider/src/requests/methods.rs`, `lib/edr/crates/edr_provider/src/data.rs`, `lib/edr/crates/edr_provider/src/requests/hardhat/config.rs`).
+- Typed fee/effective-gas-price logic and validation for EIP-1559 (`lib/edr/crates/edr_transaction/src/signed/eip1559.rs`, `lib/edr/crates/edr_provider/src/requests/validation.rs`).
+- Access-list-aware execution and intrinsic gas paths (`lib/foundry/crates/evm/evm/src/inspectors/mod.rs`, `lib/foundry/crates/evm/evm/src/executors/mod.rs`).
+- Runtime-selectable hardfork/spec controls (`lib/foundry/crates/evm/evm/src/executors/builder.rs`, `lib/edr/crates/foundry/evm/evm/src/executors/builder.rs`).
+- Strong primitive/newtype typing and explicit tx-kind modeling (`lib/edr/crates/primitives/src/lib.rs`, `lib/edr/crates/edr_chain_spec/src/transaction.rs`).
+- Inspector/dry-run/tracing APIs and call lifecycle observability (`lib/edr/crates/evm/src/lib.rs`, `lib/edr/crates/tracing/src/lib.rs`, `lib/foundry/crates/evm/evm/src/inspectors/stack.rs`).
+- Debug trace RPCs, impersonation/prank/origin override, precompile override controls (`lib/edr/crates/edr_provider/src/requests/methods.rs`, `lib/edr/crates/foundry/cheatcodes/src/evm/prank.rs`, `lib/edr/crates/edr_provider/src/data.rs`).
+- CREATE2 helper surfaces and configurable initcode/code-size policy knobs (`lib/foundry/crates/evm/evm/src/executors/mod.rs`, `lib/edr/crates/edr_provider/src/requests/eth/transactions.rs`, `lib/foundry/crates/evm/core/src/opts.rs`).
 
 ## Per-Chunk Findings
 
@@ -416,12 +416,12 @@ _chunks=10 avgConform=30 avgCov=24 issues=72 crit=12_
 - Test coverage: 8
 - Summary: contract-creation path is materially non-conformant and under-tested.
 - Issues:
-  - [critical/conformance] Top-level create integration does not execute creation lifecycle correctly ([/Users/williamcory/zevm/src/tx_processor.zig](/Users/williamcory/zevm/src/tx_processor.zig)).
-  - [critical/conformance] Create intrinsic gas undercharged; missing initcode word cost ([/Users/williamcory/zevm/src/tx_processor.zig](/Users/williamcory/zevm/src/tx_processor.zig)).
-  - [major/conformance] Initcode-size validity not enforced pre-execution ([/Users/williamcory/zevm/src/tx_processor.zig](/Users/williamcory/zevm/src/tx_processor.zig)).
-  - [major/conformance] Create execution environment fields not fully populated (ORIGIN/GASPRICE) ([/Users/williamcory/zevm/src/tx_processor.zig](/Users/williamcory/zevm/src/tx_processor.zig)).
-  - [major/test-coverage] No direct contract-creation tests in tx/block suites ([/Users/williamcory/zevm/src/tx_processor_test.zig](/Users/williamcory/zevm/src/tx_processor_test.zig)).
-  - [minor/test-coverage] Baseline tests are red ([/Users/williamcory/zevm/src/tx_processor_test.zig](/Users/williamcory/zevm/src/tx_processor_test.zig)).
+  - [critical/conformance] Top-level create integration does not execute creation lifecycle correctly ([src/tx_processor.zig](src/tx_processor.zig)).
+  - [critical/conformance] Create intrinsic gas undercharged; missing initcode word cost ([src/tx_processor.zig](src/tx_processor.zig)).
+  - [major/conformance] Initcode-size validity not enforced pre-execution ([src/tx_processor.zig](src/tx_processor.zig)).
+  - [major/conformance] Create execution environment fields not fully populated (ORIGIN/GASPRICE) ([src/tx_processor.zig](src/tx_processor.zig)).
+  - [major/test-coverage] No direct contract-creation tests in tx/block suites ([src/tx_processor_test.zig](src/tx_processor_test.zig)).
+  - [minor/test-coverage] Baseline tests are red ([src/tx_processor_test.zig](src/tx_processor_test.zig)).
 
 ### Section 8 — Message Call (section-8-message-call)
 - Conformance: 20
@@ -1038,11 +1038,11 @@ Issues:
 - Test coverage: 12
 - Summary: submit methods are recognized but unreachable in active runtime, despite existing handler code.
 Issues:
-- [critical/conformance] `eth_sendTransaction` and `eth_sendRawTransaction` not wired in active server (`/Users/williamcory/zevm/src/main.zig:20`).
-- [major/conformance] submit handlers exist but are unreachable dead code (`/Users/williamcory/zevm/src/rpc/handlers/tx_submission.zig:22`).
-- [major/test-coverage] no RPC-level tests for submit methods (`/Users/williamcory/zevm/src/rpc/server_test.zig:30`).
-- [major/test-coverage] submit handler tests are not in default graph (`/Users/williamcory/zevm/src/rpc/root.zig:6`).
-- [major/missing-feature] Anvil/Hardhat compatibility surface is much smaller than references (`/Users/williamcory/zevm/src/rpc/dispatcher.zig:68`).
+- [critical/conformance] `eth_sendTransaction` and `eth_sendRawTransaction` not wired in active server (`src/main.zig:20`).
+- [major/conformance] submit handlers exist but are unreachable dead code (`src/rpc/handlers/tx_submission.zig:22`).
+- [major/test-coverage] no RPC-level tests for submit methods (`src/rpc/server_test.zig:30`).
+- [major/test-coverage] submit handler tests are not in default graph (`src/rpc/root.zig:6`).
+- [major/missing-feature] Anvil/Hardhat compatibility surface is much smaller than references (`src/rpc/dispatcher.zig:68`).
 
 ### eth — client.yaml (eth-client)
 - Conformance: 5

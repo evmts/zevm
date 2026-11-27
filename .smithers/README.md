@@ -1,54 +1,47 @@
-# ZEVM factory and incremental CI
+# ZEVM Coding Factory on Smithers Cloud
 
-`smthrs ci '//...'` builds and tests ZEVM incrementally. Results cache locally
-in `.smithers/cache` and sync through `https://build.smithers.sh` when
-`SMITHERS_CACHE_READ_TOKEN` / `SMITHERS_CACHE_WRITE_TOKEN` are set.
+ZEVM (`evmts/zevm`) is built, audited, and published through its public Smithers Cloud Coding Factory at **https://smithers.sh/evmts/zevm** (mirrored to GitHub).
 
-- Workspace: `.smithers/WORKSPACE.ts`, the only declaration; smthrs refuses a
-  second `.smithers/WORKSPACE.smithers` beside it.
-- Targets: root `PACKAGE.ts`, `bench/**/PACKAGE.ts`, `.smithers/PACKAGE.ts`.
-- Factory: `.smithers/FACTORY.ts` and `.smithers/flows/**`, projected into the
-  checked-in `factory.json` and `home.json`.
+## Architecture at a Glance
 
-## Native dependency keys
+- **Workspace & Shared Object Store (`.smithers/WORKSPACE.ts`):** incremental build graph (`PACKAGE.ts`, `bench/**/PACKAGE.ts`, `.smithers/PACKAGE.ts`) backed by `https://build.smithers.sh` using split read/write credentials.
+- **Factory & Personalized 3-Audience Home (`.smithers/FACTORY.ts`):** projects into checked-in `.smithers/factory.json` (`apiVersion: 1`, `contributes.triggers`, `policy`, `machine`, `issueViews`, `issueTransitions`, `github`) and `.smithers/home.json` (`docs: "https://zevm.sh/docs/llms.txt"`, `contributors: "role"`, `sections` for `maintainer`, `contributor`, and `everyone`).
+- **Lighthouse Backpressure (`.agents/uphill/` + `tools/audit_report.mjs`):** 7 scored categories (`safety`, `style`, `footprint`, `verification`, `documentation`, `conformance`, `factory`) rendered as an interactive Lighthouse HTML report (`.uphill/audit-report.html` and `https://zevm.sh/docs/audit/`) plus a Smithers Factory feed JSON.
+- **Obsidian Wiki & Mythical History (`.smithers/wiki/` + `.smithers/history/epics.json`):** verified wikilinks and source citations projected to `plugins/wiki` via `tools/wiki_sync.mjs`.
+- **Authenticated MCP & One-Time Sandbox Auth (`tools/sandbox_auth.mjs`):** Streamable HTTP MCP at `https://smithers.sh/evmts/zevm/mcp` with single-use BYOA attach (`smthrs attach --intent <XXXX-XXXX> --origin https://smithers.sh`) and scoped gateway token minting (`smthrs token mint`).
+- **Sandboxed Execution Workbench (`.smithers/playground/`):** bounded in-memory NativeNode bytecode tracer with strict SHA-256 CSP (`node .smithers/playground/csp.mjs --check`).
 
-`build.zig.zon` resolves `../voltaire` and `../guillotine-mini` by path, outside
-the workspace, where Smithers cannot hash them. `tools/native_deps_digest.mjs`
-writes their source digest to `.native-deps.digest` (gitignored), and every Zig
-target declares that file as an input, so editing a sibling or changing its
-checkout invalidates dependent results. `scripts/smthrs` and CI regenerate the
-digest before each run; run `node tools/native_deps_digest.mjs` first when
-calling `smthrs` directly. Check out the pins with `bash tools/checkout-native.sh`.
+## Trust & Untrusted Execution Model
 
-Zig targets run with `sandbox: "none"` because they read the siblings and the
-host Zig cache. Smithers publishes only confined results, so these results stay
-in the local and GitHub Actions caches.
+- **Non-maintainers are encouraged to run tests, fuzzers, and Uphill audits locally and on PRs.**
+- Pull requests and external runs execute with `SMITHERS_TRUST=untrusted`, `SMITHERS_CACHE_NAMESPACE=pr-<N>`, and zero write tokens (`build.smithers.sh` returns `403` on writes with a read token).
+- Untrusted runs produce full advisory audit reports clearly badged `Untrusted External Run`, and can **never** poison trunk cache or skip required controlled-sandbox merge gates.
+- Approvals and merges are locked to authenticated humans (`policy.approvals: { approve: "person", merge: "person" }`, `.smithers/merge.json`).
 
-## Targets
+## Native Dependency Keys
 
-| Target | Kind | Runs |
-| --- | --- | --- |
-| `//:dependency-preflight` | test | `zig build dependency-preflight` |
-| `//:build` | build | `zig build` |
-| `//:test` | test | `zig build verify-fast` (needs `lib/execution-apis`) |
-| `//:c-smoke` | test | `zig build c-smoke` |
-| `//:npm-smoke` | test | `zig build npm-smoke` |
-| `//:release-binaries` | build | `zig build release-binaries -Doptimize=ReleaseSafe` |
-| `//:npm-platform-artifacts` | build | `zig build npm-platform-artifacts -Doptimize=ReleaseSafe` |
-| `//:qualification-check` | test | `zig build qualification-check` |
-| `//:fmt` | test | `zig fmt --check` |
-| `//:js-check` | test | `node --check` on npm and tool scripts |
-| `//:docs-mirror` | test | `node tools/docs_mirror.mjs` (Starlight mirror drift check) |
-| `//bench/<suite>:bench`, `:test` | build, test | ReleaseFast suite, report vs `bench/baseline.json` |
-| `//bench:deps-check` | test | bench PACKAGE.ts source closure check |
-| `//.smithers:factory-check` | build, lint | factory projection drift check |
-| `//.smithers:factory-write` | build, lint | regenerate projections (`smthrs target //.smithers:factory-write --write`) |
+`build.zig.zon` resolves `../voltaire` and `../guillotine-mini` by path outside the workspace. `tools/native_deps_digest.mjs` hashes both sibling source trees (with symlink-cycle protection) into `.native-deps.digest` (gitignored), and every Zig target keys on that file. Check out pinned siblings with `bash tools/checkout-native.sh`.
 
 ## Commands
 
 ```sh
+# Fast tier-1 hygiene checks (seconds)
+sh .smithers/checks/fast-check.sh
+
+# Full incremental Smithers CI
 scripts/smthrs ci '//...'
-scripts/smthrs ci //:test //:fmt
+
+# Lighthouse-style Backpressure Audit Report
+node tools/audit_report.mjs --run --publish-docs docs/public/audit/index.html
+
+# Regenerate & verify factory.json + home.json after editing .smithers/FACTORY.ts
 scripts/smthrs target //.smithers:factory-write --write
-scripts/smthrs explain //:build
+scripts/smthrs ci //.smithers:factory-check
+
+# Verify Obsidian wiki & mythical history (add --push with SMITHERS_FEED_KEY to sync to smithers.sh)
+node tools/wiki_sync.mjs --check --out .smithers/reports/wiki-feed.json
+
+# Print one-time-use sandbox auth handoff for agents
+scripts/sandbox-auth --mode attach
+scripts/sandbox-auth --mode untrusted --pr 42
 ```

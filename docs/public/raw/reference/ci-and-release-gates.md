@@ -1,0 +1,158 @@
+# CI And Release Gates
+
+# CI And Release Gates
+
+This page maps the local release-readiness commands to the root GitHub Actions workflow.
+
+## Local Gate Commands
+
+Run these from the `zevm/` checkout:
+
+```bash
+bash tools/checkout-native.sh
+zig build --fetch
+zig build
+zig build dependency-preflight -- --zig-version 0.15.2
+zig build verify-fast
+zig build fuzz -Doptimize=ReleaseSafe
+zig build fuzz-c-abi -Doptimize=ReleaseSafe
+zig build c-smoke
+zig build npm-smoke
+zig build release-binaries -Doptimize=ReleaseSafe
+zig build npm-platform-artifacts -Doptimize=ReleaseSafe
+npm --prefix npm/zevm install --ignore-scripts
+node --check npm/zevm/src/index.js
+npm --prefix npm/zevm run build
+zig build qualification-check
+zig build qualification-check -- --require-covered
+zig build abi-tests
+zig build verify
+```
+
+`zig build dependency-preflight` checks the Zig version against `--zig-version`, confirms that the `../voltaire` and `../guillotine-mini` checkouts that `build.zig.zon` resolves by path exist, and with `--voltaire-revision` and `--guillotine-mini-revision` fails unless each sibling's `HEAD` is that commit. `zig build test` also runs the test-graph checker, which fails if any `src/**/*_test.zig` file is not reachable from `src/root.zig`. `zig build verify-fast` runs that default unit/integration test graph. `zig build fuzz` and `zig build fuzz-c-abi` execute all property-based and native `std.testing.fuzz` suites (supporting `-Dfuzz-filter=<substr>` and `--fuzz` on Linux; use `./tools/fuzz_ubuntu.sh --optimize ReleaseSafe --seconds 30 --jobs 8` to run all 30 coverage-guided targets locally on Ubuntu or remotely on a bare-metal Linux host). `zig build c-smoke` validates the public C ABI header/library contract. `zig build npm-smoke` validates the local N-API addon through Node. `zig build release-binaries` and `zig build npm-platform-artifacts` build artifacts for the selected target; multi-platform release jobs run them in an OS/architecture matrix. `zig build qualification-check` validates the release qualification map schema and covered-row evidence references, but it does not execute the referenced behavioral tests by itself. `zig build abi-tests` runs every `lib/ethereum-tests/ABITests` vector against Voltaire's `primitives.Abi`: each case must encode its `args` to `result` and round-trip through decode, and the explicit `exclusions` list in `tools/abi_tests.zig` names each unsupported case with its reason (a stale exclusion fails). Initialize the fixtures with `git submodule update --init --depth 1 -- lib/ethereum-tests`. `zig build verify` runs `verify-fast`, `abi-tests`, `trie-tests`, and the active official external suite slices encoded in `tools/external_verify.zig`, including `RLPTests`.
+
+## Smithers Incremental CI
+
+`scripts/smthrs ci '//...'` runs the same Zig, npm, formatting, and benchmark checks as cached Smithers targets declared in the root `PACKAGE.ts`, `bench/**/PACKAGE.ts`, and `.smithers/PACKAGE.ts`. Unchanged targets replay from the local cache in `.smithers/cache` and from the Smithers remote cache. See [`.smithers/README.md`](https://github.com/evmts/zevm/blob/main/.smithers/README.md) for the target list and the native-dependency cache key.
+
+## Pull Request And Main Branch Gates
+
+The root `CI` workflow runs these checks for pull requests and pushes to `main`:
+
+- check out `zevm` and the `lib/execution-apis` and `lib/ethereum-tests` submodules
+- run `bash tools/checkout-native.sh`
+- install Zig `0.15.2`
+- install Rust/Cargo, Node, and Perl for Voltaire's Rust crypto archive and npm checks
+- run `zig build --fetch`
+- run `zig build dependency-preflight -- --zig-version "$ZIG_VERSION"`
+- run `zig build`
+- run `zig build verify-fast` (includes every `src/fuzz/*_test.zig` property suite and the C ABI fuzz suite at Debug-scaled trial counts)
+- run `zig build transaction-tests`
+- run `zig build c-smoke`
+- run `zig build npm-smoke`
+- run `zig build release-binaries -Doptimize=ReleaseSafe`
+- run `zig build npm-platform-artifacts -Doptimize=ReleaseSafe`
+- run `node --check npm/zevm/src/index.js`
+- run `npm --prefix npm/zevm run build`
+- run `zig build qualification-check`
+- generate release metadata smoke artifacts with a commit-based release identifier
+- fail if tracked files are dirtied by the gate
+
+A second job, `smthrs ci //...`, runs every Smithers target. Pull requests read the remote cache; pushes to `main` also write to it.
+
+## Release And Scheduled Gates
+
+Tag pushes, manual dispatches, and the weekly scheduled workflow run the official external verification job:
+
+```bash
+bash tools/fetch-early-state.sh
+zig build verify-early-state -Doptimize=ReleaseSafe
+zig build verify-mid-forks
+zig build qualification-check -- --require-covered
+zig build verify
+zig build verify-latest-state -Doptimize=ReleaseFast
+```
+
+With the pinned `lib/ethereum-tests/LegacyTests` submodule initialized, `zig build verify-mid-forks` runs Berlin and Shanghai post-states through the shared legacy state-test verifier. It checks state roots, log hashes, and expected transaction rejections. The pinned Cancun archive includes gas-cost and access-list fixtures plus the Shanghai warm-coinbase, PUSH0, and initcode suites. The fixture's `post` key selects the execution fork.
+
+At the pinned LegacyTests revision `1f581b8c`, the gate runs 491 Berlin and 585 Shanghai post-cases. It prints passed and failed counts for each fork and exits with an error on mismatches. Filter by the post-state key to run one fork, or by fixture name to reproduce a failure.
+
+```bash
+zig build verify-mid-forks -- --match=' :: Berlin post='
+zig build verify-mid-forks -- --match=' :: Shanghai post='
+zig build verify-mid-forks -- --match=creationTxInitCodeSizeLimit
+```
+
+EIP-4895 withdrawals are block-level operations. GeneralStateTests supplies a single transaction and has no withdrawals list. The block builder tests cover withdrawal credits and roots.
+
+This is the required CI path for release-candidate confidence. It currently verifies the active official suite coverage encoded in `tools/external_verify.zig`; it is not a claim that every Hive simulator or every Ethereum fixture directory is already fully active. `zig build verify-latest-state` runs every Cancun and Prague `GeneralStateTests` case, reports per-fork and per-category counts, and fails when a category drops below `tools/latest_fork_state_baseline.json`. See [Latest-Fork State Tests](./latest-fork-state-tests).
+
+Those same tag, manual, and scheduled workflows also run the Hive RPC compat smoke job described below. Main branch pushes, manual dispatches, and weekly schedules also run the `Coverage-Guided Fuzzing` job on `ubuntu-latest` (`bash tools/fuzz_ubuntu.sh --local --optimize ReleaseSafe --seconds 15 --jobs 4`), which first runs `zig build fuzz -Doptimize=ReleaseSafe` at full trial counts and then drives every native `std.testing.fuzz` target with `--fuzz`.
+
+## Hive RPC Compat Smoke
+
+For the CI-friendly Hive lifecycle smoke, run:
+
+```bash
+bun tools/hive_rpc_compat_smoke.js
+```
+
+The script builds a local `zevm/hive-client:local` image from this checkout, checks out the pinned native dependencies with `tools/checkout-native.sh` inside that build, builds the Hive runner, and runs ZEVM through the full `ethereum/rpc-compat` transcript set by default. Set `ZEVM_HIVE_RPC_COMPAT_PATTERN` only when intentionally narrowing a local debug run. The client wrapper provides the Hive-required HTTP JSON-RPC port `8545`, translates Hive fork-schedule environment variables into ZEVM trusted-mode config, forwards mounted Hive `genesis.json` and `chain.rlp` into ZEVM startup when present, and exposes ZEVM's native Engine API listener on `8551`.
+
+The simulator starts ZEVM with the explicit loopback-only `--execution-apis` profile. This adds the enclosing block timestamp to upstream transaction and log responses, including simulated blocks, and enables the read-only `testing_buildBlockV1` call on the public RPC port. The Engine port continues to require its JWT. The packaging and Phase-1 regression jobs exercise the default profile. Hive launches a fresh seeded client for `txpool_content` because submission transcripts mutate the pool. The run checks the total against the pinned transcript count.
+
+CI runs this same command in the `Hive RPC Compat Smoke` job for tag pushes, manual dispatches, and the weekly scheduled workflow.
+
+The RPC compatibility run exercises every `ethereum/rpc-compat` transcript selected by the pinned execution-apis revision. This is narrower than full Hive release readiness: GraphQL, Engine API conformance, sync, devp2p discovery edge cases, and the larger execution-spec consensus fixtures are separate simulators and must be reported independently. Phase-1 `chain.rlp` handling remains query-oriented for imported history, while the Engine listener covers local payload build jobs, strict `newPayload` import for known local parents, `getPayload` by payload id, payload-body lookup, and null blob sidecar lookup for unavailable blobs.
+
+## External Suite Coverage Status
+
+`zig build verify` and the release jobs above cover these `ethereum-tests` suites only as stated. A suite not listed as a full runner has no pass/fail claim.
+
+| Suite | Issue | Current gate |
+| --- | --- | --- |
+| `BlockchainTests` | #6 | `zig build blockchain-tests` (and CI step) replays `lib/ethereum-tests/BlockchainTests/` (`ValidBlocks` + `InvalidBlocks`, `NoProof` seal semantics, per-category tracking for any unsupported legacy/transition categories) |
+| `DifficultyTests` | #7 | `zig build difficulty-tests` (and CI step) verifies all 17 files / 18,598 vectors across `Frontier` through `GrayGlacier` via `src/difficulty.zig` |
+| `EOFTests` | #9 | `zig build eof-tests` (and CI step) validates all 7 files / 343 vectors against `src/eof.zig` static EOF1 container/stack validation with explicit reporting |
+
+## npm Release Workflow
+
+`.github/workflows/release.yml` publishes `@evmts/zevm` and its native platform packages. Only a pushed `v*` tag starts it, and its first job fails unless the tagged commit is an ancestor of `origin/main`.
+
+```text
+tag v<version> ─▶ verify ─▶ native (9-target matrix) ─▶ publish (npm) ─▶ github-release
+```
+
+- `verify` runs `npm --prefix npm/zevm run verify:release -- "$GITHUB_REF_NAME"`, `zig build dependency-preflight`, `zig build`, `zig build verify`, `zig build qualification-check -- --require-covered`, `zig build c-smoke`, `zig build npm-smoke`, and the JavaScript package checks, then fails on a dirty worktree
+- `native` builds `zig build npm-platform-artifacts -Dtarget=<triple> -Doptimize=ReleaseSafe` on each platform's runner and runs `npm/zevm/scripts/smoke.cjs` wherever the runner can load the addon (every target except the two musl targets and `win32-ia32-msvc`)
+- `publish` requires exactly 9 addons, re-runs `verify:release`, and runs `npm --prefix npm/zevm run publish:all` in the `npm` environment with npm provenance; it authenticates with npm trusted publishing (OIDC) or the `NPM_TOKEN` secret
+- `github-release` generates `release-tuple.json` and `light-default-checkpoints.json` with `zig build release-metadata` and attaches them to a draft GitHub release for the tag
+
+The release platform set is `optionalDependencies` in `npm/zevm/package.json`: `darwin-arm64`, `darwin-x64`, `linux-arm64-gnu`, `linux-arm64-musl`, `linux-x64-gnu`, `linux-x64-musl`, `win32-arm64-msvc`, `win32-ia32-msvc`, and `win32-x64-msvc`. `verify-release.cjs`, `stage-artifacts.cjs`, and `publish-all.cjs` read that list, so a package directory under `npm/platforms/` that is not listed is never verified, staged, or published. FreeBSD is excluded because the pinned Voltaire Rust crypto archive does not build for FreeBSD.
+
+`verify:release` fails unless the tag equals `v<version>` and that version matches `npm/zevm/package.json`, every listed platform package, the main package's `optionalDependencies` pins, `build.zig.zon`, and `ZEVM_VERSION` in `src/c_bindings.zig`. To cut a release:
+
+```bash
+npm --prefix npm/zevm run verify:release -- v0.1.0
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+Publish the draft release from a maintainer account to run the Published Release Asset Gate below. The workflow leaves it as a draft because a release published by `GITHUB_TOKEN` does not fire the `release: published` event that the gate listens for.
+
+## Published Release Asset Gate
+
+When a GitHub release is published, CI validates the release metadata publication contract:
+
+- exactly one `release-tuple.json` asset exists
+- exactly one `light-default-checkpoints.json` asset exists
+- both assets have the expected schema version and field set
+- both assets use the published release tag as `releaseIdentifier`
+- `release-tuple.json.zevmGitRevision` equals the checked-out release tag commit
+- tuple dependency revisions are 40-hex commit identifiers
+- `zig build dependency-preflight` confirms that the `../voltaire` and `../guillotine-mini` checkouts from `tools/checkout-native.sh` are at the exact tuple revisions
+- Zig is installed at the exact tuple `zigVersion`
+- `zig build verify` and `zig build qualification-check -- --require-covered` pass against the materialized tuple
+- `bun tools/hive_rpc_compat_smoke.js` passes against the materialized tuple
+- default light-mode checkpoints are 32-byte `0x` hashes for `mainnet`, `sepolia`, and `holesky`
+
+If any item fails, the release metadata is invalid for canonical reproducibility claims.

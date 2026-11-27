@@ -1,7 +1,11 @@
-name: Uphill
+name: Uphill Backpressure Audit
 
 on:
   pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -9,6 +13,7 @@ permissions:
 
 jobs:
   uphill:
+    name: Lighthouse Backpressure Audit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -25,3 +30,26 @@ jobs:
 
       - name: Run Uphill
         uses: wevm/uphill@main
+
+      - name: Build Lighthouse Backpressure Audit Report
+        env:
+          SMITHERS_TRUST: ${{ github.event_name == 'pull_request' && 'untrusted' || 'controlled-sandbox' }}
+        run: |
+          node tools/audit_report.mjs \
+            --input .uphill/report.json \
+            --out .uphill/audit-report.html \
+            --feed-out .uphill/factory-feed.json \
+            --md-out .uphill/audit-comment.md \
+            --trust "${SMITHERS_TRUST}"
+          cat .uphill/audit-comment.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Backpressure Audit Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: zevm-backpressure-audit
+          path: |
+            .uphill/audit-report.html
+            .uphill/factory-feed.json
+            .uphill/audit-comment.md
+            .uphill/report.json
+          retention-days: 14

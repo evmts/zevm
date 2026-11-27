@@ -1,5 +1,7 @@
 import { Glob } from "bun";
-import { appendFileSync, readFileSync } from "fs";
+import { appendFileSync, existsSync, readFileSync } from "fs";
+import { homedir } from "os";
+import { join } from "path";
 
 const out = process.env.UPHILL_METRICS;
 if (!out) {
@@ -22,9 +24,11 @@ function stripLine(line: string): string {
   return line.replace(/\/\/.*$/, "").replace(/"(?:\\.|[^"\\])*"/g, '""');
 }
 
-// 1. Canonical Zig formatting via `zig fmt --check src`
+// 1. Canonical Zig formatting via `zig fmt --check src` (prefer CI-pinned Zig 0.15.2)
+const pinnedZig = join(homedir(), ".zvm", "0.15.2", "zig");
+const zigBin = process.env.ZIG_BIN || (existsSync(pinnedZig) ? pinnedZig : "zig");
 const allSrcZig = [...new Glob("src/**/*.zig").scanSync(".")].sort();
-const fmtProc = Bun.spawnSync(["zig", "fmt", "--check", "src"], {
+const fmtProc = Bun.spawnSync([zigBin, "fmt", "--check", "src"], {
   stdout: "pipe",
   stderr: "pipe",
 });

@@ -1,0 +1,103 @@
+name: Docs, Wiki & Audit Publish
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths:
+      - "docs/**"
+      - "cloudflare/zevm-docs-worker/**"
+      - ".smithers/wiki/**"
+      - ".smithers/history/**"
+      - ".agents/uphill/**"
+      - "tools/generate_llms_txt.mjs"
+      - "tools/audit_report.mjs"
+      - "tools/wiki_sync.mjs"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zevm-docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-publish:
+    name: Build Docs, llms.txt & Lighthouse Audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: mlugg/setup-zig@v2.2.1
+        with:
+          version: "0.15.2"
+
+      - name: Verify docs mirror, llms.txt, and Obsidian wiki
+        run: |
+          node tools/docs_mirror.mjs
+          node tools/generate_llms_txt.mjs --check
+          node tools/wiki_sync.mjs --check --out .smithers/reports/wiki-feed.json
+
+      - name: Run Uphill and generate Lighthouse Backpressure Audit Report
+        uses: wevm/uphill@main
+
+      - name: Render Lighthouse Audit UI into docs/public/audit/index.html
+        env:
+          SMITHERS_TRUST: ${{ github.event_name == 'pull_request' && 'untrusted' || 'controlled-sandbox' }}
+        run: |
+          node tools/audit_report.mjs \
+            --input .uphill/report.json \
+            --out .uphill/audit-report.html \
+            --publish-docs docs/public/audit/index.html \
+            --feed-out .uphill/factory-feed.json \
+            --md-out .uphill/audit-comment.md \
+            --trust "${SMITHERS_TRUST}"
+
+      - name: Build Astro Starlight site
+        run: |
+          npm --prefix docs ci
+          npm --prefix docs run build
+          test -s docs/dist/llms.txt
+          test -s docs/dist/audit/index.html
+
+      - name: Deploy zevm.sh docs worker on main (when Cloudflare credentials are configured)
+        if: github.event_name != 'pull_request'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ALCHEMY_PASSWORD: ${{ secrets.ALCHEMY_PASSWORD }}
+        working-directory: cloudflare/zevm-docs-worker
+        run: |
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "CLOUDFLARE_API_TOKEN not configured; skipping live zevm.sh deploy"
+            exit 0
+          fi
+          npm ci
+          npm run deploy
+
+      - name: Sync Obsidian wiki and Backpressure feeds to Smithers Cloud on main
+        if: github.event_name != 'pull_request'
+        env:
+          SMITHERS_FEED_KEY: ${{ secrets.SMITHERS_FEED_KEY }}
+        run: |
+          if [ -z "${SMITHERS_FEED_KEY:-}" ]; then
+            echo "SMITHERS_FEED_KEY not configured; skipping live Smithers Cloud feed push"
+            exit 0
+          fi
+          node tools/wiki_sync.mjs --push
+          curl -fsSL -X POST "https://smithers.sh/api/repos/evmts/zevm/feeds" \
+            -H "content-type: application/json" \
+            -H "authorization: Bearer ${SMITHERS_FEED_KEY}" \
+            --data-binary "@.uphill/factory-feed.json"

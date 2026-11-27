@@ -1,0 +1,5 @@
+#!/bin/sh
+# Wrapper for printing one-time-use Smithers Cloud sandbox auth handoffs.
+set -eu
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec node "$root/tools/sandbox_auth.mjs" "$@"

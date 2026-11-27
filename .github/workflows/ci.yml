@@ -156,11 +156,17 @@ jobs:
           node npm/zevm/scripts/browser-smoke.mjs
           node npm/zevm/scripts/chromium-smoke.mjs
 
-      - name: JavaScript package checks
+      - name: JavaScript package and factory checks
         working-directory: zevm
         run: |
           node --check npm/zevm/src/index.js
           npm --prefix npm/zevm run build
+          node tools/docs_mirror.mjs
+          node tools/generate_llms_txt.mjs --check
+          node tools/wiki_sync.mjs --check
+          node .smithers/playground/csp.mjs --check
+          node npm/zevm/scripts/verify-release.cjs
+          node --test tools/audit_report.test.mjs tools/wiki_sync.test.mjs tools/sandbox_auth.test.mjs tools/generate_llms_txt.test.mjs
 
       - name: Qualification map structural check
         working-directory: zevm
@@ -239,11 +245,14 @@ jobs:
         working-directory: zevm
         run: node tools/native_deps_digest.mjs .native-deps.digest
 
-      # Pull requests read the remote cache; pushes to main also publish to it.
+      # Pull requests read the shared remote cache under an isolated PR namespace;
+      # pushes to main also publish to the shared Smithers Cloud object store.
       - name: smthrs ci //...
         working-directory: zevm
         run: npx --yes --package=@smthrs/cli@"$SMTHRS_VERSION" smthrs ci '//...' --workspace . --verbose
         env:
+          SMITHERS_TRUST: ${{ github.event_name == 'pull_request' && 'untrusted' || 'controlled-sandbox' }}
+          SMITHERS_CACHE_NAMESPACE: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || '' }}
           SMITHERS_CACHE_READ_TOKEN: ${{ secrets.SMITHERS_CACHE_READ_TOKEN }}
           SMITHERS_CACHE_WRITE_TOKEN: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.SMITHERS_CACHE_WRITE_TOKEN || '' }}
 

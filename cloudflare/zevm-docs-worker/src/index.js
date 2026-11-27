@@ -8,6 +8,11 @@ export default {
             redirectUrl.search = "";
             return Response.redirect(redirectUrl, 302);
         }
+        // Serve llms.txt and llms-full.txt directly at both root and /docs/
+        // so Smithers Cloud Docs tab and MCP docs_list work without redirects.
+        if (url.pathname === "/llms.txt" || url.pathname === "/llms-full.txt") {
+            return serveTextAsset(request, env, url.pathname, "text/plain; charset=utf-8");
+        }
         if (url.pathname === DOCS_PATH_PREFIX) {
             return serveAsset(request, env, "/");
         }
@@ -15,12 +20,18 @@ export default {
             if (url.pathname === `${DOCS_PATH_PREFIX}/404` || url.pathname === `${DOCS_PATH_PREFIX}/404/`) {
                 return new Response("Not found", { status: 404 });
             }
+            const assetPath = url.pathname.slice(DOCS_PATH_PREFIX.length) || "/";
+            if (assetPath === "/llms.txt" || assetPath === "/llms-full.txt") {
+                return serveTextAsset(request, env, assetPath, "text/plain; charset=utf-8");
+            }
+            if (assetPath.endsWith(".md")) {
+                return serveTextAsset(request, env, assetPath, "text/markdown; charset=utf-8");
+            }
             if (!hasFileExtension(url.pathname) && !url.pathname.endsWith("/")) {
                 const redirectUrl = new URL(request.url);
                 redirectUrl.pathname = `${url.pathname}/`;
                 return Response.redirect(redirectUrl, 302);
             }
-            const assetPath = url.pathname.slice(DOCS_PATH_PREFIX.length) || "/";
             const response = await serveAsset(request, env, assetPath);
             return response.status === 404 ? new Response("Not found", { status: 404 }) : response;
         }
@@ -38,6 +49,8 @@ export default {
 function isExportAssetPath(pathname) {
     return (pathname.startsWith("/_astro/") ||
         pathname.startsWith("/pagefind/") ||
+        pathname.startsWith("/raw/") ||
+        pathname.startsWith("/audit/") ||
         pathname === "/favicon.svg" ||
         pathname === "/sitemap-index.xml" ||
         pathname === "/sitemap-0.xml");
@@ -50,4 +63,18 @@ function serveAsset(request, env, pathname) {
     const assetUrl = new URL(request.url);
     assetUrl.pathname = pathname;
     return env.ASSETS.fetch(new Request(assetUrl, request));
+}
+async function serveTextAsset(request, env, pathname, contentType) {
+    const response = await serveAsset(request, env, pathname);
+    if (response.status === 404) {
+        return new Response("Not found", { status: 404 });
+    }
+    const headers = new Headers(response.headers);
+    headers.set("content-type", contentType);
+    headers.set("access-control-allow-origin", "*");
+    return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+    });
 }

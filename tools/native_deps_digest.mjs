@@ -10,7 +10,7 @@
 //
 // Usage: node tools/native_deps_digest.mjs [out-file]   (default .native-deps.digest)
 import { createHash } from "node:crypto"
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
+import { mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs"
 import { dirname, join, relative } from "node:path"
 
 const root = join(dirname(new URL(import.meta.url).pathname), "..")
@@ -19,13 +19,21 @@ const out = process.argv[2] ?? ".native-deps.digest"
 const dependencies = ["voltaire", "guillotine-mini"]
 const skipDirs = new Set([
   ".git", ".jj", ".zig-cache", "zig-cache", "zig-out", "target", "node_modules",
-  ".smithers", ".flows", "dist", "docs", "skills",
+  ".smithers", ".flows", ".worktrees", ".cache", "dist", "docs", "skills",
 ])
 // Sources that can change compiled output or the Rust/C archives build.zig links.
 const keepFile = (name) =>
   /\.(zig|zon|c|h|rs|s|S|toml|lock)$/.test(name) || name === "Makefile" || name === "CMakeLists.txt"
 
-const walk = (dir, files) => {
+const walk = (dir, files, seenDirs) => {
+  let real
+  try {
+    real = realpathSync(dir)
+  } catch {
+    return
+  }
+  if (seenDirs.has(real)) return
+  seenDirs.add(real)
   let entries
   try {
     entries = readdirSync(dir, { withFileTypes: true })
@@ -46,7 +54,7 @@ const walk = (dir, files) => {
       }
     }
     if (isDir) {
-      if (!skipDirs.has(entry.name)) walk(path, files)
+      if (!skipDirs.has(entry.name)) walk(path, files, seenDirs)
     } else if (isFile && keepFile(entry.name)) {
       files.push(path)
     }
@@ -57,7 +65,7 @@ const lines = []
 for (const name of dependencies) {
   const base = join(root, "..", name)
   const files = []
-  walk(base, files)
+  walk(base, files, new Set())
   if (files.length === 0) {
     console.error(`native-deps-digest: ../${name} is missing; run tools/checkout-native.sh`)
     process.exit(1)

@@ -24,3 +24,9 @@ test("bounds input and refuses arbitrary methods", () => {
   assert.deepEqual(run({ ...example, gas: 250001 }), { error: "Set a gas limit between 21000 and 250000" })
   assert.deepEqual(run({ ...example, bytecode: "0xabc" }), { error: "Enter up to 2048 bytes of hex bytecode" })
 })
+
+test("playground HTML CSP hashes match inline style and script", () => {
+  const cspScript = fileURLToPath(new URL("./csp.mjs", import.meta.url))
+  const out = execFileSync(process.execPath, [cspScript, "--check"], { encoding: "utf8" })
+  assert.match(out, /playground-csp: ok/)
+})

@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "smithers-coding-project.v1",
+  "repository": "evmts/zevm",
+  "wikiDir": ".smithers/wiki",
+  "historyFile": ".smithers/history/epics.json",
+  "pages": [
+    { "path": "Overview.md", "sources": ["README.md", "src/node/runtime.zig", "src/consensus_sync.zig", "src/light_proof.zig"] },
+    { "path": "Architecture.md", "sources": ["build.zig.zon", "native-dependencies.json", "src/evm_backend.zig", "tools/checkout-native.sh", "tools/native_deps_digest.mjs"] },
+    { "path": "Execution-Engine.md", "sources": ["src/tx_processor.zig", "src/block_builder.zig", "src/host_adapter.zig", "src/database/database.zig", "src/hardfork_schedule.zig"] },
+    { "path": "Fusaka-and-Osaka.md", "sources": ["src/system_contracts.zig", "src/blob_fee.zig", "src/blob_kzg.zig", "src/precompile_compat.zig", "src/rpc/handlers/eth_config.zig"] },
+    { "path": "JSON-RPC-and-Engine-API.md", "sources": ["src/rpc/server.zig", "src/rpc/dispatch_wiring.zig", "src/console_log.zig", "docs/specs/json-rpc-contract.md", "tools/hive_rpc_compat_smoke.js"] },
+    { "path": "Beacon-Light-Client.md", "sources": ["src/beacon_api.zig", "src/consensus_sync.zig", "src/consensus_verifier.zig", "src/light_proof.zig", "src/mpt_proof.zig", "src/light_default_checkpoints.zig"] },
+    { "path": "ExEx-and-Rebase-Fork.md", "sources": ["src/exex.zig", "src/rebase_fork.zig", "src/exex_rebase_integration_test.zig"] },
+    { "path": "Formal-Verification-and-Fuzzing.md", "sources": ["spec/lean/ZevmSpec/Main.lean", "tools/lean_diff_fuzz.zig", "tools/fuzz_ubuntu.sh", "tools/latest_fork_state_baseline.json"] },
+    { "path": "Native-Bindings-and-Releases.md", "sources": ["include/zevm.h", "src/c_bindings.zig", "npm/zevm/native/zevm_napi.c", "src/browser.zig", ".github/workflows/release.yml", ".github/workflows/docs.yml"] },
+    { "path": "Smithers-Factory-and-Trust.md", "sources": [".smithers/FACTORY.ts", ".smithers/WORKSPACE.ts", ".smithers/merge.json", "tools/sandbox_auth.mjs", "tools/audit_report.mjs"] },
+    { "path": "Mythical-History.md", "sources": [".smithers/history/epics.json", "CHANGELOG.md"] }
+  ]
+}

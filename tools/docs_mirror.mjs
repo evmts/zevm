@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "docs");
 const mirror = join(root, "src", "content", "docs");
-const skipped = new Set(["src", "node_modules", "dist"]);
+const skipped = new Set(["src", "node_modules", "dist", "public"]);
 
 function pages(dir, base, skip) {
   const out = [];

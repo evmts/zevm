@@ -1,5 +1,6 @@
 import { Smithers as S } from "@smthrs/targets"
 import { Package as benchPkg } from "./bench/PACKAGE.ts"
+import { Package as smithersPkg } from "./.smithers/PACKAGE.ts"
 
 const zig = S.Host.bin("zig")
 const cargo = S.Host.bin("cargo")
@@ -136,7 +137,7 @@ const jsCheck = S.Shell.Test({
   args: [
     "-eu",
     "-c",
-    "for f in npm/zevm/src/*.js npm/zevm/scripts/*.cjs npm/zevm/scripts/*.mjs tools/*.mjs tools/*.js; do node --check \"$f\"; done",
+    "for f in npm/zevm/src/*.js npm/zevm/scripts/*.cjs npm/zevm/scripts/*.mjs tools/*.mjs tools/*.js; do [ -e \"$f\" ] || continue; node --check \"$f\"; done",
   ],
   data: [
     S.glob("npm/zevm/src/**"),
@@ -161,6 +162,43 @@ const docsMirror = S.Shell.Test({
   timeout: "2m",
 })
 
+const llmsCheck = S.Shell.Test({
+  summary: "Check that docs/public/llms.txt and raw markdown mirrors match docs/ (node tools/generate_llms_txt.mjs --check)",
+  bin: node,
+  args: ["tools/generate_llms_txt.mjs", "--check"],
+  data: [
+    S.file("tools/generate_llms_txt.mjs"),
+    S.file("docs/astro.config.mjs"),
+    S.glob("docs/**/*.md", { exclude: ["docs/node_modules/**", "docs/src/content/docs/**", "docs/public/**"] }),
+    S.glob("docs/**/*.mdx", { exclude: ["docs/node_modules/**", "docs/src/content/docs/**", "docs/public/**"] }),
+    S.glob("docs/public/llms*.txt"),
+  ],
+  sandbox: "none",
+  timeout: "2m",
+})
+
+const factoryToolsTest = S.Shell.Test({
+  summary: "Run Node unit tests for audit report, wiki sync, sandbox auth, and llms.txt tooling",
+  bin: node,
+  args: [
+    "--test",
+    "tools/audit_report.test.mjs",
+    "tools/wiki_sync.test.mjs",
+    "tools/sandbox_auth.test.mjs",
+    "tools/generate_llms_txt.test.mjs",
+  ],
+  data: [
+    S.glob("tools/*.mjs"),
+    smithersPkg["wiki-sources"],
+    S.file("docs/astro.config.mjs"),
+    S.glob("docs/**/*.md", { exclude: ["docs/node_modules/**", "docs/src/content/docs/**", "docs/public/**"] }),
+    S.glob("docs/**/*.mdx", { exclude: ["docs/node_modules/**", "docs/src/content/docs/**", "docs/public/**"] }),
+    S.glob("docs/public/llms*.txt"),
+  ],
+  sandbox: "none",
+  timeout: "2m",
+})
+
 export const Package = S.Package({
   targets: {
     "zig-sources": zigSources,
@@ -176,6 +214,10 @@ export const Package = S.Package({
     fmt,
     "js-check": jsCheck,
     "docs-mirror": docsMirror,
+    "llms-check": llmsCheck,
+    "wiki-check": S.Alias(smithersPkg["wiki-check"]),
+    "playground-csp-check": S.Alias(smithersPkg["playground-csp-check"]),
+    "factory-tools-test": factoryToolsTest,
     bench: S.Alias(benchPkg.report),
     "bench-update-baseline": S.Alias(benchPkg["update-baseline"]),
   },

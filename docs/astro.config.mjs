@@ -28,6 +28,7 @@ export default defineConfig({
             { label: "Canonical Specs", slug: "reference/canonical-specs" },
             { label: "Specs And Process", slug: "reference/specs-and-process" },
             { label: "CI And Release Gates", slug: "reference/ci-and-release-gates" },
+            { label: "Smithers Cloud Factory", slug: "reference/smithers-factory" },
             { label: "Release Metadata Runbook", slug: "reference/release-metadata-runbook" },
           ],
         },

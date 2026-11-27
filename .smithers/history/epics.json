@@ -1,0 +1,70 @@
+{
+  "schemaVersion": "zevm-mythical-history.v1",
+  "repository": "evmts/zevm",
+  "epics": [
+    {
+      "id": "E1",
+      "slug": "native-foundation",
+      "title": "Pinned Native Foundation & Build Graph",
+      "status": "landed",
+      "wikiPage": "Architecture.md",
+      "paths": ["build.zig", "build.zig.zon", "native-dependencies.json", "tools/checkout-native.sh", "tools/dependency_preflight.zig", "tools/native_deps_digest.mjs"]
+    },
+    {
+      "id": "E2",
+      "slug": "execution-engine",
+      "title": "Trusted Execution Engine & State Database",
+      "status": "landed",
+      "wikiPage": "Execution-Engine.md",
+      "paths": ["src/database/database.zig", "src/evm_backend.zig", "src/host_adapter.zig", "src/tx_processor.zig", "src/block_builder.zig", "src/mining_coordinator.zig", "src/txpool.zig"]
+    },
+    {
+      "id": "E3",
+      "slug": "json-rpc-engine-api",
+      "title": "Canonical JSON-RPC, Engine API & Dev Ergonomics",
+      "status": "landed",
+      "wikiPage": "JSON-RPC-and-Engine-API.md",
+      "paths": ["src/rpc/server.zig", "src/rpc/dispatch_wiring.zig", "src/console_log.zig", "docs/specs/json-rpc-contract.md", "tools/hive_rpc_compat_smoke.js"]
+    },
+    {
+      "id": "E4",
+      "slug": "beacon-light-client",
+      "title": "Beacon Light Client & Cryptographic Proof Verification",
+      "status": "landed",
+      "wikiPage": "Beacon-Light-Client.md",
+      "paths": ["src/beacon_api.zig", "src/consensus_sync.zig", "src/consensus_verifier.zig", "src/light_proof.zig", "src/mpt_proof.zig", "src/light_default_checkpoints.zig"]
+    },
+    {
+      "id": "E5",
+      "slug": "prague-osaka-fusaka",
+      "title": "Prague, Osaka & Fusaka Readiness",
+      "status": "landed",
+      "wikiPage": "Fusaka-and-Osaka.md",
+      "paths": ["src/hardfork_schedule.zig", "src/blob_fee.zig", "src/blob_kzg.zig", "src/system_contracts.zig", "src/precompile_compat.zig", "src/rpc/handlers/eth_config.zig"]
+    },
+    {
+      "id": "E6",
+      "slug": "formal-verification-fuzzing",
+      "title": "Formal Lean 4 Spec, Fuzzing & Official Ethereum Conformance",
+      "status": "landed",
+      "wikiPage": "Formal-Verification-and-Fuzzing.md",
+      "paths": ["spec/lean/ZevmSpec/Main.lean", "tools/lean_diff_fuzz.zig", "tools/fuzz_ubuntu.sh", "tools/latest_fork_state_baseline.json", "docs/specs/qualification/assertion-map.json"]
+    },
+    {
+      "id": "E7",
+      "slug": "exex-rebase-fork",
+      "title": "ExEx Event Streams & Rebase Fork",
+      "status": "landed",
+      "wikiPage": "ExEx-and-Rebase-Fork.md",
+      "paths": ["src/exex.zig", "src/rebase_fork.zig", "src/exex_rebase_integration_test.zig"]
+    },
+    {
+      "id": "E8",
+      "slug": "native-distribution-smithers-factory",
+      "title": "Native Distribution & Smithers Cloud Coding Factory",
+      "status": "landed",
+      "wikiPage": "Smithers-Factory-and-Trust.md",
+      "paths": ["include/zevm.h", "src/c_bindings.zig", "npm/zevm/package.json", ".smithers/FACTORY.ts", ".agents/uphill/uphill.yaml", "tools/audit_report.mjs", "tools/wiki_sync.mjs", "tools/sandbox_auth.mjs"]
+    }
+  ]
+}

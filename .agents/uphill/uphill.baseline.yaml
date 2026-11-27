@@ -31,7 +31,6 @@ safety:
 style:
   zig-fmt:
     "*": { baseline: pass }
-    src/exex_rebase_integration_test.zig: { baseline: fail }
   no-private-import-aliases:
     "*": { baseline: pass }
     src/eof.zig: { baseline: fail }
@@ -200,7 +199,6 @@ footprint:
 verification:
   lean-no-sorry:
     "*": { baseline: pass }
-    spec/lean/ZevmSpec/RlpTx.lean: { baseline: fail }
   lean-theorems: { baseline: 20, target: 60 }
   fuzz-targets: { baseline: 29, target: 50 }
   module-test-coverage: { baseline: 90.5, target: 100 }
@@ -210,5 +208,32 @@ documentation:
     "*": { baseline: pass }
   broken-links:
     "*": { baseline: pass }
-    REVIEWS.md: { baseline: fail }
-    docs/reference/ci-and-release-gates.mdx: { baseline: fail }
+
+conformance:
+  native-pins-valid:
+    "*": { baseline: pass }
+  qualification-coverage: { baseline: 100, target: 100 }
+  cancun-state-floor: { baseline: 99, target: 100 }
+  prague-state-floor: { baseline: 98.7, target: 100 }
+  release-version-parity:
+    "*": { baseline: pass }
+
+factory:
+  factory-triggers:
+    "*": { baseline: pass }
+  factory-person-only:
+    "*": { baseline: pass }
+  factory-protected-paths:
+    "*": { baseline: pass }
+  factory-personalized-home:
+    "*": { baseline: pass }
+  factory-docs-index:
+    "*": { baseline: pass }
+  cache-trust-isolation:
+    "*": { baseline: pass }
+  wiki-integrity:
+    "*": { baseline: pass }
+  llms-txt-index:
+    "*": { baseline: pass }
+  sandbox-auth-and-merge:
+    "*": { baseline: pass }

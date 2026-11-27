@@ -1,0 +1,24 @@
+---
+description: Run Uphill backpressure scoring and generate the Lighthouse-style audit report, Smithers Factory feed, and PR comment summary.
+capabilities:
+  - "fs:read:**"
+  - "fs:write:.uphill/**"
+  - "fs:write:docs/public/audit/**"
+  - "proc:spawn:uphill *"
+  - "proc:spawn:bun *"
+  - "proc:spawn:node *"
+  - "proc:spawn:jj --no-pager *"
+model: sol
+budget:
+  tokens: 32000
+  milliseconds: 600000
+---
+
+Run from the repository root using `jj --no-pager` for any version-control inspection.
+Do not modify source files, push, merge, or bypass gates.
+
+1. Run `node tools/audit_report.mjs --run --publish-docs docs/public/audit/index.html`.
+2. Inspect `.uphill/audit-comment.md` and `.uphill/factory-feed.json`.
+3. Report the overall score, per-category Lighthouse scores, trust provenance,
+   any regressions against `.agents/uphill/uphill.baseline.yaml`, and the top
+   three score opportunities with concrete file and line references.

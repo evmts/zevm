@@ -1,5 +1,6 @@
 {
-  "summary": "ZEVM: incremental Zig/C/N-API CI, Ethereum spec conformance, native pin hygiene, and maintainer triage.",
+  "apiVersion": 1,
+  "summary": "ZEVM: native Zig Ethereum execution and light-client node with Lean 4 spec, Lighthouse backpressure, and Smithers CI.",
   "flows": [
     {
       "id": "checks/review",
@@ -190,9 +191,49 @@
       }
     },
     {
+      "id": "audit-report",
+      "description": "Run Uphill backpressure scoring and generate the Lighthouse-style audit report, Smithers Factory feed, and PR comment summary.",
+      "summary": "Run Uphill scoring and build the Lighthouse-style backpressure audit report and Factory feed.",
+      "featured": true,
+      "kind": "mdx",
+      "path": ".smithers/flows/audit-report/flow.mdx",
+      "capabilities": [
+        "fs:read:**",
+        "fs:write:.uphill/**",
+        "fs:write:docs/public/audit/**",
+        "proc:spawn:uphill *",
+        "proc:spawn:bun *",
+        "proc:spawn:node *",
+        "proc:spawn:jj --no-pager *"
+      ],
+      "model": "sol",
+      "modelInvocable": true,
+      "inputSchema": {
+        "dialect": "draft-2020-12",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "args": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "args"
+          ],
+          "additionalProperties": true
+        },
+        "definitions": {}
+      },
+      "flows": [],
+      "budget": {
+        "tokens": 32000,
+        "milliseconds": 600000
+      }
+    },
+    {
       "id": "playground/exec",
       "description": "Inspect ZEVM bytecode and local JSON-RPC results",
-      "summary": "Inspect ZEVM bytecode and local JSON-RPC results.",
+      "summary": "Inspect ZEVM bytecode execution and local JSON-RPC opcode traces in a sandboxed devnet.",
       "featured": true,
       "kind": "mdx",
       "path": ".smithers/flows/playground/exec/flow.mdx",
@@ -226,6 +267,94 @@
       }
     },
     {
+      "id": "ci",
+      "description": "Run ZEVM hygiene, Zig fast verification, C/N-API smokes, and release qualification gates.",
+      "summary": null,
+      "featured": false,
+      "kind": "ts",
+      "path": ".smithers/flows/ci/flow.ts",
+      "capabilities": [],
+      "model": null,
+      "modelInvocable": false,
+      "inputSchema": {
+        "dialect": "draft-2020-12",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "run": {
+              "type": "string"
+            },
+            "repo": {
+              "type": "string"
+            },
+            "sha": {
+              "type": "string"
+            },
+            "ref": {
+              "type": "string"
+            },
+            "event": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "run",
+            "repo",
+            "sha",
+            "ref",
+            "event"
+          ],
+          "additionalProperties": true
+        },
+        "definitions": {}
+      },
+      "flows": []
+    },
+    {
+      "id": "docs-publish",
+      "description": "Verify docs mirror parity, regenerate llms.txt, and build the ZEVM Starlight docs bundle.",
+      "summary": null,
+      "featured": false,
+      "kind": "ts",
+      "path": ".smithers/flows/docs-publish/flow.ts",
+      "capabilities": [],
+      "model": null,
+      "modelInvocable": false,
+      "inputSchema": {
+        "dialect": "draft-2020-12",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "run": {
+              "type": "string"
+            },
+            "repo": {
+              "type": "string"
+            },
+            "sha": {
+              "type": "string"
+            },
+            "ref": {
+              "type": "string"
+            },
+            "event": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "run",
+            "repo",
+            "sha",
+            "ref",
+            "event"
+          ],
+          "additionalProperties": true
+        },
+        "definitions": {}
+      },
+      "flows": []
+    },
+    {
       "id": "playground/native",
       "description": "Execute bounded local EVM requests and return their opcode trace",
       "summary": null,
@@ -239,9 +368,172 @@
       "model": null,
       "modelInvocable": false,
       "flows": []
+    },
+    {
+      "id": "release-check",
+      "description": "Validate release version parity, qualification coverage, and canonical release metadata for tag pushes.",
+      "summary": null,
+      "featured": false,
+      "kind": "ts",
+      "path": ".smithers/flows/release-check/flow.ts",
+      "capabilities": [],
+      "model": null,
+      "modelInvocable": false,
+      "inputSchema": {
+        "dialect": "draft-2020-12",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "run": {
+              "type": "string"
+            },
+            "repo": {
+              "type": "string"
+            },
+            "sha": {
+              "type": "string"
+            },
+            "ref": {
+              "type": "string"
+            },
+            "event": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "run",
+            "repo",
+            "sha",
+            "ref",
+            "event"
+          ],
+          "additionalProperties": true
+        },
+        "definitions": {}
+      },
+      "flows": []
+    },
+    {
+      "id": "uphill",
+      "description": "Score ZEVM Uphill metrics and generate the Lighthouse-style backpressure audit report.",
+      "summary": null,
+      "featured": false,
+      "kind": "ts",
+      "path": ".smithers/flows/uphill/flow.ts",
+      "capabilities": [],
+      "model": null,
+      "modelInvocable": false,
+      "inputSchema": {
+        "dialect": "draft-2020-12",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "run": {
+              "type": "string"
+            },
+            "repo": {
+              "type": "string"
+            },
+            "sha": {
+              "type": "string"
+            },
+            "ref": {
+              "type": "string"
+            },
+            "event": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "run",
+            "repo",
+            "sha",
+            "ref",
+            "event"
+          ],
+          "additionalProperties": true
+        },
+        "definitions": {}
+      },
+      "flows": []
+    },
+    {
+      "id": "wiki-refresh",
+      "description": "Validate ZEVM Obsidian wiki links, source citations, and mythical history feed projection.",
+      "summary": null,
+      "featured": false,
+      "kind": "ts",
+      "path": ".smithers/flows/wiki-refresh/flow.ts",
+      "capabilities": [],
+      "model": null,
+      "modelInvocable": false,
+      "inputSchema": {
+        "dialect": "draft-2020-12",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "run": {
+              "type": "string"
+            },
+            "repo": {
+              "type": "string"
+            },
+            "sha": {
+              "type": "string"
+            },
+            "ref": {
+              "type": "string"
+            },
+            "event": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "run",
+            "repo",
+            "sha",
+            "ref",
+            "event"
+          ],
+          "additionalProperties": true
+        },
+        "definitions": {}
+      },
+      "flows": []
     }
   ],
   "on": [
+    {
+      "event": "issue.labeled:todo",
+      "flow": "issue/poc",
+      "description": "Build a failing regression and bounded fix for every maintainer-accepted TODO"
+    },
+    {
+      "event": "change.opened",
+      "flow": "checks/review",
+      "description": "Review every Change across consensus, RPC, light client, memory, and build graph lenses"
+    },
+    {
+      "event": "change.updated",
+      "flow": "checks/review",
+      "description": "Re-review every updated Change before maintainer merge"
+    },
+    {
+      "event": "change.landed",
+      "flow": [
+        "wiki-refresh",
+        "docs-publish"
+      ],
+      "description": "Verify the Obsidian wiki, mythical history, and docs bundle after every landing"
+    },
+    {
+      "event": "github.push:main",
+      "flow": [
+        "wiki-refresh",
+        "docs-publish"
+      ],
+      "description": "Keep wiki citations, llms.txt, and docs artifacts aligned with main"
+    },
     {
       "event": "schedule:17 9 * * 1",
       "flow": "conformance-review",
@@ -250,9 +542,14 @@
   ],
   "github": {
     "mirror": "pull",
-    "issues": "read",
+    "issues": "two-way",
     "changes": "send-upstream",
     "protectedPaths": [
+      ".smithers",
+      ".agents/uphill",
+      ".github/workflows",
+      "PACKAGE.ts",
+      "build.zig",
       "build.zig.zon",
       "native-dependencies.json",
       "include/zevm.h",
@@ -261,10 +558,197 @@
       "src/consensus_verifier.zig",
       "src/hardfork_schedule.zig",
       "src/light_default_checkpoints.zig",
-      "docs/specs/qualification"
+      "docs/specs/qualification",
+      "spec/lean"
     ],
     "maintainers": [
       "roninjin10"
+    ],
+    "dailyTokens": 1000000000
+  },
+  "policy": {
+    "lifecycle": {
+      "docs": "evergreen",
+      "tests": "evergreen"
+    },
+    "notifications": {
+      "quietHours": []
+    },
+    "approvals": {
+      "approve": "person",
+      "merge": "person"
+    }
+  },
+  "machine": {
+    "vcpus": 4,
+    "memoryMiB": 8192,
+    "tools": [
+      "zig",
+      "cargo",
+      "rustc",
+      "cc",
+      "node",
+      "bun",
+      "jq",
+      "uphill"
+    ]
+  },
+  "issueViews": [
+    {
+      "id": "triage",
+      "title": "Needs triage",
+      "state": "open",
+      "labels": [
+        "proposed"
+      ]
+    },
+    {
+      "id": "todo",
+      "title": "Committed TODOs",
+      "state": "open",
+      "labels": [
+        "todo"
+      ]
+    },
+    {
+      "id": "bugs",
+      "title": "Open bugs",
+      "state": "open",
+      "labels": [
+        "bug"
+      ]
+    },
+    {
+      "id": "consensus",
+      "title": "Consensus & EVM",
+      "state": "open",
+      "labels": [
+        "consensus"
+      ]
+    },
+    {
+      "id": "rpc",
+      "title": "JSON-RPC parity",
+      "state": "open",
+      "labels": [
+        "rpc"
+      ]
+    },
+    {
+      "id": "light-client",
+      "title": "Beacon light client",
+      "state": "open",
+      "labels": [
+        "light-client"
+      ]
+    },
+    {
+      "id": "exex-rebase",
+      "title": "ExEx & rebase fork",
+      "state": "open",
+      "labels": [
+        "exex"
+      ]
+    },
+    {
+      "id": "external-tests",
+      "title": "External test suites",
+      "state": "open",
+      "labels": [
+        "external-tests"
+      ]
+    }
+  ],
+  "issueTransitions": [
+    {
+      "id": "accept",
+      "title": "Accept for discussion",
+      "from": "proposed",
+      "to": "accepted",
+      "actor": "person"
+    },
+    {
+      "id": "needs-repro",
+      "title": "Needs minimal repro",
+      "from": "proposed",
+      "to": "needs-repro",
+      "actor": "anyone"
+    },
+    {
+      "id": "todo",
+      "title": "Commit to TODO",
+      "from": "accepted",
+      "to": "todo",
+      "actor": "person"
+    },
+    {
+      "id": "wontfix",
+      "title": "Decline proposal",
+      "from": "proposed",
+      "to": "wontfix",
+      "actor": "person"
+    }
+  ],
+  "contributes": {
+    "triggers": [
+      {
+        "on": "github.push",
+        "flow": "ci",
+        "title": "ZEVM CI on main",
+        "branches": [
+          "main"
+        ]
+      },
+      {
+        "on": "github.pull_request",
+        "flow": "ci",
+        "title": "ZEVM CI on pull request"
+      },
+      {
+        "on": "github.push",
+        "flow": "uphill",
+        "title": "Lighthouse backpressure audit on main",
+        "branches": [
+          "main"
+        ]
+      },
+      {
+        "on": "github.pull_request",
+        "flow": "uphill",
+        "title": "Lighthouse backpressure audit on pull request"
+      },
+      {
+        "on": "github.push",
+        "flow": "docs-publish",
+        "title": "Verify and build ZEVM docs + llms.txt",
+        "branches": [
+          "main"
+        ]
+      },
+      {
+        "on": "github.push",
+        "flow": "wiki-refresh",
+        "title": "Verify ZEVM wiki and mythical history",
+        "branches": [
+          "main"
+        ]
+      },
+      {
+        "on": "github.push",
+        "flow": "release-check",
+        "title": "Validate release parity and qualification metadata",
+        "tags": [
+          "v*"
+        ]
+      },
+      {
+        "on": "cron",
+        "flow": "uphill",
+        "title": "Weekly backpressure and conformance audit",
+        "cron": "17 9 * * 1",
+        "timezone": "UTC",
+        "overlap": "skip"
+      }
     ]
   }
 }

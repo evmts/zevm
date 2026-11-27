@@ -1,0 +1,75 @@
+# ZEVM
+
+> Embeddable Zig Ethereum execution and proof-backed light-client node powered by pinned Voltaire and Guillotine Mini, with C ABI, Node-API, browser WASM, Lean 4 formal spec, and Smithers Cloud coding factory.
+
+- Coding Factory: https://smithers.sh/evmts/zevm
+- Public MCP Server: https://smithers.sh/evmts/zevm/mcp
+- Lighthouse Backpressure Audit: https://zevm.sh/docs/audit/
+- Full Markdown Bundle: https://zevm.sh/docs/llms-full.txt
+
+## Overview
+
+- [ZEVM](https://zevm.sh/docs/raw/index.md): Run a local trusted dev node or a proof-backed, consensus-anchored light client.
+
+## Quickstart
+
+- [Forked Dev Node](https://zevm.sh/docs/raw/quickstart/forked-dev-node.md): Run trusted mode with an upstream fork and validate local overlay behavior.
+- [Installation](https://zevm.sh/docs/raw/quickstart/installation.md): Build ZEVM from source and run it locally.
+- [Run Light Mode](https://zevm.sh/docs/raw/quickstart/run-light-mode.md): Start ZEVM light mode, check readiness, and run proof-backed reads.
+- [Run Trusted Mode](https://zevm.sh/docs/raw/quickstart/run-trusted-mode.md): Start ZEVM as a local trusted dev node and validate core RPC flows.
+- [Troubleshooting](https://zevm.sh/docs/raw/quickstart/troubleshooting.md): Diagnose common ZEVM build, startup, configuration, and RPC errors.
+
+## Concepts
+
+- [Architecture And Upstream Ownership](https://zevm.sh/docs/raw/concepts/architecture-and-upstream-ownership.md): Concise ownership boundary between ZEVM and upstream execution components.
+- [Light Mode](https://zevm.sh/docs/raw/concepts/light-mode.md): ZEVM's proof-backed, consensus-anchored read mode with readiness-gated selectors.
+- [Method Support By Mode](https://zevm.sh/docs/raw/concepts/method-support-by-mode.md): Practical capability matrix for trusted and light mode without duplicating method reference pages.
+- [Runtime Modes](https://zevm.sh/docs/raw/concepts/runtime-modes.md): ZEVM has two runtime modes with explicit startup selection and mode-gated JSON-RPC surfaces.
+- [State Fork And Snapshots](https://zevm.sh/docs/raw/concepts/state-fork-and-snapshots.md): Trusted-mode fork overlay, snapshot boundary, and reset semantics.
+- [Trusted Mode](https://zevm.sh/docs/raw/concepts/trusted-mode.md): ZEVM's writable local dev-node mode and canonical control surface.
+
+## Configuration Reference
+
+- [Light-Mode Configuration](https://zevm.sh/docs/raw/reference/configuration/light-mode.md): Light-mode fields, chain/network mapping, checkpoint selection, and validation.
+- [Configuration Overview](https://zevm.sh/docs/raw/reference/configuration/overview.md): Runtime mode selection, shared startup flags, config schema, and precedence.
+- [Trusted-Mode Configuration](https://zevm.sh/docs/raw/reference/configuration/trusted-mode.md): Trusted-mode defaults, CLI/config fields, mining and fork options, and validation.
+
+## Library Reference
+
+- [C ABI](https://zevm.sh/docs/raw/reference/library/c-abi.md): Embed the ZEVM execution node and light client through libzevm and zevm.h.
+- [Database](https://zevm.sh/docs/raw/reference/library/database.md): In-memory Ethereum accounts, contract code, and state roots.
+- [Execution Library](https://zevm.sh/docs/raw/reference/library/execution-library.md): Embed transaction processing, block construction, verification, proofs, and mining policy.
+- [Genesis And Chain Import](https://zevm.sh/docs/raw/reference/library/genesis-and-chain-import.md): Load genesis allocations and import concatenated RLP block history.
+
+## JSON-RPC Reference
+
+- [Blocks, Receipts, And Logs](https://zevm.sh/docs/raw/reference/json-rpc/blocks-receipts-and-logs.md): Trusted-mode block, transaction, receipt, and log query contract.
+- [Core Reads](https://zevm.sh/docs/raw/reference/json-rpc/core-reads.md): Core read methods with trusted-mode selector rules and exact eth_feeHistory behavior.
+- [ZEVM Controls](https://zevm.sh/docs/raw/reference/json-rpc/dev-controls.md): Trusted-mode zevm_* state controls, snapshots, impersonation, funding helpers, and metadata methods.
+- [Managed Dev Wallet (Trusted Mode)](https://zevm.sh/docs/raw/reference/json-rpc/managed-dev-wallet.md): Exact trusted-mode managed dev-wallet contract: mnemonic, derivation root, addresses, private keys, and signing behavior.
+- [JSON-RPC Overview](https://zevm.sh/docs/raw/reference/json-rpc/overview.md): Transport, envelope rules, error codes, selector semantics, and method surface by mode.
+- [Simulation](https://zevm.sh/docs/raw/reference/json-rpc/simulation.md): Trusted-mode execution simulation contract, including TransactionRequest and override sets.
+- [Transactions And Mining](https://zevm.sh/docs/raw/reference/json-rpc/transactions-and-mining.md): Trusted-mode transaction submission plus mining, txpool, block-environment, time, and fork-source controls.
+- [Unsupported And Deferred](https://zevm.sh/docs/raw/reference/json-rpc/unsupported-and-deferred.md): Public JSON-RPC and transport surfaces intentionally outside the current ZEVM contract.
+- [Verified Light-Mode Reads](https://zevm.sh/docs/raw/reference/json-rpc/verified-light-mode-reads.md): Light-mode sync status, readiness gating, selector rules, and proof-backed read methods.
+
+## Reference & Release Gates
+
+- [Canonical Specs](https://zevm.sh/docs/raw/reference/canonical-specs.md): Contract-source index for the authoritative ZEVM public spec files.
+- [CI And Release Gates](https://zevm.sh/docs/raw/reference/ci-and-release-gates.md): Maintainer map from local verification commands to GitHub Actions release gates.
+- [Latest-Fork State Tests](https://zevm.sh/docs/raw/reference/latest-fork-state-tests.md): `zig build verify-latest-state` runs every Cancun and Prague `GeneralStateTests` post case against ZEVM and reports pass, fail, and unsupported counts per fork and per category.
+- [Release Metadata Runbook](https://zevm.sh/docs/raw/reference/release-metadata-runbook.md): Reproducible operator workflow for release metadata selection, validation, provenance, and baked-default audits.
+- [Smithers Cloud Coding Factory](https://zevm.sh/docs/raw/reference/smithers-factory.md): How evmts/zevm runs on Smithers Cloud with shared object-store caching, Lighthouse backpressure audits, Obsidian wiki, authenticated MCP, and untrusted contributor isolation.
+- [Canonical Specs And Docs-First Process](https://zevm.sh/docs/raw/reference/specs-and-process.md): Docs-first update order, release metadata policy, and qualification intent.
+- [Submodule Update Policy](https://zevm.sh/docs/raw/reference/submodule-update-policy.md): Last updated 2026-11-22
+
+## Canonical Specs
+
+- [ZEVM Documentation Process](https://zevm.sh/docs/raw/specs/docs-first-process.md): ZEVM documentation is contract-first.
+- [Embedded execution node](https://zevm.sh/docs/raw/specs/embedded-node.md): `zevm_node_create`, `zevm_node_rpc`, and `zevm_node_destroy` expose the same native NodeRuntime and JSON-RPC dispatcher as the executable, without a socket. Voltaire owns Ethereum primitives and state; Guillotine Mini ex
+- [ZEVM JSON-RPC Contract](https://zevm.sh/docs/raw/specs/json-rpc-contract.md): This file is the exact ZEVM JSON-RPC API contract.
+- [ZEVM Maintainer Decisions](https://zevm.sh/docs/raw/specs/maintainer-decisions.md): This file is a non-normative historical decision log.
+- [Active Plan: Public Docs Maintenance](https://zevm.sh/docs/raw/specs/mintlify-docs-plan.md): This file is a lightweight maintenance plan for the current public docs structure.
+- [Public Docs Page Ownership and Anchors](https://zevm.sh/docs/raw/specs/page-ownership.md): This file is the non-normative traceability map for public docs pages.
+- [ZEVM Product Requirements](https://zevm.sh/docs/raw/specs/prd.md): ZEVM is one Zig binary (`zevm`) with two runtime modes:
+- [ZEVM Specs Index](https://zevm.sh/docs/raw/specs/README.md): The ZEVM normative product/API contract is defined only by:

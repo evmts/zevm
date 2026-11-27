@@ -44,3 +44,27 @@ Astro/Starlight docs mirror parity (`tools/docs_mirror.mjs`) and markdown link i
 
 - Keep docs/ and docs/src/content/docs/ synchronized by running `node tools/docs_mirror.mjs --write` after editing docs.
 - Fix broken local paths and machine-specific links in root Markdown files and docs/.
+
+## Ethereum Conformance
+
+Pinned Voltaire and Guillotine Mini provenance, release qualification coverage, Cancun/Prague GeneralStateTests floors, and npm release version parity.
+
+- Keep native-dependencies.json pinned to pushed 40-hex commit SHAs for evmts/voltaire and evmts/guillotine-mini.
+- Keep every release qualification assertion in docs/specs/qualification/assertion-map.json covered. At least 100.
+- Raise the Cancun GeneralStateTests pass floor in tools/latest_fork_state_baseline.json toward 100%. At least 100.
+- Raise the Prague GeneralStateTests pass floor in tools/latest_fork_state_baseline.json toward 100%. At least 100.
+- Keep package versions, platform optionalDependencies, build.zig.zon, and native ZEVM_VERSION aligned (npm run verify:release).
+
+## Smithers Factory & Trust
+
+Coding factory projection, 3-audience personalized home, shared cache trust isolation, Obsidian wiki, llms.txt index, and one-time sandbox auth.
+
+- Declare Smithers Cloud repository workflow triggers in .smithers/FACTORY.ts so factory.json emits apiVersion 1 and contributes.triggers.
+- Enforce policy.approvals approve=person and merge=person in .smithers/FACTORY.ts.
+- Protect consensus, ABI, native pins, build, and factory paths in github.protectedPaths.
+- Declare maintainer, contributor, and everyone sections in .smithers/FACTORY.ts home without markdown blocks so smithers.sh renders pre-clone.
+- Declare docs pointing to https://zevm.sh/docs/llms.txt in .smithers/FACTORY.ts home.
+- Isolate untrusted PR execution from trunk cache writes using split SMITHERS_CACHE_READ_TOKEN and main-only SMITHERS_CACHE_WRITE_TOKEN.
+- Keep .smithers/wiki/ wikilinks, frontmatter, mythical history, and code citations valid (node tools/wiki_sync.mjs --check).
+- Keep docs/public/llms.txt synchronized with docs/ (node tools/generate_llms_txt.mjs --check).
+- Maintain .smithers/merge.json and tools/sandbox_auth.mjs for one-time-use sandbox agent authentication.
