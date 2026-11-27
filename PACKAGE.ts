@@ -178,17 +178,19 @@ const llmsCheck = S.Shell.Test({
 })
 
 const factoryToolsTest = S.Shell.Test({
-  summary: "Run Node unit tests for audit report, wiki sync, sandbox auth, and llms.txt tooling",
+  summary: "Run Node unit tests for audit report, home projection, wiki sync, sandbox auth, and llms.txt tooling",
   bin: node,
   args: [
     "--test",
     "tools/audit_report.test.mjs",
+    "tools/home_projection.test.mjs",
     "tools/wiki_sync.test.mjs",
     "tools/sandbox_auth.test.mjs",
     "tools/generate_llms_txt.test.mjs",
   ],
   data: [
     S.glob("tools/*.mjs"),
+    smithersPkg["home-sources"],
     smithersPkg["wiki-sources"],
     S.file("docs/astro.config.mjs"),
     S.glob("docs/**/*.md", { exclude: ["docs/node_modules/**", "docs/src/content/docs/**", "docs/public/**"] }),
@@ -215,6 +217,7 @@ export const Package = S.Package({
     "js-check": jsCheck,
     "docs-mirror": docsMirror,
     "llms-check": llmsCheck,
+    "home-check": S.Alias(smithersPkg["home-check"]),
     "wiki-check": S.Alias(smithersPkg["wiki-check"]),
     "playground-csp-check": S.Alias(smithersPkg["playground-csp-check"]),
     "factory-tools-test": factoryToolsTest,

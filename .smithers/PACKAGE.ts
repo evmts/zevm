@@ -46,15 +46,59 @@ const playgroundJsCheck = S.Shell.Test({
   timeout: "1m",
 })
 
+const homeSources = S.Filegroup({
+  srcs: [
+    S.file("HOME.mjs"),
+    S.file("home.json"),
+  ],
+})
+
+const homeWrite = S.Shell.Run({
+  summary: "Project .smithers/HOME.mjs into .smithers/home.json",
+  bin: node,
+  args: ["tools/home_projection.mjs", "--write"],
+  data: [S.file("//tools/home_projection.mjs"), S.file("HOME.mjs")],
+  sandbox: "none",
+  manual: true,
+  timeout: "1m",
+})
+
+const homeCheck = S.Shell.Test({
+  summary: "Verify .smithers/home.json matches .smithers/HOME.mjs and 3-audience policy",
+  bin: node,
+  args: ["tools/home_projection.mjs", "--check"],
+  data: [S.file("//tools/home_projection.mjs"), homeSources],
+  sandbox: "none",
+  timeout: "1m",
+})
+
+const sh = S.Host.bin("sh")
+
+const factoryWrite = S.Shell.Run({
+  summary: "Project .smithers/FACTORY.ts into .smithers/factory.json",
+  bin: sh,
+  tools: [node],
+  args: ["scripts/smthrs", "target", "//.smithers:factory-check", "--write"],
+  data: [S.file("FACTORY.ts"), S.file("//scripts/smthrs")],
+  sandbox: "none",
+  manual: true,
+  timeout: "5m",
+})
+
 // Factory projection: .smithers/FACTORY.ts and .smithers/flows/** render to
-// the checked-in .smithers/factory.json and .smithers/home.json.
-//   smthrs target //.smithers:factory-write --write   # regenerate
-//   smthrs ci //.smithers:factory-check                # drift check (in ci)
+// the checked-in .smithers/factory.json, while .smithers/HOME.mjs renders to
+// .smithers/home.json.
+//   smthrs target //.smithers:factory-write --write   # regenerate factory.json
+//   smthrs ci //.smithers:factory-check               # drift check (in ci)
+//   smthrs ci //.smithers:home-check                  # 3-audience home check
 export const Package = S.Package({
   defaultVisibility: "public",
   targets: {
-    "factory-write": S.FactoryProjection({ mode: "write" }),
-    "factory-check": S.FactoryProjection({ mode: "check" }),
+    "factory-write": factoryWrite,
+    "factory-check": S.FactoryProjection({ mode: "check", homeOutput: ".smithers/.home-projection.unused" }),
+    "home-write": homeWrite,
+    "home-check": homeCheck,
+    "home-sources": homeSources,
     "wiki-sources": wikiSources,
     "playground-sources": playgroundSources,
     "wiki-check": wikiCheck,

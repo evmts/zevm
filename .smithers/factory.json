@@ -541,9 +541,9 @@
     }
   ],
   "github": {
-    "mirror": "pull",
+    "mirror": "push",
     "issues": "two-way",
-    "changes": "send-upstream",
+    "changes": "land",
     "protectedPaths": [
       ".smithers",
       ".agents/uphill",

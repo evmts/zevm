@@ -13,6 +13,12 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
+# Defense-in-depth trust boundary: untrusted runs may read the shared object
+# store (SMITHERS_CACHE_READ_TOKEN) but must never write to trunk cache.
+if [ "${SMITHERS_TRUST:-}" = "untrusted" ] || [ "${SMITHERS_UNTRUSTED:-0}" = "1" ] || { [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] && [ "${GITHUB_HEAD_REPO_FORK:-false}" = "true" ]; }; then
+  unset SMITHERS_CACHE_WRITE_TOKEN
+fi
+
 # Key Zig targets on the sibling native dependencies (see PACKAGE.ts).
 node tools/native_deps_digest.mjs .native-deps.digest
 
@@ -27,6 +33,10 @@ fi
 sibling="$root/../smithers/node_modules/.bin/smthrs"
 if [ -x "$sibling" ]; then
   exec "$sibling" "$@"
+fi
+
+if command -v npx >/dev/null 2>&1; then
+  exec npx --yes --package="@smthrs/cli@${SMTHRS_VERSION:-1.0.0-rc.18}" smthrs "$@"
 fi
 
 echo "error: smthrs not found on PATH or at $sibling (set SMTHRS_BIN to override, or run npx --package=@smthrs/cli smthrs)" >&2

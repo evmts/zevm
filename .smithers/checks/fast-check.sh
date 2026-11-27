@@ -4,9 +4,10 @@ set -eu
 
 node tools/docs_mirror.mjs
 node tools/generate_llms_txt.mjs --check
+node tools/home_projection.mjs --check
 node tools/wiki_sync.mjs --check
 node npm/zevm/scripts/verify-release.cjs
-node --test tools/audit_report.test.mjs
+node --test tools/audit_report.test.mjs tools/home_projection.test.mjs tools/wiki_sync.test.mjs tools/sandbox_auth.test.mjs tools/generate_llms_txt.test.mjs
 for f in npm/zevm/src/*.js npm/zevm/scripts/*.cjs tools/*.mjs tools/*.js; do
   [ -e "$f" ] || continue
   node --check "$f"
