@@ -679,6 +679,11 @@
   "contributes": {
     "triggers": [
       {
+        "on": "manual",
+        "flow": "uphill",
+        "title": "Run Uphill audit"
+      },
+      {
         "on": "github.push",
         "flow": "ci",
         "title": "ZEVM CI on main",

@@ -10,6 +10,10 @@ const uphill = CiJob.make("uphill", {
   ]
 })
 
+const manualAudit = CiJob.make("uphill", {
+  steps: [{ name: "uphill-audit", run: "sh .smithers/checks/manual-uphill.sh" }]
+})
+
 export default Flow.make("uphill", {
   description: "Score ZEVM Uphill metrics and generate the Lighthouse-style backpressure audit report.",
   modelInvocable: false,
@@ -21,5 +25,5 @@ export default Flow.make("uphill", {
     event: Schema.String
   },
   success: Schema.Struct({ uphill: CiJob.Result }),
-  body: (run) => Node.all({ uphill: uphill.call(run) })
+  body: (run) => Node.all({ uphill: (run.event === "manual" ? manualAudit : uphill).call(run) })
 })

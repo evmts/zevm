@@ -89,6 +89,7 @@ export const factory = S.Factory({
     }
   },
   triggers: {
+    "manual-uphill": bind("uphill", { _tag: "Manual" }, "Run Uphill audit"),
     "ci-main": bind("ci", { _tag: "Push", branches: ["main"] }, "ZEVM CI on main"),
     "ci-pr": bind("ci", { _tag: "PullRequest" }, "ZEVM CI on pull request"),
     "uphill-main": bind("uphill", { _tag: "Push", branches: ["main"] }, "Lighthouse backpressure audit on main"),

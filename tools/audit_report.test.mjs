@@ -5,6 +5,13 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+test("Smithers Runs can select the repository Uphill audit once", () => {
+  const manifest = JSON.parse(fs.readFileSync(new URL("../.smithers/factory.json", import.meta.url), "utf8"));
+  assert.equal(manifest.apiVersion, 1);
+  assert.deepEqual(manifest.contributes.triggers.filter((t) => t.flow === "uphill" && t.on === "manual"),
+    [{ on: "manual", flow: "uphill", title: "Run Uphill audit" }]);
+});
+
 test("audit_report generates Lighthouse HTML, Factory feed JSON, and PR Markdown with trust badge", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "zevm-audit-test-"));
   const fixturePath = path.join(tmpDir, "report.json");
